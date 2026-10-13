@@ -61,6 +61,7 @@ pub struct TextInput {
     bounds: Option<Bounds<Pixels>>,
     selecting: bool,
     pub font_size: f32,
+    pub text_color: Option<Hsla>,
 }
 impl EventEmitter<InputEvent> for TextInput {}
 impl Focusable for TextInput {
@@ -94,6 +95,7 @@ impl TextInput {
             bounds: None,
             selecting: false,
             font_size,
+            text_color: None,
         }
     }
     pub fn reset(&mut self, text: String, marks: Vec<Mark>, caret: usize, cx: &mut Context<Self>) {
@@ -443,6 +445,7 @@ impl TextLayout {
         width: Pixels,
         font_size: Pixels,
         dim: bool,
+        text_color: Option<Hsla>,
         window: &Window,
     ) -> Self {
         let style = window.text_style();
@@ -450,9 +453,9 @@ impl TextLayout {
             len: text.len(),
             font: style.font(),
             color: if dim {
-                style.color.opacity(0.56)
+                text_color.unwrap_or(style.color).opacity(0.56)
             } else {
-                style.color
+                text_color.unwrap_or(style.color)
             },
             background_color: None,
             underline: None,
@@ -611,6 +614,7 @@ impl Element for TextElement {
         let marks = input.marks.clone();
         let marked = input.buffer.marked();
         let font_size = px(input.font_size);
+        let text_color = input.text_color;
         let state = Rc::new(RefCell::new(None));
         let measured = state.clone();
         let mut style = Style::default();
@@ -627,6 +631,7 @@ impl Element for TextElement {
                 width,
                 font_size,
                 dim,
+                text_color,
                 window,
             );
             let size = size(width, layout.height());
@@ -664,6 +669,7 @@ impl Element for TextElement {
                     bounds.size.width,
                     px(input.font_size),
                     dim,
+                    input.text_color,
                     window,
                 )
             })

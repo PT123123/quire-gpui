@@ -2,7 +2,7 @@ use crate::input::{InputEvent, TextInput};
 use gpui::{prelude::*, *};
 use quire_core::core::{
     command::Command,
-    types::{BlockId, BlockKind},
+    types::{BlockId, BlockKind, ColorKind},
 };
 use quire_gpui::session::Session;
 use std::{
@@ -79,6 +79,7 @@ struct Palette {
     muted: String,
     border: String,
     accent: String,
+    light: bool,
 }
 impl Palette {
     fn load(id: &str) -> Self {
@@ -92,6 +93,55 @@ impl Palette {
     }
     fn color(value: &str) -> Hsla {
         rgb(u32::from_str_radix(value.trim_start_matches('#'), 16).expect("palette hex")).into()
+    }
+    fn block_text(&self, slot: i32) -> Hsla {
+        let dark = !self.light;
+        let values = if dark {
+            [
+                "#e7e7ea", "#9b9a97", "#c3996b", "#e28d50", "#dcae3f", "#6ba584", "#5b9bc4",
+                "#ad7fb8", "#d3709f", "#e06d66",
+            ]
+        } else {
+            [
+                "#1f2328", "#787774", "#9f6b53", "#bd6408", "#a87718", "#448361", "#337ea9",
+                "#9065b0", "#c14c8a", "#d44c47",
+            ]
+        };
+        Self::color(values[slot.clamp(0, 9) as usize])
+    }
+    fn block_bg(&self, slot: i32) -> Hsla {
+        if slot <= 0 {
+            return rgb(0x00000000).into();
+        }
+        let dark = !self.light;
+        let values = if dark {
+            [
+                "#00000000",
+                "#2f2f2f",
+                "#2e2420",
+                "#38291c",
+                "#372c14",
+                "#1e2c21",
+                "#1d272e",
+                "#2a2233",
+                "#322028",
+                "#37201f",
+            ]
+        } else {
+            [
+                "#00000000",
+                "#f1f1ef",
+                "#f4eeee",
+                "#faebdd",
+                "#fbf3db",
+                "#edf3ec",
+                "#e7f3f8",
+                "#f6f3f9",
+                "#faf1f5",
+                "#fdebec",
+            ]
+        };
+        Self::color(values[slot.clamp(0, 9) as usize])
     }
 }
 
@@ -107,6 +157,7 @@ pub struct Workspace {
     palette: Palette,
     theme_picker_open: bool,
     icon_picker_open: bool,
+    color_picker: Option<(BlockId, bool)>,
     confirm_delete_page: Option<quire_core::core::types::PageId>,
     slash_menu: Option<BlockId>,
     status: String,
@@ -144,6 +195,7 @@ impl Workspace {
             palette: Palette::load(theme),
             theme_picker_open: false,
             icon_picker_open: false,
+            color_picker: None,
             confirm_delete_page: None,
             slash_menu: None,
             status: "已保存".into(),
@@ -253,8 +305,11 @@ impl Workspace {
                 self.inputs.insert(block.id.0, input.clone());
                 input
             };
+            let block_text_color = (block.color != ColorKind::Default)
+                .then(|| self.palette.block_text(block.color.slot()));
             input.update(cx, |input, cx| {
                 input.font_size = font;
+                input.text_color = block_text_color;
                 if input.buffer.committed() != block.text {
                     input.reset(block.text, block.marks.clone(), input.buffer.caret(), cx);
                 } else if input.marks != block.marks {
@@ -501,6 +556,34 @@ impl Workspace {
         self.sync_inputs(window, cx);
         self.schedule_save(false, window, cx);
     }
+    fn delete_table_row(
+        &mut self,
+        id: BlockId,
+        row: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.session.page.locked {
+            return;
+        }
+        self.session.execute(Command::TableDeleteRow { id, row });
+        self.sync_inputs(window, cx);
+        self.schedule_save(false, window, cx);
+    }
+    fn delete_table_column(
+        &mut self,
+        id: BlockId,
+        col: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.session.page.locked {
+            return;
+        }
+        self.session.execute(Command::TableDeleteColumn { id, col });
+        self.sync_inputs(window, cx);
+        self.schedule_save(false, window, cx);
+    }
     fn add_columns_column(&mut self, id: BlockId, window: &mut Window, cx: &mut Context<Self>) {
         if self.session.page.locked {
             return;
@@ -632,6 +715,47 @@ impl Workspace {
         if let Some(caret) = caret {
             self.focus(id, caret, window, cx);
         }
+        self.schedule_save(false, window, cx);
+    }
+    fn toggle_color_picker(&mut self, id: BlockId, background: bool, cx: &mut Context<Self>) {
+        self.color_picker = if self.color_picker == Some((id, background)) {
+            None
+        } else {
+            Some((id, background))
+        };
+        cx.notify();
+    }
+    fn set_block_color(
+        &mut self,
+        id: BlockId,
+        background: bool,
+        slot: i32,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.session.page.locked {
+            return;
+        }
+        let Some(block) = self.session.blocks().iter().find(|block| block.id == id) else {
+            return;
+        };
+        let color = if background {
+            block.color
+        } else {
+            ColorKind::from_slot(slot).unwrap_or(ColorKind::Default)
+        };
+        let bg = if background {
+            ColorKind::from_slot(slot).unwrap_or(ColorKind::Default)
+        } else {
+            block.background
+        };
+        self.session.execute(Command::SetBlockColor {
+            id,
+            color,
+            background: bg,
+        });
+        self.color_picker = None;
+        self.sync_inputs(window, cx);
         self.schedule_save(false, window, cx);
     }
     fn toggle_selected_mark(
@@ -1612,6 +1736,43 @@ impl Render for Workspace {
                                 this.add_table_column(block_id, table_columns, window, cx)
                             }))
                             .child("＋ 列"),
+                        div()
+                            .id(SharedString::from(format!(
+                                "table-delete-row-{}",
+                                block_id.0
+                            )))
+                            .px(px(7.))
+                            .py(px(3.))
+                            .cursor_pointer()
+                            .text_color(muted)
+                            .hover(|button| button.text_color(accent))
+                            .when(table_row_count > 1, |button| {
+                                button.on_click(cx.listener(move |this, _, window, cx| {
+                                    this.delete_table_row(block_id, table_row_count - 1, window, cx)
+                                }))
+                            })
+                            .child("− 行"),
+                        div()
+                            .id(SharedString::from(format!(
+                                "table-delete-column-{}",
+                                block_id.0
+                            )))
+                            .px(px(7.))
+                            .py(px(3.))
+                            .cursor_pointer()
+                            .text_color(muted)
+                            .hover(|button| button.text_color(accent))
+                            .when(table_columns > 1, |button| {
+                                button.on_click(cx.listener(move |this, _, window, cx| {
+                                    this.delete_table_column(
+                                        block_id,
+                                        table_columns - 1,
+                                        window,
+                                        cx,
+                                    )
+                                }))
+                            })
+                            .child("− 列"),
                     ]
                 } else {
                     Vec::new()
@@ -1711,6 +1872,42 @@ impl Render for Workspace {
                         })
                         .child("− 分栏"),
                 ];
+                let color_picker_view =
+                    self.color_picker
+                        .filter(|(id, _)| *id == block_id)
+                        .map(|(_, background)| {
+                            div()
+                                .w_full()
+                                .flex()
+                                .flex_wrap()
+                                .gap(px(5.))
+                                .pt(px(5.))
+                                .children(ColorKind::ALL.into_iter().enumerate().map(
+                                    |(slot, _)| {
+                                        let slot = slot as i32;
+                                        let swatch = if background {
+                                            self.palette.block_bg(slot)
+                                        } else {
+                                            self.palette.block_text(slot)
+                                        };
+                                        div()
+                                            .id(SharedString::from(format!(
+                                                "block-color-{block_id:?}-{background}-{slot}"
+                                            )))
+                                            .size(px(19.))
+                                            .rounded(px(4.))
+                                            .border_1()
+                                            .border_color(Palette::color(&p.border))
+                                            .bg(swatch)
+                                            .cursor_pointer()
+                                            .on_click(cx.listener(move |this, _, window, cx| {
+                                                this.set_block_color(
+                                                    block_id, background, slot, window, cx,
+                                                )
+                                            }))
+                                    },
+                                ))
+                        });
                 div()
                     .id(("block", block.id.0))
                     .w_full()
@@ -1719,6 +1916,10 @@ impl Render for Workspace {
                     .gap(px(8.))
                     .py(px(4.))
                     .when(block.parent.is_some(), |row| row.ml(px(18.)))
+                    .when(block.background != ColorKind::Default, |row| {
+                        row.bg(self.palette.block_bg(block.background.slot()))
+                            .rounded(px(4.))
+                    })
                     .when(kind == BlockKind::Code, |row| {
                         row.bg(Palette::color(&p.elevated))
                             .rounded(px(5.))
@@ -1800,6 +2001,32 @@ impl Render for Workspace {
                             .flex()
                             .items_center()
                             .gap(px(2.))
+                            .child(
+                                div()
+                                    .id(SharedString::from(format!(
+                                        "block-text-color-{block_id:?}"
+                                    )))
+                                    .px(px(3.))
+                                    .cursor_pointer()
+                                    .text_color(self.palette.block_text(block.color.slot()))
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        this.toggle_color_picker(block_id, false, cx)
+                                    }))
+                                    .child("A"),
+                            )
+                            .child(
+                                div()
+                                    .id(SharedString::from(format!(
+                                        "block-background-color-{block_id:?}"
+                                    )))
+                                    .px(px(3.))
+                                    .cursor_pointer()
+                                    .text_color(muted)
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        this.toggle_color_picker(block_id, true, cx)
+                                    }))
+                                    .child("▧"),
+                            )
                             .when(move_allowed, |actions| {
                                 actions
                                     .child(
@@ -1844,6 +2071,7 @@ impl Render for Workspace {
                                     .child("×"),
                             ),
                     )
+                    .when_some(color_picker_view, |row, picker| row.child(picker))
             })
             .collect::<Vec<_>>();
         div()
