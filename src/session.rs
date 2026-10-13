@@ -12,7 +12,7 @@ use quire_core::{
     storage::SqliteRepository,
 };
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, HashSet},
     path::{Path, PathBuf},
     sync::Arc,
     time::{Duration, Instant},
@@ -365,6 +365,147 @@ impl Session {
                     });
                 }
             }
+        }
+        self.pages.sort_by_key(|page| (page.parent, page.order));
+        if changes.is_empty() {
+            return false;
+        }
+        self.persistence.record(changes);
+        true
+    }
+    pub fn indent_page(&mut self, id: PageId) -> bool {
+        let Some(page) = self
+            .pages
+            .iter()
+            .find(|page| page.id == id && !page.template)
+        else {
+            return false;
+        };
+        let mut siblings = self
+            .pages
+            .iter()
+            .filter(|candidate| candidate.parent == page.parent && !candidate.template)
+            .collect::<Vec<_>>();
+        siblings.sort_by_key(|candidate| candidate.order);
+        let Some(index) = siblings.iter().position(|candidate| candidate.id == id) else {
+            return false;
+        };
+        let Some(previous) = index.checked_sub(1).and_then(|index| siblings.get(index)) else {
+            return false;
+        };
+        self.reparent_page(id, Some(previous.id), None)
+    }
+    pub fn outdent_page(&mut self, id: PageId) -> bool {
+        let Some(page) = self
+            .pages
+            .iter()
+            .find(|page| page.id == id && !page.template)
+        else {
+            return false;
+        };
+        let Some(parent_id) = page.parent else {
+            return false;
+        };
+        let Some(parent) = self
+            .pages
+            .iter()
+            .find(|candidate| candidate.id == parent_id)
+        else {
+            return false;
+        };
+        let destination_parent = parent.parent;
+        let mut siblings = self
+            .pages
+            .iter()
+            .filter(|candidate| {
+                candidate.parent == destination_parent && candidate.id != id && !candidate.template
+            })
+            .collect::<Vec<_>>();
+        siblings.sort_by_key(|candidate| candidate.order);
+        let insertion = siblings
+            .iter()
+            .position(|candidate| candidate.id == parent_id)
+            .map_or(siblings.len(), |index| index + 1);
+        self.reparent_page(id, destination_parent, Some(insertion))
+    }
+    fn reparent_page(
+        &mut self,
+        id: PageId,
+        parent: Option<PageId>,
+        insertion: Option<usize>,
+    ) -> bool {
+        let Some(target) = self
+            .pages
+            .iter()
+            .find(|page| page.id == id && !page.template)
+            .cloned()
+        else {
+            return false;
+        };
+        if parent == Some(id)
+            || target.parent == parent
+            || parent.is_some_and(|parent_id| {
+                !self
+                    .pages
+                    .iter()
+                    .any(|page| page.id == parent_id && !page.template)
+            })
+        {
+            return false;
+        }
+        let mut ancestor = parent;
+        let mut visited = HashSet::new();
+        while let Some(ancestor_id) = ancestor {
+            if ancestor_id == id || !visited.insert(ancestor_id) {
+                return false;
+            }
+            ancestor = self
+                .pages
+                .iter()
+                .find(|page| page.id == ancestor_id)
+                .and_then(|page| page.parent);
+        }
+
+        let mut siblings = self
+            .pages
+            .iter()
+            .filter(|page| page.parent == parent && page.id != id && !page.template)
+            .map(|page| page.id)
+            .collect::<Vec<_>>();
+        siblings.sort_by_key(|sibling| {
+            self.pages
+                .iter()
+                .find(|page| page.id == *sibling)
+                .map(|page| page.order)
+        });
+        let index = insertion.unwrap_or(siblings.len()).min(siblings.len());
+        siblings.insert(index, id);
+        let mut changes = Vec::new();
+        for (index, sibling) in siblings.into_iter().enumerate() {
+            let order = OrderKey(OrderKey::FIRST.0 + index as u64 * OrderKey::STRIDE);
+            let Some(page) = self.pages.iter_mut().find(|page| page.id == sibling) else {
+                continue;
+            };
+            let next_parent = parent;
+            if page.parent != next_parent || page.order != order {
+                page.parent = next_parent;
+                page.order = order;
+                changes.push(Change::PageMoved {
+                    id: sibling,
+                    parent: next_parent,
+                    order,
+                });
+            }
+        }
+        if let Some(parent_id) = parent
+            && let Some(parent_page) = self.pages.iter_mut().find(|page| page.id == parent_id)
+            && !parent_page.expanded
+        {
+            parent_page.expanded = true;
+            changes.push(Change::PageExpandedSet {
+                id: parent_id,
+                expanded: true,
+            });
         }
         self.pages.sort_by_key(|page| (page.parent, page.order));
         if changes.is_empty() {

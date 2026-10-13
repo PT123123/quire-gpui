@@ -564,6 +564,28 @@ impl Workspace {
             self.schedule_save(false, window, cx);
         }
     }
+    fn indent_page(
+        &mut self,
+        id: quire_core::core::types::PageId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.session.indent_page(id) {
+            cx.notify();
+            self.schedule_save(false, window, cx);
+        }
+    }
+    fn outdent_page(
+        &mut self,
+        id: quire_core::core::types::PageId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.session.outdent_page(id) {
+            cx.notify();
+            self.schedule_save(false, window, cx);
+        }
+    }
     fn request_delete_page(&mut self, id: quire_core::core::types::PageId, cx: &mut Context<Self>) {
         self.confirm_delete_page = Some(id);
         cx.notify();
@@ -914,6 +936,30 @@ impl Render for Workspace {
                                 this.move_page(page_id, 1, window, cx)
                             }))
                             .child("↓"),
+                    )
+                    .child(
+                        div()
+                            .id(SharedString::from(format!("indent-page-{}", page_id.0)))
+                            .px(px(2.))
+                            .cursor_pointer()
+                            .text_color(muted)
+                            .hover(|button| button.text_color(accent))
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.indent_page(page_id, window, cx)
+                            }))
+                            .child("↳"),
+                    )
+                    .child(
+                        div()
+                            .id(SharedString::from(format!("outdent-page-{}", page_id.0)))
+                            .px(px(2.))
+                            .cursor_pointer()
+                            .text_color(muted)
+                            .hover(|button| button.text_color(accent))
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.outdent_page(page_id, window, cx)
+                            }))
+                            .child("↰"),
                     )
                     .child(
                         div()
