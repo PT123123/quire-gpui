@@ -670,7 +670,13 @@ impl Session {
                             ))
                     })
                 });
-                simple_kind && (b.parent.is_none() || valid_child)
+                let table_cell = b.kind == BlockKind::TableCell
+                    && b.parent.is_some_and(|parent| {
+                        self.document
+                            .block(parent)
+                            .is_some_and(|parent| parent.kind == BlockKind::Table)
+                    });
+                table_cell || (simple_kind && (b.parent.is_none() || valid_child))
             })
     }
     pub fn end_typing(&mut self) {
