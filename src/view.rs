@@ -665,6 +665,30 @@ impl Workspace {
         self.session.clear_page_cover();
         self.schedule_save(false, window, cx);
     }
+    fn save_attachment(
+        &mut self,
+        id: quire_core::core::types::AttachmentId,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(name) = self.session.attachment_save_name(id) else {
+            return;
+        };
+        let Some(target) = rfd::FileDialog::new().set_file_name(name).save_file() else {
+            return;
+        };
+        match self.session.export_attachment(id, &target) {
+            Ok(()) => {
+                self.status = format!("已保存附件：{}", target.display());
+                self.error = false;
+                cx.notify();
+            }
+            Err(error) => {
+                self.status = format!("另存附件失败：{error}");
+                self.error = true;
+                cx.notify();
+            }
+        }
+    }
     fn add_table_row(
         &mut self,
         id: BlockId,
@@ -1899,6 +1923,7 @@ impl Render for Workspace {
                 } else {
                     None
                 };
+                let file_attachment = block.attachment;
                 let code_lang_controls = if kind == BlockKind::Code {
                     Lang::ALL
                         .into_iter()
@@ -2325,6 +2350,34 @@ impl Render for Workspace {
                                                         }
                                                     }))
                                                     .child("打开文件"),
+                                            )
+                                            .when_some(
+                                                file_attachment,
+                                                |row, attachment| {
+                                                    row.child(
+                                                        div()
+                                                            .id(SharedString::from(format!(
+                                                                "save-file-{block_id:?}"
+                                                            )))
+                                                            .px(px(7.))
+                                                            .py(px(3.))
+                                                            .rounded(px(4.))
+                                                            .cursor_pointer()
+                                                            .text_color(accent)
+                                                            .hover(|button| {
+                                                                button
+                                                                    .bg(Palette::color(&p.elevated))
+                                                            })
+                                                            .on_click(cx.listener(
+                                                                move |this, _, _, cx| {
+                                                                    this.save_attachment(
+                                                                        attachment, cx,
+                                                                    )
+                                                                },
+                                                            ))
+                                                            .child("另存为"),
+                                                    )
+                                                },
                                             )
                                         }),
                                 )

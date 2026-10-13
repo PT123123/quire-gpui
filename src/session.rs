@@ -271,6 +271,20 @@ impl Session {
             .get(&id.as_u64())
             .map(|attachment| self.attachment_store.stored_path(attachment))
     }
+    pub fn attachment_save_name(&self, id: AttachmentId) -> Option<String> {
+        self.attachments
+            .get(&id.as_u64())
+            .map(|attachment| self.attachment_store.save_name(attachment))
+    }
+    pub fn export_attachment(&self, id: AttachmentId, target: &Path) -> Result<()> {
+        let attachment = self
+            .attachments
+            .get(&id.as_u64())
+            .ok_or_else(|| anyhow::anyhow!("附件元数据不存在"))?;
+        self.attachment_store
+            .export_to(attachment, target)
+            .map_err(|error| anyhow::anyhow!(error.to_string()))
+    }
     pub fn set_page_cover_from(&mut self, path: &Path) -> Result<()> {
         if self.page.locked {
             bail!("此页面已锁定");
