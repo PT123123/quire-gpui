@@ -7,11 +7,51 @@ use quire_core::core::{
 use quire_gpui::session::Session;
 use std::{
     collections::{BTreeMap, HashSet},
+    ops::Range,
     sync::{Arc, Mutex},
     time::Duration,
 };
 
-actions!(workspace, [Save, Undo, Redo]);
+actions!(workspace, [Save, Undo, Redo, Find, FindNext, FindPrevious]);
+
+fn find_matches_in(text: &str, query: &str) -> Vec<Range<usize>> {
+    if query.is_empty() || query.len() > text.len() {
+        return Vec::new();
+    }
+    let mut ranges = Vec::new();
+    let mut next_allowed = 0;
+    for (start, _) in text.char_indices() {
+        if start < next_allowed {
+            continue;
+        }
+        let Some(end) = start.checked_add(query.len()) else {
+            continue;
+        };
+        if end <= text.len()
+            && text.is_char_boundary(end)
+            && text[start..end].eq_ignore_ascii_case(query)
+        {
+            ranges.push(start..end);
+            next_allowed = end;
+        }
+    }
+    ranges
+}
+
+#[cfg(test)]
+mod find_tests {
+    use super::find_matches_in;
+
+    #[test]
+    fn find_matches_are_non_overlapping_case_insensitive_and_utf8_aligned() {
+        assert_eq!(
+            find_matches_in("Alpha α alpha Alpha", "alpha"),
+            [0..5, 9..14, 15..20]
+        );
+        assert_eq!(find_matches_in("标题标题", "标题"), [0..6, 6..12]);
+        assert!(find_matches_in("anything", "").is_empty());
+    }
+}
 
 fn ordered_page_tree(
     pages: &[quire_core::core::types::Page],
@@ -150,9 +190,15 @@ pub struct Workspace {
     title_input: Entity<TextInput>,
     title_subscription: Option<Subscription>,
     search_input: Entity<TextInput>,
+    find_input: Entity<TextInput>,
     link_target_input: Entity<TextInput>,
     search_subscription: Option<Subscription>,
+    find_subscription: Option<Subscription>,
     search_query: String,
+    find_query: String,
+    find_matches: Vec<(BlockId, Range<usize>)>,
+    find_index: Option<usize>,
+    find_open: bool,
     inputs: BTreeMap<u64, Entity<TextInput>>,
     subscriptions: Vec<Subscription>,
     palette: Palette,
@@ -186,6 +232,10 @@ impl Workspace {
         search_input.update(cx, |input, _| {
             input.placeholder = Some("搜索页面和正文".into());
         });
+        let find_input = cx.new(|cx| TextInput::new(String::new(), Vec::new(), 12., window, cx));
+        find_input.update(cx, |input, _| {
+            input.placeholder = Some("查找当前页面".into());
+        });
         let link_target_input =
             cx.new(|cx| TextInput::new(String::new(), Vec::new(), 12., window, cx));
         link_target_input.update(cx, |input, _| {
@@ -196,9 +246,15 @@ impl Workspace {
             title_input,
             title_subscription: None,
             search_input,
+            find_input,
             link_target_input,
             search_subscription: None,
+            find_subscription: None,
             search_query: String::new(),
+            find_query: String::new(),
+            find_matches: Vec::new(),
+            find_index: None,
+            find_open: false,
             inputs: BTreeMap::new(),
             subscriptions: Vec::new(),
             palette: Palette::load(theme),
@@ -240,6 +296,18 @@ impl Workspace {
                 cx.subscribe_in(&search_input, window, |this, _, event, _, cx| {
                     if let InputEvent::Edited { text, .. } = event {
                         this.search_query = text.clone();
+                        cx.notify();
+                    }
+                }),
+            );
+        let find_input = this.find_input.clone();
+        this.find_subscription =
+            Some(
+                cx.subscribe_in(&find_input, window, |this, _, event, _, cx| {
+                    if let InputEvent::Edited { text, .. } = event {
+                        this.find_query = text.clone();
+                        this.find_index = None;
+                        this.refresh_find_matches();
                         cx.notify();
                     }
                 }),
@@ -385,6 +453,10 @@ impl Workspace {
                     && !text[1..].chars().any(char::is_whitespace))
                 .then_some(id);
                 self.slash_selection = 0;
+                if self.find_open {
+                    self.find_index = None;
+                    self.refresh_find_matches();
+                }
                 if let (Some(block), Some(input)) = (
                     self.session.document.block(id),
                     self.inputs.get(&id.0).cloned(),
@@ -800,6 +872,8 @@ impl Workspace {
             .unwrap_or_else(|| "已导入".into());
         let page = self.session.import_markdown(title.clone(), &source);
         self.session.visit_page(page);
+        self.find_index = None;
+        self.refresh_find_matches();
         self.active = None;
         let page_title = self.session.page.title.clone();
         self.title_input.update(cx, |input, cx| {
@@ -1286,6 +1360,8 @@ impl Workspace {
         }
         if self.session.select_page(id) {
             self.session.visit_page(id);
+            self.find_index = None;
+            self.refresh_find_matches();
             self.active = None;
             let title = self.session.page.title.clone();
             self.title_input.update(cx, |input, cx| {
@@ -1360,6 +1436,8 @@ impl Workspace {
             return;
         };
         self.session.visit_page(duplicate);
+        self.find_index = None;
+        self.refresh_find_matches();
         self.active = None;
         let title = self.session.page.title.clone();
         self.title_input.update(cx, |input, cx| {
@@ -1413,6 +1491,8 @@ impl Workspace {
         if self.session.delete_page(id) {
             self.confirm_delete_page = None;
             self.active = None;
+            self.find_index = None;
+            self.refresh_find_matches();
             let title = self.session.page.title.clone();
             self.title_input.update(cx, |input, cx| {
                 let len = title.len();
@@ -1430,6 +1510,8 @@ impl Workspace {
         self.session.create_page(None);
         let id = self.session.page.id;
         self.session.visit_page(id);
+        self.find_index = None;
+        self.refresh_find_matches();
         self.active = None;
         self.sync_inputs(window, cx);
         self.focus_first(window, cx);
@@ -1447,6 +1529,8 @@ impl Workspace {
         self.session.create_page(Some(parent));
         let id = self.session.page.id;
         self.session.visit_page(id);
+        self.find_index = None;
+        self.refresh_find_matches();
         self.active = None;
         self.sync_inputs(window, cx);
         self.focus_first(window, cx);
@@ -1476,7 +1560,95 @@ impl Workspace {
     fn composing(&self, cx: &App) -> bool {
         self.title_input.read(cx).buffer.composing()
             || self.search_input.read(cx).buffer.composing()
+            || self.find_input.read(cx).buffer.composing()
             || self.inputs.values().any(|i| i.read(cx).buffer.composing())
+    }
+    fn refresh_find_matches(&mut self) {
+        self.find_matches = if self.find_query.is_empty() {
+            Vec::new()
+        } else {
+            self.session
+                .blocks()
+                .iter()
+                .filter(|block| self.inputs.contains_key(&block.id.0))
+                .flat_map(|block| {
+                    find_matches_in(&block.text, &self.find_query)
+                        .into_iter()
+                        .map(|range| (block.id, range))
+                })
+                .collect()
+        };
+    }
+    fn open_find(&mut self, _: &Find, window: &mut Window, cx: &mut Context<Self>) {
+        let selected = self.active.and_then(|id| {
+            self.inputs.get(&id.0).and_then(|input| {
+                let input = input.read(cx);
+                (!input.buffer.selection.is_empty())
+                    .then(|| input.buffer.text[input.buffer.selection.clone()].to_owned())
+            })
+        });
+        self.find_open = true;
+        if let Some(selected) = selected.filter(|text| !text.is_empty()) {
+            self.find_query = selected.clone();
+            self.find_input.update(cx, |input, cx| {
+                let len = selected.len();
+                input.reset(selected, Vec::new(), len, cx);
+            });
+        }
+        self.find_index = None;
+        self.refresh_find_matches();
+        cx.notify();
+        window.focus(&self.find_input.read(cx).focus);
+    }
+    fn close_find(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.find_open = false;
+        if let Some(id) = self.active
+            && let Some(input) = self.inputs.get(&id.0)
+        {
+            let focus = input.read(cx).focus.clone();
+            window.focus(&focus);
+        }
+        cx.notify();
+    }
+    fn move_find(&mut self, step: isize, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.find_open {
+            return;
+        }
+        self.refresh_find_matches();
+        let count = self.find_matches.len();
+        if count == 0 {
+            self.find_index = None;
+            cx.notify();
+            return;
+        }
+        let target = self.find_index.map_or_else(
+            || if step > 0 { 0 } else { count - 1 },
+            |index| (index as isize + step).rem_euclid(count as isize) as usize,
+        );
+        self.find_index = Some(target);
+        let (id, range) = self.find_matches[target].clone();
+        if let Some(input) = self.inputs.get(&id.0) {
+            let focus = input.read(cx).focus.clone();
+            input.update(cx, |input, cx| {
+                input.buffer.selection = range;
+                input.buffer.reversed = false;
+                cx.notify();
+            });
+            self.active = Some(id);
+            window.focus(&focus);
+        }
+        cx.notify();
+    }
+    fn find_next_action(&mut self, _: &FindNext, window: &mut Window, cx: &mut Context<Self>) {
+        self.move_find(1, window, cx);
+    }
+    fn find_previous_action(
+        &mut self,
+        _: &FindPrevious,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.move_find(-1, window, cx);
     }
     fn save(&mut self, _: &Save, window: &mut Window, cx: &mut Context<Self>) {
         self.session.end_typing();
@@ -2083,6 +2255,61 @@ impl Render for Workspace {
                 )
         } else {
             div().id("link-editor-closed")
+        };
+        let find_bar = if self.find_open {
+            let count = self.find_matches.len();
+            let position = self
+                .find_index
+                .map(|index| format!("{} / {count}", index + 1))
+                .unwrap_or_else(|| {
+                    if count == 0 {
+                        "无结果".into()
+                    } else {
+                        format!("{count} 个结果")
+                    }
+                });
+            div()
+                .id("find-bar")
+                .w_full()
+                .h(px(38.))
+                .px(px(12.))
+                .flex()
+                .items_center()
+                .gap(px(8.))
+                .border_b_1()
+                .border_color(Palette::color(&p.border))
+                .child(div().flex_1().min_w_0().child(self.find_input.clone()))
+                .child(div().text_size(px(11.)).text_color(muted).child(position))
+                .child(
+                    div()
+                        .id("find-previous")
+                        .px(px(6.))
+                        .cursor_pointer()
+                        .hover(|button| button.bg(Palette::color(&p.elevated)))
+                        .on_click(cx.listener(|this, _, window, cx| this.move_find(-1, window, cx)))
+                        .child("↑"),
+                )
+                .child(
+                    div()
+                        .id("find-next")
+                        .px(px(6.))
+                        .cursor_pointer()
+                        .hover(|button| button.bg(Palette::color(&p.elevated)))
+                        .on_click(cx.listener(|this, _, window, cx| this.move_find(1, window, cx)))
+                        .child("↓"),
+                )
+                .child(
+                    div()
+                        .id("find-close")
+                        .px(px(6.))
+                        .cursor_pointer()
+                        .text_color(muted)
+                        .hover(|button| button.bg(Palette::color(&p.elevated)))
+                        .on_click(cx.listener(|this, _, window, cx| this.close_find(window, cx)))
+                        .child("×"),
+                )
+        } else {
+            div().id("find-bar-closed")
         };
         let rows = self
             .session
@@ -2798,6 +3025,9 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::save))
             .on_action(cx.listener(Self::undo))
             .on_action(cx.listener(Self::redo))
+            .on_action(cx.listener(Self::open_find))
+            .on_action(cx.listener(Self::find_next_action))
+            .on_action(cx.listener(Self::find_previous_action))
             .child(
                 div()
                     .h(px(40.))
@@ -3031,6 +3261,7 @@ impl Render for Workspace {
                     ),
             )
             .child(link_editor)
+            .child(find_bar)
             .child(
                 div()
                     .flex()
@@ -3224,5 +3455,8 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("ctrl-z", Undo, Some("Quire")),
         KeyBinding::new("ctrl-shift-z", Redo, Some("Quire")),
         KeyBinding::new("ctrl-y", Redo, Some("Quire")),
+        KeyBinding::new("ctrl-f", Find, Some("Quire")),
+        KeyBinding::new("ctrl-g", FindNext, Some("Quire")),
+        KeyBinding::new("ctrl-shift-g", FindPrevious, Some("Quire")),
     ]);
 }
