@@ -160,6 +160,7 @@ pub struct Workspace {
     color_picker: Option<(BlockId, bool)>,
     confirm_delete_page: Option<quire_core::core::types::PageId>,
     slash_menu: Option<BlockId>,
+    slash_selection: usize,
     status: String,
     error: bool,
     active: Option<BlockId>,
@@ -198,6 +199,7 @@ impl Workspace {
             color_picker: None,
             confirm_delete_page: None,
             slash_menu: None,
+            slash_selection: 0,
             status: "已保存".into(),
             error: false,
             active: None,
@@ -360,6 +362,7 @@ impl Workspace {
                 self.slash_menu = (text.starts_with('/')
                     && !text[1..].chars().any(char::is_whitespace))
                 .then_some(id);
+                self.slash_selection = 0;
                 if let (Some(block), Some(input)) = (
                     self.session.document.block(id),
                     self.inputs.get(&id.0).cloned(),
@@ -379,20 +382,7 @@ impl Workspace {
                     .block(id)
                     .is_some_and(|block| block.kind == BlockKind::TableCell)
                 {
-                    if let Some(index) = self.session.document.index_of(self.session.page.id, id)
-                        && let Some(next) =
-                            self.session.blocks()[index + 1..].iter().find(|block| {
-                                block.kind == BlockKind::TableCell
-                                    && block.parent
-                                        == self
-                                            .session
-                                            .document
-                                            .block(id)
-                                            .and_then(|block| block.parent)
-                            })
-                    {
-                        self.focus(next.id, 0, window, cx);
-                    }
+                    self.navigate_table_cell(id, 1, window, cx);
                     return;
                 }
                 if self.slash_menu == Some(id) {
@@ -403,11 +393,17 @@ impl Workspace {
                         .and_then(|block| block.text.strip_prefix('/'))
                         .unwrap_or("")
                         .to_lowercase();
-                    if let Some((_, _, kind)) = slash_items().iter().find(|(label, keywords, _)| {
-                        query.is_empty()
-                            || label.to_lowercase().contains(&query)
-                            || keywords.contains(&query)
-                    }) {
+                    let matches = slash_items()
+                        .iter()
+                        .filter(|(label, keywords, _)| {
+                            query.is_empty()
+                                || label.to_lowercase().contains(&query)
+                                || keywords.contains(&query)
+                        })
+                        .collect::<Vec<_>>();
+                    if let Some((_, _, kind)) =
+                        matches.get(self.slash_selection.min(matches.len().saturating_sub(1)))
+                    {
                         self.select_slash_kind(id, *kind, window, cx);
                         return;
                     }
@@ -446,6 +442,30 @@ impl Workspace {
                 self.schedule_save(false, window, cx);
             }
             InputEvent::Navigate(direction) => {
+                if self.slash_menu == Some(id) {
+                    let query = self
+                        .session
+                        .document
+                        .block(id)
+                        .and_then(|block| block.text.strip_prefix('/'))
+                        .unwrap_or("")
+                        .to_lowercase();
+                    let count = slash_items()
+                        .iter()
+                        .filter(|(label, keywords, _)| {
+                            query.is_empty()
+                                || label.to_lowercase().contains(&query)
+                                || keywords.contains(&query)
+                        })
+                        .count();
+                    if count > 0 {
+                        self.slash_selection = (self.slash_selection as i64 + *direction as i64)
+                            .rem_euclid(count as i64)
+                            as usize;
+                        cx.notify();
+                    }
+                    return;
+                }
                 if let Some(index) = self.session.document.index_of(self.session.page.id, id) {
                     let next = index as i64 + *direction as i64;
                     if next >= 0
@@ -463,14 +483,32 @@ impl Workspace {
                 cx.notify();
             }
             InputEvent::Indent => {
-                self.session.execute(Command::IndentList { id });
-                self.sync_inputs(window, cx);
-                self.schedule_save(false, window, cx);
+                if self
+                    .session
+                    .document
+                    .block(id)
+                    .is_some_and(|block| block.kind == BlockKind::TableCell)
+                {
+                    self.navigate_table_cell(id, 1, window, cx);
+                } else {
+                    self.session.execute(Command::IndentList { id });
+                    self.sync_inputs(window, cx);
+                    self.schedule_save(false, window, cx);
+                }
             }
             InputEvent::Outdent => {
-                self.session.execute(Command::OutdentList { id });
-                self.sync_inputs(window, cx);
-                self.schedule_save(false, window, cx);
+                if self
+                    .session
+                    .document
+                    .block(id)
+                    .is_some_and(|block| block.kind == BlockKind::TableCell)
+                {
+                    self.navigate_table_cell(id, -1, window, cx);
+                } else {
+                    self.session.execute(Command::OutdentList { id });
+                    self.sync_inputs(window, cx);
+                    self.schedule_save(false, window, cx);
+                }
             }
             InputEvent::ToggleMark(kind) => {
                 let Some(input) = self.inputs.get(&id.0) else {
@@ -583,6 +621,64 @@ impl Workspace {
         self.session.execute(Command::TableDeleteColumn { id, col });
         self.sync_inputs(window, cx);
         self.schedule_save(false, window, cx);
+    }
+    fn navigate_table_cell(
+        &mut self,
+        id: BlockId,
+        delta: i32,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(table_id) = self
+            .session
+            .document
+            .block(id)
+            .filter(|block| block.kind == BlockKind::TableCell)
+            .and_then(|block| block.parent)
+        else {
+            return;
+        };
+        let mut cells = self
+            .session
+            .blocks()
+            .iter()
+            .filter(|block| block.parent == Some(table_id) && block.kind == BlockKind::TableCell)
+            .collect::<Vec<_>>();
+        cells.sort_by_key(|block| block.order);
+        let Some(index) = cells.iter().position(|block| block.id == id) else {
+            return;
+        };
+        let next_index = index as i64 + delta as i64;
+        if next_index >= 0
+            && let Some(next) = cells.get(next_index as usize)
+        {
+            let next_id = next.id;
+            let caret = if delta < 0 { next.text.len() } else { 0 };
+            self.focus(next_id, caret, window, cx);
+        } else if delta > 0 {
+            let columns = self
+                .session
+                .document
+                .block(table_id)
+                .map_or(1, |table| usize::from(table.columns.max(1)));
+            let row = cells.len().div_ceil(columns);
+            self.session
+                .execute(Command::TableAddRow { id: table_id, row });
+            self.sync_inputs(window, cx);
+            let last_cell = self
+                .session
+                .blocks()
+                .iter()
+                .filter(|block| {
+                    block.parent == Some(table_id) && block.kind == BlockKind::TableCell
+                })
+                .max_by_key(|block| block.order)
+                .map(|block| block.id);
+            if let Some(last_cell) = last_cell {
+                self.focus(last_cell, 0, window, cx);
+            }
+            self.schedule_save(false, window, cx);
+        }
     }
     fn add_columns_column(&mut self, id: BlockId, window: &mut Window, cx: &mut Context<Self>) {
         if self.session.page.locked {
@@ -1639,7 +1735,8 @@ impl Render for Workspace {
                                 || label.to_lowercase().contains(&slash_query)
                                 || keywords.contains(slash_query.as_str())
                         })
-                        .map(|(label, keywords, item_kind)| {
+                        .enumerate()
+                        .map(|(option_index, (label, keywords, item_kind))| {
                             let item_kind = *item_kind;
                             div()
                                 .id(SharedString::from(format!(
@@ -1655,6 +1752,9 @@ impl Render for Workspace {
                                 .rounded(px(4.))
                                 .cursor_pointer()
                                 .hover(|option| option.bg(Palette::color(&p.elevated)))
+                                .when(option_index == self.slash_selection, |option| {
+                                    option.bg(Palette::color(&p.elevated))
+                                })
                                 .on_click(cx.listener(move |this, _, window, cx| {
                                     this.select_slash_kind(block_id, item_kind, window, cx)
                                 }))
