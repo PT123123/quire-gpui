@@ -182,6 +182,8 @@ fn slash_items() -> &'static [(&'static str, &'static str, BlockKind)] {
         ("折叠块", "toggle", BlockKind::Toggle),
         ("引用", "quote", BlockKind::Quote),
         ("代码", "code", BlockKind::Code),
+        ("数学公式", "math latex formula", BlockKind::Math),
+        ("链接卡片", "embed link card", BlockKind::Embed),
         ("提示块", "callout", BlockKind::Callout),
         ("分隔线", "divider", BlockKind::Divider),
         ("表格", "table grid", BlockKind::Table),
@@ -2279,6 +2281,8 @@ impl Render for Workspace {
                 ("折叠块", BlockKind::Toggle),
                 ("引用", BlockKind::Quote),
                 ("代码", BlockKind::Code),
+                ("数学公式", BlockKind::Math),
+                ("链接卡片", BlockKind::Embed),
                 ("提示", BlockKind::Callout),
                 ("分隔线", BlockKind::Divider),
                 ("表格", BlockKind::Table),
@@ -2987,6 +2991,62 @@ impl Render for Workspace {
                                         )
                                         .children(toc_entries)
                                 }
+                            })
+                            .when(kind == BlockKind::Math, |view| {
+                                view.rounded(px(5.))
+                                    .px(px(10.))
+                                    .py(px(8.))
+                                    .bg(Palette::color(&p.elevated))
+                                    .child(
+                                        div()
+                                            .font_family("Cambria Math")
+                                            .text_size(px(20.))
+                                            .text_color(self.palette.block_text(block.color.slot()))
+                                            .child(quire_core::core::math::to_unicode(&block.text)),
+                                    )
+                            })
+                            .when(kind == BlockKind::Embed, |view| {
+                                let url = block.text.clone();
+                                let title = quire_core::core::embed::describe(&url);
+                                let openable = quire_core::core::embed::is_openable(&url);
+                                view.flex_col()
+                                    .gap(px(5.))
+                                    .rounded(px(6.))
+                                    .border_1()
+                                    .border_color(Palette::color(&p.border))
+                                    .px(px(10.))
+                                    .py(px(8.))
+                                    .bg(Palette::color(&p.elevated))
+                                    .child(div().font_weight(FontWeight::SEMIBOLD).child(title))
+                                    .child(
+                                        div()
+                                            .text_size(px(12.))
+                                            .text_color(muted)
+                                            .child(url.clone()),
+                                    )
+                                    .when(openable, |card| {
+                                        card.child(
+                                            div()
+                                                .id(SharedString::from(format!(
+                                                    "open-embed-{block_id:?}"
+                                                )))
+                                                .w(px(140.))
+                                                .px(px(8.))
+                                                .py(px(4.))
+                                                .rounded(px(4.))
+                                                .cursor_pointer()
+                                                .text_color(accent)
+                                                .hover(|button| {
+                                                    button.bg(Palette::color(&p.border))
+                                                })
+                                                .on_click(cx.listener(move |_, _, _, cx| {
+                                                    cx.open_url(
+                                                        &quire_core::core::embed::with_scheme(&url),
+                                                    )
+                                                }))
+                                                .child("在浏览器中打开"),
+                                        )
+                                    })
                             })
                             .when_some(image_path, |view, path| {
                                 let width =
