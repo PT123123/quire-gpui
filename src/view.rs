@@ -1956,15 +1956,35 @@ impl Render for Workspace {
         let backlinks_empty = backlink_rows.is_empty();
         let sync_sources = self
             .session
-            .blocks()
+            .pages
             .iter()
-            .filter(|block| {
-                self.inputs.contains_key(&block.id.0)
-                    && !block.text.trim().is_empty()
-                    && block.kind != BlockKind::Synced
+            .filter(|page| !page.template)
+            .flat_map(|page| {
+                let page_id = page.id;
+                let title = page.title.clone();
+                self.session
+                    .document
+                    .page_blocks(page_id)
+                    .iter()
+                    .filter(|block| {
+                        matches!(
+                            block.kind,
+                            BlockKind::Paragraph
+                                | BlockKind::Heading1
+                                | BlockKind::Heading2
+                                | BlockKind::Heading3
+                                | BlockKind::Bullet
+                                | BlockKind::Numbered
+                                | BlockKind::Todo
+                                | BlockKind::Quote
+                                | BlockKind::Code
+                                | BlockKind::Callout
+                                | BlockKind::Toggle
+                        ) && !block.text.trim().is_empty()
+                    })
+                    .map(move |block| (page_id, title.clone(), block.id, block.text.clone()))
             })
             .take(20)
-            .map(|block| (block.id, block.text.clone()))
             .collect::<Vec<_>>();
         let page_candidates = self
             .session
@@ -2608,8 +2628,8 @@ impl Render for Workspace {
                 let sync_candidates = if kind == BlockKind::Synced && block.sync_ref.is_none() {
                     sync_sources
                         .iter()
-                        .filter(|(source_id, _)| *source_id != block_id)
-                        .map(|(source_id, source_text)| {
+                        .filter(|(_, _, source_id, _)| *source_id != block_id)
+                        .map(|(_, page_title, source_id, source_text)| {
                             let source_id = *source_id;
                             div()
                                 .id(SharedString::from(format!(
@@ -2628,7 +2648,7 @@ impl Render for Workspace {
                                         this.schedule_save(false, window, cx);
                                     }
                                 }))
-                                .child(source_text.clone())
+                                .child(format!("{page_title} · {source_text}"))
                         })
                         .collect::<Vec<_>>()
                 } else {

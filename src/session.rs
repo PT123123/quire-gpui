@@ -1432,23 +1432,15 @@ mod tests {
         let path = scratch.path().join("test.db");
         let mut session = Session::open(&path)?;
         let source = session.blocks()[0].id;
-        let synced = session.document.alloc_block_id();
-        let mut block = session.document.block(source).unwrap().clone();
-        block.id = synced;
-        block.kind = BlockKind::Synced;
-        block.text = "stale text".into();
-        block.parent = None;
-        block.order = OrderKey::between(Some(block.order), None).unwrap();
-        block.sync_ref = None;
-        session
-            .document
-            .apply(&[Change::BlockInserted(block.clone())]);
-        session
-            .persistence
-            .record(vec![Change::BlockInserted(block)]);
         session.execute(Command::ReplaceText {
             id: source,
             text: "live source".into(),
+        });
+        session.create_page(None);
+        let synced = session.blocks()[0].id;
+        session.execute(Command::SetBlockType {
+            id: synced,
+            kind: BlockKind::Synced,
         });
         assert!(session.set_sync_source(synced, Some(source)));
         assert_eq!(
@@ -1458,7 +1450,6 @@ mod tests {
         assert!(session.document.block(synced).unwrap().text.is_empty());
         session.undo();
         assert_eq!(session.document.block(synced).unwrap().sync_ref, None);
-        assert_eq!(session.document.block(synced).unwrap().text, "stale text");
         session.redo();
         session.persistence.force_flush()?;
         drop(session);
