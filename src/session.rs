@@ -6,8 +6,12 @@ use quire_core::{
         document::{Document, Entry},
         history::History,
         persistence::{Change, Repository},
-        types::{Block, BlockId, BlockKind, Mark, OrderKey, Page, PageFont, PageId},
+        types::{
+            Attachment, AttachmentId, Block, BlockId, BlockKind, Mark, OrderKey, Page, PageFont,
+            PageId,
+        },
     },
+    services::attachment_store::AttachmentStore,
     services::persistence::PersistenceService,
     storage::SqliteRepository,
 };
@@ -27,6 +31,9 @@ pub struct Session {
     pub document: Document,
     pub persistence: Arc<PersistenceService>,
     pub repo: Arc<SqliteRepository>,
+    pub attachments: BTreeMap<u64, Attachment>,
+    attachment_store: AttachmentStore,
+    next_attachment_id: u64,
     history: History,
     typing: Option<(BlockId, Entry, Instant)>,
     // Prevent two GPUI instances allocating IDs against the same stale document.
@@ -133,6 +140,19 @@ impl Session {
         let repo =
             Arc::new(SqliteRepository::open(path).context("无法打开库；不会覆盖或重建已有文件")?);
         let loaded = repo.load()?;
+        let attachments = repo
+            .load_attachments()?
+            .into_iter()
+            .map(|attachment| (attachment.id.as_u64(), attachment))
+            .collect::<BTreeMap<_, _>>();
+        let next_attachment_id = attachments
+            .keys()
+            .copied()
+            .max()
+            .unwrap_or(0)
+            .saturating_add(1)
+            .max(1);
+        let attachment_store = AttachmentStore::for_db(Some(path));
         let mut pages = loaded.pages.clone();
         pages.sort_by_key(|p| p.order);
         let selected = pages
@@ -182,6 +202,9 @@ impl Session {
             document,
             persistence,
             repo,
+            attachments,
+            attachment_store,
+            next_attachment_id,
             history: History::default(),
             typing: None,
             _instance_lock: instance_lock,
@@ -202,6 +225,51 @@ impl Session {
     }
     pub fn blocks(&self) -> &[Block] {
         self.document.page_blocks(self.page.id)
+    }
+    pub fn import_attachment(
+        &mut self,
+        after: BlockId,
+        path: &Path,
+        image: bool,
+    ) -> Result<BlockId> {
+        let id = AttachmentId(self.next_attachment_id);
+        self.next_attachment_id = self.next_attachment_id.saturating_add(1);
+        let attachment = if image {
+            self.attachment_store
+                .import_file(id, path)
+                .map_err(|error| anyhow::anyhow!(error.to_string()))?
+        } else {
+            self.attachment_store
+                .import_any_file(id, path)
+                .map_err(|error| anyhow::anyhow!(error.to_string()))?
+        };
+        self.attachments.insert(id.as_u64(), attachment.clone());
+        self.execute(if image {
+            Command::InsertImage {
+                id: after,
+                attachment,
+            }
+        } else {
+            Command::InsertFile {
+                id: after,
+                attachment,
+            }
+        });
+        self.blocks()
+            .iter()
+            .find(|block| block.attachment == Some(id))
+            .map(|block| block.id)
+            .ok_or_else(|| anyhow::anyhow!("core rejected the attachment insertion"))
+    }
+    pub fn attachment_display_path(&self, id: AttachmentId) -> Option<PathBuf> {
+        self.attachments
+            .get(&id.as_u64())
+            .map(|attachment| self.attachment_store.display_path(attachment))
+    }
+    pub fn attachment_path(&self, id: AttachmentId) -> Option<PathBuf> {
+        self.attachments
+            .get(&id.as_u64())
+            .map(|attachment| self.attachment_store.stored_path(attachment))
     }
     pub fn select_page(&mut self, id: PageId) -> bool {
         self.end_typing();

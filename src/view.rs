@@ -593,6 +593,38 @@ impl Workspace {
         self.sync_inputs(window, cx);
         self.schedule_save(false, window, cx);
     }
+    fn pick_attachment(&mut self, image: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if self.session.page.locked || self.closing {
+            return;
+        }
+        let mut picker = rfd::FileDialog::new();
+        if image {
+            picker = picker.add_filter("图片", &["png", "jpg", "jpeg", "gif", "bmp"]);
+        }
+        let Some(path) = picker.pick_file() else {
+            return;
+        };
+        let after = self
+            .active
+            .filter(|id| self.session.blocks().iter().any(|block| block.id == *id))
+            .or_else(|| self.session.blocks().last().map(|block| block.id));
+        let Some(after) = after else {
+            return;
+        };
+        match self.session.import_attachment(after, &path, image) {
+            Ok(id) => {
+                self.active = Some(id);
+                self.sync_inputs(window, cx);
+                self.status = "附件已添加，正在保存…".into();
+                self.schedule_save(false, window, cx);
+            }
+            Err(error) => {
+                self.status = format!("导入附件失败：{error}");
+                self.error = true;
+                cx.notify();
+            }
+        }
+    }
     fn add_table_row(
         &mut self,
         id: BlockId,
@@ -1694,6 +1726,29 @@ impl Render for Workspace {
                 .child(label)
         })
         .collect::<Vec<_>>();
+        let attachment_buttons = [("图片", true), ("文件", false)]
+            .into_iter()
+            .map(|(label, image)| {
+                div()
+                    .id(if image { "insert-image" } else { "insert-file" })
+                    .px(px(8.))
+                    .py(px(5.))
+                    .rounded(px(5.))
+                    .cursor_pointer()
+                    .text_color(if self.session.page.locked {
+                        muted
+                    } else {
+                        accent
+                    })
+                    .hover(|button| button.bg(Palette::color(&p.elevated)))
+                    .when(!self.session.page.locked, |button| {
+                        button.on_click(cx.listener(move |this, _, window, cx| {
+                            this.pick_attachment(image, window, cx)
+                        }))
+                    })
+                    .child(label)
+            })
+            .collect::<Vec<_>>();
         let rows = self
             .session
             .blocks()
@@ -1759,6 +1814,21 @@ impl Render for Workspace {
                 let is_todo = block.kind == BlockKind::Todo;
                 let is_toggle = block.kind == BlockKind::Toggle;
                 let kind = block.kind;
+                let image_path = if kind == BlockKind::Image {
+                    block
+                        .attachment
+                        .and_then(|attachment| self.session.attachment_display_path(attachment))
+                } else {
+                    None
+                };
+                let image_missing = kind == BlockKind::Image && image_path.is_none();
+                let file_path = if kind == BlockKind::File {
+                    block
+                        .attachment
+                        .and_then(|attachment| self.session.attachment_path(attachment))
+                } else {
+                    None
+                };
                 let code_lang_controls = if kind == BlockKind::Code {
                     Lang::ALL
                         .into_iter()
@@ -2144,6 +2214,48 @@ impl Render for Workspace {
                                 view.py(px(8.))
                                     .child(div().w_full().h(px(1.)).bg(Palette::color(&p.border)))
                             })
+                            .when_some(image_path, |view, path| {
+                                let width =
+                                    700. * f32::from(block.img_percent.clamp(10, 100)) / 100.;
+                                view.child(img(path).w(px(width)).max_h(px(520.)).rounded(px(5.)))
+                            })
+                            .when(image_missing, |view| {
+                                view.child(div().text_color(muted).child("图片附件不可用"))
+                            })
+                            .when(kind == BlockKind::File, |view| {
+                                let path = file_path.clone();
+                                view.child(
+                                    div()
+                                        .flex()
+                                        .items_center()
+                                        .gap(px(8.))
+                                        .child(format!("📎 {}", block.text))
+                                        .when_some(path, |row, path| {
+                                            row.child(
+                                                div()
+                                                    .id(SharedString::from(format!(
+                                                        "open-file-{block_id:?}"
+                                                    )))
+                                                    .px(px(7.))
+                                                    .py(px(3.))
+                                                    .rounded(px(4.))
+                                                    .cursor_pointer()
+                                                    .text_color(accent)
+                                                    .hover(|button| {
+                                                        button.bg(Palette::color(&p.elevated))
+                                                    })
+                                                    .on_click(cx.listener(move |_, _, _, cx| {
+                                                        if let Ok(uri) =
+                                                            url::Url::from_file_path(&path)
+                                                        {
+                                                            cx.open_url(uri.as_str());
+                                                        }
+                                                    }))
+                                                    .child("打开文件"),
+                                            )
+                                        }),
+                                )
+                            })
                             .when(kind == BlockKind::Code, |view| {
                                 view.child(
                                     div()
@@ -2157,7 +2269,9 @@ impl Render for Workspace {
                             .when(
                                 kind != BlockKind::Divider
                                     && kind != BlockKind::Table
-                                    && kind != BlockKind::Columns,
+                                    && kind != BlockKind::Columns
+                                    && kind != BlockKind::Image
+                                    && kind != BlockKind::File,
                                 |view| {
                                     view.font_family(if kind == BlockKind::Code {
                                         "Cascadia Code"
@@ -2429,7 +2543,8 @@ impl Render for Workspace {
                     .border_color(Palette::color(&p.border))
                     .children(kind_buttons)
                     .child(div().w(px(1.)).h(px(18.)).bg(Palette::color(&p.border)))
-                    .children(mark_buttons),
+                    .children(mark_buttons)
+                    .children(attachment_buttons),
             )
             .child(
                 div()
