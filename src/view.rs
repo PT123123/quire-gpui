@@ -773,6 +773,45 @@ impl Workspace {
         }
         cx.notify();
     }
+    fn import_markdown(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.closing {
+            return;
+        }
+        let Some(path) = rfd::FileDialog::new()
+            .set_title("导入 Markdown 为新页面")
+            .add_filter("Markdown", &["md", "markdown"])
+            .pick_file()
+        else {
+            return;
+        };
+        let source = match std::fs::read_to_string(&path) {
+            Ok(source) => source,
+            Err(error) => {
+                self.status = format!("读取 Markdown 失败：{error}");
+                self.error = true;
+                cx.notify();
+                return;
+            }
+        };
+        let title = path
+            .file_stem()
+            .map(|stem| stem.to_string_lossy().trim().to_owned())
+            .filter(|stem| !stem.is_empty())
+            .unwrap_or_else(|| "已导入".into());
+        let page = self.session.import_markdown(title.clone(), &source);
+        self.session.visit_page(page);
+        self.active = None;
+        let page_title = self.session.page.title.clone();
+        self.title_input.update(cx, |input, cx| {
+            let len = page_title.len();
+            input.reset(page_title, Vec::new(), len, cx);
+        });
+        self.sync_inputs(window, cx);
+        self.focus_first(window, cx);
+        self.status = format!("已导入 Markdown：{title}");
+        self.error = false;
+        self.schedule_save(false, window, cx);
+    }
     fn add_table_row(
         &mut self,
         id: BlockId,
@@ -2895,6 +2934,20 @@ impl Render for Workspace {
                             .child("链接"),
                     )
                     .children(attachment_buttons)
+                    .child(
+                        div()
+                            .id("page-import-markdown")
+                            .px(px(8.))
+                            .py(px(5.))
+                            .rounded(px(5.))
+                            .cursor_pointer()
+                            .text_color(Palette::color(&p.accent))
+                            .hover(|button| button.bg(Palette::color(&p.elevated)))
+                            .on_click(
+                                cx.listener(|this, _, window, cx| this.import_markdown(window, cx)),
+                            )
+                            .child("导入 Markdown"),
+                    )
                     .child(
                         div()
                             .id("page-export-markdown")

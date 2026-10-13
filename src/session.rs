@@ -160,6 +160,7 @@ impl Session {
             .find(|p| !p.template && p.parent.is_none())
             .cloned()
             .or_else(|| pages.iter().find(|p| !p.template).cloned());
+        let create_initial_page = pages.is_empty();
         if selected.is_none() && !pages.is_empty() {
             bail!("库中只有模板，本轮原型不会自动修改该库");
         }
@@ -178,6 +179,12 @@ impl Session {
             locked: false,
             template: false,
         });
+        if pages.is_empty() {
+            // The synthetic first page is persisted below; it also belongs in
+            // the live workspace tree so later imports and page creation do
+            // not reuse its id or leave it out of navigation.
+            pages.push(page.clone());
+        }
         let mut document = Document::new(1);
         for p in &pages {
             document.set_page_blocks(
@@ -191,7 +198,7 @@ impl Session {
             );
         }
         let persistence = Arc::new(PersistenceService::with_default_clock(repo.clone()));
-        if pages.is_empty() {
+        if create_initial_page {
             persistence.record(vec![Change::PageCreated(page.clone())]);
         }
         let mut session = Self {
@@ -369,6 +376,42 @@ impl Session {
             .record(vec![Change::PageCreated(page.clone())]);
         self.document.set_page_blocks(id, Vec::new());
         self.pages.push(page.clone());
+        self.page = page;
+        self.ensure_page_has_block();
+        id
+    }
+    pub fn import_markdown(&mut self, title: String, source: &str) -> PageId {
+        self.end_typing();
+        let id = PageId(self.pages.iter().map(|page| page.id.0).max().unwrap_or(0) + 1);
+        let last_order = self
+            .pages
+            .iter()
+            .filter(|page| page.parent.is_none() && !page.template)
+            .map(|page| page.order)
+            .max();
+        let page = Page {
+            id,
+            title,
+            parent: None,
+            order: OrderKey::between(last_order, None).unwrap_or(OrderKey::FIRST),
+            favorite: false,
+            expanded: true,
+            font: PageFont::Default,
+            full_width: false,
+            small_text: false,
+            icon: String::new(),
+            cover: None,
+            locked: false,
+            template: false,
+        };
+        let changes = {
+            let mut allocate = || self.document.alloc_block_id();
+            quire_core::services::import_service::import_markdown(source, &page, &mut allocate)
+        };
+        self.document.apply(&changes);
+        self.persistence.record(changes);
+        self.pages.push(page.clone());
+        self.pages.sort_by_key(|page| (page.parent, page.order));
         self.page = page;
         self.ensure_page_has_block();
         id
@@ -1099,6 +1142,43 @@ mod tests {
         let links = &session.document.block(id).unwrap().marks;
         assert_eq!(links.len(), 3);
         assert_eq!(links[1].url, "https://new.example");
+        Ok(())
+    }
+
+    #[test]
+    fn markdown_import_creates_a_new_persisted_page() -> Result<()> {
+        let scratch = quire_core::testing::ScratchDir::new("gpui-markdown-import");
+        let path = scratch.path().join("test.db");
+        let imported_page;
+        {
+            let mut session = Session::open(&path)?;
+            let original_page = session.page.id;
+            imported_page = session.import_markdown(
+                "Imported notes".into(),
+                "# Heading\n\n- first item\n- second item\n\n[site](https://example.com)\n",
+            );
+            assert_ne!(original_page, imported_page);
+            assert_eq!(session.page.id, imported_page);
+            assert_eq!(session.page.title, "Imported notes");
+            let blocks = session.blocks();
+            assert_eq!(blocks.len(), 4);
+            assert_eq!(blocks[0].kind, BlockKind::Heading1);
+            assert_eq!(blocks[1].kind, BlockKind::Bullet);
+            assert_eq!(blocks[2].kind, BlockKind::Bullet);
+            assert_eq!(blocks[3].marks[0].url, "https://example.com");
+            session.persistence.force_flush()?;
+        }
+        let reopened = Session::open(&path)?;
+        assert!(
+            reopened
+                .pages
+                .iter()
+                .any(|page| { page.id == imported_page && page.title == "Imported notes" })
+        );
+        let imported = reopened.document.page_blocks(imported_page);
+        assert_eq!(imported.len(), 4);
+        assert_eq!(imported[0].text, "Heading");
+        assert_eq!(imported[3].marks[0].url, "https://example.com");
         Ok(())
     }
 }
