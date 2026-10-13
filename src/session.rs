@@ -1070,4 +1070,35 @@ mod tests {
         assert_ne!(s.blocks()[0].id, s.blocks()[1].id);
         Ok(())
     }
+
+    #[test]
+    fn replacing_link_target_preserves_outer_ranges_and_undoes_as_one_entry() -> Result<()> {
+        let scratch = quire_core::testing::ScratchDir::new("gpui-link-replace");
+        let path = scratch.path().join("test.db");
+        let mut session = Session::open(&path)?;
+        let id = session.blocks()[0].id;
+        session.replace(id, "alpha beta gamma".into(), false);
+        session.set_link(id, 0, 16, "https://old.example".into());
+
+        session.set_link(id, 6, 10, "https://new.example".into());
+        let links = session.document.block(id).unwrap().marks.clone();
+        assert_eq!(links.len(), 3);
+        assert_eq!((links[0].start, links[0].end), (0, 6));
+        assert_eq!(links[0].url, "https://old.example");
+        assert_eq!((links[1].start, links[1].end), (6, 10));
+        assert_eq!(links[1].url, "https://new.example");
+        assert_eq!((links[2].start, links[2].end), (10, 16));
+        assert_eq!(links[2].url, "https://old.example");
+
+        session.undo();
+        let links = &session.document.block(id).unwrap().marks;
+        assert_eq!(links.len(), 1);
+        assert_eq!((links[0].start, links[0].end), (0, 16));
+        assert_eq!(links[0].url, "https://old.example");
+        session.redo();
+        let links = &session.document.block(id).unwrap().marks;
+        assert_eq!(links.len(), 3);
+        assert_eq!(links[1].url, "https://new.example");
+        Ok(())
+    }
 }

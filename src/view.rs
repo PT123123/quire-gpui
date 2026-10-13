@@ -733,6 +733,46 @@ impl Workspace {
             }
         }
     }
+    fn export_markdown(&mut self, cx: &mut Context<Self>) {
+        if self.closing {
+            return;
+        }
+        let title = self
+            .session
+            .page
+            .title
+            .chars()
+            .map(|ch| if r#"<>:\"/|?*"#.contains(ch) { '_' } else { ch })
+            .collect::<String>();
+        let file_name = format!(
+            "{}.md",
+            if title.trim().is_empty() {
+                "未命名"
+            } else {
+                title.trim()
+            }
+        );
+        let Some(path) = rfd::FileDialog::new()
+            .set_title("导出 Markdown")
+            .set_file_name(file_name)
+            .add_filter("Markdown", &["md"])
+            .save_file()
+        else {
+            return;
+        };
+        let markdown = quire_core::services::export_service::export_page(self.session.blocks());
+        match std::fs::write(&path, markdown) {
+            Ok(()) => {
+                self.status = format!("已导出 Markdown：{}", path.display());
+                self.error = false;
+            }
+            Err(error) => {
+                self.status = format!("导出 Markdown 失败：{error}");
+                self.error = true;
+            }
+        }
+        cx.notify();
+    }
     fn add_table_row(
         &mut self,
         id: BlockId,
@@ -2854,7 +2894,19 @@ impl Render for Workspace {
                             }))
                             .child("链接"),
                     )
-                    .children(attachment_buttons),
+                    .children(attachment_buttons)
+                    .child(
+                        div()
+                            .id("page-export-markdown")
+                            .px(px(8.))
+                            .py(px(5.))
+                            .rounded(px(5.))
+                            .cursor_pointer()
+                            .text_color(Palette::color(&p.accent))
+                            .hover(|button| button.bg(Palette::color(&p.elevated)))
+                            .on_click(cx.listener(|this, _, _, cx| this.export_markdown(cx)))
+                            .child("导出 Markdown"),
+                    ),
             )
             .child(link_editor)
             .child(
