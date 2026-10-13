@@ -87,6 +87,7 @@ pub struct Workspace {
     subscriptions: Vec<Subscription>,
     palette: Palette,
     theme_picker_open: bool,
+    confirm_delete_page: Option<quire_core::core::types::PageId>,
     status: String,
     error: bool,
     active: Option<BlockId>,
@@ -121,6 +122,7 @@ impl Workspace {
             subscriptions: Vec::new(),
             palette: Palette::load(theme),
             theme_picker_open: false,
+            confirm_delete_page: None,
             status: "已保存".into(),
             error: false,
             active: None,
@@ -562,6 +564,36 @@ impl Workspace {
             self.schedule_save(false, window, cx);
         }
     }
+    fn request_delete_page(&mut self, id: quire_core::core::types::PageId, cx: &mut Context<Self>) {
+        self.confirm_delete_page = Some(id);
+        cx.notify();
+    }
+    fn cancel_delete_page(&mut self, cx: &mut Context<Self>) {
+        self.confirm_delete_page = None;
+        cx.notify();
+    }
+    fn delete_page(
+        &mut self,
+        id: quire_core::core::types::PageId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.composing(cx) {
+            return;
+        }
+        if self.session.delete_page(id) {
+            self.confirm_delete_page = None;
+            self.active = None;
+            let title = self.session.page.title.clone();
+            self.title_input.update(cx, |input, cx| {
+                let len = title.len();
+                input.reset(title, Vec::new(), len, cx);
+            });
+            self.sync_inputs(window, cx);
+            self.focus_first(window, cx);
+            self.schedule_save(true, window, cx);
+        }
+    }
     fn add_page(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.closing || self.session.page.locked {
             return;
@@ -894,13 +926,36 @@ impl Render for Workspace {
                             }))
                             .child(if page.favorite { "★" } else { "☆" }),
                     )
+                    .child(
+                        div()
+                            .id(SharedString::from(format!("delete-page-{}", page_id.0)))
+                            .px(px(3.))
+                            .cursor_pointer()
+                            .text_color(muted)
+                            .hover(|button| button.text_color(rgb(0xe06c75)))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.request_delete_page(page_id, cx)
+                            }))
+                            .child("×"),
+                    )
             })
             .collect::<Vec<_>>();
         let favorite_rows = self
             .session
             .pages
             .iter()
-            .filter(|page| page.favorite && !page.template)
+            .filter(|page| {
+                page.favorite
+                    && !page.template
+                    && (query.is_empty()
+                        || page.title.to_lowercase().contains(&query)
+                        || self
+                            .session
+                            .document
+                            .page_blocks(page.id)
+                            .iter()
+                            .any(|block| block.text.to_lowercase().contains(&query)))
+            })
             .map(|page| {
                 let page_id = page.id;
                 let selected = page_id == self.session.page.id;
@@ -923,6 +978,51 @@ impl Render for Workspace {
                     .child(page.title.clone())
             })
             .collect::<Vec<_>>();
+        let delete_confirmation =
+            self.confirm_delete_page.and_then(|id| {
+                self.session
+                    .pages
+                    .iter()
+                    .find(|page| page.id == id)
+                    .map(|page| {
+                        let title = page.title.clone();
+                        div()
+                            .w_full()
+                            .px(px(8.))
+                            .py(px(8.))
+                            .rounded(px(6.))
+                            .bg(Palette::color(&p.bg).opacity(0.55))
+                            .flex()
+                            .flex_col()
+                            .gap(px(5.))
+                            .child(format!("删除「{title}」及其所有子页面？"))
+                            .child(
+                                div()
+                                    .flex()
+                                    .gap(px(8.))
+                                    .child(
+                                        div()
+                                            .id("confirm-delete-page")
+                                            .cursor_pointer()
+                                            .text_color(rgb(0xe06c75))
+                                            .on_click(cx.listener(move |this, _, window, cx| {
+                                                this.delete_page(id, window, cx)
+                                            }))
+                                            .child("删除页面树"),
+                                    )
+                                    .child(
+                                        div()
+                                            .id("cancel-delete-page")
+                                            .cursor_pointer()
+                                            .text_color(muted)
+                                            .on_click(cx.listener(|this, _, _, cx| {
+                                                this.cancel_delete_page(cx)
+                                            }))
+                                            .child("取消"),
+                                    ),
+                            )
+                    })
+            });
         let kind_buttons =
             [
                 ("段落", BlockKind::Paragraph),
@@ -1253,6 +1353,9 @@ impl Render for Workspace {
                                     .text_color(muted)
                                     .child(self.search_input.clone()),
                             )
+                            .when_some(delete_confirmation, |sidebar, confirmation| {
+                                sidebar.child(confirmation)
+                            })
                             .child(
                                 div()
                                     .text_size(px(11.))

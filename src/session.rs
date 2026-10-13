@@ -373,6 +373,63 @@ impl Session {
         self.persistence.record(changes);
         true
     }
+    pub fn delete_page(&mut self, id: PageId) -> bool {
+        let Some(target) = self
+            .pages
+            .iter()
+            .find(|page| page.id == id && !page.template)
+            .cloned()
+        else {
+            return false;
+        };
+        let mut subtree = vec![id];
+        let mut cursor = 0;
+        while cursor < subtree.len() {
+            let parent = subtree[cursor];
+            for child in self
+                .pages
+                .iter()
+                .filter(|page| page.parent == Some(parent) && !page.template)
+            {
+                if !subtree.contains(&child.id) {
+                    subtree.push(child.id);
+                }
+            }
+            cursor += 1;
+        }
+        let remaining = self
+            .pages
+            .iter()
+            .filter(|page| !page.template && !subtree.contains(&page.id))
+            .count();
+        if remaining == 0 {
+            return false;
+        }
+
+        self.end_typing();
+        self.persistence.record(vec![Change::PageDeleted { id }]);
+        for page_id in &subtree {
+            self.document.drop_page(*page_id);
+        }
+        self.pages.retain(|page| !subtree.contains(&page.id));
+
+        if subtree.contains(&self.page.id) {
+            self.page = target
+                .parent
+                .filter(|parent| !subtree.contains(parent))
+                .and_then(|parent| self.pages.iter().find(|page| page.id == parent).cloned())
+                .or_else(|| {
+                    self.pages
+                        .iter()
+                        .filter(|page| !page.template)
+                        .min_by_key(|page| page.order)
+                        .cloned()
+                })
+                .expect("at least one non-template page remains");
+            self.ensure_page_has_block();
+        }
+        true
+    }
     fn ensure_page_has_block(&mut self) {
         if self.blocks().is_empty() && !self.page.locked {
             let command = Command::AppendBlock {
