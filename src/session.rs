@@ -416,6 +416,81 @@ impl Session {
         self.ensure_page_has_block();
         id
     }
+    pub fn duplicate_page(&mut self, id: PageId) -> Option<PageId> {
+        self.end_typing();
+        let original = self.pages.iter().find(|page| page.id == id)?.clone();
+        if original.template {
+            return None;
+        }
+        let new_id = PageId(
+            self.pages
+                .iter()
+                .map(|page| page.id.0)
+                .max()?
+                .checked_add(1)?,
+        );
+        let siblings = self
+            .pages
+            .iter()
+            .filter(|page| page.parent == original.parent && !page.template)
+            .collect::<Vec<_>>();
+        let next_order = siblings
+            .iter()
+            .position(|page| page.id == original.id)
+            .and_then(|index| siblings.get(index + 1).map(|page| page.order));
+        let order = OrderKey::between(Some(original.order), next_order).or_else(|| {
+            siblings
+                .iter()
+                .map(|page| page.order)
+                .max()
+                .and_then(|last| OrderKey::between(Some(last), None))
+        })?;
+        let mut duplicate = original.clone();
+        duplicate.id = new_id;
+        duplicate.title = format!("{} 副本", original.title);
+        duplicate.order = order;
+        duplicate.favorite = false;
+        duplicate.expanded = true;
+        duplicate.locked = false;
+
+        let source_blocks = self.document.page_blocks(id).to_vec();
+        let mut id_map = BTreeMap::new();
+        let mut copies = Vec::with_capacity(source_blocks.len());
+        for block in source_blocks {
+            let fresh_id = self.document.alloc_block_id();
+            id_map.insert(block.id, fresh_id);
+            let mut copy = block;
+            copy.id = fresh_id;
+            copy.page = new_id;
+            copies.push(copy);
+        }
+        for block in &mut copies {
+            if let Some(parent) = block.parent {
+                block.parent = id_map.get(&parent).copied();
+            }
+        }
+
+        let mut changes = Vec::with_capacity(copies.len() + 2);
+        changes.push(Change::PageCreated(duplicate.clone()));
+        changes.extend(copies.iter().cloned().map(Change::BlockInserted));
+        if let Some(parent) = duplicate.parent
+            && let Some(parent_page) = self.pages.iter_mut().find(|page| page.id == parent)
+            && !parent_page.expanded
+        {
+            parent_page.expanded = true;
+            changes.push(Change::PageExpandedSet {
+                id: parent,
+                expanded: true,
+            });
+        }
+        self.document.apply(&changes);
+        self.persistence.record(changes);
+        self.pages.push(duplicate.clone());
+        self.pages.sort_by_key(|page| (page.parent, page.order));
+        self.page = duplicate;
+        self.ensure_page_has_block();
+        Some(new_id)
+    }
     pub fn set_page_title(&mut self, title: String) {
         if self.page.locked || self.page.title == title {
             return;
@@ -1179,6 +1254,59 @@ mod tests {
         assert_eq!(imported.len(), 4);
         assert_eq!(imported[0].text, "Heading");
         assert_eq!(imported[3].marks[0].url, "https://example.com");
+        Ok(())
+    }
+
+    #[test]
+    fn page_duplication_remaps_nested_blocks_and_preserves_content() -> Result<()> {
+        let scratch = quire_core::testing::ScratchDir::new("gpui-page-duplicate");
+        let path = scratch.path().join("test.db");
+        let source_page;
+        let duplicate_page;
+        {
+            let mut session = Session::open(&path)?;
+            source_page = session.page.id;
+            let root_id = session.blocks()[0].id;
+            session.execute(Command::SetBlockType {
+                id: root_id,
+                kind: BlockKind::Toggle,
+            });
+            session.replace(root_id, "Root title".into(), false);
+            session.set_link(root_id, 0, 4, "https://example.com".into());
+            let mut child = session.document.block(root_id).unwrap().clone();
+            child.id = session.document.alloc_block_id();
+            child.page = source_page;
+            child.parent = Some(root_id);
+            child.order = OrderKey::between(Some(child.order), None).unwrap();
+            child.kind = BlockKind::Paragraph;
+            child.text = "Nested child".into();
+            child.marks.clear();
+            session
+                .document
+                .apply(&[Change::BlockInserted(child.clone())]);
+            session
+                .persistence
+                .record(vec![Change::BlockInserted(child)]);
+
+            duplicate_page = session.duplicate_page(source_page).unwrap();
+            assert_ne!(source_page, duplicate_page);
+            assert_eq!(session.page.title, "未命名 副本");
+            let copies = session.blocks();
+            assert_eq!(copies.len(), 2);
+            assert_eq!(copies[0].text, "Root title");
+            assert_eq!(copies[0].kind, BlockKind::Toggle);
+            assert_eq!(copies[0].marks[0].url, "https://example.com");
+            assert_ne!(copies[0].id, root_id);
+            assert_eq!(copies[1].text, "Nested child");
+            assert_eq!(copies[1].parent, Some(copies[0].id));
+            assert_ne!(copies[1].parent, Some(root_id));
+            session.persistence.force_flush()?;
+        }
+        let reopened = Session::open(&path)?;
+        let copies = reopened.document.page_blocks(duplicate_page);
+        assert_eq!(copies.len(), 2);
+        assert_eq!(copies[1].parent, Some(copies[0].id));
+        assert_eq!(copies[0].marks[0].url, "https://example.com");
         Ok(())
     }
 }

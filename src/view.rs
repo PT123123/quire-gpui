@@ -1328,6 +1328,30 @@ impl Workspace {
             self.schedule_save(false, window, cx);
         }
     }
+    fn duplicate_page(
+        &mut self,
+        id: quire_core::core::types::PageId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.closing || self.composing(cx) {
+            return;
+        }
+        let Some(duplicate) = self.session.duplicate_page(id) else {
+            return;
+        };
+        self.session.visit_page(duplicate);
+        self.active = None;
+        let title = self.session.page.title.clone();
+        self.title_input.update(cx, |input, cx| {
+            let len = title.len();
+            input.reset(title, Vec::new(), len, cx);
+        });
+        self.sync_inputs(window, cx);
+        self.focus_first(window, cx);
+        self.status = "页面副本已创建，正在保存…".into();
+        self.schedule_save(false, window, cx);
+    }
     fn indent_page(
         &mut self,
         id: quire_core::core::types::PageId,
@@ -1711,6 +1735,18 @@ impl Render for Workspace {
                                 this.add_child_page(page_id, window, cx)
                             }))
                             .child("＋"),
+                    )
+                    .child(
+                        div()
+                            .id(SharedString::from(format!("duplicate-page-{}", page_id.0)))
+                            .px(px(3.))
+                            .cursor_pointer()
+                            .text_color(muted)
+                            .hover(|button| button.text_color(accent))
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.duplicate_page(page_id, window, cx)
+                            }))
+                            .child("⧉"),
                     )
                     .child(
                         div()
