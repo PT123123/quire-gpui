@@ -14,7 +14,7 @@
 
 - [x] 阅读全部交接文档，核对快照 manifest 与旧版工作区差异。113 个文件 SHA-256 全量重算一致；`git_status_short` 与 `../quire-desktop` 当前 10 个脏文件逐行一致；本地 `quire-core` HEAD 正是 pin 的 `db0e95f`（2026-10-14 复核）。
 - [~] 从组件、UIState 回调、controller、state、core 服务建立完整功能矩阵。骨架已生成：246 callback / 261 property / 188 场景 / 44 个 .slint，见 `docs/PARITY.md`、`docs/PARITY.csv`；**语义列（预期行为、快捷键、持久化、undo、测试步骤）未填**，14 个只有声明的 callback 已单独核实。core 侧 50 个 Command 与 10 个 MCP 工具尚未与矩阵交叉。
-- [~] 以官方资料核对 GPUI 与 GPUI Kit/组件库组合。一手事实已核验并写入 `docs/ADR-001-GPUI-STACK.md`（分发方式、Windows 成熟度、中文 IME 未关闭 issue 清单、渐变 API、gpui-kit 绑 fork）；**「运行 Windows 最小程序」未做**，7 条探针已获准在下一轮随第一竖切执行。
+- [~] 以官方资料核对 GPUI 与 GPUI Kit/组件库组合。一手事实已核验并写入 `docs/ADR-001-GPUI-STACK.md`。官方最小窗和输入示例在本机成功编译运行；GPUI 应用也已打开真实窗口。剩余窗口、DPI、IME 定位等探针仍按 ADR 逐项验收。
 - [~] Rust 1.98.0 通过 `rust-toolchain.toml` 固定，GPUI 0.2.2、core revision 和 `Cargo.lock` 已钉；dev/release 均可构建。MSVC/SDK 环境可用（SDK 10.0.26100，fxc 10.0.26100.7705）；完整安装与多机复现尚未验。
 - [~] 确定独立应用标识、开发数据目录、日志目录和测试库策略。core 侧事实已查清（`APP_DIR_NAME="Quire"`、`--db` 压倒一切、`--portable`、legacy 迁移），**已定（2026-10-14）：独立数据目录 + 保留旧版并存**，见 `docs/13-DECISIONS-NEEDED.md` 第 4 条。
 - [x] 在同机采集旧版主要页面和 12 主题参考图，保存采集命令与版本。312 张 PNG / 30.6MB 在 `reference/shots/`，含二进制 SHA-256、构建命令、重复哈希读出的五条事实与未覆盖清单，见 `docs/14-REFERENCE-SHOTS.md`。
@@ -24,7 +24,7 @@
 ## P1 — 编辑器技术闸门
 
 - [~] 独立 core 数据库加载、根页面切换/新建、标题编辑、树层级展开、正文搜索、收藏、页面锁定、页面布局和字体、段落/标题/列表/待办/引用/代码/提示块转换已有实现；子页面创建、同级排序、缩进/反缩进移动、收藏/最近导航分组和带确认的子树删除已有。
-- [~] composition、UTF-16/UTF-8 映射、选区、折行与防抖保存已有实现；真实 Windows TSF/微软拼音效果未验证。
+- [~] composition、UTF-16/UTF-8 映射、选区、折行与防抖保存已有实现；用户真实微软拼音输入反馈未发现问题，候选窗定位、跨 DPI、多屏和回归场景仍待系统验收。
 - [~] Enter 拆块、Backspace 合并、Ctrl+Z/Ctrl+Y、Tab/Shift+Tab 列表缩进、粗体/斜体/删除线/行内代码标记、Markdown 前缀转换和单块删除已接 core；块上下文菜单、完整键盘导航未完成。
 - [~] 已渲染并编辑粗体/斜体/删除线/行内代码标记；Ctrl+点击链接可打开网页或跳转本地页面，链接目标编辑、提及/日期/数学呈现、完整混排和长链接对照未完成。
 - [ ] 1000/10000 块虚拟化，焦点块滚出视口后输入状态仍正确。

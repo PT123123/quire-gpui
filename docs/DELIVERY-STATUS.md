@@ -145,3 +145,9 @@ GPUI 应用已超出第一竖切，但离完整复刻仍有较大差距。用户
 - GPUI 文本元素复用 core `highlight::layer` 词法器，按主题语义色画关键词、注释、字符串、数字和名称；没有引入第二套 lexer。
 - 自定义块色仍用于 Plain 代码文本，非 Plain token 使用 core 代码色与主题明暗对应。
 - 验证：`cargo fmt --all`、`cargo build -j 8 --target-dir target-next` 通过；代码语言弹层、长代码与中文字符的视觉断行尚未对照。
+
+## 持久化 smoke 复核（同日）
+
+- 运行现成 GPUI 窗口 smoke，使用全新 `%TEMP%\quire-gpui-smoke-58690bf.db`；窗口真实打开，输入回调写入两段文本并正常触发关闭保存。
+- 随后用 `--dump-state` 重新打开同一隔离库，读回页面和两段原文一致。日志：`SMOKE: input callbacks -> core document OK; not OS IME verification`。
+- 这只验证 GPUI 输入回调、core 文档和 SQLite 往返，不取代用户之前完成的真实微软拼音输入反馈，也没有覆盖新主题、颜色和表格控制的逐项手动回归。
