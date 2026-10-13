@@ -1,4 +1,4 @@
-"id","回调名","区域","入口组件与行","声明","签名","controller注册行","处理说明","处理首语句","调用的core/state","关联场景","实现状态","验证状态","差异","人工语义"
+﻿"id","回调名","区域","入口组件与行","声明","签名","controller注册行","处理说明","处理首语句","调用的core/state","关联场景","实现状态","验证状态","差异","人工语义"
 "F031","move-block","编辑器","ui/components/EditorBlock.slint:569 ; ui/components/EditorBlock.slint:573","ui/Types.slint:1033","int","src/app/controller.rs:1942","","let g = gw.upgrade().unwrap()","","move-to block-menu link-block page-block","未开始","未验证","",""
 "F032","block-drag-hover","编辑器","ui/components/EditorBlock.slint:242","ui/Types.slint:1037","data-transfer, int, bool","src/app/controller.rs:1989","","let Some(id) = block_drag_id(&data) else { return false }","","block-menu board-drag link-block page-block","未开始","未验证","",""
 "F033","block-dropped","编辑器","ui/components/EditorBlock.slint:252","ui/Types.slint:1038","data-transfer, int, bool","src/app/controller.rs:2006","","let Some(id) = block_drag_id(&data) else { return }","","block-menu link-block page-block block-colors","未开始","未验证","",""

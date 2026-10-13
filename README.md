@@ -11,8 +11,8 @@
 1. `AGENTS.md`：执行规则、完成定义与边界。
 2. `PLAN.md`：阶段、任务、阻塞门槛、交付物（P0 已标注本轮完成度）。
 3. `docs/13-DECISIONS-NEEDED.md`：**2026-10-14 已拍板一轮**，看开头的拍板表；仍开放三条（上游锚点细节、MCP 页面工具、内存门槛）。
-4. `docs/ADR-001-GPUI-STACK.md`：GPUI 一手事实核验、本机工具链缺口、7 条开工前探针。
-5. `docs/16-REVIEW-AND-NEXT-STEPS.md`：另一位 AI 对上述产物的复核。**它是建议，不是用户批准**；与 `docs/13` 拍板表冲突时以用户结论为准。其中三条已被采纳并落到正文：ADR-001 的"crates.io 装不起来"证据有误（见该文件修订）、`PARITY.csv` 重跑会覆盖人工语义列（改用 sidecar）、Working Set/Private 不等于堆内存。
+4. `docs/ADR-001-GPUI-STACK.md`：GPUI 一手事实核验 + 本机实测记录（探针 1 已在发布版 `gpui 0.2.2` 上通过：能装、能编、能起带 IME 的输入窗）、三条依赖路线 A1/A2/B、真实工具链、7 条 P0 探针。
+5. `docs/16-REVIEW-AND-NEXT-STEPS.md`：另一位 AI 对上述产物的复核。**它是建议，不是用户批准**；与 `docs/13` 拍板表冲突时以用户结论为准。逐条处理结果记在 `docs/DELIVERY-STATUS.md` 的"对 docs/16 的处理"一节——其中六条已核实并落到正文，最重要的是 ADR-001 那条"crates.io 装不起来、只能走 git 依赖"的证据**混淆了两个源码版本，已撤回**（他抓对了，我错了）。
 6. `docs/01-PRODUCT-SCOPE.md`：功能范围与复刻原则。
 7. `docs/02-ARCHITECTURE.md`：GPUI 架构、core 边界和状态流。
 8. `docs/11-CORE-API.md`：`quire-core@db0e95f` 的 API 面、文本单位、撤销归属、不许重实现的清单。
@@ -30,7 +30,7 @@
 ## 可重跑的生成脚本
 
 ```text
-node tools/extract-parity.mjs            # PARITY.csv / PARITY-STATE.csv / PARITY-UNWIRED.txt / 15-SCENE-CATALOG.md
+node tools/extract-parity.mjs            # PARITY.csv（合并 PARITY-SEMANTICS.csv 的人工列）/ PARITY-STATE.csv / PARITY-UNWIRED.txt / 15-SCENE-CATALOG.md
 node tools/extract-design-constants.mjs  # 12-DESIGN-CONSTANTS.md
 powershell -File tools/capture-reference-shots.ps1 -Shot ..\quire-desktop\target-shot\debug\quire-shot.exe -Mode Both
 powershell -File tools/capture-reference-shots.ps1 -Shot ..\quire-desktop\target-shot\debug\quire-shot.exe -Mode Tabs
@@ -60,4 +60,4 @@ powershell -File tools/capture-reference-shots.ps1 -Shot ..\quire-desktop\target
 
 交接资料已经够用，**这一轮的产出是一个跑起来的程序**：一个窗口、一个页面、能用微软拼音连续中文输入、能保存进测试库并重启读回（AGENTS.md「第一竖切」与 PLAN.md「下一轮目标」）。
 
-先读 `AGENTS.md`（含 2026-10-14 已拍板的决策）、`PLAN.md`、`docs/13-DECISIONS-NEEDED.md` 的拍板表、`docs/ADR-001-GPUI-STACK.md` 与 `docs/09-HANDOFF.md`。开工即跑 ADR-001 第 6 节的 7 条探针并把结果写回该文件——探针结论决定官方 gpui 还是 gpui-kit，两条栈都允许评估。core 保持不动，数据目录独立且只用显式 `--db` 的测试库，严格复刻 `reference/slint-desktop` 的界面与 12 主题 4 渐变（基线 `reference/shots`，已冻结为 `baseline-2026-10-14`）。中文输入出问题先定位修复，别急着自己绘文本层——自绘不解决系统 IME。明确缺陷要修（如同步/MCP 页文字裁切）并逐处写 `docs/DIFFERENCES.md`。功能清单以 `docs/PARITY.csv` 为骨架，实现到哪一行补哪一行的语义，不要为了补文档而补文档。逐项记录已实现/已验证/未验证/阻塞，编译通过和截图都不算交互验收。
+先读 `AGENTS.md`（含 2026-10-14 已拍板的决策）、`PLAN.md`、`docs/13-DECISIONS-NEEDED.md` 的拍板表、`docs/ADR-001-GPUI-STACK.md` 与 `docs/09-HANDOFF.md`。ADR-001 第 6 节的探针 1（最小窗口）已在发布版 `gpui 0.2.2` 上跑通并记了实测记录，其余探针随竖切跑，不要攒成开工前置门槛。依赖选型三条路都允许走（A1 发布版 / A2 git 钉 tag / B Kit），比较口径是输入效果、维护成本、组件能力。core 保持不动；数据目录独立且默认可写，**绝不自动发现或迁移旧版真实库**，要碰旧库只能由用户显式 `--db` 指向测试副本。严格复刻 `reference/slint-desktop` 的界面与 12 主题 4 渐变（基线 `reference/shots`，已冻结为 `baseline-2026-10-14`）。中文输入出问题先定位修复，别急着自己绘文本层——自绘不解决系统 IME。明确缺陷要修（如同步/MCP 页文字裁切）并逐处写 `docs/DIFFERENCES.md`。功能清单以 `docs/PARITY.csv` 为骨架，人工语义与进度写 `docs/PARITY-SEMANTICS.csv`（生成器合并，重跑不覆盖），实现到哪一行补哪一行，不要为了补文档而补文档。逐项记录已实现/已验证/未验证/阻塞，编译通过和截图都不算交互验收。

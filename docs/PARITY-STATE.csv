@@ -1,4 +1,4 @@
-名称,方向,类型,默认值,声明
+﻿名称,方向,类型,默认值,声明
 "theme","in-out","string","""midnight""","ui/Types.slint:631"
 "sidebar-open","in-out","bool","true","ui/Types.slint:632"
 "sidebar-width","in-out","float","260","ui/Types.slint:638"

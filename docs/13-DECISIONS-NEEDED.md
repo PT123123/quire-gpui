@@ -30,8 +30,8 @@
 
 ## 2. gpui 上游锚点与升级策略
 
-- 事实：crates.io 的 `gpui` 0.2.2 无法独立构建（兄弟 crate 未发布）；官方 README 自述 pre-1.0、经常 breaking。
-- 选项：钉 tag `v1.23.3`（2026-10-12）/ 钉某个 main commit / 跟 main。
+- 事实（2026-10-14 修订）：发布版 `gpui 0.2.2` **能在本机装、编、起窗**（ADR-001 第六节实测记录），旧版这里写的"无法独立构建（兄弟 crate 未发布）"是错的，已撤回；它的真实代价是**停在 2025-10-22**，比上游晚约 12 个月。当前 main 拆出的 `gpui_platform`/`gpui_windows` 确实未发布，所以拿最新官方代码只能走 git。官方 README 自述 pre-1.0、经常 breaking。
+- 选项：A1 `gpui =0.2.2`（零 git，已验证）/ A2 git 钉 tag `v1.23.3`（2026-10-12，最新但引入 git 依赖，解析未测）/ B Kit（`gpui-pre 0.3.9` + `gpui-fast 0.1.7` + `gpui-kit 0.7.3`，零 git，按周从上游打快照）。
 - 代价：钉 tag 意味着遇到上游 IME bug 时不能立刻拿修复；跟 main 意味着每次同步都可能撞 API 断裂。
 - 建议：**钉 tag，锁 Cargo.lock，升级单独走 ADR**，禁止 `branch = "main"`。
 

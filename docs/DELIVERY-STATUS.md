@@ -19,10 +19,10 @@
 
 新增产物：
 
-- `docs/PARITY.md` + `PARITY.csv`（246 callback 逐行带入口/注册点/首语句/场景）+ `PARITY-STATE.csv`（261 property）+ `PARITY-UNWIRED.txt`。
+- `docs/PARITY.md` + `PARITY.csv`（246 callback 逐行带入口/注册点/首语句/场景）+ `PARITY-STATE.csv`（261 property）+ `PARITY-UNWIRED.txt` + `PARITY-SEMANTICS.csv`（人工语义/进度 sidecar，当前只有表头）。
 - `docs/11-CORE-API.md`：core 在 `db0e95f` 的完整 API 面，含"文本单位是 UTF-8 字节偏移""块类型在 core 是字符串、0..24 数字是桌面端自造""撤销归 core（每页栈 CAP=100）""MCP 不在 core"等承重结论，逐条带 file:line。
 - `docs/12-DESIGN-CONSTANTS.md`：349 条具名尺寸属性、62 处 animate、8 个 8 位色值、5 档字号的台账。
-- `docs/ADR-001-GPUI-STACK.md`：GPUI/gpui-kit 一手事实（含 crates.io 0.2.2 装不起来、入口 API 不兼容、5 个未关闭中文 IME issue、无托盘、渐变坐标语义）+ 本机工具链缺口 + 7 条 P0 探针。
+- `docs/ADR-001-GPUI-STACK.md`：GPUI 选型一手事实 + 本机实测。含发布版 `gpui 0.2.2` 装/编/起窗的实测记录、入口 API 差异、Kit 与 fast/pre 的发布节奏、5 个未关闭中文 IME issue、无托盘、渐变坐标语义、独立应用真实工具链、7 条 P0 探针。
 - `docs/13-DECISIONS-NEEDED.md`：九件必须用户拍板的事，含代价与建议。
 - `docs/14-REFERENCE-SHOTS.md` + `reference/shots/`：312 张离屏参考图（30.6MB）与可核对的采集身份。
 - `docs/15-SCENE-CATALOG.md`：188 个截图场景目录。
@@ -38,9 +38,17 @@
 
 下一轮目标改为**能运行、能微软拼音输入、能保存一页并重启读回**的程序（AGENTS.md「第一竖切」、PLAN.md「下一轮目标」），并明确停止扩充交接文档。
 
+## 对 `docs/16-REVIEW-AND-NEXT-STEPS.md` 的处理（2026-10-14）
+
+那份复核由另一位 AI 写的，不是用户结论；逐条开料核过之后：
+
+- **采纳并已改**：① ADR-001 §一.1 拿"当前 main 拆出的 `gpui_platform` 未发布"去证明"发布版 0.2.2 装不起来"混淆了两个版本——本机重跑后撤回，并把实测命令、窗口证据与真实工具链缺口写进 ADR §四/§六；② §一.3 把 Kit 说成"绑 fork/另一套框架"过宽，Kit 的 `gpui-pre` 是 crates.io 上的发布版快照且比官方发布通道新，已重写为 A1/A2/B 三条路线；③ Zed 全仓库的 Spectre/CMake/wasmtime 要求被误当成独立应用的门，实测该 Spectre 目录不存在而构建通过，已删；④ 七条探针全压在 P1 前会形成循环，已改为分档随竖切跑；⑤ `PARITY.csv` 重跑覆盖人工列——`tools/extract-parity.mjs` 加了 `docs/PARITY-SEMANTICS.csv` 合并（留空不覆盖、拼错回调名会点名、幂等已验）；⑥ 第 4 条的"默认目录可写 vs 强制 `--db`"规则冲突、第 8 条"堆内存/Working Set"混称，都已回填 `docs/13`。
+- **它没测到的一条**：release 构建会用 `fxc.exe` 编 HLSL（`build.rs` 里 `#[cfg(not(debug_assertions))]`），本轮全走 dev profile 所以没碰到，已作为待测项记进 ADR §三与 §七。
+- **仍然属于建议、未当成事实**：它的第 1、9 条结论方向与用户拍板一致，但"移动文案不天然要求改 snapshot version"这类判断我没有一手核过，保持为建议。
+
 ## 仍然没有做的事（不要误认已完成）
 
-尚未创建 Cargo 应用、未选定最终依赖组合、未编译、未运行任何 GPUI 代码；未测中文 IME、未测视觉/性能/数据往返/同步/Windows 集成。功能矩阵是**入口骨架**，语义列空白，未与 core 的 50 个 Command 和 MCP 的 10 个工具交叉。参考图缺：MCP 页运行态（只有"未开启/无令牌"空态）、其余 10 套主题的逐 tab 图、独立速记窗口、hover/pressed/focus/disabled 态、窄窗口、真窗口 GPU 对照、动效中间帧。
+尚未创建 Quire 的 Cargo 应用、未选定最终依赖组合、未写一行 Quire 的 GPUI 界面代码。**已经跑过的只有依赖选型证据**：本机用 `gpui =0.2.2` 建了一个 scratch 工程，编译并启动了官方 `hello_world` 与 `input` 两个示例窗口（`%TEMP%/gpui-022-probe`，不属于本工程，判据与命令记在 ADR-001 第六节）。中文 IME 的**实际打字行为仍未测**——候选框落点、选词、替换选区、撤销是否丢字必须由用户在真实键盘上验，那两个 exe 就是现成夹具。未测视觉/性能/数据往返/同步/Windows 集成。功能矩阵是**入口骨架**，语义列空白，未与 core 的 50 个 Command 和 MCP 的 10 个工具交叉。参考图缺：MCP 页运行态（只有"未开启/无令牌"空态）、其余 10 套主题的逐 tab 图、独立速记窗口、hover/pressed/focus/disabled 态、窄窗口、真窗口 GPU 对照、动效中间帧。
 
 旧版源码中的截图工具与场景已保存，可由后续 AI 在独立测试环境生成参考图。源码和 token 是可追溯的参考，不等于新程序已有同样行为。
 

@@ -1,15 +1,18 @@
 # 功能矩阵使用说明
 
-生成命令：`node tools/extract-parity.mjs`（只读 `reference/slint-desktop`，重跑覆盖输出）。
+生成命令：`node tools/extract-parity.mjs`（只读 `reference/slint-desktop`，重跑覆盖输出）。**人工填的语义与进度不要写在 `docs/PARITY.csv` 里**——它是生成产物，重跑必然覆盖；写 `docs/PARITY-SEMANTICS.csv`，由生成器按回调名合并进 PARITY.csv。
 
 | 文件 | 内容 | 规模 |
 | --- | --- | --- |
-| `docs/PARITY.csv` | 每个 UIState callback 一行：入口、签名、controller 注册点、首条语句、调用的 core/state、关联场景、实现/验证状态 | 246 行 |
+| `docs/PARITY.csv` | 每个 UIState callback 一行：入口、签名、controller 注册点、首条语句、调用的 core/state、关联场景、实现/验证状态、差异、人工语义（后四列来自 sidecar） | 246 行 |
+| `docs/PARITY-SEMANTICS.csv` | **人工维护**，按 `回调名` 索引：`实现状态,验证状态,差异,人工语义` | 当前只有表头，等实现阶段逐行填 |
 | `docs/PARITY-STATE.csv` | 每个 UIState property 一行：方向、类型、默认值、声明位置 | 261 行 |
 | `docs/PARITY-UNWIRED.txt` | 无调用点/无注册的 callback 清单 | 14 + 8 |
 | `docs/15-SCENE-CATALOG.md` | 截图场景目录（含「叠加」「暗色变体」两列） | 188 个场景 |
 
 CSV 用 UTF-8 BOM + CRLF，Excel/WPS 可直接打开。`实现状态` 与 `验证状态` 是**两列**，不许合并：按钮存在≠动作落地，动作落地≠验收通过。
+
+sidecar 的两条规则：**留空=没有人工结论**，不会覆盖生成列的默认值（`未开始`/`未验证`），所以要改就得写满那一格；**回调名拼错会被点名**，生成时打印"合并 N 个回调，M 条回调名在生成结果里找不到"，M>0 就是白填了。重跑幂等已验：去掉新增列后，246 行生成列与上一版逐字节相同。
 
 ## 区域分布（246 个 callback）
 

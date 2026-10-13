@@ -194,14 +194,16 @@ for (const [name, v] of sem) {
 }
 
 rows.sort((x, y) => (x[2] + x[0]).localeCompare(y[2] + y[0]));
-const out = [head, ...rows].map((r) => r.map(csv).join(',')).join('\r\n') + '\r\n';
+// BOM + CRLF：这两份 CSV 是给 Excel/WPS 里逐行填状态用的，没 BOM 中文会花屏。
+const BOM = String.fromCharCode(0xfeff);
+const out = BOM + [head, ...rows].map((r) => r.map(csv).join(',')).join('\r\n') + '\r\n';
 fs.writeFileSync(path.join(ROOT, 'docs', 'PARITY.csv'), out);
 
 // 属性投影面单独成表：新 UI 每格状态都要有归属
 const phead = ['名称', '方向', '类型', '默认值', '声明'];
 fs.writeFileSync(
   path.join(ROOT, 'docs', 'PARITY-STATE.csv'),
-  [phead, ...props.map((p) => [p.name, p.dir, p.type, p.dflt, `ui/Types.slint:${p.decl}`].map(csv).join(','))].join('\r\n') + '\r\n',
+  BOM + [phead, ...props.map((p) => [p.name, p.dir, p.type, p.dflt, `ui/Types.slint:${p.decl}`].map(csv).join(','))].join('\r\n') + '\r\n',
 );
 
 // 场景目录

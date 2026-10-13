@@ -25,10 +25,11 @@
 5. 原则上优先用 GPUI/组件库现有能力；需要自绘文本时保持同一套排版、命中测试和光标几何。
 6. 所有写操作经 core 命令/服务；UI 不直接写 SQL。输入草稿、selection、composition 与持久化文档分离。
 7. 更新 PLAN.md、功能矩阵和验证记录；新增行为差异写 ADR。
-8. `docs/PARITY.csv`、`PARITY-STATE.csv`、`12-DESIGN-CONSTANTS.md`、`15-SCENE-CATALOG.md` 是脚本产物：要改就改 `tools/` 里的生成逻辑再重跑，不要手改；参考图用 `tools/capture-reference-shots.ps1` 采，禁止手工摆状态截图冒充。
+8. `docs/PARITY.csv`、`PARITY-STATE.csv`、`12-DESIGN-CONSTANTS.md`、`15-SCENE-CATALOG.md` 是脚本产物：要改就改 `tools/` 里的生成逻辑再重跑，不要手改；参考图用 `tools/capture-reference-shots.ps1` 采，禁止手工摆状态截图冒充。**例外：`docs/PARITY-SEMANTICS.csv` 是人工维护的语义/进度表，按回调名索引，生成器把它合并进 `PARITY.csv`；手填内容只写这里，留空表示没有结论（不覆盖生成列）。**
 9. 开工前先读 `docs/ADR-001-GPUI-STACK.md` 并执行其第 6 节探针，结果写回该文件。`docs/13-DECISIONS-NEEDED.md` 已在 2026-10-14 拍板一轮：**表中标"已定"的按结论执行，不得回退成建议**；仍标"未定"的三条（上游锚点细节、MCP 页面工具、内存门槛拆法）不阻塞第一竖切，真挡住再问，不要自行决定。
-10. 复刻外观与行为，但**修掉明确缺陷**（旧版自己声明了意图却没做到，如 docs/14 第 5 条的文字裁切）。每处修复写 `docs/DIFFERENCES.md`：旧行为、新行为、理由、验收证据。"觉得这样更好看"不是缺陷。
-11. 交接资料到此够用：**下一轮的产出是跑起来的程序与其验证记录**，不是新文档。除阻塞实现的更正外，不再扩充 `docs/`；把发现写进已有的 PLAN/DELIVERY-STATUS/DIFFERENCES 行内，不另起规格文件。
+10. ADR-001 的两条旧结论已用本机实测撤回，别重新踩一遍：发布版 `gpui 0.2.2` **能装能编能起窗**（探针 1 已过，不是"只能 git 依赖"）；独立 gpui 应用**不需要** Zed 全仓库的工具链（无 Spectre libs、无 CMake/wasmtime 照样构建）。反过来也别把 0.2.2 当成最新——它停在 2025-10-22，IME 那串议题在它之后。
+11. 复刻外观与行为，但**修掉明确缺陷**（旧版自己声明了意图却没做到，如 docs/14 第 5 条的文字裁切）。每处修复写 `docs/DIFFERENCES.md`：旧行为、新行为、理由、验收证据。"觉得这样更好看"不是缺陷。
+12. 交接资料到此够用：**下一轮的产出是跑起来的程序与其验证记录**，不是新文档。除阻塞实现的更正外，不再扩充 `docs/`；把发现写进已有的 PLAN/DELIVERY-STATUS/DIFFERENCES 行内，不另起规格文件。
 
 ## 第一竖切（本轮唯一目标）
 
