@@ -538,6 +538,7 @@ impl Workspace {
             return;
         }
         if self.session.select_page(id) {
+            self.session.visit_page(id);
             self.active = None;
             let title = self.session.page.title.clone();
             self.title_input.update(cx, |input, cx| {
@@ -656,6 +657,8 @@ impl Workspace {
             return;
         }
         self.session.create_page(None);
+        let id = self.session.page.id;
+        self.session.visit_page(id);
         self.active = None;
         self.sync_inputs(window, cx);
         self.focus_first(window, cx);
@@ -671,6 +674,8 @@ impl Workspace {
             return;
         }
         self.session.create_page(Some(parent));
+        let id = self.session.page.id;
+        self.session.visit_page(id);
         self.active = None;
         self.sync_inputs(window, cx);
         self.focus_first(window, cx);
@@ -1090,6 +1095,38 @@ impl Render for Workspace {
                     }))
                     .child("★")
                     .child(page.title.clone())
+            })
+            .collect::<Vec<_>>();
+        let recent_rows = self
+            .session
+            .recent_pages()
+            .into_iter()
+            .filter(|id| *id != self.session.page.id)
+            .filter_map(|id| {
+                self.session
+                    .pages
+                    .iter()
+                    .find(|page| page.id == id)
+                    .map(|page| (id, page.title.clone()))
+            })
+            .filter(|(_, title)| query.is_empty() || title.to_lowercase().contains(&query))
+            .map(|(page_id, title)| {
+                div()
+                    .id(SharedString::from(format!("recent-nav-{}", page_id.0)))
+                    .h(px(28.))
+                    .px(px(8.))
+                    .flex()
+                    .items_center()
+                    .gap(px(7.))
+                    .rounded(px(5.))
+                    .cursor_pointer()
+                    .text_color(muted)
+                    .hover(|row| row.bg(Palette::color(&p.bg).opacity(0.24)))
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.activate_page(page_id, window, cx)
+                    }))
+                    .child("◷")
+                    .child(title)
             })
             .collect::<Vec<_>>();
         let delete_confirmation =
@@ -1543,6 +1580,19 @@ impl Render for Workspace {
                                     .flex_1()
                                     .h_full()
                                     .overflow_y_scroll()
+                                    .when(!recent_rows.is_empty(), |list| {
+                                        list.child(
+                                            div()
+                                                .h(px(24.))
+                                                .px(px(8.))
+                                                .flex()
+                                                .items_center()
+                                                .text_size(px(11.))
+                                                .text_color(muted)
+                                                .child("最近"),
+                                        )
+                                        .children(recent_rows)
+                                    })
                                     .when(!favorite_rows.is_empty(), |list| {
                                         list.child(
                                             div()

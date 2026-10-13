@@ -269,6 +269,43 @@ impl Session {
     pub fn setting(&self, key: &str) -> Option<&str> {
         self.settings.get(key).map(String::as_str)
     }
+    pub fn recent_pages(&self) -> Vec<PageId> {
+        self.setting("gpui.recent-pages")
+            .unwrap_or_default()
+            .split(',')
+            .filter_map(|id| id.parse::<u64>().ok().map(PageId))
+            .filter(|id| {
+                self.pages
+                    .iter()
+                    .any(|page| page.id == *id && !page.template)
+            })
+            .take(8)
+            .collect()
+    }
+    pub fn visit_page(&mut self, id: PageId) {
+        if !self
+            .pages
+            .iter()
+            .any(|page| page.id == id && !page.template)
+        {
+            return;
+        }
+        let mut recent = self
+            .recent_pages()
+            .into_iter()
+            .filter(|page_id| *page_id != id)
+            .collect::<Vec<_>>();
+        recent.insert(0, id);
+        recent.truncate(8);
+        self.set_setting(
+            "gpui.recent-pages",
+            recent
+                .iter()
+                .map(|page_id| page_id.0.to_string())
+                .collect::<Vec<_>>()
+                .join(","),
+        );
+    }
     pub fn set_setting(&mut self, key: impl Into<String>, value: impl Into<String>) {
         let key = key.into();
         let value = value.into();
@@ -564,6 +601,15 @@ impl Session {
             self.document.drop_page(*page_id);
         }
         self.pages.retain(|page| !subtree.contains(&page.id));
+        let recent = self
+            .recent_pages()
+            .iter()
+            .map(|page_id| page_id.0.to_string())
+            .collect::<Vec<_>>()
+            .join(",");
+        if self.setting("gpui.recent-pages") != Some(recent.as_str()) {
+            self.set_setting("gpui.recent-pages", recent);
+        }
 
         if subtree.contains(&self.page.id) {
             self.page = target
@@ -579,6 +625,7 @@ impl Session {
                 })
                 .expect("at least one non-template page remains");
             self.ensure_page_has_block();
+            self.visit_page(self.page.id);
         }
         true
     }
