@@ -2,7 +2,7 @@ use crate::input::{InputEvent, TextInput};
 use gpui::{prelude::*, *};
 use quire_core::core::{
     command::Command,
-    types::{BlockId, BlockKind, ColorKind},
+    types::{BlockId, BlockKind, ColorKind, Lang},
 };
 use quire_gpui::session::Session;
 use std::{
@@ -309,9 +309,22 @@ impl Workspace {
             };
             let block_text_color = (block.color != ColorKind::Default)
                 .then(|| self.palette.block_text(block.color.slot()));
+            let code_colors = [
+                self.palette.block_text(7),
+                self.palette.block_text(1),
+                self.palette.block_text(5),
+                self.palette.block_text(3),
+                self.palette.block_text(6),
+            ];
             input.update(cx, |input, cx| {
                 input.font_size = font;
                 input.text_color = block_text_color;
+                input.code_lang = if block.kind == BlockKind::Code {
+                    block.lang
+                } else {
+                    Lang::Plain
+                };
+                input.code_colors = code_colors;
                 if input.buffer.committed() != block.text {
                     input.reset(block.text, block.marks.clone(), input.buffer.caret(), cx);
                 } else if input.marks != block.marks {
@@ -565,6 +578,20 @@ impl Workspace {
             self.restore_focus(window, cx);
             self.schedule_save(false, window, cx);
         }
+    }
+    fn set_code_lang(
+        &mut self,
+        id: BlockId,
+        lang: Lang,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.session.page.locked {
+            return;
+        }
+        self.session.execute(Command::SetCodeLang { id, lang });
+        self.sync_inputs(window, cx);
+        self.schedule_save(false, window, cx);
     }
     fn add_table_row(
         &mut self,
@@ -1720,6 +1747,32 @@ impl Render for Workspace {
                 let is_todo = block.kind == BlockKind::Todo;
                 let is_toggle = block.kind == BlockKind::Toggle;
                 let kind = block.kind;
+                let code_lang_controls = if kind == BlockKind::Code {
+                    Lang::ALL
+                        .into_iter()
+                        .map(|lang| {
+                            let selected = block.lang == lang;
+                            div()
+                                .id(SharedString::from(format!(
+                                    "code-lang-{block_id:?}-{}",
+                                    lang.as_str()
+                                )))
+                                .px(px(5.))
+                                .py(px(2.))
+                                .rounded(px(3.))
+                                .cursor_pointer()
+                                .text_size(px(10.))
+                                .text_color(if selected { accent } else { muted })
+                                .when(selected, |chip| chip.bg(Palette::color(&p.bg).opacity(0.4)))
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    this.set_code_lang(block_id, lang, window, cx)
+                                }))
+                                .child(lang.label())
+                        })
+                        .collect::<Vec<_>>()
+                } else {
+                    Vec::new()
+                };
                 let move_allowed = !matches!(kind, BlockKind::Table | BlockKind::Columns)
                     && !self
                         .session
@@ -2021,9 +2074,11 @@ impl Render for Workspace {
                             .rounded(px(4.))
                     })
                     .when(kind == BlockKind::Code, |row| {
-                        row.bg(Palette::color(&p.elevated))
-                            .rounded(px(5.))
-                            .px(px(8.))
+                        row.when(block.background == ColorKind::Default, |row| {
+                            row.bg(Palette::color(&p.elevated))
+                        })
+                        .rounded(px(5.))
+                        .px(px(8.))
                     })
                     .when(kind == BlockKind::Quote, |row| {
                         row.border_l_2()
@@ -2031,9 +2086,11 @@ impl Render for Workspace {
                             .pl(px(12.))
                     })
                     .when(kind == BlockKind::Callout, |row| {
-                        row.bg(Palette::color(&p.elevated))
-                            .rounded(px(5.))
-                            .px(px(10.))
+                        row.when(block.background == ColorKind::Default, |row| {
+                            row.bg(Palette::color(&p.elevated))
+                        })
+                        .rounded(px(5.))
+                        .px(px(10.))
                     })
                     .child(
                         div()
@@ -2074,6 +2131,16 @@ impl Render for Workspace {
                             .when(kind == BlockKind::Divider, |view| {
                                 view.py(px(8.))
                                     .child(div().w_full().h(px(1.)).bg(Palette::color(&p.border)))
+                            })
+                            .when(kind == BlockKind::Code, |view| {
+                                view.child(
+                                    div()
+                                        .flex()
+                                        .flex_wrap()
+                                        .gap(px(3.))
+                                        .mb(px(4.))
+                                        .children(code_lang_controls),
+                                )
                             })
                             .when(
                                 kind != BlockKind::Divider

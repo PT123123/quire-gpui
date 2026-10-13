@@ -138,3 +138,10 @@ GPUI 应用已超出第一竖切，但离完整复刻仍有较大差距。用户
 - 页面图标网格从硬编码的 14 个示例扩展为 core 定义的完整 96 个 emoji，加一个清除项；不重复维护易漂移的图标目录。
 - 网格固定每行 8 个并可滚动，选择仍写入既有页面图标持久化路径。
 - 验证：`cargo fmt --all` 与 `cargo build -j 8 --target-dir target-next` 通过；窗口布局和完整列表视觉对照待验。
+
+## 第十一轮：代码语言与词法着色
+
+- 代码块提供 Plain、Rust、Python、JavaScript、TypeScript、Markdown、JSON、Bash 八种语言选项，并通过 core `SetCodeLang` 保存。
+- GPUI 文本元素复用 core `highlight::layer` 词法器，按主题语义色画关键词、注释、字符串、数字和名称；没有引入第二套 lexer。
+- 自定义块色仍用于 Plain 代码文本，非 Plain token 使用 core 代码色与主题明暗对应。
+- 验证：`cargo fmt --all`、`cargo build -j 8 --target-dir target-next` 通过；代码语言弹层、长代码与中文字符的视觉断行尚未对照。

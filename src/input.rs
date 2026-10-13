@@ -1,7 +1,10 @@
 //! GPUI 0.2.2 EntityInputHandler integration, based on its Apache-2.0 input example.
 //! Unlike the single-line example, all geometry here comes from wrapped text.
 use gpui::{prelude::*, *};
-use quire_core::core::types::{Mark, MarkKind};
+use quire_core::core::{
+    highlight::{self, Kind as HighlightKind},
+    types::{Lang, Mark, MarkKind},
+};
 use quire_gpui::buffer::{Buffer, to_utf16};
 use std::{cell::RefCell, ops::Range, rc::Rc};
 use unicode_segmentation::UnicodeSegmentation;
@@ -62,6 +65,8 @@ pub struct TextInput {
     selecting: bool,
     pub font_size: f32,
     pub text_color: Option<Hsla>,
+    pub code_lang: Lang,
+    pub code_colors: [Hsla; 5],
 }
 impl EventEmitter<InputEvent> for TextInput {}
 impl Focusable for TextInput {
@@ -96,6 +101,14 @@ impl TextInput {
             selecting: false,
             font_size,
             text_color: None,
+            code_lang: Lang::Plain,
+            code_colors: [
+                rgb(0xad7fb8).into(),
+                rgb(0x9b9a97).into(),
+                rgb(0x6ba584).into(),
+                rgb(0xe28d50).into(),
+                rgb(0x5b9bc4).into(),
+            ],
         }
     }
     pub fn reset(&mut self, text: String, marks: Vec<Mark>, caret: usize, cx: &mut Context<Self>) {
@@ -446,6 +459,8 @@ impl TextLayout {
         font_size: Pixels,
         dim: bool,
         text_color: Option<Hsla>,
+        code_lang: Lang,
+        code_colors: [Hsla; 5],
         window: &Window,
     ) -> Self {
         let style = window.text_style();
@@ -461,11 +476,55 @@ impl TextLayout {
             underline: None,
             strikethrough: None,
         };
+        let syntax_ranges = if code_lang == Lang::Plain {
+            Vec::new()
+        } else {
+            let layers = (1..=5)
+                .map(|kind| {
+                    highlight::layer(
+                        text.as_ref(),
+                        code_lang,
+                        1.0e9,
+                        1.0,
+                        HighlightKind::from_int(kind),
+                    )
+                })
+                .map(|layer| layer.chars().collect::<Vec<_>>())
+                .collect::<Vec<_>>();
+            let mut ranges = Vec::new();
+            let mut byte = 0;
+            let mut active: Option<(usize, usize)> = None;
+            for (index, ch) in text.chars().enumerate() {
+                let kind = if ch.is_whitespace() {
+                    None
+                } else {
+                    layers.iter().position(|layer| {
+                        layer
+                            .get(index)
+                            .is_some_and(|painted| *painted != '\u{00a0}')
+                    })
+                };
+                if kind != active.map(|(_, active_kind)| active_kind) {
+                    if let Some((start, active_kind)) = active.take() {
+                        ranges.push((start, byte, active_kind));
+                    }
+                    active = kind.map(|kind| (byte, kind));
+                }
+                byte += ch.len_utf8();
+            }
+            if let Some((start, kind)) = active {
+                ranges.push((start, byte, kind));
+            }
+            ranges
+        };
         let mut boundaries = vec![0, text.len()];
         for mark in marks {
             if mark.start < mark.end && mark.end <= text.len() {
                 boundaries.extend([mark.start, mark.end]);
             }
+        }
+        for (start, end, _) in &syntax_ranges {
+            boundaries.extend([*start, *end]);
         }
         if let Some(mark) = &marked {
             boundaries.extend([mark.start, mark.end]);
@@ -481,6 +540,12 @@ impl TextLayout {
                 }
                 let mut styled = run.clone();
                 styled.len = end - start;
+                if let Some((_, _, kind)) = syntax_ranges
+                    .iter()
+                    .find(|(from, to, _)| *from <= start && *to >= end)
+                {
+                    styled.color = code_colors[*kind];
+                }
                 for mark in marks
                     .iter()
                     .filter(|mark| mark.start <= start && mark.end >= end)
@@ -615,6 +680,8 @@ impl Element for TextElement {
         let marked = input.buffer.marked();
         let font_size = px(input.font_size);
         let text_color = input.text_color;
+        let code_lang = input.code_lang;
+        let code_colors = input.code_colors;
         let state = Rc::new(RefCell::new(None));
         let measured = state.clone();
         let mut style = Style::default();
@@ -632,6 +699,8 @@ impl Element for TextElement {
                 font_size,
                 dim,
                 text_color,
+                code_lang,
+                code_colors,
                 window,
             );
             let size = size(width, layout.height());
@@ -670,6 +739,8 @@ impl Element for TextElement {
                     px(input.font_size),
                     dim,
                     input.text_color,
+                    input.code_lang,
+                    input.code_colors,
                     window,
                 )
             })
