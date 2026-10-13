@@ -1,0 +1,1132 @@
+// The app's windows. `AppWindow` is the workspace; 速记 (ADR-0145) is the small
+// always-on-top composer Alt+N answers with, and it is re-exported here because
+// the Rust side shows it as its own top level — a component no markup
+// instantiates is a component the compiler does not generate. Everything below
+// is composition; state and actions are routed through the UIState global to the
+// Rust controller.
+
+export { QuickNoteWindow } from "components/QuickNoteWindow.slint";
+
+import { Theme } from "Theme.slint";
+import { Colors } from "Colors.slint";
+import { Typography } from "Typography.slint";
+import { Icon } from "Icons.slint";
+import { ListView } from "std-widgets.slint";
+import { Button } from "components/Button.slint";
+import { UIState } from "Types.slint";
+import { AppShell } from "components/AppShell.slint";
+import { CommandPalette } from "components/CommandPalette.slint";
+import { SearchPanel } from "components/SearchPanel.slint";
+import { ContextMenu } from "components/ContextMenu.slint";
+import { IconPicker } from "components/IconPicker.slint";
+import { ConfirmDialog } from "components/Dialog.slint";
+import { SettingsDialog } from "components/SettingsDialog.slint";
+import { VersionPanel } from "components/VersionPanel.slint";
+// D4 (SPEC §三十九 「操作」): the view rules' two popups — the filter panel and
+// the group-by picker — as separate components, the way DatabaseView and its
+// siblings are. They mount at the window root like every popup here.
+import { DatabaseFilterPopup } from "components/DatabaseFilterPopup.slint";
+import { DatabaseGroupPopup } from "components/DatabaseGroupPopup.slint";
+// D6 (SPEC §三十九 「需计算」): the formula column's editor — the one write a
+// computed column has is its expression (the value is computed, ADR-0062).
+import { DatabaseFormulaPopup } from "components/DatabaseFormulaPopup.slint";
+// D10 (SPEC §三十九 「属性」): the two editors a cell of a configured kind opens
+// — a relation's picker and a rollup's configurator. Both share the one list
+// shape the Columns popup's type menu uses too (`DatabasePickList`).
+import { DatabaseRelationPopup } from "components/DatabaseRelationPopup.slint";
+import { DatabaseRollupPopup } from "components/DatabaseRollupPopup.slint";
+import { DatabasePickList } from "components/DatabasePickList.slint";
+
+// Row menus (slash + block handle): one window-level popup each, positioned
+// by the controller from the delegate's reported geometry. Declared before
+// use (slint rule).
+
+component BlockMenuPopup inherits PopupWindow {
+    width: 176px;
+    height: UIState.block-menu-rows.length * 28px + 8px;
+    // outside click / Escape dismiss; UIState syncs via the is-open mirror
+    close-policy: PopupClosePolicy.close-on-click-outside;
+
+    Rectangle {
+        x: 2px; y: 3px;
+        width: parent.width - 4px;
+        height: parent.height - 5px;
+        border-radius: Theme.radius-md + 2px;
+        background: Colors.shadow;
+    }
+    Rectangle {
+        width: parent.width;
+        height: parent.height;
+        border-radius: Theme.radius-md;
+        background: Colors.surface-overlay;
+        border-width: 1px;
+        border-color: Colors.border;
+
+        for item[index] in UIState.block-menu-rows : Rectangle {
+            x: 4px;
+            y: 4px + (index * 28px);
+            width: parent.width - 8px;
+            height: 28px;
+            border-radius: Theme.radius-sm;
+            background: bm-ta.has-hover ? Colors.surface-hover : transparent;
+            animate background { duration: Theme.duration-instant; }
+
+            HorizontalLayout {
+                x: 6px;
+                padding-right: Theme.spacing-sm;
+                spacing: Theme.spacing-sm;
+                // color rows carry a swatch dot instead of an icon
+                if item.swatch >= 0 : Rectangle {
+                    width: 14px;
+                    height: 14px;
+                    vertical-stretch: 0;
+                    cross-axis-self-alignment: center;
+                    border-radius: 7px;
+                    background: item.swatch-bg ? Colors.block-bg(item.swatch)
+                        : Colors.block-text(item.swatch);
+                    // every background swatch carries a border: the light
+                    // pastels were invisible on the popup (A4 sweep)
+                    border-width: item.swatch-bg ? 1px : 0px;
+                    border-color: Colors.border-strong;
+                }
+                if item.swatch < 0 : Icon {
+                    vertical-stretch: 0;
+                    cross-axis-self-alignment: center;
+                    width: 14px;
+                    height: 14px;
+                    size: 14px;
+                    name: item.icon;
+                    color: item.danger ? Colors.danger
+                        : (bm-ta.has-hover ? Colors.text-primary : Colors.text-secondary);
+                }
+                Text {
+                    text: item.label;
+                    font-family: Typography.ui-font;
+                    font-size: Typography.size-ui;
+                    color: item.danger ? Colors.danger
+                        : (bm-ta.has-hover ? Colors.text-primary : Colors.text-secondary);
+                    vertical-alignment: center;
+                    horizontal-stretch: 1;
+                }
+                if item.check : Icon {
+                    vertical-stretch: 0;
+                    cross-axis-self-alignment: center;
+                    width: 13px;
+                    height: 13px;
+                    size: 13px;
+                    name: "todo-check";
+                    stroke-width: 2.6px;
+                    color: Colors.accent;
+                }
+            }
+            bm-ta := TouchArea {
+                mouse-cursor: MouseCursor.pointer;
+                clicked => {
+                    UIState.block-menu-action(item.id);
+                }
+            }
+        }
+    }
+}
+
+component SlashMenuPopup inherits PopupWindow {
+    width: Math.min(280px, 760px);
+    // natural height, clamped to the window space below the anchor so a tall
+    // insert list scrolls inside the popup instead of running off the window
+    // bottom — the "+" list is ~27 rows and overflows a short window (the same
+    // clamp ContextMenu uses for its Move-to list)
+    height: min(
+        UIState.slash-items.length * 32px + 8px,
+        max(UIState.window-h - UIState.slash-y - 20px, 120px),
+    );
+    // outside click / Escape dismiss; UIState syncs via the is-open mirror
+    // in AppWindow (a popup must not read its own `is-open`)
+    close-policy: PopupClosePolicy.close-on-click-outside;
+
+    Rectangle {
+        x: 2px; y: 3px;
+        width: parent.width - 4px;
+        height: parent.height - 5px;
+        border-radius: Theme.radius-md + 2px;
+        background: Colors.shadow;
+    }
+    Rectangle {
+        width: parent.width;
+        height: parent.height;
+        border-radius: Theme.radius-md;
+        background: Colors.surface-overlay;
+        border-width: 1px;
+        border-color: Colors.border;
+
+        ListView {
+            x: 4px; y: 4px;
+            width: parent.width - 8px;
+            height: parent.height - 8px;
+            content-width: self.width;
+
+            for item[idx] in UIState.slash-items : Rectangle {
+                width: parent.content-width;
+                height: 32px;
+                border-radius: Theme.radius-sm;
+                // placeholder rows ("later" kinds) render muted and inert
+                opacity: item.disabled ? 0.55 : 1.0;
+                background: !item.disabled && (idx == UIState.slash-focus || sl-ta.has-hover)
+                    ? Colors.surface-hover : transparent;
+                animate background { duration: Theme.duration-instant; }
+
+                HorizontalLayout {
+                    // bounded inside the row: the hint's elide needs a real
+                    // width, or the description clips at the popup border (D4)
+                    padding-left: Theme.spacing-sm;
+                    padding-right: Theme.spacing-sm;
+                    spacing: Theme.spacing-sm;
+                    Text {
+                        text: item.label;
+                        font-family: Typography.ui-font;
+                        font-size: Typography.size-ui;
+                        color: item.disabled ? Colors.text-muted
+                            : idx == UIState.slash-focus ? Colors.text-primary : Colors.text-secondary;
+                        vertical-alignment: center;
+                        horizontal-stretch: 0;
+                    }
+                    Rectangle { width: 0px; }
+                    Text {
+                        text: item.hint;
+                        font-family: Typography.ui-font;
+                        font-size: Typography.size-caption;
+                        color: Colors.text-muted;
+                        vertical-alignment: center;
+                        overflow: elide;
+                    }
+                }
+                sl-ta := TouchArea {
+                    enabled: !item.disabled;
+                    mouse-cursor: item.disabled ? MouseCursor.default : MouseCursor.pointer;
+                    clicked => {
+                        UIState.slash-focus = idx;
+                        UIState.slash-apply-selected();
+                    }
+                }
+            }
+        }
+    }
+}
+
+// The database columns popup (SPEC §三十九 「操作」 + 「属性」): which columns
+// the active view shows, and — D10's second panel — what type a column is or a
+// new one starts as. A window-level popup like the block menu — one popup for
+// the whole app, not one per realized row — and its rows are pushed by Rust
+// (`db_column_toggles`, `db_column_kinds`), because "what the view shows" and
+// "what may this become" are the document's answers, not the delegate's. The
+// title column is listed and locked: it is what a row is named by (ADR-0063),
+// so it has no switch rather than a switch the table would refuse.
+//
+// The type menu is this popup's second state rather than a popup of its own for
+// the reason the filter panel gives for its four lists: one popup that changes
+// its list is a state machine, and two popups are two windows fighting over
+// one click. It opens from the row's own **type word**, which is the only
+// place a column's type is both shown and reachable.
+component DatabaseColumnsPopup inherits PopupWindow {
+    width: 224px;
+    // the schema's rows, plus the one creation row
+    height: UIState.db-columns-panel == 1
+        ? 34px + UIState.db-kind-rows.length * 32px + 6px
+        : UIState.db-columns-rows.length * 30px + 42px;
+    // outside click / Escape dismiss; UIState syncs via the is-open mirror
+    close-policy: PopupClosePolicy.close-on-click-outside;
+
+    Rectangle {
+        x: 2px; y: 3px;
+        width: parent.width - 4px;
+        height: parent.height - 5px;
+        border-radius: Theme.radius-md + 2px;
+        background: Colors.shadow;
+    }
+    Rectangle {
+        width: parent.width;
+        height: parent.height;
+        border-radius: Theme.radius-md;
+        background: Colors.surface-overlay;
+        border-width: 1px;
+        border-color: Colors.border;
+        clip: true;
+
+        // ── panel 0: hide / show, and the door to each column's type ───────
+        if UIState.db-columns-panel == 0 : Rectangle {
+            width: parent.width;
+            height: parent.height;
+            background: transparent;
+
+            for item[index] in UIState.db-columns-rows : Rectangle {
+                x: 4px;
+                y: 4px + (index * 30px);
+                width: parent.width - 8px;
+                height: 30px;
+                border-radius: Theme.radius-sm;
+                background: !item.locked && dc-ta.has-hover ? Colors.surface-hover : transparent;
+                animate background { duration: Theme.duration-instant; }
+
+                HorizontalLayout {
+                    x: 8px;
+                    width: parent.width - 16px;
+                    spacing: Theme.spacing-sm;
+                    Text {
+                        text: item.name;
+                        font-family: Typography.ui-font;
+                        font-size: Typography.size-ui;
+                        color: item.locked ? Colors.text-muted
+                            : (dc-ta.has-hover ? Colors.text-primary : Colors.text-secondary);
+                        vertical-alignment: center;
+                        horizontal-stretch: 1;
+                        overflow: elide;
+                    }
+                    // The column's type, as the kind's own word — and the door
+                    // to the type menu. A caption you can click is one fewer
+                    // control on every row than a second button beside it, and
+                    // the word is already here because a popup about the schema
+                    // that did not say what each column *is* would be half a
+                    // description.
+                    type-cell := Rectangle {
+                        vertical-stretch: 0;
+                        cross-axis-self-alignment: center;
+                        width: type-word.preferred-width + 8px;
+                        height: 22px;
+                        border-radius: Theme.radius-xs;
+                        background: dk-ta.has-hover ? Colors.surface-hover : transparent;
+
+                        type-word := Text {
+                            x: 4px;
+                            height: parent.height;
+                            vertical-alignment: center;
+                            text: item.kind;
+                            font-family: Typography.ui-font;
+                            font-size: Typography.size-caption;
+                            color: Colors.text-muted;
+                        }
+                        dk-ta := TouchArea {
+                            width: parent.width;
+                            height: parent.height;
+                            mouse-cursor: MouseCursor.pointer;
+                            clicked => {
+                                UIState.db-kind-opened(UIState.db-columns-block, item.property);
+                            }
+                        }
+                    }
+                    if item.visible : Icon {
+                        vertical-stretch: 0;
+                        cross-axis-self-alignment: center;
+                        width: 13px;
+                        height: 13px;
+                        size: 13px;
+                        name: "todo-check";
+                        stroke-width: 2.6px;
+                        color: item.locked ? Colors.text-muted : Colors.accent;
+                    }
+                }
+                dc-ta := TouchArea {
+                    // the title column is listed so the popup is the one place the
+                    // whole schema is visible; it does not pretend to be toggleable
+                    enabled: !item.locked;
+                    mouse-cursor: item.locked ? MouseCursor.default : MouseCursor.pointer;
+                    clicked => {
+                        UIState.db-column-toggled(UIState.db-columns-block, item.property);
+                    }
+                }
+            }
+
+            // The one creation row: the type menu, with nothing chosen, listing
+            // what a new column can start as. D6 had a shortcut straight to a
+            // formula column here, and the menu subsumes it — a new formula
+            // column arrives in the editor exactly the way the shortcut left
+            // it (the controller opens it for kind 14).
+            Rectangle {
+                x: 4px;
+                y: 8px + UIState.db-columns-rows.length * 30px;
+                width: parent.width - 8px;
+                height: 30px;
+                border-radius: Theme.radius-sm;
+                background: column-add.has-hover ? Colors.surface-hover : transparent;
+
+                Text {
+                    x: 8px;
+                    width: parent.width - 16px;
+                    height: parent.height;
+                    vertical-alignment: center;
+                    text: "+ 新建列";
+                    font-family: Typography.ui-font;
+                    font-size: Typography.size-ui;
+                    color: column-add.has-hover ? Colors.text-primary : Colors.text-secondary;
+                }
+                column-add := TouchArea {
+                    width: parent.width;
+                    height: parent.height;
+                    mouse-cursor: MouseCursor.pointer;
+                    clicked => {
+                        UIState.db-kind-opened(UIState.db-columns-block, -1);
+                    }
+                }
+            }
+        }
+
+        // ── panel 1: the column type menu (D10, SPEC §三十九 「属性」) ──────
+        if UIState.db-columns-panel == 1 : Rectangle {
+            width: parent.width;
+            height: parent.height;
+            background: transparent;
+
+            // The question, and the way home in the same line ("‹", the filter
+            // panel's affordance). A column that *is* something reads truer
+            // than a generic "Property type", so the name comes from Rust.
+            Text {
+                x: 8px;
+                y: 6px;
+                width: parent.width - 16px;
+                height: 22px;
+                vertical-alignment: center;
+                overflow: elide;
+                text: UIState.db-columns-property < 0
+                    ? "新建列"
+                    : "‹ " + UIState.db-columns-title;
+                font-family: Typography.ui-font;
+                font-size: Typography.size-caption;
+                color: UIState.db-columns-property < 0
+                    ? Colors.text-muted
+                    : (kind-back.has-hover ? Colors.text-primary : Colors.text-muted);
+            }
+            kind-back := TouchArea {
+                x: 4px;
+                y: 4px;
+                width: parent.width - 8px;
+                height: 26px;
+                enabled: UIState.db-columns-property >= 0;
+                mouse-cursor: MouseCursor.pointer;
+                clicked => {
+                    UIState.db-kind-back();
+                }
+            }
+
+            DatabasePickList {
+                x: 4px;
+                y: 34px;
+                width: parent.width - 8px;
+                row-height: 32px;
+                rows: UIState.db-kind-rows;
+                picked(id) => {
+                    UIState.db-kind-picked(UIState.db-columns-block, id);
+                }
+            }
+        }
+    }
+}
+
+component LinkDialog inherits PopupWindow {
+    width: 380px;
+    // preferred-height already carries the layout's own padding; adding
+    // spacing-lg here gave the layout slack, which it spent as a ~50 px gap
+    // between the title and the URL field (A4 sweep, D8)
+    height: content-col.preferred-height;
+    close-policy: PopupClosePolicy.no-auto-close;
+
+    property <bool> opened: UIState.link-open;
+    changed opened => {
+        if (UIState.link-open) {
+            url-input.focus();
+        }
+    }
+
+    Rectangle {
+        width: parent.width;
+        height: parent.height;
+
+        Rectangle {
+            x: 2px; y: 3px;
+            width: parent.width - 4px;
+            height: parent.height - 5px;
+            border-radius: Theme.radius-lg + 2px;
+            background: Colors.shadow;
+        }
+        Rectangle {
+            width: parent.width;
+            height: parent.height;
+            border-radius: Theme.radius-lg;
+            background: Colors.surface-overlay;
+            border-width: 1px;
+            border-color: Colors.border;
+        }
+
+        content-col := VerticalLayout {
+            padding: Theme.spacing-lg;
+            spacing: Theme.spacing-md;
+
+            Text {
+                text: "添加链接";
+                font-family: Typography.ui-font;
+                font-size: Typography.size-h3;
+                font-weight: Typography.weight-semibold;
+                color: Colors.text-primary;
+            }
+            url-field := Rectangle {
+                height: 32px;
+                border-radius: Theme.radius-sm;
+                background: Colors.background;
+                border-width: 1px;
+                border-color: Colors.border;
+                clip: true;
+                url-input := TextInput {
+                    x: Theme.spacing-sm;
+                    width: parent.width - 2 * Theme.spacing-sm;
+                    y: (parent.height - self.preferred-height) / 2;
+                    font-family: Typography.ui-font;
+                    font-size: Typography.size-ui;
+                    color: Colors.text-primary;
+                    single-line: true;
+                    text <=> UIState.link-url;
+                    accepted => {
+                        UIState.link-apply();
+                    }
+                    key-pressed(event) => {
+                        if (event.text == Key.Escape) {
+                            UIState.link-cancel();
+                            accept
+                        } else {
+                            reject
+                        }
+                    }
+                }
+            }
+            HorizontalLayout {
+                spacing: Theme.spacing-sm;
+                Button {
+                    text: "移除";
+                    clicked => {
+                        UIState.link-remove();
+                    }
+                }
+                Rectangle { horizontal-stretch: 1; }
+                Button {
+                    text: "应用";
+                    primary: true;
+                    clicked => {
+                        UIState.link-apply();
+                    }
+                }
+            }
+        }
+    }
+}
+
+// Rust-facing names must be re-exported from the entry file (1.18 codegen rule).
+export { UIState, SidebarNode, BlockRow, TextRun, CommandRow, SearchRow, MenuRow, SlashRow, VersionRow, DiffRow } from "Types.slint";
+
+// The system tray (SPEC §二十七). A SystemTrayIcon cannot be a child of this
+// window, so it is a component of its own that Rust builds and holds; naming it
+// here is what makes the codegen emit it (see ADR-0096).
+export { AppTray } from "TrayIcon.slint";
+
+export component AppWindow inherits Window {
+    title: "Quire";
+    preferred-width: 1280px;
+    preferred-height: 800px;
+    min-width: 940px;
+    min-height: 600px;
+    // A `Window`'s own background is the renderer's clear colour, so a *brush*
+    // here is silently flattened to its first stop: the four gradient themes
+    // painted a plain `bg` until this was moved onto a real Rectangle below
+    // (measured, not assumed — the jade scene's whole right edge came back
+    // #0f4938 top to bottom). `Colors.background` is the flat colour this shell
+    // opens with, and `ramp` paints the gradient over it.
+    background: Colors.background;
+
+    // Frameless: TopBar provides the move area and window controls.
+    no-frame: true;
+    resize-border-width: 6px;
+    forward-focus: shortcuts;
+
+    // 最大化 / 窗口化, told twice and for two different readers. The title bar
+    // needs the flag to draw 「还原」 instead of 「最大化」 — a window control
+    // that cannot say which way it goes is a control the user has to try. Rust
+    // needs it because the size a maximized window reports is the *monitor's*
+    // size, and recording that is how a maximized session used to come back
+    // as a full-screen window on the next launch: the flag is the only moment
+    // at which the pre-maximize rectangle is still knowable (see
+    // `window_maximized_changed` in `controller::wire`).
+    changed maximized => {
+        UIState.window-maximized = self.maximized;
+        UIState.window-maximized-changed(self.maximized);
+    }
+
+    // `changed` handlers can only observe locally declared properties, so the
+    // things Rust must react to are mirrored here first.
+    in-out property <bool> palette-open <=> UIState.palette-open;
+    in-out property <string> palette-query <=> UIState.palette-query;
+    in-out property <bool> search-open <=> UIState.search-open;
+    in-out property <string> search-query <=> UIState.search-query;
+    in-out property <bool> menu-open <=> UIState.menu-open;
+    in-out property <bool> slash-open <=> UIState.slash-open;
+    in-out property <int> block-menu-open-id <=> UIState.block-menu-open-id;
+    in-out property <bool> db-columns-open <=> UIState.db-columns-open;
+    in-out property <bool> db-filter-open <=> UIState.db-filter-open;
+    in-out property <bool> db-group-open <=> UIState.db-group-open;
+    in-out property <bool> db-formula-open <=> UIState.db-formula-open;
+    // D10 (SPEC §三十九 「属性」): the relation picker and the rollup editor.
+    in-out property <bool> db-relation-open <=> UIState.db-relation-open;
+    in-out property <bool> db-rollup-open <=> UIState.db-rollup-open;
+    in-out property <bool> link-open <=> UIState.link-open;
+    in-out property <bool> dialog-open <=> UIState.dialog-open;
+    in-out property <bool> settings-open <=> UIState.settings-open;
+    in-out property <bool> icon-picker-open <=> UIState.icon-picker-open;
+    in-out property <bool> versions-open <=> UIState.versions-open;
+    in-out property <int> org-quick-note-tick <=> UIState.org-quick-note-tick;
+
+    // The 全局快捷键's Alt+N lands here (main.rs bumps the counter from the
+    // event loop): the counter is the only thing a foreign thread can write,
+    // and this hook is where the write becomes the same call the ＋ makes.
+    changed org-quick-note-tick => {
+        UIState.org-quick-note-requested();
+    }
+
+    changed palette-open => {
+        if (palette-open) {
+            palette.show();
+        } else {
+            palette.close();
+            UIState.palette-query = "";
+            UIState.palette-focus = 0;
+        }
+    }
+
+    // Filtering happens in Rust (single source of truth for the filtered
+    // model), so keyboard focus and Enter resolve against the same list.
+    changed palette-query => {
+        UIState.palette-query-changed();
+    }
+
+    changed search-open => {
+        if (search-open) {
+            search.show();
+        } else {
+            search.close();
+            UIState.search-query = "";
+            UIState.search-focus = 0;
+            UIState.search-selected-id = -1;
+        }
+    }
+
+    changed search-query => {
+        UIState.search-query-changed();
+    }
+
+    changed menu-open => {
+        if (menu-open) {
+            menu.show();
+        } else {
+            menu.close();
+            UIState.menu-node-id = -1;
+        }
+    }
+
+    changed slash-open => {
+        if (slash-open) {
+            slashMenu.show();
+        } else {
+            slashMenu.close();
+            // every close path funnels through here (input Escape, space,
+            // markdown convert, popup auto-dismiss) — clear the mode flags
+            // so a stale one can't hijack the next "/" menu
+            UIState.slash-insert = false;
+            UIState.slash-pick-page = false;
+            UIState.slash-pick-linkdb = false;
+            UIState.slash-pick-mention = false;
+        }
+    }
+
+    // the block menu exists iff a block id is set; the same signal closes it,
+    // so there is no second bool to keep in sync
+    changed block-menu-open-id => {
+        if (block-menu-open-id >= 0) {
+            blockMenu.show();
+        } else {
+            blockMenu.close();
+        }
+    }
+
+    changed db-columns-open => {
+        if (db-columns-open) {
+            dbColumns.show();
+        } else {
+            dbColumns.close();
+        }
+    }
+
+    // D4: the two rules popups, same three-piece pattern as the columns one —
+    // the open bit mirrored, the changed handler showing/closing, the is-open
+    // mirror clearing the bit when the user clicks outside.
+    changed db-filter-open => {
+        if (db-filter-open) {
+            dbFilter.show();
+        } else {
+            dbFilter.close();
+        }
+    }
+    property <bool> db-filter-shown: dbFilter.is-open;
+    changed db-filter-shown => {
+        if (!db-filter-shown && UIState.db-filter-open) {
+            UIState.db-filter-open = false;
+        }
+    }
+
+    changed db-group-open => {
+        if (db-group-open) {
+            dbGroup.show();
+        } else {
+            dbGroup.close();
+        }
+    }
+    property <bool> db-group-shown: dbGroup.is-open;
+    changed db-group-shown => {
+        if (!db-group-shown && UIState.db-group-open) {
+            UIState.db-group-open = false;
+        }
+    }
+
+    // D6: the formula editor, the same three-piece pattern as the two rules
+    // popups — the open bit mirrored, the changed handler showing/closing, the
+    // is-open mirror clearing the bit when the user clicks outside.
+    changed db-formula-open => {
+        if (db-formula-open) {
+            dbFormula.show();
+        } else {
+            dbFormula.close();
+        }
+    }
+    property <bool> db-formula-shown: dbFormula.is-open;
+    changed db-formula-shown => {
+        if (!db-formula-shown && UIState.db-formula-open) {
+            UIState.db-formula-open = false;
+        }
+    }
+
+    // D10: the relation picker and the rollup editor, same three-piece pattern
+    // as the formula editor above. They are centered like it, not anchored:
+    // each one edits a fact about a *column*, and the cell it opened from may
+    // scroll away while the popup is up.
+    changed db-relation-open => {
+        if (db-relation-open) {
+            dbRelation.show();
+        } else {
+            dbRelation.close();
+        }
+    }
+    property <bool> db-relation-shown: dbRelation.is-open;
+    changed db-relation-shown => {
+        if (!db-relation-shown && UIState.db-relation-open) {
+            UIState.db-relation-open = false;
+        }
+    }
+
+    changed db-rollup-open => {
+        if (db-rollup-open) {
+            dbRollup.show();
+        } else {
+            dbRollup.close();
+        }
+    }
+    property <bool> db-rollup-shown: dbRollup.is-open;
+    changed db-rollup-shown => {
+        if (!db-rollup-shown && UIState.db-rollup-open) {
+            UIState.db-rollup-open = false;
+        }
+    }
+
+    changed link-open => {
+        if (link-open) {
+            linkDialog.show();
+        } else {
+            linkDialog.close();
+        }
+    }
+
+    changed dialog-open => {
+        if (dialog-open) {
+            dialog.show();
+        } else {
+            dialog.close();
+        }
+    }
+
+    changed settings-open => {
+        if (settings-open) {
+            settings.show();
+        } else {
+            settings.close();
+        }
+    }
+
+    changed icon-picker-open => {
+        if (icon-picker-open) {
+            iconPicker.show();
+        } else {
+            iconPicker.close();
+        }
+    }
+
+    // The version panel closes through the controller (Done / Escape / a page
+    // switch), which writes UIState — so the only job here is the show/close
+    // pair. Nothing is cleared on close on purpose: the panel is a window onto
+    // a page's versions, and a stale selection is not visible from the list.
+    changed versions-open => {
+        if (versions-open) {
+            versions.show();
+        } else {
+            versions.close();
+        }
+    }
+
+    // Popup auto-dismiss (outside click / Escape) is enforced by Slint's
+    // close-on-click-outside policy: the engine flips the popup's `is-open`,
+    // mirrored here so UIState — and through it the Rust layer — follows.
+    // (A popup must not read its own `is-open`: slint 1.18 const-prop
+    // crash; the parent-side reference is the supported pattern.) Without
+    // this sync a dismissed menu would leave UIState open, the AppShell
+    // scrim would stay enabled, and the window would look frozen.
+    property <bool> menu-shown: menu.is-open;
+    changed menu-shown => {
+        if (!menu-shown && UIState.menu-open) {
+            UIState.menu-open = false;
+        }
+    }
+    property <bool> slash-shown: slashMenu.is-open;
+    changed slash-shown => {
+        if (!slash-shown && UIState.slash-open) {
+            UIState.slash-open = false;
+        }
+    }
+    property <bool> block-menu-shown: blockMenu.is-open;
+    changed block-menu-shown => {
+        if (!block-menu-shown && UIState.block-menu-open-id >= 0) {
+            UIState.block-menu-open-id = -1;
+        }
+    }
+    property <bool> db-columns-shown: dbColumns.is-open;
+    changed db-columns-shown => {
+        if (!db-columns-shown && UIState.db-columns-open) {
+            UIState.db-columns-open = false;
+        }
+    }
+    property <bool> palette-shown: palette.is-open;
+    changed palette-shown => {
+        if (!palette-shown && UIState.palette-open) {
+            UIState.palette-open = false;
+        }
+    }
+    property <bool> search-shown: search.is-open;
+    changed search-shown => {
+        if (!search-shown && UIState.search-open) {
+            UIState.search-open = false;
+        }
+    }
+    property <bool> icon-picker-shown: iconPicker.is-open;
+    changed icon-picker-shown => {
+        if (!icon-picker-shown) {
+            UIState.icon-picker-open = false;
+            UIState.icon-picker-page = -1;
+        }
+    }
+    // 设置 is a card over the page, so an outside click has to dismiss it like
+    // any other popup: the engine eats that click (so `AppShell`'s scrim never
+    // sees it) and closes the popup itself, and this mirror is the only way
+    // `settings-open` — and the Rust layer behind it — learns.
+    property <bool> settings-shown: settings.is-open;
+    changed settings-shown => {
+        if (!settings-shown && UIState.settings-open) {
+            UIState.settings-open = false;
+        }
+    }
+
+    // geometry mirror for Rust-side popup anchoring
+    changed width => {
+        UIState.window-w = self.width;
+        UIState.window-resized();
+    }
+    changed height => {
+        UIState.window-h = self.height;
+        UIState.window-resized();
+    }
+
+    shortcuts := FocusScope {
+        width: root.width;
+        height: root.height;
+
+        KeyBinding {
+            keys: @keys(Control + K);
+            activated => {
+                UIState.palette-open-requested();
+            }
+        }
+        KeyBinding {
+            keys: @keys(Control + P);
+            activated => {
+                UIState.search-open-requested();
+            }
+        }
+        KeyBinding {
+            keys: @keys(Control + N);
+            activated => {
+                UIState.page-create-requested();
+            }
+        }
+        KeyBinding {
+            keys: @keys(Control + BackSlash);
+            activated => {
+                UIState.toggle-sidebar();
+            }
+        }
+        KeyBinding {
+            keys: @keys(Control + Z);
+            activated => {
+                UIState.undo-requested();
+            }
+        }
+        KeyBinding {
+            keys: @keys(Control + Shift + Z);
+            activated => {
+                UIState.redo-requested();
+            }
+        }
+        KeyBinding {
+            keys: @keys(Control + Y);
+            activated => {
+                UIState.redo-requested();
+            }
+        }
+        KeyBinding {
+            keys: @keys(Control + Shift + L);
+            activated => {
+                UIState.toggle-theme();
+            }
+        }
+        KeyBinding {
+            keys: @keys(Control + F);
+            activated => {
+                UIState.find-open = true;
+            }
+        }
+        KeyBinding {
+            keys: @keys(Control + S);
+            activated => {
+                UIState.save-requested();
+            }
+        }
+        // Zoom. `Equals` and `Plus` are two rows because they are two key
+        // events: Ctrl+= sends '=' and Ctrl+Shift+= sends '+', and a binding
+        // names one character. Both key names carry Slint's "the shift state
+        // is not part of the match" behavior, so each row covers its own
+        // shifted spelling on layouts that need one (see `ShiftBehavior`).
+        KeyBinding {
+            keys: @keys(Control + Equals);
+            activated => {
+                UIState.zoom-in();
+            }
+        }
+        KeyBinding {
+            keys: @keys(Control + Plus);
+            activated => {
+                UIState.zoom-in();
+            }
+        }
+        KeyBinding {
+            keys: @keys(Control + HyphenMinus);
+            activated => {
+                UIState.zoom-out();
+            }
+        }
+        KeyBinding {
+            keys: @keys(Control + Digit0);
+            activated => {
+                UIState.zoom-reset();
+            }
+        }
+        KeyBinding {
+            keys: @keys(Alt + LeftArrow);
+            activated => {
+                UIState.nav-back-requested();
+            }
+        }
+        KeyBinding {
+            keys: @keys(Alt + RightArrow);
+            activated => {
+                UIState.nav-forward-requested();
+            }
+        }
+        // Escape puts the notes half's note 浮层 down (ADR-0118) — the same ask
+        // its ✕ makes. Guarded on the panel actually being up, so an Escape in
+        // the editor is nobody's business but the editor's, and slint calls a
+        // focused input's own `key-pressed` first, so the capture layer's Escape
+        // still closes only that layer.
+        KeyBinding {
+            keys: @keys(Escape);
+            activated => {
+                if (UIState.active-area == "organizer" && UIState.org-tab == 0
+                    && UIState.org-note-detail.id >= 0) {
+                    UIState.org-note-closed();
+                }
+            }
+        }
+
+        // The page ramp, painted behind everything (`Colors.page`): the four
+        // gradient themes run `bg` into `grad2` here, and the nine flat ones
+        // hand back a ramp whose stops are equal. It is one rectangle for the
+        // whole window rather than one per pane, which is what makes the ramp
+        // continuous; `AppShell` above it, and the editor and organizer inside
+        // it, draw no fill of their own.
+        ramp := Rectangle {
+            x: 0;
+            y: 0;
+            width: parent.width;
+            height: parent.height;
+            background: Colors.page;
+        }
+        // (`ramp` is named so the comment above has something to point at; it is
+        // never referenced.)
+
+        AppShell {
+            minimize-requested => {
+                root.minimized = true;
+            }
+            maximize-requested => {
+                root.maximized = !root.maximized;
+            }
+            close-requested => {
+                root.close();
+            }
+        }
+    }
+
+    palette := CommandPalette {
+        x: (root.width - 560px) / 2;
+        y: 96px;
+    }
+
+    search := SearchPanel {
+        x: (root.width - self.width) / 2;
+        y: 96px;
+    }
+
+    menu := ContextMenu {
+        x: UIState.menu-x;
+        y: UIState.menu-y;
+    }
+
+    iconPicker := IconPicker {
+        x: UIState.icon-picker-x;
+        y: UIState.icon-picker-y;
+    }
+
+    slashMenu := SlashMenuPopup {
+        x: UIState.slash-x;
+        y: UIState.slash-y;
+    }
+
+    blockMenu := BlockMenuPopup {
+        x: UIState.block-menu-x;
+        y: UIState.block-menu-y;
+    }
+
+    dbColumns := DatabaseColumnsPopup {
+        x: UIState.db-columns-x;
+        y: UIState.db-columns-y;
+    }
+
+    dbFilter := DatabaseFilterPopup {
+        x: UIState.db-filter-x;
+        y: UIState.db-filter-y;
+    }
+
+    dbGroup := DatabaseGroupPopup {
+        x: UIState.db-group-x;
+        y: UIState.db-group-y;
+    }
+
+    // The formula editor is a sheet, not a menu: it is centered rather than
+    // anchored, because it edits a *column* (a fact about the schema) and the
+    // cell it was opened from may scroll away while it is open.
+    dbFormula := DatabaseFormulaPopup {
+        x: (root.width - self.width) / 2;
+        y: (root.height - self.height) / 2;
+    }
+
+    // D10 (SPEC §三十九 「属性」): a relation cell's picker and a rollup cell's
+    // configurator, both centered like the formula editor — they edit a fact
+    // about a *column*, and the row a cell sits in may scroll away underneath
+    // them while the user is still choosing.
+    dbRelation := DatabaseRelationPopup {
+        x: (root.width - self.width) / 2;
+        y: (root.height - self.height) / 2;
+    }
+
+    dbRollup := DatabaseRollupPopup {
+        x: (root.width - self.width) / 2;
+        y: (root.height - self.height) / 2;
+    }
+
+    linkDialog := LinkDialog {
+        x: (root.width - self.width) / 2;
+        y: (root.height - self.height) / 2;
+    }
+
+    dialog := ConfirmDialog {
+        x: (root.width - self.width) / 2;
+        y: (root.height - self.height) / 2;
+    }
+
+    settings := SettingsDialog {
+        x: (root.width - self.width) / 2;
+        y: (root.height - self.height) / 2;
+    }
+
+    versions := VersionPanel {
+        x: (root.width - self.width) / 2;
+        y: (root.height - self.height) / 2;
+    }
+
+    // Picture preview (SPEC §三十七): the block's raster enlarged to fit the
+    // window over a dimmed page; a click anywhere closes it. It is deliberately
+    // the same bounded raster the row loads, not the original file — a
+    // 4000x3000 image must not enter memory at its own size (§二十二), and the
+    // full-resolution bytes stay on disk for any viewer that can show them.
+    Rectangle {
+        x: 0; y: 0;
+        width: root.width; height: root.height;
+        visible: UIState.preview-attachment != 0;
+        background: Colors.scrim;
+
+        TouchArea {
+            mouse-cursor: MouseCursor.pointer;
+            clicked => { UIState.preview-attachment = 0; }
+        }
+
+        Rectangle {
+            property <float> aspect: UIState.image-aspect(UIState.preview-attachment);
+            property <length> box-w: root.width - 2 * Theme.spacing-xl;
+            property <length> box-h: root.height - 2 * Theme.spacing-xl;
+            property <length> pic-w: self.aspect > 0
+                ? Math.min(self.box-w, self.box-h / self.aspect) : 0px;
+            x: (root.width - self.pic-w) / 2;
+            width: self.pic-w;
+            height: self.pic-w * self.aspect;
+            y: (root.height - self.height) / 2;
+            clip: true;
+            border-radius: Theme.radius-md;
+            border-width: 1px;
+            border-color: Colors.border;
+
+            Image {
+                x: 0; y: 0;
+                width: parent.width; height: parent.height;
+                image-fit: contain;
+                source: UIState.image-for(UIState.preview-attachment);
+            }
+        }
+    }
+}
+

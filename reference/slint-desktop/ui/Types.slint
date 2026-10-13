@@ -1,0 +1,1775 @@
+// Data shapes exchanged between Rust and the UI, plus the single shared
+// UI-state global. Rust owns construction (VecModel), UI owns presentation.
+
+export struct SidebarNode {
+    id: int,
+    label: string,
+    kind: string,   // "header" | "favorite" | "recent" | "page" | "new-page"
+    depth: int,
+    expanded: bool,
+    has-children: bool,
+    selected: bool,
+    y: int,         // cumulative px offset in the tree area (menu anchoring)
+    // What this row's 16px slot draws (SPEC §三十八): the page's own emoji, or
+    // the title's first character when it has none. Empty for a section header
+    // and the "New page" row, which keep their vector glyph.
+    icon: string,
+}
+
+export struct TextRun {
+    text: string,
+    bold: bool,
+    italic: bool,
+    strike: bool,
+    code: bool,
+    link: bool,
+    url: string,
+    // A find hit (SPEC §二十, A4 D7): the cell is one occurrence the bar
+    // matched, so the delegate tints its background. A hit that starts or ends
+    // inside a word tints the whole cell, because a cell is the smallest thing
+    // this layout can paint.
+    hit: bool,
+    // SPEC §四十: a @page mention. The cell stores the *id* and shows the
+    // target page's live title (Rust resolves it at projection time, so a
+    // rename moves every chip without a write). -1 = not a mention.
+    mention: int,
+    // ...and the target page is gone. The chip stays on screen and reads
+    // "(deleted page)": a dangling reference must never fail a projection
+    // (ADR-0026 / ADR-0029's contract).
+    mention-deleted: bool,
+    // SPEC §四十: a @date atom. The label is the stored ISO text.
+    date: bool,
+}
+
+/// One cell of a table (SPEC §三十七 批次 B). The grid rides on its table's
+/// row as a flat row-major list — Slint has no array of arrays in a struct —
+/// with `columns` telling the delegate where each row ends.
+export struct TableCell {
+    id: int,
+    text: string,
+    runs: [TextRun], // inline marks; a cell carries them like any block
+}
+
+/// One block inside a columns layout (SPEC §三十七 批次 B). Its column is a
+/// child block the projection leaves out of the row list, so the layout's
+/// whole content rides on the layout's own row as one flat list, grouped by
+/// box: `column` says which box, `depth` how far inside that box.
+export struct ColumnItem {
+    id: int,
+    column: int, // 0-based box of the layout
+    depth: int, // nesting inside its own column, for the indent
+    kind: int, // same ints as BlockRow.kind: only the marker differs
+    text: string,
+    runs: [TextRun],
+    checked: bool,
+    number: int, // numbered-list position inside its own box
+    folded: bool, // a toggle's subtree is left out of this list, as in the rows
+    can-fold: bool,
+    color: int,
+    bg: int, // callout tint, same palette slots
+    attachment: int, // picture an image item points at; 0 = none
+}
+
+/// One box of a columns layout, as the delegate sees it: the `Column` block
+/// it is, and where its content sits in the flat `column-items` list. Slint
+/// has no recursive components, so this is how a layout finds its own shape.
+export struct ColumnBox {
+    id: int,
+    column: int, // 0-based position in the layout
+    first: int,  // index in `column-items` of this box's first item
+    size: int,   // how many items it holds; 0 = nothing to draw yet
+}
+
+// One line of a `Toc` block's contents (21): derived from the page's headings
+// at projection time, never stored, so it cannot go stale.
+export struct TocEntry {
+    block: int, // the heading's id; clicking the entry jumps there
+    label: string, // the heading's text
+    level: int, // 1..3 from the heading's kind, which is the indent
+}
+
+// One line of the backlink panel at the foot of a page (SPEC §四十, ADR-0051).
+// Derived every time the page is projected and never stored: the panel is a
+// question asked of the marks table ("which blocks point at this page"), and a
+// stored copy is the one thing that could disagree with the editor.
+export struct BacklinkRow {
+    block: int, // the referring block; clicking the row jumps to it
+    page: int, // the page that block lives on
+    title: string, // that page's name, as the workspace calls it now
+    text: string, // the referring block's own text ("" = nothing to quote)
+    // true when the reference *is* the block (`Page` / `Link to page`,
+    // ADR-0026) rather than a mention typed inside one. The row marks it,
+    // because "this page names that page" and "this page mentions that page"
+    // are both references but only one of them reads as prose.
+    block-level: bool,
+    // The first row of a run that shares `page`: only it draws the page name,
+    // so a page quoted six times reads as one group instead of six headers.
+    first-on-page: bool,
+}
+
+export struct DbCell {
+    property: int,     // the property id, which a write names
+    kind: int,         // PropertyKind index (see the legend in UIState's callbacks)
+    text: string,      // painted (option name, formatted number, ISO date)
+    checked: bool,     // checkbox only; derived from the painted word in Rust
+    editable: bool,    // false for computed/derived kinds: no inline editor
+}
+
+export struct DbRow {
+    record: int,
+    page: int,   // the page the row IS, -1 for a bare record (ADR-0063)
+    title: string,
+    // D4 (SPEC §三十九 「操作」): a group header's label ("Done · 3"), and ""
+    // for a data row — the one thing the row delegate's conditional asks. A
+    // header is an *entry*, not a record: it occupies one slot of the scroll
+    // surface and carries no cells, so a 10 000-row database grouped into
+    // three groups realizes three of these, never one per group.
+    header: string,
+    // D5 (timeline): the bar's two ends as day numbers (days since
+    // 1970-01-01, computed in Rust from the row's date cells — a delegate
+    // never parses a date). -1 = no date, which the timeline's own filter
+    // never hands over anyway (「无日期不显示」 is SQL, not a delegate check);
+    // from == to is a point, the brief's 「起=止=同一天时画点」.
+    tl-from: int,
+    tl-to: int,
+    // D5 (gallery): the avatar's one character — the title's first, cut in
+    // Rust because a delegate never touches string surgery. "" = nothing to
+    // cut (the avatar draws blank, which a record with no title is).
+    letter: string,
+    cells: [DbCell],
+}
+
+export struct DbOption {
+    id: string,   // the stored value (an option id, ADR-0061)
+    name: string, // what the row draws
+    color: string,
+}
+
+export struct DbColumn {
+    property: int,
+    name: string,
+    kind: int,
+    permille: int, // stored width in permille of the grid; 0 = equal share
+    title: bool,
+    options: [DbOption],
+}
+
+export struct DbViewTab {
+    view: int,
+    name: string,
+    active: bool,
+}
+
+// ─── D5: the view family's own shapes (SPEC §三十九 「视图」) ────────────────
+// Everything here is already decided in Rust — labels, counts, windows — and
+// the delegate only places what it is handed, the same contract the table's
+// rows have kept since D3. Declared *before* BlockRow: Slint resolves struct
+// types in declaration order, and BlockRow's D5 fields name these.
+
+// One board column: the group's label and count (from one `GROUP BY` over an
+// option-bounded column — the list of *headers*, never one per card) and the
+// cards the slot window realizes inside it. A card is a `DbRow`: its `title`
+// is the card's words and its cells carry the checkbox the card draws.
+export struct DbBoardColumn {
+    label: string,
+    count: int,
+    cards: [DbRow],
+}
+
+// One calendar day cell: the day of the month (0 = a leading/trailing blank),
+// how many records the day holds (the fold's number, from one `GROUP BY`), and
+// up to three realized records — the rest say "and N more" without ever
+// becoming objects.
+export struct DbCalendarDay {
+    day: int,
+    count: int,
+    records: [DbRow],
+}
+
+// One form field: the column the field edits, and the draft text as typed.
+// A draft and not a record — nothing reaches SQL until Submit, and one submit
+// is one undo step.
+export struct DbFormField {
+    property: int,
+    name: string,
+    kind: int,
+    text: string,
+}
+
+// One point of a chart view's plot (D7, SPEC §三十九 「视图」): the group's
+// label and count — both decided in Rust, the same rule the board's columns
+// keep — plus the three numbers the shapes draw from. `frac` is the count over
+// the plot's largest (a bar's height, a line's y); `slot` is the palette tint
+// (`Colors.block-text`); `commands` is the pie slice's path in a 100×100
+// viewbox (cubic arcs, built in Rust where trig lives — the delegate draws a
+// string it cannot get wrong). The chart realizes **zero rows**: the plot is
+// the `GROUP BY`'s aggregates, never the records.
+export struct DbChartPoint {
+    label: string,
+    value: int,
+    slot: int,
+    frac: float,
+    commands: string,
+}
+
+export struct BlockRow {
+    id: int,
+    kind: int, // 0 para, 1 h1, 2 h2, 3 h3, 4 bullet, 5 numbered, 6 todo, 7 quote, 8 code, 9 divider, 10 callout, 11 page, 12 link, 13 toggle, 14 image, 15 file, 16 table, 18 columns, 20 math, 21 toc, 22 embed, 23 database (17 = table_cell, 19 = column: containers' children, never a row)
+    text: string,
+    checked: bool,
+    number: int,
+    tail: bool, // last block of the page: the delegate carries the bottom spacer
+    runs: [TextRun], // inline marks (M6); empty = render `text` as one run
+    depth: int, // list nesting level (0-1 in M4; drives the indent)
+    color: int, // text palette slot (0 = theme default, 1.. = gray..red)
+    bg: int,    // row background palette slot (0 = transparent)
+    page-ref: int, // the page a Page-kind block (11) opens; -1 = none/dangling
+    folded: bool, // toggle (13) showing its chevron collapsed; its subtree has no rows
+    can-fold: bool, // this block has children (the chevron itself is toggle-only)
+    attachment: int, // attachments row an image (14) or file (15) points at; 0 = none
+    img-percent: int, // image display width, percent of the editor column
+    columns: int, // table (16) or columns (18) box count; 0 = neither
+    lang: string, // code (8): the language its colour keys on; "" = no colour
+    // a table's cells, row-major: cell (r,c) is `table-cells[r * columns + c]`
+    table-cells: [TableCell],
+    // a columns layout's content, grouped by box in box order
+    column-items: [ColumnItem],
+    // and its boxes, left to right: the layout reads its own shape from these
+    column-boxes: [ColumnBox],
+    // a toc (21) block's lines: this page's headings, derived every projection
+    toc-entries: [TocEntry],
+    // ─── database (23), SPEC §三十九 ──────────────────────────────────────
+    // The entity this block draws (ADR-0060); -1 = the block has none, and
+    // `db-ok` says whether one exists at all — a dangling ref is ADR-0060's
+    // "(deleted database)", a single muted line.
+    db-ref: int,
+    db-ok: bool,
+    db-title: string,   // the database's own name, for the header line
+    db-rows: [DbRow],   // ONLY the realized window (D0: 31 rows of 10 000)
+    db-columns: [DbColumn],
+    db-views: [DbViewTab],
+    // The window's place in the scroll surface: row `n` of the database is model
+    // index `n - db-row-start`, and the surface is `db-row-count` rows tall.
+    // This is §三十七's row->model conversion, done in Rust, not in a delegate.
+    db-row-start: int,
+    db-row-count: int,
+    db-row-height: length,
+    db-header-height: length,
+    db-layout: string,     // the active view's layout, as its label
+    // ...and as its number: the eight `ViewLayout::ALL` indices, which is what
+    // the delegate compares when it decides *what to draw*. The label is for
+    // reading ("Table"); a predicate written against it broke every layout for
+    // six slices because the word is capitalized and the key was not.
+    db-layout-index: int,
+    db-layout-ok: bool,    // false = this build does not draw that layout yet
+    // D4 (SPEC §三十九 「操作」): the view's rules, as the header reads them.
+    // `db-filter-note` is the visible degradation — a filter the document held
+    // that this build could not apply, drawn where the row count would be and
+    // never toasted away. The other four are the buttons' state: how many
+    // clauses the filter holds (chip + active tint), the first sort term (the
+    // header arrow; a document may hold more terms and still sorts by all of
+    // them), and the group column.
+    db-filter-note: string,
+    db-filter-count: int,
+    db-sort-property: int,
+    db-sort-desc: bool,
+    db-group-property: int,
+    // ─── D5: the view family (SPEC §三十九 「视图」) ─────────────────────────
+    // The block's height is the layout's own shape now: `db-body-height` is the
+    // surface below the header, computed in Rust from the layout's counts (a
+    // table's rows, a board's tallest column, a gallery's card rows, the
+    // calendar's fixed grid, the form's fields) — the delegate adds the header
+    // and stops doing arithmetic of its own.
+    db-body-height: length,
+    // board: the group columns with their realized card slices
+    db-board-columns: [DbBoardColumn],
+    // calendar: the fixed 6×7 grid (0 = blank) and the month's name
+    db-cal-days: [DbCalendarDay],
+    db-cal-label: string,
+    // gallery: the delegate's reported cards-per-row (it knows the width)
+    db-gallery-per-row: int,
+    // timeline: the axis the bars are drawn against — first day (a day number)
+    // and its length in days, one aggregate query per refresh
+    db-tl-start: int,
+    db-tl-days: int,
+    // form: the field list, fed from the draft until Submit creates the record
+    db-form: [DbFormField],
+    // ─── D7 (chart): the plot's points (the group list, never rows) and the
+    // line's polyline (a path in a 100×100 viewbox; empty for bar and pie).
+    // `db-chart-kind` is the active shape's index (0 bar / 1 line / 2 pie) —
+    // the three buttons' state and the same index Rust stores in the view's
+    // document.
+    db-chart-points: [DbChartPoint],
+    db-chart-path: string,
+    db-chart-kind: int,
+
+    // ─── synced block (24), SPEC §四十 / ADR-0052 ─────────────────────────
+    // The block whose words this row draws — **resolved**, not as stored:
+    // Rust follows the chain before handing the row over, so this is always
+    // either the source that holds the sentence or -1 (nothing to draw and
+    // nothing to edit through). 0 never reaches the UI.
+    sync-source: int,
+}
+
+// Database (23) cell values (SPEC §三十九). Everything is already painted and
+// every decision is already made: a delegate draws `text` and compares `kind`.
+export struct DbColumnToggle {
+    property: int,
+    name: string,
+    kind: string,
+    visible: bool,
+    locked: bool, // the title column: listed, never hideable
+}
+
+// D10 (SPEC §三十九 「属性」): one row of any of the schema editors' chooser
+// lists — the column type menu, a relation's target database and back-pointer,
+// the records a relation cell holds, and a rollup's three parts. One struct
+// because every list asks the same question ("which of these?") and the three
+// things a delegate may draw about an answer are a tick, a greying-out and a
+// sentence; `id` is whatever that list's callback names back (a kind index, a
+// property id, a database id, a record id, an aggregate index).
+//
+// A `disabled` row's `note` is never empty: it carries the refusal's own words,
+// so the user reads why the row is grey instead of finding out by clicking it.
+// On a live row `note` is the row's caption (what kind a column is, which
+// database is this one) or empty.
+export struct DbPickRow {
+    id: int,
+    name: string,
+    chosen: bool,
+    disabled: bool,
+    note: string,
+}
+
+// D4 (SPEC §三十九 「操作」): one filter-panel row. The ids name the clause to
+// write; the strings are what the row shows. `has-value == false` is the
+// unfilled rule the panel draws as "not set yet" — it filters nothing by
+// design, so "add a rule" can be left half-done without hiding rows.
+export struct DbFilterRow {
+    property: int,
+    name: string,     // the clause's column, as its header says it
+    kind: int,        // PropertyKind index: drives the value editor
+    op: int,          // FilterOp index (the FILTER_OPS order in Rust)
+    op-name: string,  // the comparison's word ("is", "contains", "after")
+    value: string,    // as the value button shows it ("" = not set)
+    has-value: bool,
+    invert: bool,     // a `not` around this clause
+}
+
+// One comparison of the op picker's list: the op's index and its word for the
+// kind the row's column has.
+export struct DbFilterOp {
+    op: int,
+    name: string,
+}
+
+export struct CommandRow {
+    id: int,
+    name: string,
+    hint: string,
+    section: string,
+    icon: string,
+}
+
+// One line of the 同步 page's device table (crate::services::sync). Rust builds
+// these from the peers table; the delegate only draws them.
+//
+// The fields are the reference table's columns (`aw-qtui/syncpage.ui`'s
+// `devTable`) rather than the two lines the settings dialog used to draw: a
+// device is a *row you can act on* — dial it, read where it was last reached,
+// see when it last answered — and squeezing that into a name plus a sentence is
+// what made the section unreadable. `kind` and `port` are separate from `label`
+// for the same reason they are separate columns there: the name is the user's
+// word for it, the platform is the device's own.
+export struct SyncRow {
+    id: string,
+    label: string,   // "Laptop" — the name the peer announced
+    kind: string,    // "Windows" / "Android" / "未知设备"
+    status: string,  // "3 分钟前同步过" / "还没同步过"
+    ip: string,
+    port: int,
+    // The age of the last announcement ("5 秒前"), which is what separates a
+    // device that is on the network from one whose row is simply still stored.
+    // `online` is the same fact as a bool and is kept: it is the one thing the
+    // row's dot and its 立即同步 button branch on, and a delegate comparing two
+    // age strings to answer that is Rust's rule living in a `.slint` file.
+    last-seen: string,
+    paired: bool,
+    online: bool,
+}
+
+// One line of the 同步 page's 同步统计 box: what this device carries, and what a
+// round with one peer actually moved. Rust's numbers, not the page's arithmetic
+// — a stat that is computed in a delegate is a stat that can disagree with the
+// snapshot it describes.
+//
+// `local` splits the box in two: this device's own counts, then one pair of lines
+// per peer. The split is a **field** rather than a second model because it is a
+// property of the line, not a different kind of line — and because Slint's
+// `model` has no slice, so "the first N rows" is not something a delegate can
+// ask for.
+export struct SyncStat {
+    label: string,
+    value: string,
+    local: bool,
+}
+
+// One line of the sync log (settings row "sync.log"), oldest first, the tail of
+// it reaching the dialog. `when` is the age Rust computed from the stored stamp —
+// the stamp is UTC and the dialog has no timezone to read it against, and a time
+// that is quietly eight hours off is worse than "3 分钟前".
+export struct SyncLogRow {
+    when: string,
+    peer: string,
+    ok: bool,
+    message: string,
+}
+
+// One line of the MCP page's log (settings row "mcp.log"), newest first — the
+// same stored-tail discipline the sync log follows, with the age Rust computed
+// at publish time rather than an absolute clock (the sync log's reason: a stamp
+// that is quietly eight hours off is worse than "3 分钟前").
+export struct McpLogRow {
+    when: string,
+    tool: string,
+    ok: bool,
+    message: string,
+}
+
+export struct SearchRow {
+    page-id: int,
+    title: string,
+    snippet: string, // content excerpt or breadcrumb for title/recents hits
+    hit-block-id: int, // -1 for title/recents hits; else the matched block
+}
+
+export struct SlashRow {
+    id: int,        // maps to a BlockKind in Rust; < 0 = placeholder row
+    label: string,
+    hint: string,
+    disabled: bool, // placeholder for a later-milestone kind: muted, inert
+}
+
+export struct MenuRow {
+    id: int,
+    label: string,
+    icon: string,
+    danger: bool,
+    swatch: int,     // palette slot for color rows; -1 = plain icon row
+    swatch-bg: bool, // true: swatch resolves through the background palette
+    check: bool,     // renders the "current pick" check at the row's right
+}
+
+// One row of the version-history panel (SPEC §三十八, ADR-0050).
+//
+// `index` is the row's position in the panel, not the moment the version was
+// taken: a unix second needs 32 bits and Slint's `int` is exactly 32 bits, so
+// an id picked that way would break in 2038 — and break by silently naming the
+// wrong row. Rust keeps the real `(page, created)` list and resolves an index
+// against it, which is the same trick the template picker uses for its rows.
+//
+// `when` is an age ("4 h ago") worked out in Rust, because the app stores no
+// timezone and no calendar: a clock time rendered from a UTC instant would be
+// wrong for the reader, and a conversion has nothing here to convert with.
+export struct VersionRow {
+    index: int,
+    label: string,
+    when: string,
+}
+
+// One line of a version comparison. `added` is "here now, not in the version";
+// false is the other way round. A line the version has and the page has
+// differently arrives as a pair of these, which is the shape people already
+// know how to read. `kind` names the row's own shape ("Heading 1", "To-do")
+// because a paragraph that became a heading is two lines of identical text.
+export struct DiffRow {
+    added: bool,
+    kind: string,
+    text: string,
+}
+
+// ─── SPEC §四十一: notes and tasks ──────────────────────────────────────────
+// Three row shapes and one that belongs to another row. Rust decides every
+// word a row paints — labels, dates, counts — and the delegate places them, the
+// same contract the database rows have kept. The `[SubtaskRow]` array inside
+// `TaskRow` is why `SubtaskRow` is declared first: Slint resolves struct types
+// in declaration order.
+
+// One line of a task's checklist. It travels inside its task, in storage and on
+// the wire both, so a row here is only ever painted inside one.
+export struct SubtaskRow {
+    id: int,
+    title: string,
+    done: bool,
+}
+
+// One note: the list row *and* the detail panel's row, from one struct. A note
+// is small enough that the two are the same data — the delegate elides the
+// excerpt it does not show, and the editor binds `title`/`body`.
+export struct NoteRow {
+    id: int,              // -1 = no note selected
+    title: string,
+    body: string,
+    excerpt: string,      // the body's first line, for the list row
+    pinned: bool,
+    tags: string,         // already joined: a delegate never does string work
+    // One entry per tag, **the raw path** (`项目/工作`) — the card's pill shows
+    // it as `#项目/工作` and clicking it filters by that path, so the display
+    // string and the filter argument are the same value and neither side
+    // reconstructs the other. (`tags` above stays the joined label for the
+    // detail panel.)
+    tag-list: [string],
+    when: string,         // relative age ("3 分钟前")
+    selected: bool,
+    // picked by 多选 — a second flag beside `selected` on purpose: one row can be
+    // the one the detail pane is showing *and* a picked one, and the two states
+    // paint differently (a tint versus a tick).
+    picked: bool,
+}
+
+// One note's 详细信息: what the store actually holds about it. Every field is
+// already the text a row shows, for the reason the note row's own `when` is —
+// a day needs a clock and a length needs counting in the units the reader reads
+// (characters, not bytes), and neither belongs in a delegate.
+export struct NoteDetails {
+    id: string,
+    // The 唯一 ID (SPEC §四十一): the name the clipboard hands out and a batch
+    // instruction addresses this note by. Already `local:<id>` when the row has no
+    // uuid yet, so the row is never blank.
+    uuid: string,
+    created: string,      // "2026-09-21 · 5 天前"
+    edited: string,
+    tags: string,         // "#项目 / 工作", or 无
+    length: string,       // "128 字", or 无 for an empty note
+    pinned: string,       // 是 / 否
+}
+
+// One task list as its chip paints it.
+export struct TaskListRow {
+    id: int,              // -1 = the inbox chip (a sentinel, not a row)
+    name: string,
+    color: int,           // ColorKind slot for the dot
+    count: int,
+    selected: bool,
+    smart: bool,          // true for the inbox: the chip the *view* half owns
+}
+
+// One tag the notes carry, as the 笔记 tab's nav column lists it. `name` is the
+// last segment — what a row shows — and `path` is the whole thing (`项目/工作`),
+// which is the filter: a tag is a **path**, and the column shows one level of it.
+export struct TagRow {
+    name: string,
+    count: int,
+    path: string,
+    // 反向筛选 (SPEC §四十一): this path is one the user has *hidden*, so the row
+    // paints struck-through and its tap removes the exclusion. The badge is the
+    // set, projected — a delegate never holds one.
+    excluded: bool,
+}
+
+// One task: the list row and the detail panel's row again. `priority` and
+// `repeat` are the enums' slots and `color` a palette slot, so the UI names them
+// in its own language instead of Rust shipping words for a menu.
+export struct TaskRow {
+    id: int,              // -1 = no task selected
+    title: string,
+    done: bool,
+    priority: int,        // Priority slot: 0 none, 1 low, 2 medium, 3 high
+    due: string,          // the ISO the date input edits ("" = none)
+    due-label: string,    // what the row paints ("今天", "09-24")
+    overdue: bool,        // the badge, never folded into the label
+    list: int,
+    list-name: string,
+    list-color: int,
+    tags: string,         // already joined, for the detail panel's own input
+    tag-list: [string],   // and one entry per pill, for the row
+    notes: string,
+    repeat: int,          // Repeat slot
+    subtasks: [SubtaskRow],
+    subtasks-done: int,
+    subtasks-total: int,
+    when: string,
+    selected: bool,
+    picked: bool,         // 多选, for the same reason as `NoteRow.picked`
+}
+
+// One card of the board (平铺) view. Deliberately *not* a `TaskRow`: a card is
+// only ever painted inside a column, so it carries the six things a card draws
+// and none of the detail panel's fields — and nesting `TaskRow`'s own
+// `[SubtaskRow]` inside a `[BoardColumn]` would be an array of arrays for
+// nothing.
+export struct BoardCard {
+    id: int,
+    title: string,
+    tag-list: [string],
+    priority: int,        // Priority slot
+    due: string,
+    due-label: string,
+    overdue: bool,
+    done: bool,
+    subtasks-done: int,
+    subtasks-total: int,
+}
+
+// One column of the board: a list, and the open tasks filed under it. The inbox
+// is a column like any other (`id` -1), because a board that dropped the tasks
+// with no list would drop exactly the ones the inbox exists to hold.
+export struct BoardColumn {
+    id: int,              // -1 = 收集箱 (the sentinel), else a stored list's id
+    name: string,
+    color: int,           // ColorKind slot for the head's dot
+    count: int,
+    cards: [BoardCard],
+}
+
+// The one place transient UI state lives. Components read/write it directly;
+// Rust reaches it through the generated global accessor.
+export global UIState {
+    // The chosen palette id from AW's theme catalog (see Colors.slint), or
+    // "system" to follow the platform's colour scheme. Rust owns the value and
+    // persists it as the `theme` settings row; `Theme.dark` is derived from it.
+    in-out property <string> theme: "midnight";
+    in-out property <bool> sidebar-open: true;
+    // The sidebar's width in logical px. The drag handle on its right edge
+    // writes it live; Rust reads it back on release and persists it as the
+    // `sidebar.width` settings row. `sidebar-resizing` gates the width
+    // animation during the drag — a tween between mouse-move frames is a
+    // rubber band, not a drag.
+    in-out property <float> sidebar-width: 260;
+    in-out property <bool> sidebar-resizing: false;
+
+    in-out property <[SidebarNode]> sidebar-rows;
+    // A 收藏 / 最近 header was clicked (the header's id travels, -15 / -16).
+    // The fold itself is session-only state on the Rust side (both sections
+    // default closed — the tree is the library's real index and the two
+    // sections are shortcuts on top of it); Rust flips it and rebuilds the rows.
+    callback sidebar-section-toggled(int);
+    in-out property <int> sidebar-selected-id: 0;
+    in-out property <int> renaming-id: -1;      // page being renamed inline
+    in-out property <length> tree-viewport-y: 0px; // PageTree scroll mirror
+
+    in-out property <[BlockRow]> blocks;
+    in-out property <string> page-title: "开始使用";
+    in-out property <string> page-breadcrumb: "";
+    in-out property <length> editor-scroll-y: 0px; // Editor viewport mirror
+
+    // slash menu (M5): "/" in an editing block filters Rust-provided
+    // block-kind descriptors; the dropdown renders inside the delegate.
+    // The same popup doubles as the "+"-handle insert menu (Notion-style):
+    // slash-insert distinguishes the two modes — filter the whole line
+    // instead of the text after "/", and discard the text on apply.
+    // slash-pick-page is the third mode: the rows are workspace pages and
+    // applying one converts the line into a Link-to-page block.
+    // slash-pick-mention is the fourth (SPEC §四十): the rows are the date
+    // item followed by the workspace's pages, and applying one inserts an
+    // inline atom at the "@" the user typed.
+    in-out property <bool> slash-open: false;
+    in-out property <bool> slash-insert: false;
+    in-out property <bool> slash-pick-page: false;
+    in-out property <bool> slash-pick-mention: false;
+    // slash-pick-synced is the fifth: the rows are *blocks* anywhere in the
+    // library, and picking one makes this line a second view of it
+    // (SPEC §四十, ADR-0052). A separate flag rather than a shared "id means
+    // something else" integer, because two of these modes are open over the
+    // same list and only one of them can own a keystroke.
+    in-out property <bool> slash-pick-synced: false;
+    // slash-pick-linkdb is the sixth (SPEC §三十九 「操作」, ADR-0085): the
+    // rows are the workspace's databases, and applying one makes the line a
+    // linked database — a second block drawing an entity that exists already,
+    // nothing copied.
+    in-out property <bool> slash-pick-linkdb: false;
+    in-out property <string> slash-filter: "";
+    in-out property <int> slash-focus: 0;
+    in-out property <[SlashRow]> slash-items;
+    in-out property <length> slash-x: 300px;
+    in-out property <length> slash-y: 200px;
+
+    // block menu (M5): ⋮⋮ handle menu for one block; visibility follows
+    // block-menu-open-id (>= 0 open) — no separate bool to keep in sync
+    in-out property <int> block-menu-open-id: -1;
+    in-out property <[MenuRow]> block-menu-rows;
+    in-out property <length> block-menu-x: 300px;
+    in-out property <length> block-menu-y: 100px;
+
+    // link dialog (M6): Ctrl+L over a selection
+    in-out property <bool> link-open: false;
+    in-out property <string> link-url: "";
+    in-out property <int> link-start: 0;
+    in-out property <int> link-end: 0;
+
+    // startup notice (e.g. database restored from backup); empty = hidden
+    in-out property <string> db-notice: "";
+    // LAN sharing (read-only server on :5877); persisted, restart applies
+    in-out property <bool> lan-sharing: false;
+    callback toggle-lan-sharing();
+    // MCP server for AI agents (127.0.0.1:5880); persisted, restart applies
+    in-out property <bool> mcp-enabled: false;
+    callback toggle-mcp();
+    // The MCP page's own facts, all Rust's: whether the endpoint is up in this
+    // run, the address it answers on, and the two ready-to-paste client
+    // configs (empty while no token exists yet — a config without its token
+    // is a sentence half-typed). The log is the same stored tail the sync
+    // page keeps, published newest first.
+    in-out property <bool> mcp-running: false;
+    in-out property <string> mcp-endpoint: "";
+    in-out property <string> mcp-config-stdio: "";
+    in-out property <string> mcp-config-http: "";
+    // 「给 Agent 的提示词」：一段说明接口能做什么、有哪些工具的文字，Rust 从
+    // tool_defs() 生成，和 MCP 服务开没开无关。
+    in-out property <string> mcp-agent-prompt: "";
+    // 复制按钮：把选中的那段文字交给 Win32 剪贴板（弹窗里的只读输入框选不动，
+    // 所以可复制的东西必须配一个按钮）。
+    callback mcp-copy(string);
+    // 立即重启：spawn `--restart` 帮手，本会话走完最终刷盘后退出，新会话接手。
+    callback mcp-restart();
+    in-out property <[McpLogRow]> mcp-log;
+    callback mcp-log-cleared();
+    // LAN sync (crate::services::sync): the devices on this network, the last line
+    // the engine said, and the switch that lets the periodic round run by itself.
+    // The rows are Rust-built from the peers table (settings row "sync.peers").
+    //
+    // The 同步 page is a destination, not a panel (`active-area == "sync"`): the
+    // device table, the per-round statistics and the log are three things a user
+    // comes back to look at, and a 400 px popup that scrolls is none of them.
+    in-out property <[SyncRow]> sync-rows;
+    // 设备 / 统计 / 日志: the three boxes of the reference's tab widget, as one
+    // segmented control. `sync-tab` rather than three booleans so exactly one is
+    // ever true, which is the same rule the notes' own 笔记/任务 tabs follow.
+    in-out property <int> sync-tab: 0;   // 0 设备, 1 统计, 2 日志
+    // 同步统计: what this device carries and what the last round with each peer
+    // moved, as label/value rows. Filled by `refresh_sync_ui` in the same pass
+    // that builds `sync-rows`, so a stat cannot describe a device the table no
+    // longer lists.
+    in-out property <[SyncStat]> sync-stats;
+    // A log of 50 stored lines shown 12 at a time was the dialog's compromise
+    // (a popup has no room for more); the page has a scroller, so the whole
+    // stored log reaches the screen and the count is Rust's.
+    in-out property <int> sync-log-total: 0;
+    // Whether there is anything to sync with at all — the 笔记/任务 刷新 button
+    // asks this rather than the row count, because a row this device cannot
+    // reach (a laptop that left the building) is not a round anybody can start.
+    // Filled by `refresh_sync_ui` from the same pass that builds the rows, so it
+    // cannot drift from them.
+    in-out property <bool> sync-has-peers: false;
+    in-out property <string> sync-status: "";
+    in-out property <bool> sync-auto: true;
+    callback sync-now(string);       // peer id: one pull-merge-push now
+    // No peer id: a round with every device still on the network. The 笔记/任务
+    // 刷新 button is this — a manual round with everything, which is the one
+    // thing the periodic timer does that a single `sync-now` cannot.
+    callback sync-now-all();
+    callback sync-forget(string);    // peer id: drop it from the table
+    // 淘汰离线设备: the grey rows, swept in one press. The count is Rust's (the
+    // same online window the row's dot answers), and it is what both decides the
+    // button exists and says how many it will sweep. Rows only — the shadow
+    // (what the two devices last agreed on) survives, so a swept device that
+    // comes back resumes where it left off instead of re-deciding every row.
+    in-out property <int> sync-offline-count: 0;
+    callback sync-forget-offline();
+    callback sync-auto-toggled(bool);
+    // This device's own half of the section, so the other one can be recognised
+    // on the wire: the name the peer sees, this device's address (what a failed
+    // round's "the address moved to another device" is checkable against), how
+    // often the periodic round runs, whether a round is in flight, and the log
+    // the engine left. Rust fills all five in `refresh_sync_ui`.
+    in-out property <string> sync-self-name: "";
+    in-out property <string> sync-self-address: "";
+    // The aggressive end of the cadence (ADR-0140). `start_sync` overwrites this
+    // from the settings row before the first paint, so this only has to agree with
+    // `sync_config`'s default rather than be right on its own — but a stale 60 here
+    // read as "60 秒" on any frame drawn first.
+    in-out property <int> sync-interval: 10;
+    in-out property <bool> sync-busy: false;
+    in-out property <[SyncLogRow]> sync-log;
+    callback sync-name-set(string);
+    callback sync-interval-set(int);
+    // The page's own two doors beyond a round: emptying the stored log, and a
+    // re-read of the peers table (the ⟳ button). The second one is a callback
+    // rather than a bare property write because the read is Rust's. It used to
+    // be sync-open-requested, the *page's* door — the page is gone (ADR-0132's
+    // destination moved back into the settings dialog as its 同步 tab), and what
+    // survived is only the refresh.
+    callback sync-log-cleared();
+    callback sync-refresh-requested();
+    // true when the workspace has no pages: the empty state grows a CTA
+    in-out property <bool> workspace-empty: false;
+
+    // big page title in-place editing (click the title)
+    in-out property <bool> title-editing: false;
+    in-out property <string> page-stats: "";
+
+    // This page's own look (SPEC §三十八), pushed by Rust whenever the open
+    // page changes or the style menu picks. Page-level on purpose: the blocks
+    // store no font and no size, so `Typography`'s PageType derives what draws
+    // them from these three and nothing else.
+    in-out property <int> page-font: 0; // 0 default, 1 serif, 2 mono
+    in-out property <bool> page-full-width: false;
+    in-out property <bool> page-small-text: false;
+    // The open page's own emoji above its title (SPEC §三十八). Empty draws
+    // nothing: unlike the sidebar slot, this one does not fall back to the
+    // title's first character, because the title is 40px below it.
+    in-out property <string> page-icon: "";
+    // The open page's cover (SPEC §三十八): the attachment id it points at, 0
+    // for none. An id and not an `image` so the band never decodes a picture
+    // for a page that has no cover, and so a cover plus an image row of the same
+    // attachment costs the raster cache once.
+    in-out property <int> page-cover-id: 0;
+    // The open page's read-only switch (SPEC §三十八 "lock"). Everything the
+    // editor does with it is derived: no row opens a caret, the hero title
+    // cannot be clicked into, and the handle's menu keeps only what reads.
+    in-out property <bool> page-locked: false;
+
+    // in-page find (Ctrl+F)
+    in-out property <bool> find-open: false;
+    in-out property <string> find-term: "";
+    in-out property <string> find-label: "";
+    // the hit the bar navigated to: the editing input selects this range
+    // when it (re)creates, driven by find-sel-gen
+    in-out property <int> find-target-block: -1;
+    in-out property <int> pending-sel-start: -1;
+    in-out property <int> pending-sel-end: -1;
+    in-out property <int> find-sel-gen: 0;
+    /// Internal clipboard for cross-block copy/paste (menu-driven).
+    in-out property <bool> has-copied-block: false;
+
+    // block editing (M4): exactly one block owns the live TextInput.
+    // editing-text mirrors that input; pending-caret is a byte offset the
+    // input consumes on init (then resets to -1).
+    in-out property <int> editing-id: -1;
+    in-out property <string> editing-text: "";
+    in-out property <int> pending-caret: -1;
+
+    // database cells (SPEC §三十九): the same "one live TextInput" discipline as
+    // blocks above, keyed by (record, property) because a database cell is not a
+    // block and has no block id. Both are -1 when no cell is being edited, and a
+    // cell's editor exists only while `editing-id < 0` — so a page can never
+    // have two live inputs, whatever order the two were set in.
+    in-out property <int> db-editing-record: -1;
+    in-out property <int> db-editing-property: -1;
+    // The block the edited cell belongs to. A database cell is named by
+    // (block, record, property) — record and property alone could name a row
+    // of a different database — and the commit path reads all three, so the
+    // block travels with the other two rather than being guessed at.
+    in-out property <int> db-editing-block: -1;
+    // The list of a cell's options while a select/status cell is picking, and the
+    // cell that owns it. The picker is drawn inside the cell rather than in a
+    // popup: one popup per realized row is not a popup, it is a list.
+    in-out property <int> db-picking-record: -1;
+    in-out property <int> db-picking-property: -1;
+    // A row's own menu (delete this row), keyed the same way.
+    in-out property <int> db-menu-record: -1;
+    // The editor list's own height, reported by Editor.slint. It is the viewport
+    // the database window is computed from — one number for the page, because
+    // every database on it sees the same one.
+    in-out property <length> editor-viewport-h: 720px;
+    // The columns popup (hide/show a column of the active view). It is a
+    // window-level popup like the block menu, so it lives in AppWindow.slint and
+    // its rows are pushed by Rust.
+    in-out property <bool> db-columns-open: false;
+    in-out property <int> db-columns-block: -1;
+    in-out property <[DbColumnToggle]> db-columns-rows;
+    in-out property <length> db-columns-x: 300px;
+    in-out property <length> db-columns-y: 200px;
+    // D4: the filter panel — a window-level popup like the columns one, with a
+    // small state machine of its own (0 rules · 1 column chooser · 2 comparison
+    // chooser · 3 option chooser), because one popup that changes its list is
+    // the shape a rule editor can have without a popup opening on a popup.
+    // `db-filter-rows` is the panel's rule list; `db-filter-columns` is every
+    // property of the database (the chooser's list); `db-filter-ops` and
+    // `db-filter-options` are the two choosers' lists, pushed when one opens.
+    in-out property <bool> db-filter-open: false;
+    in-out property <int> db-filter-block: -1;
+    in-out property <length> db-filter-x: 300px;
+    in-out property <length> db-filter-y: 200px;
+    in-out property <bool> db-filter-match-any: false; // the root: or over and
+    in-out property <[DbFilterRow]> db-filter-rows;
+    in-out property <[DbColumnToggle]> db-filter-columns; // the chooser: every property
+    in-out property <int> db-filter-panel: 0;
+    in-out property <int> db-filter-edit-row: -1;
+    in-out property <[DbFilterOp]> db-filter-ops;
+    in-out property <[DbOption]> db-filter-options;
+    // D4: the group picker — the option-bounded kinds only (the header list
+    // has to stay a handful of rows), plus "No group".
+    in-out property <bool> db-group-open: false;
+    in-out property <int> db-group-block: -1;
+    in-out property <int> db-group-current: -1; // the active group's property (-1 = none)
+    in-out property <length> db-group-x: 300px;
+    in-out property <length> db-group-y: 200px;
+    in-out property <[DbColumnToggle]> db-group-rows;
+    // D7: the view's own search (SPEC §三十九 「操作」, ADR-0087). The box
+    // lives in the view header's count slot; the needle is session state —
+    // a question being asked, not a rule stored — so the view's document is
+    // untouched and a restart opens unsearched. Rust compiles it into the
+    // same statement the filter rides, so the count and the rows always
+    // agree about what the needle found.
+    in-out property <bool> db-search-open: false;
+    in-out property <int> db-search-block: -1;
+    in-out property <string> db-search-text: "";
+
+    // command palette
+    in-out property <bool> palette-open: false;
+    in-out property <string> palette-query: "";
+    in-out property <int> palette-focus: 0;
+    in-out property <[CommandRow]> commands;
+    in-out property <int> command-selected-id: -1;
+
+    // search panel
+    in-out property <bool> search-open: false;
+    in-out property <string> search-query: "";
+    in-out property <int> search-focus: 0;
+    in-out property <int> search-selected-id: -1;
+    in-out property <[SearchRow]> search-rows;
+
+    // page menu (shared by sidebar rows and the TopBar ⋯ button)
+    in-out property <bool> menu-open: false;
+    in-out property <int> menu-node-id: -1;
+    in-out property <length> menu-x: 240px;
+    in-out property <length> menu-y: 100px;
+    in-out property <[MenuRow]> menu-rows;
+
+    // the page icon's emoji grid (SPEC §三十八). Opened from the page menu, so
+    // the page it edits travels with it; the items are the picker's whole
+    // list, which Rust copies out of `core::icon::PICKER` rather than
+    // repeating in .slint.
+    in-out property <bool> icon-picker-open: false;
+    in-out property <int> icon-picker-page: -1;
+    in-out property <length> icon-picker-x: 240px;
+    in-out property <length> icon-picker-y: 100px;
+    in-out property <[string]> icon-picker-items;
+
+    // version history (SPEC §三十八, ADR-0050): the panel ⋯ → Version history
+    // opens, for one page named by `versions-page` — the panel outlives the menu
+    // that opened it, so the page has to travel with it. The two views share one
+    // window: `versions-showing-diff` says whether the rows below are the page's
+    // versions or the comparison of one of them with what is on screen, and the
+    // height stays fixed so clicking a row does not move the panel.
+    in-out property <bool> versions-open: false;
+    in-out property <int> versions-page: -1;
+    in-out property <string> versions-title: "";
+    in-out property <[VersionRow]> version-rows;
+    in-out property <[DiffRow]> version-diff-rows;
+    in-out property <bool> versions-showing-diff: false;
+    // the heading over the comparison ("Before the rewrite - 4 h ago") and one
+    // line under the list that states the retention rule out loud
+    in-out property <string> versions-heading: "";
+    in-out property <string> versions-note: "";
+    // the name field, which is also the panel's "nothing typed yet" state
+    in-out property <string> version-name: "";
+    // which row's version the comparison is showing; -1 = the list
+    in-out property <int> versions-selected: -1;
+
+    callback version-save();
+    callback version-view(int);
+    callback version-restore(int);
+    callback version-delete(int);
+    // leave the comparison for the list; the row keeps its own back because
+    // `versions-close` means the whole panel
+    callback version-back();
+    callback versions-close();
+
+    // dialogs
+    in-out property <bool> dialog-open: false;
+    in-out property <string> dialog-title: "";
+    in-out property <string> dialog-message: "";
+    in-out property <string> dialog-confirm-label: "删除";
+    in-out property <bool> settings-open: false;
+    // The settings dialog's five tabs (外观 / 通用 / 同步 / 快捷键 / 关于), as one
+    // index — the same one-index-per-alternative rule `org-tab` and `sync-tab`
+    // follow. A tab is a *state*, so no five booleans.
+    in-out property <int> settings-tab: 0;
+    // The dialog's search field. Typed text filters the sections and their rows
+    // live; the match itself is Rust's (`settings-match`), because "does this
+    // sentence contain those characters" is a question about text that a .slint
+    // expression cannot answer.
+    in-out property <string> settings-filter: "";
+    // `settings-match(keywords)` — true when the field is empty (everything
+    // shows) or the keywords sentence contains what was typed. Pure: it reads
+    // `settings-filter` and nothing else, so a delegate may call it per row.
+    pure callback settings-match(string) -> bool;
+    // picture preview (SPEC §三十七): the attachments id shown full-window,
+    // 0 = closed. Clicking a picture opens it; clicking the scrim closes it.
+    in-out property <int> preview-attachment: 0;
+
+    // window geometry mirror (for centering/anchoring popups from Rust)
+    in-out property <length> window-w: 1280px;
+    in-out property <length> window-h: 800px;
+
+    in property <string> app-version: "0.1.0";
+    in property <string> renderer-name: "unknown";
+
+    // routed to Rust controller
+    callback toggle-sidebar();
+    // Drag released on the sidebar's right-edge handle: Rust persists the
+    // width (the live value already sits in sidebar-width).
+    callback sidebar-resized(float);
+    callback toggle-theme();
+    callback set-theme(string);
+    // Whole-window zoom (Ctrl + = / Ctrl + +, Ctrl + -, Ctrl + 0). The factor
+    // itself lives in Rust — persisted, and applied by handing the window a new
+    // scale factor, which is the one lever Slint has for this — so the shell
+    // only names the three intents. Chrome and page scale together, because
+    // the scale factor is underneath both.
+    callback zoom-in();
+    callback zoom-out();
+    callback zoom-reset();
+    // The factor as the shell shows it (the settings row's percentage): Rust
+    // writes it at wire time and after every zoom move, so the row reads state
+    // instead of owning it. 1.0 = 100%.
+    in property <float> zoom-level: 1.0;
+    // Every window resize, mirrored from the root's width/height. Rust reads it
+    // as "the platform may have just re-announced its own scale factor" (a
+    // monitor or display-scaling change throws the zoom away) and puts the zoom
+    // back. See controller::wire.
+    callback window-resized();
+    // 最大化 / 窗口化. The flag is mirrored for the title bar's 还原 button, and
+    // the callback is for Rust, which has one job: the moment the window goes
+    // maximized is the last moment its own rectangle is knowable, because from
+    // then on `Window::size()` answers with the monitor's size. Without the
+    // snapshot a session closed while maximized saves that monitor's dimensions
+    // as the next launch's window size — which is how a maximized window on a
+    // secondary display came back sized for a display that may not be there.
+    in-out property <bool> window-maximized: false;
+    callback window-maximized-changed(bool);
+    callback move-block(int);
+    // drag-reorder (grip handle): Rust packs/unpacks the payload, hovers
+    // validate the landing, drops commit one MoveBlockTo command
+    pure callback block-drag-payload(int) -> data-transfer;
+    callback block-drag-hover(data-transfer, int, bool) -> bool;
+    callback block-dropped(data-transfer, int, bool);
+    // insert-above row index shown as the accent drop line; == blocks.length
+    // means "below the last block", -1 hidden
+    in-out property <int> drop-line-row: -1;
+    callback toggle-mark(int, int, int); // kind(0 bold,1 italic,2 strike,3 code,4 math), start, end
+    callback indent-list(int);
+    callback outdent-list(int);
+    callback duplicate-block(int);
+    callback link-apply();
+    callback link-remove();
+    callback link-cancel();
+    callback close-db-notice();
+    callback find-start();
+    callback find-step(int);
+    callback find-close();
+    callback title-commit(string);
+    callback title-cancel();
+    // Something asked to edit a locked page and was refused. SPEC §三十八 says
+    // a lock must not swallow input silently, so the .slint side reports the
+    // attempt here and Rust answers with the notice bar — one wording for the
+    // title, the rows, the handle and the keyboard.
+    callback lock-nudge();
+    // A page with no blocks shows a panel instead of rows, and every insert
+    // command is anchored to a block that does not exist yet. This is that
+    // panel's front door: make the first paragraph and put the caret in it.
+    callback empty-page-started();
+    // The touch bar's "+": insert a block at the end of the open page and
+    // open the insert menu over it — the desktop "+" handle's affordance,
+    // placed where a thumb can reach it (M9 FEEDBACK). Nothing on the desktop
+    // fires it; the callback lives here so both shells keep one UIState.
+    callback insert-at-end-requested();
+    callback open-link(string);
+    callback palette-query-changed();
+    callback palette-open-requested();
+    callback command-invoked();
+    callback palette-move(int);
+    callback todo-toggled(int);
+    // toggle block (SPEC §三十七): show/hide this block's subtree
+    callback toggle-fold(int);
+    // image block (SPEC §三十七 批次 A): resolve an attachments id to its
+    // downsampled raster. A callback and not a model field, so a picture only
+    // decodes for a row the ListView actually realizes. Both are `pure`: the
+    // id always maps to the same picture, and Rust's cache makes the repeat
+    // calls a binding evaluation costs a map lookup.
+    pure callback image-for(int) -> image;
+    // height / width of that raster, 0 when there is nothing to show. The row
+    // needs the ratio to size itself before it has the picture, and a value
+    // of type `image` does not expose its size to .slint.
+    pure callback image-aspect(int) -> float;
+    // file block (SPEC §三十七 批次 A): a row that names bytes instead of
+    // drawing them. The label comes from the attachments row, so it is a
+    // lookup and not a model field; the two actions hand those bytes to the
+    // system, which is the only thing in the app that reaches outside it.
+    pure callback attachment-size(int) -> string;
+    // math (SPEC §三十七 批次 C): the LaTeX subset a block or a span holds,
+    // turned into the Unicode a row shows. A callback and not a model field
+    // because the conversion is a pure function of text the row already has,
+    // and the document keeps the source the user edits — never the picture.
+    pure callback math-render(string) -> string;
+    // embed (SPEC §三十七 批次 C): the two lines of a link card, both derived
+    // from the address the block stores — who it belongs to, and what the Open
+    // button will actually hand to the system. Nothing is fetched: the card is
+    // the whole feature (§二 / §三十三 rule out a WebView).
+    pure callback embed-label(string) -> string;
+    pure callback embed-url(string) -> string;
+    // code highlight (SPEC §三十七 批次 C): one colour of a code block, as the
+    // whole text of a `Text` that paints it. The lexer answers "which colour is
+    // this character", and the blanking that leaves every other character of
+    // that colour out is what lets five `Text`s of different colours sit on
+    // each other glyph for glyph — with no layout to keep in step, because the
+    // row's own measure is one of them (`kind` 0). The two lengths are the row's
+    // width and the font's character advance, whose quotient is how many
+    // characters fit on a line: the newlines this adds are derived, never
+    // stored, exactly like the maths above.
+    pure callback code-layer(string, string, length, length, int) -> string;
+    // How wide one character of the mono font is, measured once by the editor
+    // (a `Text` there writes it) and read by every code row. The lexer cannot
+    // know a font's metrics from Rust, and the number has to be the same for
+    // every layer of a block — which is why it lives here and not per row.
+    in-out property <length> code-advance: 0px;
+    callback attachment-opened(int);
+    callback attachment-saved(int);
+    callback block-activate(int);
+    // toc (SPEC §三十七 批次 C): the id of the heading a contents line names.
+    // It is not a link the user typed, so it does not go through `open-link`
+    // and a url string; the row already holds the id as an int.
+    callback toc-jump(int);
+    // table grid (SPEC §三十七 批次 B): the cells are child blocks the
+    // projection hides, so they ride on their table's row and reach Rust
+    // through these. Tab walks the grid row-major; the delete ops act on the
+    // focused cell's row/column (Rust reads it back from editing-id), which
+    // is why they carry no index.
+    callback table-cell-move(int, int); // cell id, delta (+1 / -1)
+    callback cell-changed(); // a container item's live text moved: re-arm the commit
+    callback table-row-added(int);
+    callback table-row-removed(int);
+    callback table-column-added(int);
+    callback table-column-removed(int);
+    // columns layout (SPEC §三十七 批次 B): the boxes and their content are
+    // child blocks the projection hides too, so the focused item is again read
+    // back from editing-id. Tab walks the items in reading order; "remove"
+    // always takes the layout's last box, which is why it carries no index.
+    callback column-item-move(int, int); // item id, delta (+1 / -1)
+    callback column-added(int);
+    callback column-removed(int);
+    // a box with no blocks has nothing to click into, so it offers its own id
+    // and Rust gives it its first line
+    callback column-fill(int); // box (Column block) id
+    // database (SPEC §三十九), the one block kind whose rows are not blocks.
+    // Everything a cell does is one of these; the *values* it writes are typed in
+    // Rust (`core::database_property` parses them through the column's own kind),
+    // so a delegate never converts anything. `property` is the PropertyKind-carrying
+    // property id and `kind` the PropertyKind index (0 title, 1 text, 2 number,
+    // 3 select, 4 multi-select, 5 status, 6 date, 7 checkbox, 8 url, 9 email,
+    // 10 phone, 11 files, 12 created time, 13 last edited time, 14 formula,
+    // 15 rollup, 16 relation — `PropertyKind::ALL`'s order in Rust).
+    callback db-cell-activated(int, int, int);   // block, record, property: focus the one editor
+    callback db-cell-changed();                  // the live cell's text moved: re-arm the commit
+    // The live cell is going away (Enter / Escape / Tab). The commit cannot be
+    // left to the debounce here — closing the editor resets the two ids the
+    // debounced commit reads back, so a text typed in the last 300 ms would be
+    // silently dropped. The controller commits synchronously, then closes.
+    callback db-cell-closed();
+    callback db-cell-toggled(int, int, int, bool); // block, record, property, what the cell now shows
+    callback db-option-picked(int, int, int, string, string); // block, record, property, option id, current
+    callback db-row-added(int);                  // block: append a row
+    callback db-row-removed(int, int);           // block, record
+    callback db-column-resized(int, int, int);   // block, property, width in permille (0 = auto)
+    callback db-columns-opened(int, length, length); // block, viewport-x, viewport-y
+    callback db-column-toggled(int, int);        // block, property
+    callback db-columns-closed();
+    // D4 (SPEC §三十九 「操作」): the view's rules. The filter panel edits a
+    // flat `and`/`or` root over clauses, each optionally inverted — a subset
+    // the panel can draw; the compiler reads the whole recursive tree, so a
+    // hand-edited or later-build document still filters and only the *editing*
+    // is refused. The value text commits on Enter (a keystroke write would be
+    // an undo step per key); the discrete controls apply immediately.
+    callback db-filter-opened(int, length, length); // block, viewport-x, viewport-y
+    callback db-filter-closed();
+    callback db-filter-panel-set(int);              // panel state (0 rules · 1 columns · 2 ops · 3 options)
+    callback db-filter-match-set(int, bool);        // block, match-any
+    callback db-filter-add-rule(int);               // block: switch the panel to the column chooser
+    callback db-filter-column-picked(int, int);     // block, property: append an unfilled clause
+    callback db-filter-row-removed(int, int);       // block, clause index
+    callback db-filter-op-menu(int, int);           // block, clause index: push that kind's comparisons
+    callback db-filter-op-picked(int, int, int);    // block, clause index, op
+    callback db-filter-text-set(int, int, string);  // block, clause index, value (Enter)
+    callback db-filter-flag-set(int, int, bool);    // block, clause index, checked
+    callback db-filter-option-menu(int, int);       // block, clause index: push the column's options
+    callback db-filter-option-picked(int, int, string); // block, clause index, option id
+    callback db-filter-not-toggled(int, int);       // block, clause index
+    callback db-filter-cleared(int);                // block
+    // Sort: the column header cycles none → ascending → descending → none, and
+    // every term lands in the statement's ORDER BY (multi-key documents sort
+    // by all of them; the header edits the first).
+    callback db-sort-cycled(int, int);              // block, property
+    // Group by: the option-bounded kinds only (the header list must stay a
+    // handful of rows), -1 = no group.
+    callback db-group-opened(int, length, length);  // block, viewport-x, viewport-y
+    callback db-group-closed();
+    callback db-group-picked(int, int);             // block, property (-1 = none)
+    // The view switcher: one view today, and the shape that makes D5's second
+    // view a row instead of a rewrite.
+    callback db-view-picked(int, int);           // block, view id
+    // The block's own top edge relative to the editor viewport, in px — how the
+    // window follows the page's scroll without Rust being able to see Slint's
+    // layout. Fired when that number moves, which is a scroll or a reflow.
+    callback db-viewport(int, length);           // block, top-in-viewport
+    callback db-open-record(int, int);           // block, record: open the row's page (D5)
+    // ─── D5: the view family ────────────────────────────────────────────────
+    // The switcher's `+` picked a layout (`ViewLayout::ALL`'s order — the index
+    // IS the layout; Chart is refused in Rust with its own word). Creates the
+    // view and switches to it.
+    callback db-view-added(int, int);            // block, layout index
+    // calendar: ‹ › step one month
+    callback db-cal-month(int, int);             // block, delta (+1 / -1)
+    // gallery: the delegate's reported cards-per-row (it knows the grid's
+    // width; Rust re-reads the card slice when the number changes)
+    callback db-gallery-shaped(int, int);        // block, cards per row
+    // form: the draft's keystrokes (stored, never written), Submit (creates
+    // one record from the parsed draft — one undo step) and Clear
+    callback db-form-text(int, int, string);     // block, property, draft text
+    callback db-form-submitted(int);             // block
+    callback db-form-cleared(int);               // block
+    // ─── D7 (SPEC §三十九 「操作」) ──────────────────────────────────────────
+    // The view's search: opening the box (the count slot's toggle), the
+    // needle's keystrokes (compiled into the view's statement — no write, no
+    // undo step), and closing it (which clears the search: an invisible
+    // predicate on a visible table is a state the header could not explain).
+    callback db-search-opened(int);              // block
+    callback db-search-text-set(int, string);    // block, needle (per keystroke)
+    callback db-search-closed(int);              // block
+    // The chart's shape buttons (bar / line / pie, the ChartKind index): one
+    // view-document edit, the same undo step every rule edit is. The data
+    // never changes with the shape — the same group counts feed all three.
+    callback db-chart-kind(int, int);            // block, ChartKind index
+    // Save a row's values as the database's record template (the row slot's
+    // T): one change, and every later "New row" starts from those values.
+    callback db-template-saved(int, int);        // block, record
+    // ─── D6 (SPEC §三十九 「需计算」): the formula editor ───────────────────
+    // A formula column's cell is read-only (it is computed, ADR-0062 — nothing
+    // writes a value into it); clicking one opens the column's *editor* instead,
+    // which is the only write a formula has: its expression. The draft and its
+    // live answer live here, the ids of what is being edited live in Rust —
+    // the same split as the cell editor. The preview is computed on the sample
+    // row (`db-formula-record`; -1 = an empty row) on every keystroke, the
+    // commit happens once on Enter (`db-formula-accepted`, one change and one
+    // undo step), and the error line shows a parse message or an evaluation
+    // message — never both, and never nothing when the text does not compute.
+    callback db-formula-opened(int, int, int);   // block, record (sample row), property
+    callback db-formula-text-changed(string);    // the draft: parse + evaluate per keystroke
+    callback db-formula-accepted();              // commit (one change, one undo step)
+    callback db-formula-closed();                // dismissed (outside click / Escape)
+    in-out property <bool> db-formula-open: false;
+    in-out property <int> db-formula-block: -1;
+    in-out property <int> db-formula-property: -1;
+    in-out property <int> db-formula-record: -1;  // the sample row the preview evaluates on
+    in-out property <string> db-formula-name: ""; // the column's own name (the popup's header)
+    in-out property <string> db-formula-text: "";
+    in-out property <string> db-formula-preview: "";
+    in-out property <string> db-formula-error: "";
+
+    // ─── D10 (SPEC §三十九 「属性」): the schema's own editors ────────────────
+    //
+    // Three things, because a column's type is the fact every other database
+    // feature hangs off: the **type menu** (which column becomes which kind,
+    // and what a new column starts as) lives inside the Columns popup as a
+    // second panel; the **relation picker** and the **rollup configurator** are
+    // window-level popups of their own, opened by clicking a cell of their kind.
+    //
+    // The type menu reuses the Columns popup rather than opening a popup over
+    // it for the reason the filter panel gives for its own four lists: one
+    // popup that changes its list is a state machine, two popups are a fight
+    // over one click.
+    callback db-kind-opened(int, int);        // block, property (-1 = "a new column")
+    callback db-kind-back();                  // the menu's own "back to the columns"
+    callback db-kind-picked(int, int);        // block, PropertyKind index
+    in-out property <int> db-columns-panel: 0; // 0 visibility · 1 the type menu
+    in-out property <int> db-columns-property: -1; // the column the menu edits
+    in-out property <string> db-columns-title: ""; // ...named, on the menu's back row
+    in-out property <[DbPickRow]> db-kind-rows;
+
+    // A relation cell (kind 16): the picker lists the target database's rows
+    // and ticks the ones this cell holds. When the column has no target yet the
+    // same popup is its configurator — panel 1 names the database, panel 2 the
+    // back-pointer (or none) — because "point at nothing" and "point at rows"
+    // are one feature and two popups would be one more click than either.
+    callback db-relation-opened(int, int, int); // block, record, property
+    callback db-relation-closed();
+    callback db-relation-panel-set(int);        // 0 rows · 1 databases · 2 mirrors
+    callback db-relation-text-set(string);      // the needle, per keystroke
+    callback db-relation-database-picked(int);  // DatabaseId (panel 1)
+    callback db-relation-mirror-picked(int);    // PropertyId, -1 = one-way (panel 2)
+    callback db-relation-toggled(int);          // RecordId (panel 0)
+    in-out property <bool> db-relation-open: false;
+    in-out property <int> db-relation-block: -1;
+    in-out property <int> db-relation-record: -1;
+    in-out property <int> db-relation-property: -1;
+    in-out property <int> db-relation-panel: 0;
+    in-out property <string> db-relation-name: "";    // the column's own name
+    in-out property <string> db-relation-target: "";  // the database it points at
+    in-out property <string> db-relation-text: "";    // the needle
+    in-out property <[DbPickRow]> db-relation-rows;
+
+    // A rollup cell (kind 15): the editor of a fold, which is three names and
+    // so is one summary line each with its own chooser panel. No row travels
+    // with the call — a rollup edits its *column*, and the fold's answer is
+    // the cell's text, which the table behind repaints.
+    callback db-rollup-opened(int, int);        // block, property
+    callback db-rollup-closed();
+    callback db-rollup-panel-set(int);          // 0 summary · 1 relation · 2 column · 3 aggregate
+    callback db-rollup-relation-picked(int);    // PropertyId of this database's relation
+    callback db-rollup-column-picked(int);      // PropertyId of the related database
+    callback db-rollup-aggregate-picked(int);   // Aggregate index
+    in-out property <bool> db-rollup-open: false;
+    in-out property <int> db-rollup-block: -1;
+    in-out property <int> db-rollup-property: -1;
+    in-out property <int> db-rollup-panel: 0;
+    in-out property <string> db-rollup-name: "";       // the column's own name
+    in-out property <string> db-rollup-relation: "";   // its first name
+    in-out property <string> db-rollup-column: "";     // its second
+    in-out property <string> db-rollup-aggregate: "";  // its fold
+    in-out property <[DbPickRow]> db-rollup-rows;
+    // rich paste (SPEC §二十七): true = the clipboard landed as blocks (the
+    // key is consumed); false = fall through to the native plain paste
+    callback rich-paste(int) -> bool;
+    // storage row in the settings dialog (M8): the database folder + backup
+    in-out property <string> data-dir: "";
+    in-out property <bool> storage-available: false;
+    callback open-data-folder();
+    callback backup-now();
+    // settings §三十七: drop the attachment rows and files nothing references
+    callback reclaim-attachments();
+    // page-tree drag (SPEC §八): drag a page row onto another page (or the
+    // Workspace header) to move it; page-drop-target-id drives the hover
+    // highlight on the row being landed into
+    pure callback page-drag-payload(int) -> data-transfer;
+    callback page-drag-hover(data-transfer, int) -> bool;
+    callback page-dropped(data-transfer, int);
+    in-out property <int> page-drop-target-id: -1;
+    callback editing-changed(length, length, length);
+    callback enter-at-caret(int);
+    callback backspace-at-start();
+    callback focus-move(int);
+    callback cancel-editing();
+    callback undo-requested();
+    callback redo-requested();
+    callback save-requested();
+    // Go Back / Go Forward through the session's page history (SPEC §十六).
+    // Alt+Left / Alt+Right take the same path the palette rows do.
+    callback nav-back-requested();
+    callback nav-forward-requested();
+    callback slash-move(int);
+    callback slash-apply-selected();
+    callback slash-close();
+    // SPEC §四十: a table cell reports that its text changed, so the "@"
+    // trigger can be noticed there too — a cell fires cell-changed (the
+    // debounced commit) but no editing-changed, because it is not a line of
+    // prose and must not run the markdown shortcuts. Args: the cell's own
+    // text (its `edited` may land before the two-way property is written, so
+    // the text travels with the call rather than being read back), then the
+    // cell's row top in list coords, its height, and the text column x.
+    callback mention-typed(string, length, length, length);
+    // backlink panel (SPEC §四十): the page that is open was named by the
+    // blocks in `backlinks`. The window is what the panel draws (folded, it is
+    // a handful of rows); `backlink-total` is the real number, which is what
+    // the folded line says instead of the rows it is not drawing.
+    in-out property <[BacklinkRow]> backlinks;
+    in-out property <int> backlink-total: 0;
+    in-out property <bool> backlinks-expanded: false;
+    // The two things the panel says that are not a row. They are built in Rust
+    // because both are a decision Slint cannot make: a plural ("1 reference"
+    // vs "3 references") and a count the panel is deliberately not drawing.
+    // "" means there is nothing to say — no fold control, no count.
+    in-out property <string> backlink-count-label: "";
+    in-out property <string> backlink-fold-label: "";
+    callback backlink-jump(int); // the referring block's id
+    callback backlink-toggle(); // fold / unfold the window
+    callback block-menu-opened(int, length, length); // id, handle viewport-y, content-x
+    callback block-menu-action(int);
+    // "+" handle: id, the clicked block's bottom edge in list coords, and
+    // the text-column x — the popup anchors below the block it inserts
+    callback block-plus(int, length, length);
+
+    callback node-clicked(int);
+    callback node-expand-toggled(int);
+    // A left-column row asking for its menu (SPEC §八): its id, and the y its own
+    // delegate sits at. The second argument is why the row reports itself rather
+    // than being looked up by id — the 收藏 / 最近 sections re-list pages the tree
+    // also holds, so an id is not a row.
+    callback node-context(int, length);
+    callback page-create-requested();
+    callback rename-committed(int, string);
+    callback rename-cancelled();
+    callback menu-action(int);
+    // the emoji grid picked one; "" is its "None" cell, which clears the icon
+    callback icon-picked(string);
+    callback search-open-requested();
+    callback search-query-changed();
+    callback search-move(int);
+    callback search-invoked();
+    // opens a content hit with its matched block selected
+    callback search-open-hit(int, int);
+    callback dialog-confirmed();
+    callback dialog-cancelled();
+    callback settings-open-requested();
+    callback settings-close-requested();
+
+    // ─── SPEC §四十一: notes and tasks (the organizer) ──────────────────────
+    //
+    // A second top-level area, chosen by `active-area`. It has no page behind it
+    // and no block rows: the three models below are Rust's projections of the
+    // catalog, and everything the area shows that is not a row — the smart views'
+    // names, the priority words, the counts on the chips — is decided here.
+    //
+    // Which tab and which filter are showing is **session state** like every
+    // other "how the user is looking" fact (ADR-0073): a restart opens on
+    // 笔记 · 收集箱, and none of this reaches the file.
+    in-out property <string> active-area: "docs"; // "docs" | "organizer" | "sync"
+    in-out property <int> org-tab: 0;             // 0 笔记, 1 任务
+    in-out property <int> org-view: 0;            // smart view slot, see Rust's SMART_*
+    in-out property <int> org-list: -1;           // stored list id, -1 = the chip decides
+    in-out property <string> org-query: "";
+    in-out property <int> org-sort: 0;            // 0 添加顺序, 1 优先级, 2 截止日期
+    // The 笔记 half's own sort, which the tasks' three choices cannot express: a
+    // task list is ordered by when it was added, when it is due and how urgent it
+    // is, while a note list is read by when it was written and when it was last
+    // touched — the reference's 最新创建 / 最新更新 / 按内容. Separate from
+    // `org-sort` rather than a fourth slot of it, because the two halves are
+    // never on screen together and one three-slot control that changes meaning
+    // with the tab is a control nobody can read.
+    in-out property <int> org-note-sort: 0;       // 0 最新创建, 1 最新更新, 2 按内容
+    // Whether the 笔记 toolbar's sort list is down. Session state like every
+    // other "how the user is looking" fact here (ADR-0073) — and on `UIState`
+    // rather than on the component because a headless scene has to be able to
+    // photograph the list *open*: a control that only exists while a
+    // component-local `property` is true cannot be reached by `apply_scene`, and
+    // an unreachable control is an unreviewed one.
+    in-out property <bool> org-note-sort-open: false;
+    // Which of the two views the toolbar's segmented control is on: 0 列表,
+    // 1 平铺. Session state like everything else here (ADR-0073).
+    in-out property <int> org-mode: 0;
+    // Whether finished tasks are painted beside the open ones. The 已完成 view
+    // ignores it: asking for the finished ones is not the same question.
+    in-out property <bool> org-show-done: false;
+    // The nav column's five counts, in the smart views' own slot order, and the
+    // header's two numbers. Rust computes them from the catalog so the nav, the
+    // header and the footer can never disagree about how many tasks there are.
+    in-out property <[int]> org-smart-counts: [0, 0, 0, 0, 0];
+    // The header's own words. Both come from Rust because both are counts, and a
+    // count spelled in a delegate is a second definition of the filter that
+    // produced it: "2 项待办" over a list, "4 条笔记" over the notes.
+    in-out property <string> org-view-title: "";
+    in-out property <string> org-view-count-label: "";
+    in-out property <int> org-done-count: 0;
+    in-out property <int> org-total-count: 0;
+    // The quick-add line's own draft. One live input at a time, and this is the
+    // list's: it is committed on Enter, not on blur.
+    in-out property <string> org-quick-add: "";
+    // Which column a board card is hovering, so the column can light up: -2 is
+    // "no drag", -1 the inbox column, else a list id. Session state, and the
+    // board's only drag feedback — the payload itself is Rust's (`block`'s
+    // drag-reorder teaches the same lesson: a delegate never parses a payload).
+    in-out property <int> org-drop-list: -2;
+    in-out property <[NoteRow]> note-rows;
+    // The selected note's 引用 (SPEC §四十一, core ADR-0001): the notes that name
+    // it. A list of its own rather than a second field on the detail row, and
+    // projected exactly like `note-rows` — a comment 指令 added a second ago is on
+    // screen as soon as the panel is repainted.
+    in-out property <[NoteRow]> org-note-replies;
+    in-out property <[TaskRow]> task-rows;
+    in-out property <[TaskListRow]> task-list-rows;
+    in-out property <[BoardColumn]> org-board;
+    // The 笔记 tab's tag column and its filter. `org-tag` is "" for 全部笔记;
+    // a tag is a **path** (`项目/工作`), so the filter keeps the whole subtree under
+    // it and the column shows the level below. `org-tag-label` is that path as a
+    // breadcrumb (`项目 / 工作`) and `org-tag-parent` is where ↑ goes — both from
+    // Rust, because segmenting a path is model work and the UI only paints it.
+    in-out property <[TagRow]> org-tag-rows;
+    in-out property <string> org-tag: "";
+    in-out property <string> org-tag-label: "";
+    in-out property <string> org-tag-parent: "";
+    // 反向筛选: the paths the user has hidden, as one line (`排除 ⊘#项目 ⊘#工作`).
+    // Empty is "nothing hidden". The set itself lives in Rust — this is the
+    // projection of it, the same way every other count on this screen is.
+    in-out property <string> org-excluded-label: "";
+    // The selected row's *whole* self, so the detail panel binds fields instead
+    // of looking a row up in a model: `id` is -1 when nothing is selected, and
+    // every other field is then whatever the empty row says.
+    in-out property <NoteRow> org-note-detail;
+    // The note page's 详细信息 block: the six read-only rows, and whether they
+    // are open at all. The flag is state rather than a component-local property
+    // so a sweep scene can photograph the block open — a block no scene shows is
+    // a block no sweep measures.
+    in-out property <NoteDetails> org-note-details;
+    in-out property <bool> org-note-details-open: false;
+    in-out property <TaskRow> org-task-detail;
+    in-out property <int> org-selected-note: -1;
+    // The note the detail panel is **open** for — a different thing from the
+    // highlighted row above, and the split is what keeps a plain click from
+    // raising the page (ADR-0137): a click writes `org-selected-note`, while
+    // only the ⋯ menu's 打开 / 详细信息, the capture layer's "open what you
+    // just made" and the scene seeds write this. `org-note-detail` is
+    // projected from it, so `id >= 0` here is the page's own gate.
+    in-out property <int> org-note-open: -1;
+    in-out property <int> org-selected-task: -1;
+    // ── 多选 (SPEC §四十一, ADR-0111) ────────────────────────────────────────
+    // Whether the page is *picking* rows rather than showing them. A flag on the
+    // window and not inside the area: the header that swaps, the rows that light
+    // and the bar's verbs all read the same one, and the picked ids themselves
+    // stay in Rust — the count below is projected from them, the same way every
+    // other number on this screen is.
+    in-out property <bool> org-selecting: false;
+    in-out property <int> org-selection-count: 0;
+    // The list a new task lands in, and the draft of a list name being typed.
+    in-out property <int> org-new-list-color: 0;
+    in-out property <string> org-new-list-name: "";
+    // Today, as the ISO the deadlines are stored as. From Rust because a UI has
+    // no clock: the row badge that says 今天 and the picker's own "今天" button
+    // have to mean the same day, and there is exactly one place that decides
+    // which day that is.
+    in-out property <string> org-today: "";
+    // The 撤销 bar's line (ADR-0108): non-empty means a delete is waiting behind
+    // it. Window-level rather than a property of the area, because the bar outlives
+    // the area it was asked from — leaving for the document must not silently
+    // commit a delete the user had not finished looking at.
+    in-out property <string> org-undo-text: "";
+
+    // ── the drafts ──
+    // One property per editable field of the detail pane, bound two-way by the
+    // input that owns it. Rust does not clear them while the user types: a
+    // rebuild after a commit writes the *committed* value back, which is the
+    // same string, so the caret never jumps.
+    in-out property <string> org-note-title-draft: "";
+    in-out property <string> org-note-body-draft: "";
+    in-out property <string> org-note-tags-draft: "";
+    in-out property <string> org-task-title-draft: "";
+    in-out property <string> org-task-notes-draft: "";
+    in-out property <string> org-task-tags-draft: "";
+    in-out property <string> org-task-due-draft: "";
+    in-out property <string> org-subtask-draft: "";
+    // 引用: the reply being written on the open note's page. A draft like the rest,
+    // but committed by Enter or the 评论 button rather than on a settle: a reply is
+    // a *create*, and half a row is not a row (the quick-add line's rule).
+    in-out property <string> org-reply-draft: "";
+    // The stored list whose nav row is being renamed inline, or -1. A list id and
+    // **not** the sidebar's `renaming-id`: those two id spaces overlap, so reusing
+    // one for the other would put a rename box on whichever page shared the number.
+    in-out property <int> org-list-renaming: -1;
+    // Which field the 300 ms commit is pending on: the slot (`FIELD_*` in
+    // OrganizerArea.slint, `ORG_FIELD_*` in state.rs), the row it belongs to, and
+    // — for a checklist line — which subtask. A triple, and session state on
+    // purpose: it describes a keystroke in flight, not a document.
+    in-out property <int> org-field: 0;
+    in-out property <int> org-field-id: -1;
+    in-out property <int> org-field-sub: -1;
+
+    // opening the area (the sidebar's rows and the palette's two commands)
+    callback org-open-requested(int); // 0 笔记, 1 任务
+    callback org-close-requested(); // back to the document area
+    // notes
+    // There is deliberately no `org-note-create` (ADR-0115): the notes half's ＋ is
+    // the floating one, and it opens the capture layer (`org-capture-opened`)
+    // instead of writing an empty row. 任务 keeps `org-task-create` — its ＋ is still
+    // the nav column's, and a task has no capture layer.
+    callback org-note-selected(int);
+    // ✕ (and Escape) on the note's own 浮层 (ADR-0118): the panel goes and the
+    // list is left as it was, with nothing written — the selection is how the
+    // panel is *found*, so closing it is putting that selection down.
+    callback org-note-closed();
+    callback org-note-title-set(int, string);
+    callback org-note-body-set(int, string);
+    callback org-note-pin-toggled(int);
+    callback org-note-tags-set(int, string);
+    callback org-note-deleted(int);
+    // A note row's ⋯ **and** its right-click (ADR-0115): the note, and where the
+    // pointer was, so the shared context menu anchors the way the page tree's
+    // does. One callback for both doors because they are one question — the ⋯ is
+    // drawn and the right button is not, and a card has to answer to either.
+    callback org-note-menu-requested(int, length, length);
+    // 撤销 on the bar: the batch it was standing in front of is forgotten, and
+    // because the delete was deferred nothing has been written to undo.
+    callback org-undo-delete();
+    // 转为待办: the note becomes a task and the note goes
+    callback org-note-to-task(int);
+    // 引用 (SPEC §四十一, core ADR-0001): write a reply to the open note — a new
+    // note whose `ref_note` names it. The write the read-only replies list lacked.
+    callback org-reply-submitted();
+    // the 笔记 tab's tag column: "" is 全部笔记
+    callback org-tag-picked(string);
+    // 反向筛选 (SPEC §四十一): hide this path and its subtree, or stop hiding it.
+    // One callback for both directions, because which one it is is decided by the
+    // set Rust holds — the UI is looking at a projection of it, not at the set.
+    callback org-tag-excluded(string);
+    // 清除筛选: drop the include path *and* every exclusion. Session state, so it
+    // writes nothing.
+    callback org-filters-cleared();
+    // ── 回收站 (SPEC §四十一, core ADR-0003) ──────────────────────────────────
+    // A *mode* of the list rather than a fourth view on one half: the row that
+    // opens it is on both tabs, and what it shows is the half the user is standing
+    // on. A row in the bin is still a row — it is stamped, not removed — so every
+    // count on this screen comes from the projections and not from the file.
+    in-out property <bool> org-bin-open: false;
+    // What each half holds, for the nav row's count; the row prints the tab's own.
+    in-out property <int> org-bin-note-count: 0;
+    in-out property <int> org-bin-task-count: 0;
+    // 全部笔记's own count, projected off the catalog: the list model holds the
+    // *bin's* rows while the bin is open, so a nav row reading it would be wrong.
+    in-out property <int> org-note-count: 0;
+    callback org-bin-toggled();
+    // 恢复 / 彻底删除 on a binned row. One pair for both halves: which kind the id
+    // names is the tab's answer, exactly as the row's own verbs already are.
+    callback org-bin-restored(int);
+    callback org-bin-purged(int);
+    // 清空回收站: every binned row of the half on screen, purged as **one** step.
+    callback org-bin-emptied();
+    // 复制全部 (the inbox header): the notes the list is showing right now,
+    // bodies with their 唯一 IDs, as one clipboard block — the reference's own
+    // `btnCopy`, and the door an AI answer walks back in through when the batch
+    // is "everything I captured today" rather than a hand-picked set.
+    callback org-notes-copy-all();
+    // ── 指令 (SPEC §四十一): a batch of AI instructions ──────────────────────
+    // The dialog's own state. `org-cmd-text` is the pasted JSON and is a two-way
+    // draft like every other field here; `org-cmd-tab` is which half of the area
+    // the instructions name, decided when the dialog opens (a batch of task
+    // actions pasted on the 笔记 tab is refused action by action, not silently
+    // half-applied).
+    in-out property <bool> org-cmd-open: false;
+    in-out property <string> org-cmd-text: "";
+    in-out property <int> org-cmd-tab: 0;
+    callback org-command-opened(int);
+    callback org-command-run();
+    // 复制示例: the button that hands the whole template to the clipboard without
+    // closing the dialog, so it can be pasted into an AI and the answer pasted
+    // back into the same box.
+    callback org-command-example();
+    callback org-command-closed();
+    // ── the 悬浮 ＋ and the capture layer (ADR-0115) ──────────────────────────
+    // The ＋ at the notes list's bottom-right, and the draft box it opens — the
+    // one with the ➤ in it. `org-capture-draft` is a two-way draft like every
+    // other field in this area, and **nothing commits until ➤**: a layer closed
+    // by Escape, by ✕ or by its scrim has written nothing, so a dismissal costs
+    // no undo step (the Android copy's rule, and why this is a draft at all).
+    in-out property <bool> org-capture-open: false;
+    in-out property <string> org-capture-draft: "";
+    // Where the caret goes on the frame the layer appears. The tag filter is
+    // pre-filled into `org-capture-draft` as a `#token`, and a caret at 0 would
+    // put the next keystroke in front of it — so Rust hands over the byte offset
+    // it wrote, the same shape the find flow's `pending-sel-*` pair has.
+    in-out property <int> org-capture-caret: 0;
+    // Which of the two surfaces is drawing the draft (ADR-0145). Alt+N hosts the
+    // capture in its own always-on-top window — 速记 without dragging the main
+    // interface out of the tray — and the ＋ hosts it as the notes page's overlay.
+    // One draft, one tray, one submit path; only the placement differs, so the
+    // overlay asks for this flag and the small window answers it.
+    in-out property <bool> quick-note-host: false;
+    callback org-capture-opened();
+    callback org-capture-sent();
+    callback org-capture-closed();
+    // The 全局快捷键's Alt+N (a settings row, on by default) reaches the capture
+    // through here: the hotkey thread cannot hold the app's state, so it bumps
+    // `org-quick-note-tick` (a counter, so every press is a change) and AppWindow's
+    // `changed` hook fires this callback — whose handler walks the same door the ＋
+    // does: the same draft, the same 标签建议, only hosted in the small window.
+    callback org-quick-note-requested();
+    in-out property <int> org-quick-note-tick: 0;
+    // 标签建议 (ADR-0118): the `#`-typeahead the Android shell's composer has had
+    // since its own ADR-0015. `org-tag-suggestions` is Rust's projection — the
+    // distinct tags of the live catalog whose last path segment starts with the
+    // `#token` being typed — and the field reports every edit so the tray follows
+    // the draft, the way the Android copy recomputes it off its catalog.
+    in-out property <[string]> org-tag-suggestions;
+    callback org-capture-draft-changed();
+    // A tap on one of the tray's chips: the half-typed `#token` it names is
+    // replaced by the whole tag, which is the Android copy's `applyTagSuggestion`.
+    callback org-tag-suggest-picked(string);
+    // 启动时自动弹出输入框 (the Settings row): whether *arriving* at 笔记 opens the
+    // capture layer with the caret in it. Persisted as the shared
+    // `notes.auto_input` row — the Android shell reads the same one out of the
+    // same database — and absent means on.
+    in-out property <bool> org-auto-input: true;
+    callback org-auto-input-toggled(bool);
+    // ── 全局快捷键 (the Settings rows) ────────────────────────────────────────
+    // The properties mirror the settings rows so the switches read the persisted
+    // choice, and the toggles carry the new value to Rust — which persists it
+    // and registers / unregisters the key on the hotkey thread.
+    //
+    // Alt+N is **on** in a library that never wrote the row (ADR-0145): 速记 is the
+    // reason the window hides to the tray, and a shell that hides the app without
+    // giving back the key that summons it is a half feature. Alt+M stays off — it
+    // duplicates the tray icon's own left click, so nothing is missing when it is
+    // unregistered.
+    in-out property <bool> hotkey-alt-n: true;
+    in-out property <bool> hotkey-alt-m: false;
+    callback hotkey-alt-n-toggled(bool);
+    callback hotkey-alt-m-toggled(bool);
+    // tasks: the row's own switches are immediate, the text fields commit on blur
+    callback org-task-create();
+    callback org-task-selected(int);
+    callback org-task-title-set(int, string);
+    callback org-task-notes-set(int, string);
+    callback org-task-done-toggled(int);
+    callback org-task-priority-set(int, int);
+    callback org-task-due-set(int, string);
+    callback org-task-repeat-set(int, int);
+    callback org-task-tags-set(int, string);
+    callback org-task-list-set(int, int); // task, list id (-1 = 收集箱)
+    callback org-task-deleted(int);
+    // the row's ⋯: the task, and where the pointer was, so the shared context
+    // menu can be anchored the way the page tree's is
+    callback org-task-menu-requested(int, length, length);
+    // ── 多选 (SPEC §四十一, ADR-0111) ────────────────────────────────────────
+    // Enter the mode for the tab named (0 笔记, 1 任务) with nothing picked yet.
+    // A row's ⋯ → 多选 is the same call with that row already picked, so it does
+    // not need its own callback: the menu action carries the id.
+    callback org-select-entered(int);
+    // ✕, and the Escape that stands in for the reference's back gesture.
+    callback org-select-stopped();
+    // 全选 / 取消全选 — one callback, because which of the two it is is decided by
+    // the set and the rows showing, neither of which the UI holds.
+    callback org-select-all-toggled();
+    // The bar's verbs: 0 复制 (笔记), 1 完成 (任务), 2 删除 (both).
+    callback org-selection-verbed(int);
+    // the list column's quick-add line: committed on Enter, and the task lands
+    // in whichever list the view is showing (a smart view means 收集箱)
+    callback org-quick-add-submitted();
+    // the board: a card dropped on a column moves that task into the column's
+    // list (-1 = 收集箱), and a column's own ＋ line adds straight into it
+    callback org-task-moved(int, int);
+    callback org-task-add-to(int, string);
+    // the board's drag, as the block handle and the page tree do it: Rust packs
+    // the payload, the delegate only hands it back
+    pure callback org-card-payload(int) -> data-transfer;
+    pure callback org-card-hover(data-transfer, int) -> bool;
+    callback org-card-dropped(data-transfer, int);
+    // 落位环 (the reference board's settle ring): the task a drop just moved,
+    // and how bright its accent ring is right now. Rust owns the fade — it sets
+    // the task at the drop and walks the alpha to zero over ~620 ms — because a
+    // fade that starts the moment a card *lands* needs a clock, and the ring is
+    // the only thing in the area that has one.
+    in-out property <int> org-settle-task: -1;
+    in-out property <float> org-settle-alpha: 0.0;
+    // The dragging pointer's **window** y, written by the board column's
+    // `can-drop` on every drag-move and read by the cards to place the gap slot.
+    // A global rather than a column property for the same reason the sort list
+    // hangs off the area: a scene has to be able to *set* it, and the cards that
+    // read it live in another sub-tree.
+    in-out property <length> org-drop-y: -100000px;
+    // the toolbar's segmented control and the footer's completed switch
+    callback org-mode-picked(int);
+    callback org-show-done-toggled();
+    callback org-subtask-added(int);
+    callback org-subtask-edit(int, int); // task, subtask: start editing that line's title
+    callback org-subtask-title-set(int, int, string);
+    callback org-subtask-done-toggled(int, int, bool);
+    callback org-subtask-deleted(int, int);
+    // lists. A stored list is managed from its own ⋯ menu — rename / colour /
+    // delete — rather than by three separate doors: the ⋯ is where every other
+    // per-row verb in this window lives, and a list row is a row.
+    callback org-list-created();
+    // the ⋯ on a stored list's nav row: the list, and where the pointer was, so
+    // the shared context menu anchors the way the page tree's own does
+    callback org-list-menu-requested(int, length, length);
+    // the inline rename input's Enter or blur: the list and the name it was given
+    callback org-list-name-set(int, string);
+    // filters
+    callback org-view-picked(int);
+    callback org-list-picked(int);
+    callback org-sort-picked(int);
+    // The 笔记 half's sort, the three choices above. Its own callback because it
+    // is its own property: one `picked(int)` cannot mean "which of three" on one
+    // half and "which of three different ones" on the other.
+    callback org-note-sort-picked(int);
+    callback org-query-changed();
+    // a draft changed: the field slot it belongs to, which row, which subtask
+    callback org-field-edited(int);
+}
+

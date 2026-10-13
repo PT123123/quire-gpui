@@ -1,0 +1,466 @@
+// Document surface. A ListView gives us the virtualization skeleton from day
+// one: delegates exist only for visible rows. ListView delegates must be a
+// single `for`, so page-level chrome (hero spacer, page title, tail spacer)
+// rides inside the first/last DocumentRow wrappers instead.
+
+import { ListView } from "std-widgets.slint";
+import { Theme } from "../Theme.slint";
+import { Colors } from "../Colors.slint";
+import { Typography, PageType } from "../Typography.slint";
+import { Icon } from "../Icons.slint";
+import { EditorBlock } from "./EditorBlock.slint";
+import { BacklinkPanel } from "./BacklinkPanel.slint";
+import { IconButton } from "./IconButton.slint";
+import { Button } from "./Button.slint";
+import { BlockRow, UIState } from "../Types.slint";
+
+component DocumentRow inherits Rectangle {
+    in property <BlockRow> block;
+    in property <int> depth;
+    in property <int> index;
+    in property <bool> first;
+
+    // The tail row also carries the backlink panel, and the panel's own height
+    // is 0 on a page nothing refers to — so a page with no backlinks measures
+    // exactly as it did before the panel existed.
+    height: head.height + body.height + panel.height
+        + (block.tail ? Theme.spacing-hero * 2 : 0px);
+
+    // The page's own emoji, above its title (SPEC §三十八). It takes no space
+    // at all until one is set, so the 56k rows below it measure exactly as
+    // they did before this slice. Display only: the picker opens from the
+    // page's ⋯ menu, whose anchor the controller already knows.
+    property <length> icon-height: UIState.page-icon == ""
+        ? 0px
+        : icon.preferred-height + Theme.spacing-md;
+
+    // Where the hero starts. Without a cover this is the hero spacing the
+    // document has always had, and the two constants below never come into it;
+    // with one, the title is drawn inside the band's bottom edge, because
+    // §三十八 asks for the title *on* the cover and not above it.
+    property <bool> cover-on: root.first && UIState.page-cover-id > 0;
+    property <length> hero-top: root.cover-on
+        ? Typography.size-cover-height - Typography.size-cover-overlap
+        : Theme.spacing-hero;
+
+    head := Rectangle {
+        // Both x and y are spelled out on purpose. A Rectangle that binds
+        // `height` but leaves `y` alone is centred in its parent, and this
+        // delegate grows taller with its block -- so a tall first block (the
+        // table) dragged the page title down on top of itself.
+        x: 0px;
+        y: 0px;
+        width: parent.width;
+        height: root.first
+            ? root.hero-top + root.icon-height + title.height + Theme.spacing-lg
+            : 0px;
+
+        // The page's cover (SPEC §三十八, ADR-0047): the attachment the page
+        // points at, cropped to the band, under a veil the title is measured
+        // against. It ends below the hero rather than at a fixed height, so the
+        // white ink is never left standing on the page background -- an icon on
+        // top of the title pushes the whole hero down, and the band follows.
+        cover := Rectangle {
+            x: 0px;
+            y: 0px;
+            width: parent.width;
+            height: max(
+                Typography.size-cover-height,
+                root.hero-top + root.icon-height + title.height + Theme.spacing-md);
+            visible: root.cover-on;
+            clip: true;
+
+            Image {
+                x: 0; y: 0;
+                width: parent.width; height: parent.height;
+                image-fit: ImageFit.cover;
+                // the same callback an image row uses: one attachment, one
+                // decoded raster, however many things point at it
+                source: UIState.image-for(UIState.page-cover-id);
+            }
+            scrim := Rectangle {
+                x: 0; y: 0;
+                width: parent.width; height: parent.height;
+                background: Colors.cover-scrim;
+            }
+        }
+
+        icon := Text {
+            x: root.content-x;
+            y: root.hero-top;
+            width: root.content-width;
+            visible: root.first && UIState.page-icon != "";
+            text: UIState.page-icon;
+            font-family: Typography.emoji-font;
+            font-size: PageType.size-page-icon;
+            // The headless software renderer draws an emoji as a monochrome
+            // glyph in this colour, so over a cover the icon is text and takes
+            // the same rule as the title: the measured first pass left a #1f2328
+            // rocket on a #232439 photo -- 0.0165 against 0.0191 relative
+            // luminance, 1.04:1, i.e. invisible. On the GPU renderers the emoji
+            // is its own colour bitmap and this is ignored, which is why the
+            // hand test still owes it a look.
+            color: root.cover-on ? Colors.text-on-accent : Colors.text-primary;
+        }
+
+        // click the big title to rename in place (Notion-style)
+        title-ta := TouchArea {
+            x: root.content-x;
+            y: root.hero-top + root.icon-height;
+            width: root.content-width;
+            height: root.first ? title.height : 0px;
+            enabled: root.first && !UIState.title-editing;
+            visible: root.first;
+            mouse-cursor: MouseCursor.text;
+            clicked => {
+                // A locked page answers the click instead of eating it
+                // (SPEC §三十八). The cursor still says "text" because the
+                // title is still a title; what it does not do is open a caret.
+                if (UIState.page-locked) {
+                    UIState.lock-nudge();
+                } else {
+                    UIState.title-editing = true;
+                }
+            }
+        }
+        title := Text {
+            x: root.content-x;
+            y: root.hero-top + root.icon-height;
+            width: root.content-width;
+            visible: root.first && !UIState.title-editing;
+            text: UIState.page-title;
+            font-family: PageType.font-family;
+            font-weight: Typography.weight-bold;
+            font-size: PageType.size-page-title;
+            // without an explicit factor the text height is the font size
+            // only, and descenders (g, y) collide with the first block
+            line-height-factor: 1.28;
+            // over a cover the ink has to be the one the veil was computed for
+            color: root.cover-on ? Colors.text-on-accent : Colors.text-primary;
+        }
+        title-input := TextInput {
+            x: root.content-x;
+            y: root.hero-top + root.icon-height;
+            width: root.content-width;
+            visible: root.first && UIState.title-editing;
+            enabled: root.first && UIState.title-editing;
+            // the preferred height is the font size alone: descenders (g, y)
+            // collide with the line box (A4 sweep, title-edit scene)
+            height: max(self.preferred-height, PageType.size-page-title * 1.4);
+            text <=> UIState.page-title;
+            font-family: PageType.font-family;
+            font-weight: Typography.weight-bold;
+            font-size: PageType.size-page-title;
+            line-height-factor: 1.28;
+            color: root.cover-on ? Colors.text-on-accent : Colors.text-primary;
+            single-line: true;
+            selection-foreground-color: Colors.text-primary;
+            selection-background-color: Colors.selection;
+            accepted => {
+                UIState.title-commit(self.text);
+            }
+            key-pressed(event) => {
+                if (event.text == Key.Escape) {
+                    UIState.title-cancel();
+                    accept
+                } else {
+                    reject
+                }
+            }
+            init => {
+                title-input.focus();
+                title-input.select-all();
+            }
+        }
+    }
+
+    body := EditorBlock {
+        x: 0px;
+        y: head.height;
+        block: root.block;
+        depth: root.block.depth;
+        index: root.index;
+        row-y: parent.y + head.height;
+        content-x: root.content-x;
+        content-width: root.content-width;
+    }
+
+    // The page's foot (SPEC §四十): what points back at this page. It rides on
+    // the tail row for the same reason the title rides on the first one — a
+    // `ListView` takes a single `for`, so page-level chrome lives inside the
+    // row wrappers. The panel is the last thing above the bottom spacer.
+    panel := BacklinkPanel {
+        x: 0px;
+        y: head.height + body.height;
+        width: parent.width;
+        content-x: root.content-x;
+        content-width: root.content-width;
+        active: root.block.tail;
+    }
+
+    in property <length> content-x;
+    in property <length> content-width;
+}
+
+export component Editor inherits Rectangle {
+    // content column centered, min gutter so handles never touch the window
+    // edge. A full-width page keeps the gutter and drops the centering: the
+    // column is then whatever the window offers, which is the whole point of
+    // the switch (SPEC §三十八).
+    property <length> gutter: PageType.full-width
+        ? Theme.spacing-xl
+        : Math.max(
+            Theme.spacing-xl,
+            (root.width - Theme.editor-max-width) / 2);
+
+    // Transparent: the window's own `Colors.page` ramp is the document's
+    // background, so a gradient theme is continuous across the chrome.
+    background: transparent;
+
+    // The editor's own height is the viewport the database window is computed
+    // from (SPEC §三十九): every database on the page sees the same viewport,
+    // so the number is reported once per resize here and never measured
+    // inside a row — Rust cannot see Slint's layout, and this is the one
+    // number its window arithmetic needs.
+    changed height => {
+        UIState.editor-viewport-h = self.height;
+    }
+
+    // in-page find bar (Ctrl+F)
+    if UIState.find-open : Rectangle {
+        x: parent.width - self.width - Theme.spacing-md;
+        y: Theme.spacing-md;
+        width: 340px;
+        height: 36px;
+        border-radius: Theme.radius-md;
+        background: Colors.surface-overlay;
+        border-width: 1px;
+        border-color: Colors.border;
+
+        HorizontalLayout {
+            x: 6px;
+            y: 4px;
+            width: parent.width - 12px;
+            spacing: Theme.spacing-sm;
+
+            Rectangle {
+                width: 130px;
+                height: 26px;
+                border-radius: Theme.radius-sm;
+                background: Colors.background;
+                clip: true;
+                find-input := TextInput {
+                    x: 6px;
+                    width: parent.width - 12px;
+                    y: (parent.height - self.preferred-height) / 2;
+                    font-family: Typography.ui-font;
+                    font-size: Typography.size-ui;
+                    color: Colors.text-primary;
+                    single-line: true;
+                    text <=> UIState.find-term;
+                    // find-as-you-type: every keystroke rebuilds the session
+                    edited => {
+                        UIState.find-start();
+                    }
+                    accepted => {
+                        UIState.find-start();
+                        UIState.find-step(1);
+                    }
+                    key-pressed(event) => {
+                        if (event.text == Key.Escape) {
+                            UIState.find-close();
+                            accept
+                        } else {
+                            reject
+                        }
+                    }
+                    init => {
+                        find-input.focus();
+                    }
+                }
+                if UIState.find-term == "" : Text {
+                    x: 6px;
+                    text: "查找";
+                    font-family: Typography.ui-font;
+                    font-size: Typography.size-ui;
+                    color: Colors.text-muted;
+                    vertical-alignment: center;
+                }
+            }
+            Text {
+                text: UIState.find-label;
+                font-family: Typography.ui-font;
+                font-size: Typography.size-caption;
+                color: Colors.text-muted;
+                vertical-alignment: center;
+                width: 64px;
+                overflow: elide;
+            }
+            IconButton {
+                vertical-stretch: 0;
+                cross-axis-self-alignment: center;
+                icon-name: "chevron-up";
+                size: 24px;
+                clicked => {
+                    UIState.find-step(-1);
+                }
+            }
+            IconButton {
+                vertical-stretch: 0;
+                cross-axis-self-alignment: center;
+                icon-name: "chevron-down";
+                size: 24px;
+                clicked => {
+                    UIState.find-step(1);
+                }
+            }
+            IconButton {
+                vertical-stretch: 0;
+                cross-axis-self-alignment: center;
+                icon-name: "x";
+                size: 24px;
+                clicked => {
+                    UIState.find-close();
+                    UIState.find-open = false;
+                }
+            }
+        }
+    }
+
+    // The lock, said out loud (SPEC §三十八 requires a visible state, and a
+    // lock nobody can see is only a bug with a name). A pill of its own rather
+    // than a dimmed page: nothing here became harder to read, only harder to
+    // change. It rides the viewport like the find bar does — the state belongs
+    // to the page, not to one position in it — and sits left so it never
+    // trades places with that bar at the top-right.
+    if UIState.page-locked : Rectangle {
+        x: root.gutter;
+        y: Theme.spacing-md;
+        height: 24px;
+        width: lock-label.preferred-width + 24px + 3 * Theme.spacing-sm;
+        border-radius: Theme.radius-md;
+        border-width: 1px;
+        border-color: Colors.border;
+        background: Colors.surface-overlay;
+
+        Icon {
+            x: Theme.spacing-sm;
+            y: (parent.height - self.height) / 2;
+            size: 14px;
+            name: "lock";
+            color: Colors.text-secondary;
+        }
+        lock-label := Text {
+            x: Theme.spacing-sm + 14px + Theme.spacing-sm;
+            width: parent.width - self.x - Theme.spacing-sm;
+            // `⋯` (U+22EF) is not in Segoe UI's face, and the `page-lock` shot
+            // proved it: the label painted "Page locked ·  to unlock" with a
+            // hole where the button's name should be. `…` (U+2026) is in the
+            // face, and is the same word the palette and search placeholders
+            // already use.
+            text: "页面已锁定 · … 解锁";
+            font-family: Typography.ui-font;
+            font-size: Typography.size-caption;
+            color: Colors.text-secondary;
+            vertical-alignment: center;
+        }
+    }
+
+    // footer: page stats, bottom-right, out of the content's way
+    Text {
+        x: parent.width - self.width - Theme.spacing-md;
+        y: parent.height - self.height - 6px;
+        text: UIState.page-stats;
+        font-family: Typography.ui-font;
+        font-size: Typography.size-caption;
+        color: Colors.text-muted;
+    }
+
+    // The highlight counts characters, so it needs the width of one of them —
+    // and the only honest source for that number is the font, asked once here
+    // for the whole app. Not inside a row: which rows the list view realizes
+    // depends on the scroll position, and where a block's lines break must not.
+    // Ten digits because a fractional advance rounds better over a run.
+    code-probe := Text {
+        x: -1000px;
+        y: -1000px;
+        text: "0000000000";
+        font-family: Typography.mono-font;
+        font-size: PageType.size-code;
+        wrap: no-wrap;
+        visible: false;
+        changed width => {
+            UIState.code-advance = self.width / 10;
+        }
+    }
+
+    // The scroll position mirror lets the bench harness drive the same
+    // viewport a mouse wheel would (scene F); normal wheel use still works
+    // because Flickable writes its internal changes back through the
+    // two-way binding.
+    list := ListView {
+        x: 0px;
+        y: 0px;
+        width: parent.width;
+        height: parent.height;
+        content-width: parent.width;
+        content-y <=> UIState.editor-scroll-y;
+
+        for row[idx] in UIState.blocks : DocumentRow {
+            block: row;
+            depth: row.depth;
+            index: idx;
+            first: idx == 0;
+            content-x: root.gutter;
+            content-width: list.content-width - 2 * root.gutter;
+        }
+    }
+
+    // empty state — a page with no blocks yet. The panel is a click target:
+    // this is the one place on the page with nothing to select, so it has to
+    // make its own first block (see UIState.empty-page-started).
+    if UIState.blocks.length == 0 : Rectangle {
+        width: parent.width;
+        height: parent.height;
+        TouchArea {
+            mouse-cursor: MouseCursor.text;
+            clicked => {
+                UIState.empty-page-started();
+            }
+        }
+        VerticalLayout {
+            spacing: Theme.spacing-sm;
+            alignment: center;
+            Icon {
+                width: 40px;
+                height: 40px;
+                size: 40px;
+                name: "page";
+                color: Colors.text-muted;
+                cross-axis-self-alignment: center;
+            }
+            Text {
+                text: "此页面为空";
+                font-family: Typography.ui-font;
+                font-size: Typography.size-h3;
+                font-weight: Typography.weight-semibold;
+                color: Colors.text-secondary;
+                horizontal-alignment: center;
+            }
+            Text {
+                text: "点击这里开始写作，或在上方标题中按 Enter。";
+                font-family: Typography.ui-font;
+                font-size: Typography.size-ui;
+                color: Colors.text-muted;
+                horizontal-alignment: center;
+            }
+            if UIState.workspace-empty : Button {
+                text: "创建你的第一个页面";
+                primary: true;
+                clicked => {
+                    UIState.page-create-requested();
+                }
+            }
+        }
+    }
+}

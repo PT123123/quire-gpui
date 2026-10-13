@@ -1,0 +1,26 @@
+# Rust build output (including future probe workspaces)
+target/
+target-*/
+
+# Local runtime data and credentials
+appdata/
+attachments/
+logs/
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+.env
+.env.*
+!.env.example
+
+# Local/editor and temporary artifacts
+.scratch/
+.vs/
+*.log
+*.tmp
+Thumbs.db
+.DS_Store
+
+# Keep Cargo.lock, frozen reference sources and reference screenshots tracked.

@@ -1,0 +1,589 @@
+{
+  "palettes": [
+    {
+      "id": "midnight",
+      "name": "暗夜蓝",
+      "emoji": "🌙",
+      "light": false,
+      "bg": "#1a1d21",
+      "bg-elev": "#22262c",
+      "bg-elev2": "#2a2f37",
+      "border": "#343a44",
+      "fg": "#e6e6e6",
+      "fg-muted": "#9aa4b0",
+      "accent": "#4c8bf5",
+      "danger": "#e5534b",
+      "ok": "#3fb950",
+      "grad2": "#1a1d21"
+    },
+    {
+      "id": "graphite",
+      "name": "石墨灰",
+      "emoji": "🪨",
+      "light": false,
+      "bg": "#161b22",
+      "bg-elev": "#1f242c",
+      "bg-elev2": "#282e36",
+      "border": "#363d46",
+      "fg": "#e6edf3",
+      "fg-muted": "#8b949e",
+      "accent": "#2f81f7",
+      "danger": "#f85149",
+      "ok": "#3fb950",
+      "grad2": "#161b22"
+    },
+    {
+      "id": "violet",
+      "name": "紫罗兰",
+      "emoji": "💜",
+      "light": false,
+      "bg": "#17151f",
+      "bg-elev": "#211e2d",
+      "bg-elev2": "#2b2738",
+      "border": "#3a3550",
+      "fg": "#e8e6f0",
+      "fg-muted": "#9d97b5",
+      "accent": "#a78bfa",
+      "danger": "#f87171",
+      "ok": "#34d399",
+      "grad2": "#17151f"
+    },
+    {
+      "id": "emerald",
+      "name": "森林绿",
+      "emoji": "🌲",
+      "light": false,
+      "bg": "#0f1a16",
+      "bg-elev": "#16241e",
+      "bg-elev2": "#1d2f27",
+      "border": "#2a4238",
+      "fg": "#e2efe7",
+      "fg-muted": "#93b3a4",
+      "accent": "#34d399",
+      "danger": "#f87171",
+      "ok": "#22c55e",
+      "grad2": "#0f1a16"
+    },
+    {
+      "id": "amber",
+      "name": "琥珀暖",
+      "emoji": "🔥",
+      "light": false,
+      "bg": "#1c1712",
+      "bg-elev": "#241d16",
+      "bg-elev2": "#2e251b",
+      "border": "#45392a",
+      "fg": "#f0e6d6",
+      "fg-muted": "#b8a68a",
+      "accent": "#f59e0b",
+      "danger": "#f87171",
+      "ok": "#34d399",
+      "grad2": "#1c1712"
+    },
+    {
+      "id": "ocean",
+      "name": "海洋青",
+      "emoji": "🌊",
+      "light": false,
+      "bg": "#0b1a22",
+      "bg-elev": "#10222c",
+      "bg-elev2": "#16303c",
+      "border": "#20404f",
+      "fg": "#d8eef7",
+      "fg-muted": "#86b3c4",
+      "accent": "#22d3ee",
+      "danger": "#fb7185",
+      "ok": "#2dd4bf",
+      "grad2": "#0b1a22"
+    },
+    {
+      "id": "rose",
+      "name": "珊瑚红",
+      "emoji": "🌹",
+      "light": false,
+      "bg": "#1a1216",
+      "bg-elev": "#221820",
+      "bg-elev2": "#2c2029",
+      "border": "#43313a",
+      "fg": "#f0e4e9",
+      "fg-muted": "#bb9fa9",
+      "accent": "#fb7185",
+      "danger": "#f43f5e",
+      "ok": "#34d399",
+      "grad2": "#1a1216"
+    },
+    {
+      "id": "light",
+      "name": "明亮",
+      "emoji": "☀️",
+      "light": true,
+      "bg": "#f5f6f8",
+      "bg-elev": "#ffffff",
+      "bg-elev2": "#eceff3",
+      "border": "#d9dee5",
+      "fg": "#24292f",
+      "fg-muted": "#6b7280",
+      "accent": "#2f6fed",
+      "danger": "#d13438",
+      "ok": "#1a7f37",
+      "grad2": "#f5f6f8"
+    },
+    {
+      "id": "jade",
+      "name": "翡翠绿",
+      "emoji": "💎",
+      "light": false,
+      "bg": "#0f4938",
+      "bg-elev": "#143f35",
+      "bg-elev2": "#1b4f43",
+      "border": "#2a4f46",
+      "fg": "#e6eef0",
+      "fg-muted": "#8fa8a6",
+      "accent": "#34d399",
+      "danger": "#f87171",
+      "ok": "#22c55e",
+      "grad2": "#0a2442"
+    },
+    {
+      "id": "deepblue",
+      "name": "深空蓝",
+      "emoji": "🌌",
+      "light": false,
+      "bg": "#0d2a49",
+      "bg-elev": "#112f4e",
+      "bg-elev2": "#173b5f",
+      "border": "#1e3a57",
+      "fg": "#e3ecf5",
+      "fg-muted": "#8aa3bd",
+      "accent": "#38bdf8",
+      "danger": "#f87171",
+      "ok": "#34d399",
+      "grad2": "#060f1e"
+    },
+    {
+      "id": "twilight",
+      "name": "暮光紫",
+      "emoji": "🌆",
+      "light": false,
+      "bg": "#2b1d45",
+      "bg-elev": "#312250",
+      "bg-elev2": "#3a2a63",
+      "border": "#413566",
+      "fg": "#ece8f5",
+      "fg-muted": "#a395c4",
+      "accent": "#c084fc",
+      "danger": "#f87171",
+      "ok": "#34d399",
+      "grad2": "#120a24"
+    },
+    {
+      "id": "crimson",
+      "name": "荣艳红",
+      "emoji": "🌺",
+      "light": false,
+      "bg": "#471524",
+      "bg-elev": "#4c1a2a",
+      "bg-elev2": "#5c2235",
+      "border": "#5c2e3e",
+      "fg": "#f5e8ec",
+      "fg-muted": "#c09aa6",
+      "accent": "#f87171",
+      "danger": "#e11d48",
+      "ok": "#34d399",
+      "grad2": "#1c0b14"
+    }
+  ],
+  "token_expressions": [
+    {
+      "source": "ui/Theme.slint",
+      "name": "theme",
+      "type": "string",
+      "expression": "UIState.theme == \"system\"\n        ? (Palette.color-scheme == ColorScheme.dark ? \"midnight\" : \"light\")\n        : (UIState.theme == \"\" ? \"midnight\" : UIState.theme)"
+    },
+    {
+      "source": "ui/Theme.slint",
+      "name": "dark",
+      "type": "bool",
+      "expression": "Theme.theme != \"light\""
+    },
+    {
+      "source": "ui/Theme.slint",
+      "name": "spacing-xxs",
+      "type": "length",
+      "expression": "2px"
+    },
+    {
+      "source": "ui/Theme.slint",
+      "name": "spacing-xs",
+      "type": "length",
+      "expression": "4px"
+    },
+    {
+      "source": "ui/Theme.slint",
+      "name": "spacing-sm",
+      "type": "length",
+      "expression": "8px"
+    },
+    {
+      "source": "ui/Theme.slint",
+      "name": "spacing-md",
+      "type": "length",
+      "expression": "12px"
+    },
+    {
+      "source": "ui/Theme.slint",
+      "name": "spacing-lg",
+      "type": "length",
+      "expression": "16px"
+    },
+    {
+      "source": "ui/Theme.slint",
+      "name": "spacing-xl",
+      "type": "length",
+      "expression": "24px"
+    },
+    {
+      "source": "ui/Theme.slint",
+      "name": "spacing-xxl",
+      "type": "length",
+      "expression": "32px"
+    },
+    {
+      "source": "ui/Theme.slint",
+      "name": "spacing-hero",
+      "type": "length",
+      "expression": "64px"
+    },
+    {
+      "source": "ui/Theme.slint",
+      "name": "radius-xs",
+      "type": "length",
+      "expression": "3px"
+    },
+    {
+      "source": "ui/Theme.slint",
+      "name": "radius-sm",
+      "type": "length",
+      "expression": "5px"
+    },
+    {
+      "source": "ui/Theme.slint",
+      "name": "radius-md",
+      "type": "length",
+      "expression": "8px"
+    },
+    {
+      "source": "ui/Theme.slint",
+      "name": "radius-lg",
+      "type": "length",
+      "expression": "12px"
+    },
+    {
+      "source": "ui/Theme.slint",
+      "name": "radius-xl",
+      "type": "length",
+      "expression": "16px"
+    },
+    {
+      "source": "ui/Theme.slint",
+      "name": "titlebar-height",
+      "type": "length",
+      "expression": "40px"
+    },
+    {
+      "source": "ui/Theme.slint",
+      "name": "sidebar-width",
+      "type": "length",
+      "expression": "UIState.sidebar-width * 1px"
+    },
+    {
+      "source": "ui/Theme.slint",
+      "name": "editor-max-width",
+      "type": "length",
+      "expression": "760px"
+    },
+    {
+      "source": "ui/Theme.slint",
+      "name": "editor-side-padding",
+      "type": "length",
+      "expression": "96px"
+    },
+    {
+      "source": "ui/Theme.slint",
+      "name": "duration-instant",
+      "type": "duration",
+      "expression": "80ms"
+    },
+    {
+      "source": "ui/Theme.slint",
+      "name": "duration-fast",
+      "type": "duration",
+      "expression": "140ms"
+    },
+    {
+      "source": "ui/Theme.slint",
+      "name": "duration-normal",
+      "type": "duration",
+      "expression": "220ms"
+    },
+    {
+      "source": "ui/Theme.slint",
+      "name": "duration-slow",
+      "type": "duration",
+      "expression": "320ms"
+    },
+    {
+      "source": "ui/Typography.slint",
+      "name": "ui-font",
+      "type": "string",
+      "expression": "\"Segoe UI\""
+    },
+    {
+      "source": "ui/Typography.slint",
+      "name": "display-font",
+      "type": "string",
+      "expression": "\"Segoe UI Semibold\""
+    },
+    {
+      "source": "ui/Typography.slint",
+      "name": "serif-font",
+      "type": "string",
+      "expression": "\"Georgia\""
+    },
+    {
+      "source": "ui/Typography.slint",
+      "name": "mono-font",
+      "type": "string",
+      "expression": "\"Consolas\""
+    },
+    {
+      "source": "ui/Typography.slint",
+      "name": "emoji-font",
+      "type": "string",
+      "expression": "\"Segoe UI Emoji\""
+    },
+    {
+      "source": "ui/Typography.slint",
+      "name": "size-caption",
+      "type": "length",
+      "expression": "11px"
+    },
+    {
+      "source": "ui/Typography.slint",
+      "name": "size-ui",
+      "type": "length",
+      "expression": "13px"
+    },
+    {
+      "source": "ui/Typography.slint",
+      "name": "size-ui-lg",
+      "type": "length",
+      "expression": "14px"
+    },
+    {
+      "source": "ui/Typography.slint",
+      "name": "size-icon-sidebar",
+      "type": "length",
+      "expression": "13px"
+    },
+    {
+      "source": "ui/Typography.slint",
+      "name": "size-icon-picker",
+      "type": "length",
+      "expression": "19px"
+    },
+    {
+      "source": "ui/Typography.slint",
+      "name": "size-cover-height",
+      "type": "length",
+      "expression": "168px"
+    },
+    {
+      "source": "ui/Typography.slint",
+      "name": "size-cover-overlap",
+      "type": "length",
+      "expression": "68px"
+    },
+    {
+      "source": "ui/Typography.slint",
+      "name": "size-body",
+      "type": "length",
+      "expression": "15.5px"
+    },
+    {
+      "source": "ui/Typography.slint",
+      "name": "line-body",
+      "type": "float",
+      "expression": "1.55"
+    },
+    {
+      "source": "ui/Typography.slint",
+      "name": "size-h3",
+      "type": "length",
+      "expression": "18px"
+    },
+    {
+      "source": "ui/Typography.slint",
+      "name": "line-h3",
+      "type": "float",
+      "expression": "1.5"
+    },
+    {
+      "source": "ui/Typography.slint",
+      "name": "size-h2",
+      "type": "length",
+      "expression": "22px"
+    },
+    {
+      "source": "ui/Typography.slint",
+      "name": "line-h2",
+      "type": "float",
+      "expression": "1.36"
+    },
+    {
+      "source": "ui/Typography.slint",
+      "name": "size-h1",
+      "type": "length",
+      "expression": "28px"
+    },
+    {
+      "source": "ui/Typography.slint",
+      "name": "line-h1",
+      "type": "float",
+      "expression": "1.36"
+    },
+    {
+      "source": "ui/Typography.slint",
+      "name": "size-page-title",
+      "type": "length",
+      "expression": "38px"
+    },
+    {
+      "source": "ui/Typography.slint",
+      "name": "size-code",
+      "type": "length",
+      "expression": "13.5px"
+    },
+    {
+      "source": "ui/Typography.slint",
+      "name": "line-code",
+      "type": "float",
+      "expression": "1.48"
+    },
+    {
+      "source": "ui/Typography.slint",
+      "name": "weight-regular",
+      "type": "int",
+      "expression": "400"
+    },
+    {
+      "source": "ui/Typography.slint",
+      "name": "weight-medium",
+      "type": "int",
+      "expression": "500"
+    },
+    {
+      "source": "ui/Typography.slint",
+      "name": "weight-semibold",
+      "type": "int",
+      "expression": "600"
+    },
+    {
+      "source": "ui/Typography.slint",
+      "name": "weight-bold",
+      "type": "int",
+      "expression": "700"
+    },
+    {
+      "source": "ui/Typography.slint",
+      "name": "full-width",
+      "type": "bool",
+      "expression": "UIState.page-full-width"
+    },
+    {
+      "source": "ui/Typography.slint",
+      "name": "font-family",
+      "type": "string",
+      "expression": "UIState.page-font == 1\n        ? Typography.serif-font\n        : UIState.page-font == 2\n            ? Typography.mono-font\n            : Typography.ui-font"
+    },
+    {
+      "source": "ui/Typography.slint",
+      "name": "italic-font-family",
+      "type": "string",
+      "expression": "UIState.page-font == 1\n        ? \"Georgia Italic\"\n        : UIState.page-font == 2\n            ? \"Consolas Italic\"\n            : \"Segoe UI Italic\""
+    },
+    {
+      "source": "ui/Typography.slint",
+      "name": "size-body",
+      "type": "length",
+      "expression": "Typography.size-body * scale"
+    },
+    {
+      "source": "ui/Typography.slint",
+      "name": "size-h3",
+      "type": "length",
+      "expression": "Typography.size-h3 * scale"
+    },
+    {
+      "source": "ui/Typography.slint",
+      "name": "size-h2",
+      "type": "length",
+      "expression": "Typography.size-h2 * scale"
+    },
+    {
+      "source": "ui/Typography.slint",
+      "name": "size-h1",
+      "type": "length",
+      "expression": "Typography.size-h1 * scale"
+    },
+    {
+      "source": "ui/Typography.slint",
+      "name": "size-page-title",
+      "type": "length",
+      "expression": "Typography.size-page-title * scale"
+    },
+    {
+      "source": "ui/Typography.slint",
+      "name": "size-code",
+      "type": "length",
+      "expression": "Typography.size-code * scale"
+    },
+    {
+      "source": "ui/Typography.slint",
+      "name": "size-page-icon",
+      "type": "length",
+      "expression": "46px * scale"
+    },
+    {
+      "source": "ui/Typography.slint",
+      "name": "line-body",
+      "type": "float",
+      "expression": "Typography.line-body"
+    },
+    {
+      "source": "ui/Typography.slint",
+      "name": "line-h3",
+      "type": "float",
+      "expression": "Typography.line-h3"
+    },
+    {
+      "source": "ui/Typography.slint",
+      "name": "line-h2",
+      "type": "float",
+      "expression": "Typography.line-h2"
+    },
+    {
+      "source": "ui/Typography.slint",
+      "name": "line-h1",
+      "type": "float",
+      "expression": "Typography.line-h1"
+    },
+    {
+      "source": "ui/Typography.slint",
+      "name": "line-code",
+      "type": "float",
+      "expression": "Typography.line-code"
+    }
+  ],
+  "note": "Expressions are Slint source; translate semantics, not syntax. Derived Colors functions remain authoritative."
+}

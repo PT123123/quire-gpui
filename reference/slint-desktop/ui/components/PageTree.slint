@@ -1,0 +1,19 @@
+// The scrollable page tree inside the sidebar. Rows come pre-flattened from
+// Rust (favorites, recents, expanded tree, action row); a collapsed node
+// simply has no child rows in the model. The scroll position is mirrored to
+// UIState so the controller can anchor context menus to their row.
+
+import { ListView } from "std-widgets.slint";
+import { UIState } from "../Types.slint";
+import { SidebarItem } from "./SidebarItem.slint";
+
+export component PageTree inherits ListView {
+    content-width: self.width;
+    content-y <=> UIState.tree-viewport-y;
+
+    for node[index] in UIState.sidebar-rows : SidebarItem {
+        node: node;
+        index: index;
+        width: parent.content-width;
+    }
+}

@@ -1,0 +1,268 @@
+// Left navigation column: workspace header, pinned entries, page tree,
+// and a footer with build info.
+
+import { Theme } from "../Theme.slint";
+import { Colors } from "../Colors.slint";
+import { Typography } from "../Typography.slint";
+import { Icon } from "../Icons.slint";
+import { IconButton } from "./IconButton.slint";
+import { PageTree } from "./PageTree.slint";
+import { UIState } from "../Types.slint";
+
+component SidebarPinnedRow inherits Rectangle {
+    in property <string> icon-name;
+    in property <string> label;
+    in property <string> shortcut-hint: "";
+    // The row's id in the same space the tree's rows use (the `ROW_PINNED_*`
+    // constants in Rust), so a menu asked from here can say which row it was
+    // for. Negative, like every other row that is not a page.
+    in property <int> node-id: -1;
+    // The row's area is the one being shown (SPEC §四十一's two rows). A pinned
+    // row that is a *place* rather than an action has to say so, or the sidebar
+    // gives no answer to "where am I": the page tree's own selection is about a
+    // page, and neither of these two opens one.
+    in property <bool> selected: false;
+    callback clicked();
+
+    height: 28px;
+    border-radius: Theme.radius-sm;
+    background: root.selected
+        ? Colors.surface-hover
+        : (ta.has-hover ? Colors.hover-fill : transparent);
+    animate background { duration: Theme.duration-instant; }
+
+    HorizontalLayout {
+        spacing: Theme.spacing-sm;
+        padding-left: Theme.spacing-xs;
+        padding-right: Theme.spacing-sm;
+        cross-axis-alignment: center;
+        Icon {
+            width: 16px;
+            height: 16px;
+            size: 15px;
+            name: root.icon-name;
+            color: root.selected
+                ? Colors.text-primary
+                : (ta.has-hover ? Colors.text-secondary : Colors.text-muted);
+        }
+        Text {
+            text: root.label;
+            font-family: Typography.ui-font;
+            font-size: Typography.size-ui;
+            color: root.selected ? Colors.text-primary : Colors.text-secondary;
+        }
+        Rectangle { width: 0px; }
+        if root.shortcut-hint != "" : Text {
+            text: root.shortcut-hint;
+            font-family: Typography.ui-font;
+            font-size: Typography.size-caption;
+            color: Colors.text-muted;
+        }
+    }
+
+    ta := TouchArea {
+        mouse-cursor: MouseCursor.pointer;
+        clicked => {
+            root.clicked();
+        }
+        pointer-event(event) => {
+            if (event.kind == PointerEventKind.up
+                && event.button == PointerEventButton.right) {
+                UIState.node-context(root.node-id, root.absolute-position.y);
+            }
+        }
+    }
+}
+
+export component Sidebar inherits Rectangle {
+    width: UIState.sidebar-open ? Theme.sidebar-width : 0px;
+    clip: true;
+    // The drag writes the width every mouse-move; a tween on each of those
+    // frames is a rubber band, so the animation runs only for the open/close
+    // toggle — which is exactly when sidebar-resizing is off.
+    animate width { duration: UIState.sidebar-resizing ? 0ms : Theme.duration-normal; }
+    background: Colors.sidebar;
+
+    VerticalLayout {
+        width: Theme.sidebar-width;
+        padding-left: Theme.spacing-sm;
+        padding-right: Theme.spacing-sm;
+
+        // ---- workspace header ----
+        // A button whose affordance is the chevron (SPEC §八): the menu it opens
+        // is the workspace's own — 新建页面 / 打开数据文件夹 / 设置. Until this, the
+        // one control in the corner of the window answered neither a click nor a
+        // right-click, which is the *only* place the workspace's verbs live.
+        ws-header := Rectangle {
+            height: 36px;
+            TouchArea {
+                mouse-cursor: MouseCursor.pointer;
+                clicked => {
+                    UIState.node-context(-100, ws-header.absolute-position.y);
+                }
+            }
+            HorizontalLayout {
+                spacing: Theme.spacing-sm;
+                padding-left: Theme.spacing-xs;
+                Rectangle {
+                    vertical-stretch: 0;
+                    cross-axis-self-alignment: center;
+                    width: 20px;
+                    height: 20px;
+                    border-radius: 6px;
+                    background: Colors.accent;
+                    Text {
+                        text: "Q";
+                        font-family: Typography.ui-font;
+                        font-size: 12px;
+                        font-weight: Typography.weight-bold;
+                        color: Colors.text-on-accent;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                        width: 20px;
+                        height: 20px;
+                    }
+                }
+                Text {
+                    text: "工作区";
+                    font-family: Typography.ui-font;
+                    font-size: Typography.size-ui;
+                    font-weight: Typography.weight-semibold;
+                    color: Colors.text-primary;
+                    vertical-alignment: center;
+                }
+                Rectangle { width: 0px; }
+                IconButton {
+                    vertical-stretch: 0;
+                    cross-axis-self-alignment: center;
+                    icon-name: "chevron-down";
+                    size: 22px;
+                    clicked => {
+                        UIState.node-context(-100, ws-header.absolute-position.y);
+                    }
+                }
+            }
+        }
+
+        // ---- pinned rows: the two areas, then search / settings ----
+        // SPEC §四十一's two rows sit above search because they are *places*:
+        // they change what the window is showing, while search and settings open
+        // a panel over it. `shortcut-hint` is empty on them for a reason worth
+        // stating: a page is opened by a chord, but "show me my notes" is a place
+        // the user goes, and the palette is how they get there from the keyboard.
+        SidebarPinnedRow {
+            icon-name: "note";
+            label: "笔记";
+            // the `ROW_PINNED_*` constants in Rust, in the tree's id space
+            node-id: -10;
+            selected: UIState.active-area == "organizer" && UIState.org-tab == 0;
+            clicked => {
+                UIState.org-open-requested(0);
+            }
+        }
+        SidebarPinnedRow {
+            icon-name: "todo-check";
+            label: "任务";
+            node-id: -11;
+            selected: UIState.active-area == "organizer" && UIState.org-tab == 1;
+            clicked => {
+                UIState.org-open-requested(1);
+            }
+        }
+        SidebarPinnedRow {
+            icon-name: "search";
+            label: "搜索";
+            node-id: -12;
+            shortcut-hint: "Ctrl P";
+            clicked => {
+                UIState.search-open-requested();
+            }
+        }
+        SidebarPinnedRow {
+            icon-name: "settings";
+            label: "设置";
+            node-id: -13;
+            clicked => {
+                UIState.settings-open-requested();
+            }
+        }
+
+        Rectangle { height: Theme.spacing-sm; }
+
+        PageTree {
+            content-width: self.width;
+        }
+
+        if UIState.workspace-empty : Text {
+            x: Theme.spacing-md;
+            height: 24px;
+            text: "还没有页面 — Ctrl+N";
+            font-family: Typography.ui-font;
+            font-size: Typography.size-caption;
+            color: Colors.text-muted;
+            vertical-alignment: center;
+        }
+
+        // ---- footer ----
+        Rectangle {
+            height: 1px;
+            Rectangle {
+                x: Theme.spacing-xs;
+                width: parent.width - 2 * Theme.spacing-xs;
+                height: 1px;
+                background: Colors.border;
+            }
+        }
+        Rectangle {
+            height: 22px;
+            HorizontalLayout {
+                padding-left: Theme.spacing-xs + 24px;
+                Text {
+                    text: UIState.app-version;
+                    font-size: Typography.size-caption;
+                    color: Colors.text-muted;
+                    vertical-alignment: center;
+                }
+                Rectangle { width: 0px; }
+            }
+        }
+        Rectangle { height: Theme.spacing-sm; }
+    }
+
+    // ---- right-edge drag handle ----
+    // Declared last so it sits above the tree's own TouchAreas. Its x follows
+    // UIState.sidebar-width — the drag's target, applied instantly — rather
+    // than this sidebar's animated width: the width must not be read back
+    // through something that moves with it. The pointer's offset from the
+    // handle, remembered at press, cancels out of the delta below, so the
+    // width tracks the pointer one-to-one with no jump, and a width pinned at
+    // a clamp bound resumes cleanly when the pointer comes back.
+    Rectangle {
+        width: 6px;
+        height: parent.height;
+        x: UIState.sidebar-width * 1px - self.width;
+        background: ta.has-hover || UIState.sidebar-resizing
+            ? Colors.hover-fill
+            : transparent;
+        ta := TouchArea {
+            property <length> grab-offset;
+            mouse-cursor: MouseCursor.col-resize;
+            pointer-event(event) => {
+                if (event.kind == PointerEventKind.down) {
+                    ta.grab-offset = ta.mouse-x;
+                    UIState.sidebar-resizing = true;
+                }
+                if (event.kind == PointerEventKind.move) {
+                    UIState.sidebar-width = clamp(
+                        UIState.sidebar-width + (ta.mouse-x - ta.grab-offset) / 1px,
+                        200, 480);
+                }
+                if (event.kind == PointerEventKind.up
+                    || event.kind == PointerEventKind.cancel) {
+                    UIState.sidebar-resizing = false;
+                    UIState.sidebar-resized(UIState.sidebar-width);
+                }
+            }
+        }
+    }
+}

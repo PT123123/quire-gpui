@@ -1,0 +1,141 @@
+[workspace]
+# One member again: the model and the store left for their own repository
+# (ADR-0094) and come back as the pinned git dependency below, so the only crate
+# built from this directory is the Slint shell.
+members = ["."]
+
+[workspace.dependencies]
+# gif is listed because `attachment_store` names a GIF row `gif` / `image/gif`.
+# It is pinned here rather than spelled out at each use site so the shell and the
+# store agree: the same version and feature set is what stops cargo from building
+# two copies of one library into one binary.
+image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "bmp", "gif"] }
+# `bundled` in one place for the same reason: two different feature sets for
+# rusqlite across the two repositories would compile SQLite twice.
+rusqlite = { version = "0.40.2", features = ["bundled"] }
+
+[package]
+name = "quire"
+version = "0.1.26"
+edition = "2021"
+description = "A local, GPU-accelerated, Notion-like document app built with Rust + Slint"
+# three binaries exist (quire / quire-shot / quire-typing); this is the app
+default-run = "quire"
+
+[dependencies]
+# The model, the store and the windowless services, at a commit that is known
+# green here. A `rev` rather than a tag because the extracted repository has one
+# branch and no releases yet; the SHA is what makes a build reproducible.
+# Over HTTPS on purpose: the repository is public, and this is the URL that works
+# on a machine that has no SSH key registered — pushing uses SSH.
+#
+# This rev carries the organizer's sync model (core ADR-0004): notes and tasks are
+# merged by their 唯一 ID with the row's revision as the arbiter, which moves
+# `SNAPSHOT_VERSION` to 4 — so the phone's pin moves with this one, and a device
+# left on the previous rev refuses to sync rather than half-understanding. It also
+# drops the by-hand "add by IP" door, whose row and callback this shell no longer has.
+#
+# `bc6f55a` adds core ADR-0005 (a `busy_timeout`), which is a fix rather than a
+# change: the wire format, the snapshot version and the merge are all untouched, so
+# a peer on the previous rev still syncs with this one.
+#
+# `db0e95f` adds core ADR-0006: every open now repairs a file that reached the
+# current schema version without the objects that version implies, and refuses
+# one it cannot repair. A library that is missing its FTS tables had been
+# failing **every** write inside one transaction, so this shell was saving
+# nothing at all on such a file — including `sync.device-id`, which re-minted on
+# every launch (shell ADR-0142). A fix rather than a change in the same sense as
+# the rev above: the wire format, the snapshot version and the merge are all
+# untouched, so the phone's pin does not move and a peer on the previous rev
+# still syncs with this one.
+quire-core = { git = "https://github.com/PT123123/quire-core.git", rev = "db0e95f" }
+image = { workspace = true }
+rfd = "0.17.2"
+rusqlite = { workspace = true }
+# The sync snapshot's wire format (crate::sync). Pure Rust, no system deps.
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# Renderer is selected per cargo feature (see [features]); default-features are off so
+# exactly one GPU renderer is compiled per binary, keeping the binary lean.
+slint = { version = "1.18", default-features = false, features = [
+    "std",
+    "backend-winit",
+    "accessibility",
+    "system-tray",
+    "image-default-formats",
+    "compat-1-18",
+    # The 速记 pop-up has to be taken off the taskbar, and Slint has no property
+    # for that — only the HWND does it (ADR-0145).
+    "raw-window-handle-06",
+] }
+# Only for that one HWND: `RawWindowHandle::Win32` behind `Window::window_handle()`.
+# The same 0.6 slint itself builds against, so no second copy lands in the binary.
+raw-window-handle = "0.6"
+
+[features]
+default = ["femtovg"]
+# A. FemtoVG via OpenGL (Slint's default desktop renderer path)
+femtovg = ["slint/renderer-femtovg"]
+# A'. FemtoVG via wgpu
+femtovg-wgpu = ["slint/renderer-femtovg-wgpu"]
+# B. Skia (Vulkan/GL drivers behind it, per variant)
+skia = ["slint/renderer-skia"]
+skia-opengl = ["slint/renderer-skia-opengl"]
+# Software renderer kept available as a no-GPU fallback for testing
+software = ["slint/renderer-software"]
+
+[build-dependencies]
+embed-resource = "3.0.11"
+slint-build = "1.18"
+
+# The two tests that name `quire::app`, so they belong to the shell. The data
+# crate carries the other five.
+[[test]]
+name = "workspace"
+path = "tests/integration/workspace_test.rs"
+
+[[test]]
+name = "persistence"
+path = "tests/integration/persistence_test.rs"
+
+# Headless screenshot tool (visual regression); built only with the
+# software renderer feature so the shipped binary stays lean.
+[[bin]]
+name = "quire-shot"
+path = "src/bin/quire_shot.rs"
+required-features = ["software"]
+
+# Scene E typing benchmark (docs/PERFORMANCE.md): drives the real window, so
+# it builds against whichever renderer is enabled.
+[[bin]]
+name = "quire-typing"
+path = "src/bin/quire_typing.rs"
+
+# The dev profile is where this shell's disk went (ADR-0134). Slint's generated
+# code plus a full `debug = 2` made a single `libquire-*.rlib` 978 MB, and because
+# a renderer switch (`just shot` builds with `software`, everything else with the
+# default `femtovg`) is a *different feature set*, cargo treats each as a distinct
+# unit and never reclaims the old one: 26 copies of the same crate, 63 GB.
+#
+# `debug = 1` (line tables only) keeps the debugger able to step through the UI
+# and keeps a panic backtrace's function names, which is what a developer
+# actually uses this build for, and drops the bulk of the artifact. It is a
+# line-tables-plus-some, not `debug = 0`: the visual work in this shell is done by
+# reading a backtrace out of a log file (docs/DECISIONS.md), and with `0` the
+# frames would be unresolved. `incremental` is left on — it is the whole reason
+# this directory was worth keeping, and it costs a fraction of what the debug
+# info did.
+[profile.dev]
+debug = 1
+
+[profile.release]
+codegen-units = 1
+lto = "thin"
+strip = "debuginfo"
+
+# Same reasoning for the *release* profile's test builds: `just check` compiles
+# the test targets in dev, but a release test run would otherwise carry the same
+# 978 MB per unit. Not the dominant cost (7.6 GB for the whole release tree), so
+# it is left at the default rather than tuned.
+[profile.test]
+debug = 1

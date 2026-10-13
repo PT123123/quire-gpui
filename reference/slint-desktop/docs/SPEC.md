@@ -1,0 +1,2767 @@
+# Quire 项目规格（原始需求文档）
+
+> 本文档是项目的初始需求与长期约束说明，随项目保留存档。README 中为其浓缩版。
+
+---
+
+你现在要从零开始开发一个现代、轻量、GPU 加速的 Notion-like 本地文档应用。
+
+这是一个长期项目，不要把它理解成一次性的 Demo。第一目标平台是 Windows，后续再考虑 Android。项目核心要求是：
+
+1. 界面必须好看，达到现代桌面生产力软件的视觉质量，参考 Notion、Linear、Obsidian、Craft、Raycast、Arc 等产品的设计理念，但不要直接复制任何品牌 UI、Logo、图标或视觉资产。
+2. Windows 下必须尽量低内存、低 CPU。
+3. UI 必须使用 GPU 加速渲染。
+4. 不使用 Electron、Chromium、WebView2、Tauri、React、Vue、Web 技术作为主要 UI 运行时。
+5. 使用 Rust + Slint。
+6. UI 与核心业务逻辑严格分离，但默认保持单进程，不要把 Frontend 和 Backend 拆成两个进程。
+7. 代码必须非常适合 Coding Agent 持续修改和扩展，避免形成像输入法/TSF 那种平台耦合极深、修改成本极高的架构。
+8. 第一版不要做同步、协作、云端、插件市场、AI、实时多人编辑等大型能力。
+9. 优先把“漂亮的桌面 UI + Block Editor + 本地存储 + 极低资源占用”做完整。
+10. 所有架构选择都要优先考虑长期可维护性，而不是为了短期功能量堆复杂度。
+
+==================================================
+一、项目技术底座
+========
+
+不要直接 fork 一个完整的第三方 Notion-like 项目。
+
+以官方 Slint Rust Template 为工程起点：
+
+https://github.com/slint-ui/slint-rust-template
+
+这个仓库只作为工程脚手架，不要把里面的 Todo 示例逻辑继续发展成最终架构。
+
+参考以下官方仓库，但只学习架构和 UI 写法：
+
+1. Slint 主仓库：
+   https://github.com/slint-ui/slint
+
+2. 官方 cargo-ui：
+   https://github.com/slint-ui/cargo-ui
+
+3. 官方 node-editor-cpp：
+   https://github.com/slint-ui/node-editor-cpp
+
+特别参考 node-editor-cpp 对以下问题的处理方式：
+
+* `.slint` 负责视觉、布局、交互
+* backend 负责 model
+* UI callback 与 backend API 有明确边界
+* 动态模型通过 Slint model 接入
+* 复杂交互状态不要散落在 UI 各处
+
+不要复制它的具体项目结构，只吸收架构思想。
+
+当前 Slint 版本优先使用 1.18.x 或当前稳定的 1.x 小版本，不要无理由锁死过旧版本。2026-09-16 发布的 Slint 1.18 已经包含更好的大文本渲染/编辑性能、FlexboxLayout、运行时 z-order、拖拽、改进的代码生成等功能，这些能力对本项目有直接价值。
+
+==================================================
+二、项目总体架构
+========
+
+不要采用：
+
+UI → JS → API → DB
+
+不要采用：
+
+UI → WebView → Web Backend
+
+不要采用：
+
+多个进程通过 IPC 通信
+
+推荐：
+
+```
+                 Application
+                      |
+        ┌─────────────┴─────────────┐
+     Slint UI Layer              Rust Core
+        |                             |
+   ┌────┼────┐            ┌──────────┼──────────┐
+Sidebar Editor Command   Document/Page/Block   Model → DB   Search
+   |                        Services
+   |                     Import / Export
+```
+
+整个应用默认保持单进程。
+
+UI 层：
+
+* `.slint`
+* 视觉
+* 布局
+* 动画
+* 交互
+* 当前 UI 状态
+* Focus
+* Selection
+* Popup
+* Menu
+
+Rust Core：
+
+* Document Model
+* Page Model
+* Block Model
+* Undo/Redo
+* Persistence
+* SQLite
+* Search
+* Import/Export
+* Application state
+* Command dispatch
+* 后台任务
+
+原则：
+
+UI 不直接碰数据库。
+
+UI 不直接执行磁盘 IO。
+
+UI 不自己管理业务数据的一致性。
+
+Rust Core 不负责视觉细节。
+
+Rust Core 不应该知道具体某个按钮是什么颜色。
+
+==================================================
+三、目录结构
+======
+
+从第一天就建立清晰目录。
+
+推荐：
+
+src/
+main.rs
+
+```
+core/
+    mod.rs
+    document.rs
+    page.rs
+    block.rs
+    inline.rs
+    command.rs
+    history.rs
+    selection.rs
+
+storage/
+    mod.rs
+    database.rs
+    migrations.rs
+    repository.rs
+
+services/
+    mod.rs
+    document_service.rs
+    search_service.rs
+    import_service.rs
+    export_service.rs
+
+platform/
+    mod.rs
+    windows.rs
+
+app/
+    mod.rs
+    state.rs
+    controller.rs
+```
+
+ui/
+AppWindow.slint
+Theme.slint
+Colors.slint
+Typography.slint
+Icons.slint
+
+```
+components/
+    AppShell.slint
+    Sidebar.slint
+    SidebarItem.slint
+    PageTree.slint
+    Editor.slint
+    EditorBlock.slint
+    BlockHandle.slint
+    BlockMenu.slint
+    SlashMenu.slint
+    CommandPalette.slint
+    SearchPanel.slint
+    TopBar.slint
+    Button.slint
+    IconButton.slint
+    Tooltip.slint
+    ContextMenu.slint
+    IconPicker.slint
+    Dialog.slint
+
+blocks/
+    ParagraphBlock.slint
+    HeadingBlock.slint
+    TodoBlock.slint
+    BulletBlock.slint
+    NumberedListBlock.slint
+    QuoteBlock.slint
+    CodeBlock.slint
+    DividerBlock.slint
+```
+
+tests/
+fixtures/
+integration/
+
+benchmarks/
+documents/
+scripts/
+
+docs/
+ARCHITECTURE.md
+UI_ARCHITECTURE.md
+EDITOR_ARCHITECTURE.md
+PERFORMANCE.md
+ROADMAP.md
+DECISIONS.md
+
+PLAN.md
+README.md
+
+不要把所有 UI 写进一个 `main.slint`。
+
+不要把所有 Rust 逻辑写进 `main.rs`。
+
+==================================================
+四、第一阶段：工程初始化
+============
+
+目标：
+
+M0：能够稳定编译、启动，并确认 GPU renderer。
+
+任务：
+
+1. 从官方 slint-rust-template 初始化项目。
+2. 替换项目名称。
+3. 使用当前稳定 Slint 1.x。
+4. Windows 使用 MSVC。
+5. 建立 Debug / Release 两种构建。
+6. 配置 Slint LSP。
+7. 确认 VS Code 能正常获得：
+
+   * 语法高亮
+   * 补全
+   * 跳转
+   * live preview
+8. 建立最基本的 CI：
+
+   * cargo check
+   * cargo test
+   * cargo build --release
+9. 创建最小主窗口。
+10. 创建 GPU renderer 验证 Demo。
+
+不要一开始就堆各种依赖。
+
+尤其不要因为“以后可能需要”提前安装几十个 crate。
+
+每个依赖都必须回答：
+
+* 为什么需要？
+* 是否能够用标准库解决？
+* 是否会增加 runtime memory？
+* 是否会增加后台线程？
+* 是否会增加 build complexity？
+
+==================================================
+五、GPU Renderer 选择
+=================
+
+必须实际验证 renderer，不允许只根据网上印象决定。
+
+Slint 当前 Winit backend 可以选择：
+
+* FemtoVG
+* FemtoVG + WGPU
+* Skia
+* Skia OpenGL
+* Software
+
+Windows 项目重点测试：
+
+A. winit-femtovg-wgpu
+
+B. winit-skia
+
+必要时额外测试实验性的 Vello renderer，但不要在第一版直接使用实验 renderer。
+
+优先关注：
+
+1. 文本清晰度
+2. 滚动流畅度
+3. CPU
+4. GPU
+5. RAM
+6. 首次启动时间
+7. 空闲时 CPU 是否接近 0
+8. 是否存在持续 frame
+9. 长文本表现
+
+注意：
+
+GPU 加速不是目标本身。
+
+目标是：
+
+“用 GPU 渲染 UI，同时避免因为无意义持续重绘导致 CPU 很高。”
+
+如果静止界面一直有动画、timer 或 render loop，必须查清楚原因。
+
+==================================================
+六、性能基线
+======
+
+在真正开发 UI 之前，建立 benchmark。
+
+必须至少记录：
+
+1. Startup time
+2. Idle Working Set
+3. Idle Private Bytes
+4. Idle CPU
+5. Simple document RAM
+6. 1000 Block document RAM
+7. 5000 Block document RAM
+8. 10000 Block document RAM
+9. Scroll CPU
+10. Typing CPU
+11. Search CPU
+12. Page switching latency
+
+必须区分：
+
+Debug
+
+和：
+
+Release
+
+所有正式 benchmark 以 Release 为准。
+
+不要使用一个“看起来很漂亮”的页面作为唯一 benchmark。
+
+建立四种固定场景：
+
+Benchmark A：
+
+空白窗口，只包含 App Shell。
+
+Benchmark B：
+
+100 个简单 Paragraph Block。
+
+Benchmark C：
+
+5000 个简单 Paragraph Block。
+
+Benchmark D：
+
+10000 个简单 Paragraph Block。
+
+Benchmark E：
+
+持续输入文本。
+
+Benchmark F：
+
+连续滚动。
+
+Benchmark G：
+
+快速切换 100 个页面。
+
+每次关键架构修改后重新测试。
+
+把结果写入：
+
+docs/PERFORMANCE.md
+
+==================================================
+七、第二阶段：视觉系统
+===========
+
+这一步非常重要。
+
+不要先做数据库。
+
+先做一个“看起来已经像产品”的桌面 UI。
+
+目标：
+
+即使所有数据都是 mock data，截图也应该具有商业软件的完成度。
+
+视觉参考：
+
+Notion：
+
+* 极简
+* 大量留白
+* 文档感
+* 清晰层级
+
+Linear：
+
+* 高信息密度
+* 精细 hover
+* 很好的快捷操作
+* 克制动画
+
+Obsidian：
+
+* 桌面知识库结构
+* Sidebar + Document
+
+不要直接复制这些软件。
+
+建立自己的视觉语言。
+
+---
+
+## 主题系统
+
+创建：
+
+Theme.slint
+
+Colors.slint
+
+Typography.slint
+
+Icons.slint
+
+统一定义：
+
+* background
+* surface
+* surface-hover
+* surface-selected
+* text-primary
+* text-secondary
+* text-muted
+* border
+* accent
+* danger
+* success
+* code-background
+
+定义：
+
+* 标题字号
+* 正文字号
+* Sidebar 字号
+* Command Menu 字号
+* 行高
+* 字重
+* 圆角
+* spacing scale
+
+例如：
+
+spacing-xs
+spacing-sm
+spacing-md
+spacing-lg
+spacing-xl
+
+不要在 100 个 `.slint` 文件里各自写：
+
+`8px`
+
+`9px`
+
+`11px`
+
+`13px`
+
+然后最后无法统一修改。
+
+---
+
+## 颜色
+
+调色板是 **ActivityWatch 的十二个主题**（`aw-qtui/src/theme.h` 的 `kThemes[]`，
+逐字移植进 `ui/Colors.slint`，ADR-0116），在设置里按名字选：
+
+* 纯色八个：midnight（默认）/ graphite / violet / emerald / amber / ocean / rose / light
+* 渐变四个：jade / deepblue / twilight / crimson——`bg` 是页面上端、`grad2` 是下端，
+  页面画这条竖向渐变（`Colors.page`），九个纯色主题令 `grad2 == bg`，同一条规则
+  对两者都成立
+
+十二个主题共用同一套语义 token：其余 `.slint` 文件只引用 token，一个颜色都不写死。
+所有 token 都由所选那行在 `ui/Colors.slint` 里**推导**（`text-secondary =
+mix(fg, fgMuted, 0.55)`、`accent-soft`/`accent-text` 是强调色在本主题自己页面上的
+淡色，等等），与 AW 的 `applyThemeColors` 同一套规则。`UIState.theme` 存的是
+**主题 id**（或 `system`，跟随系统色阶），`Theme.dark` 由它推导而不是另存一份。
+
+Notion 的十个块色、`find-hit` / `cover-scrim` **不随主题变**：它们是内容色与算术
+（ADR-0023、ADR-0043、ADR-0047），一条笔记的含义不该因为换了外壳配色而变。
+
+浅色主题（light）仍遵守：
+
+* 接近白色的主背景
+* 非纯黑文字
+* 极轻的 border
+* 低对比度 sidebar
+
+深色主题仍遵守：
+
+* 不使用纯黑
+* 不使用大面积强对比
+* 文本层级清晰
+
+---
+
+## 动画
+
+动画原则：
+
+“有反馈，但不持续运行。”
+
+允许：
+
+* Hover fade
+* Sidebar selection transition
+* Menu enter
+* Command Palette enter
+* Drag feedback
+* Popup scale/fade
+
+禁止：
+
+* 无限 loop 动画
+* 每帧更新 UI state
+* 无意义的呼吸灯
+* 背景动画
+
+---
+
+## 窗口
+
+Windows 应用应该考虑：
+
+* 自定义 title bar
+* WindowMoveArea
+* 最小化
+* 最大化
+* 关闭
+* window resize
+* system tray —— 已做（ADR-0096）：关闭窗口是隐藏到托盘，「退出」只在托盘右键菜单里
+* 单实例 —— 已做（ADR-0136）。同一版本重复启动会弹窗提示并退出本次启动；启动的
+  版本更新时，旧版本通过自己的退出通道优雅退出（落盘 + clean-exit 记录 + 释放
+  exe），然后新版本继续启动；正在运行的版本更新时，本次启动弹窗并退出。判定发生
+  在日志、数据库和窗口之前
+
+但第一版不要花大量时间做 Windows 原生窗口特效。
+
+==================================================
+八、第三阶段：App Shell
+================
+
+先做：
+
+┌─────────────────────────────────────────┐
+│             Top / Title Bar             │
+├──────────┬──────────────────────────────┤
+│          │                              │
+│ Sidebar  │          Document            │
+│          │                              │
+│ Workspace│       Editor Area            │
+│ Pages    │                              │
+│ Search   │                              │
+│ Settings │                              │
+│          │                              │
+└──────────┴──────────────────────────────┘
+
+Sidebar：
+
+* Workspace
+* Favorites
+* Recent
+* Page Tree
+* Search
+* Settings
+
+顶部：
+
+* 页面标题
+* breadcrumb 可选
+* Search
+* 更多菜单
+
+不要第一版做得像传统 IDE。
+
+应用整体应该像现代生产力软件。
+
+---
+
+## Sidebar 行为
+
+要求：
+
+* hover
+* selected
+* right click
+* collapse
+* expand
+* drag
+* context menu
+
+Page Tree：
+
+支持：
+
+Page
+
+Sub Page
+
+无限层级理论上允许，但视觉上需要限制展开复杂度。
+
+不要一开始制作 10 万节点测试。
+
+==================================================
+九、第四阶段：Document Model
+=====================
+
+这是 Rust Core 的核心。
+
+不要：
+
+Page = 巨大 String
+
+推荐：
+
+Document
+
+包含：
+
+Page
+
+包含：
+
+Block Tree
+
+示例：
+
+Page
+├── Heading
+├── Paragraph
+├── Paragraph
+├── Todo
+├── BulletList
+│    ├── Paragraph
+│    └── Paragraph
+├── Quote
+└── Code
+
+每个 Block：
+
+id
+
+parent_id
+
+order
+
+type
+
+properties
+
+children
+
+不要使用数组 index 作为永久 ID。
+
+ID 必须稳定。
+
+推荐 UUID 或适合本项目的轻量 ID。
+
+排序必须支持插入和移动。
+
+---
+
+## Block Type
+
+第一期：
+
+paragraph
+
+heading_1
+
+heading_2
+
+heading_3
+
+bullet
+
+numbered
+
+todo
+
+quote
+
+code
+
+divider
+
+后续再添加：
+
+image
+
+bookmark
+
+callout
+
+table
+
+toggle
+
+database
+
+不要第一期做这些。
+
+2026-09-20 更新：上面这批已排进 §三十七（媒体 / 结构 / 嵌入三批）与 §三十九（database），不再是「以后再说」，按 §二十九 的 M10–M14 执行。第一期（M0–M8）约束仍然有效，不得借这条提前动块模型。
+
+==================================================
+十、Inline Model
+==============
+
+Notion 的正文不是单纯字符串。
+
+因此预留：
+
+Inline Text
+
+Inline Code
+
+Bold
+
+Italic
+
+Link
+
+Strike
+
+Highlight
+
+2026-09-21 更新：这批预留里除 Highlight 外都已在 M6 实现，另外多了一项 §三十七 批次 C 要的 Math（行内 `$…$` 与 `math` 块，ADR-0038）。这不回头改 M6 的验收：Math 是新增 mark kind，靠 `MarkKind::as_str` 落库，没有迁移。
+
+但第一阶段不要一次把全部实现。
+
+推荐：
+
+Block
+
+↓
+
+Text Content
+
+↓
+
+Inline Span[]
+
+每个 Span：
+
+text
+
+marks
+
+link
+
+style
+
+---
+
+## 重要限制
+
+Slint 目前没有一个现成的完整 Notion-grade Rich Text Editor。
+
+因此不要假定：
+
+TextEdit = Notion Editor
+
+不是这样的。
+
+需要自己建立：
+
+Editor Model
+
+Selection
+
+Caret
+
+Block insertion
+
+Block deletion
+
+Block splitting
+
+Block merging
+
+Inline mark
+
+Document command
+
+==================================================
+十一、第五阶段：Block Editor MVP
+========================
+
+这是第一阶段真正的核心。
+
+必须先做稳定，而不是先做富文本。
+
+必须实现：
+
+1. 输入文字
+2. Enter 新建 Block
+3. Backspace 删除
+4. Backspace 合并 Block
+5. Delete
+6. Up / Down
+7. Left / Right
+8. Home / End
+9. Ctrl+A
+10. Ctrl+C
+11. Ctrl+V
+12. Ctrl+Z
+13. Ctrl+Shift+Z 或 Ctrl+Y
+14. 鼠标选区
+15. 鼠标点击定位
+16. Todo
+17. 切换 Block 类型
+18. 删除 Block
+19. 移动 Block
+
+要求：
+
+输入不能明显卡顿。
+
+不要每输入一个字符就：
+
+serialize document
+
+write SQLite
+
+rebuild all UI
+
+refresh all block
+
+正确做法：
+
+用户输入
+
+↓
+
+Editor Controller
+
+↓
+
+更新当前 Block
+
+↓
+
+局部 UI 更新
+
+↓
+
+debounced persistence
+
+---
+
+## 中文输入
+
+这是硬性要求。
+
+禁止自己实现：
+
+TSF
+
+IME engine
+
+Candidate Window
+
+Composition Framework
+
+输入法协议
+
+Text Service
+
+不要重复做你之前输入法项目的复杂基础设施。
+
+优先使用 Slint 的文本输入设施和 Windows 系统 IME。
+
+只有遇到 Slint/Windows 的实际 bug 时，再做最小的平台 adapter。
+
+==================================================
+十二、第六阶段：Block Rendering
+=======================
+
+Block Editor 必须考虑 Virtualization。
+
+不要：
+
+10000 blocks
+
+↓
+
+10000 个复杂永久 UI Item
+
+↓
+
+10000 个 TextEdit
+
+正确目标：
+
+viewport
+
+↓
+
+visible blocks
+
+↓
+
+nearby blocks
+
+↓
+
+复用/创建必要的 UI
+
+核心原则：
+
+不可见内容尽可能不占据昂贵的 UI 资源。
+
+不要把每一个 Block 都永久绑定一个复杂 editor。
+
+特别是 TextEdit。
+
+因为：
+
+TextEdit 是交互控件。
+
+不是纯文本渲染器。
+
+考虑将：
+
+非编辑状态
+
+和：
+
+编辑状态
+
+分开。
+
+普通 Block：
+
+轻量展示
+
+当前编辑 Block：
+
+进入 editor mode
+
+例如：
+
+普通：
+
+ParagraphBlockView
+
+当前：
+
+ParagraphEditor
+
+只有焦点 Block 使用真正 TextEdit。
+
+这样可以极大降低长文档常驻 UI 成本。
+
+==================================================
+十三、第七阶段：Selection / Caret / Focus
+=================================
+
+这是编辑器稳定性的关键。
+
+建立明确的 EditorState：
+
+focused_block_id
+
+selection_start
+
+selection_end
+
+anchor
+
+cursor
+
+composition_state
+
+active_block
+
+editing_mode
+
+不要让每个 `.slint` 文件自己维护一套 selection。
+
+Rust 中维护核心状态。
+
+UI 只展示。
+
+==================================================
+十四、第八阶段：Command 系统
+==================
+
+所有核心编辑操作都应该尽量变成 Command。
+
+例如：
+
+InsertText
+
+DeleteText
+
+SplitBlock
+
+MergeBlock
+
+SetBlockType
+
+MoveBlock
+
+DeleteBlock
+
+InsertBlock
+
+ToggleTodo
+
+ApplyMark
+
+Undo
+
+Redo
+
+这样 Undo/Redo 就可以天然建立在 Command history 上。
+
+不要实现：
+
+“撤销的时候重新读取数据库”
+
+Undo 应该针对内存中的 Document Model。
+
+数据库只是 persistence。
+
+==================================================
+十五、第九阶段：Slash Command
+=====================
+
+实现 Notion 风格：
+
+输入：
+
+/
+
+弹出：
+
+┌──────────────────────┐
+│ Search blocks...     │
+├──────────────────────┤
+│ Text                 │
+│ Heading 1            │
+│ Heading 2            │
+│ Bullet List          │
+│ Numbered List        │
+│ Todo                 │
+│ Quote                │
+│ Code                 │
+│ Divider              │
+└──────────────────────┘
+
+要求：
+
+* 键盘操作
+* 上下选择
+* Enter 确认
+* Esc 取消
+* 模糊搜索
+* 自动定位
+* 不抢正常输入
+
+Slash menu 不应该在 QML/Slint 中硬编码大量业务判断。
+
+由 Rust 返回 command descriptors。
+
+UI 负责展示。
+
+==================================================
+十六、第十阶段：Command Palette
+=======================
+
+提供全局：
+
+Ctrl+K
+
+或你最终确定的快捷键。
+
+支持：
+
+Open Page
+
+Create Page
+
+Search
+
+Change Theme
+
+Toggle Sidebar
+
+Go Back
+
+Go Forward
+
+等等。
+
+Command Palette 与 Slash Menu 必须复用底层 command registry。
+
+不要写两套。
+
+==================================================
+十七、第十一阶段：Page Tree
+==================
+
+实现：
+
+Create page
+
+Rename page
+
+Delete page
+
+Duplicate page
+
+Create subpage
+
+Move page
+
+Collapse
+
+Expand
+
+Search page
+
+Favorites
+
+Recent
+
+页面树操作应该是异步但不应阻塞 UI。
+
+大型 Tree 必须考虑 virtualization。
+
+不要一次把整个 workspace 渲染成巨大的 UI tree。
+
+---
+
+本阶段只管树的结构。页面自身的图标、封面、版式、锁定、版本历史、模板见 §三十八；反向链接与提及见 §四十。
+
+==================================================
+十八、第十二阶段：SQLite
+===============
+
+使用 SQLite。
+
+数据库至少考虑：
+
+workspaces
+
+pages
+
+blocks
+
+block_children
+
+metadata
+
+settings
+
+后续：
+
+search index
+
+attachments
+
+不要一开始引入：
+
+Postgres
+
+server
+
+cloud database
+
+Redis
+
+sync backend
+
+所有数据优先本地。
+
+---
+
+## 事务
+
+以下操作应该具备事务一致性：
+
+Create Page
+
+Delete Page
+
+Move Page
+
+Move Block
+
+Merge Block
+
+Split Block
+
+Bulk Update
+
+Undo/Redo persistence
+
+不要每个 SQL 单独提交然后让中间状态暴露。
+
+==================================================
+十九、第十三阶段：自动保存
+=============
+
+自动保存策略：
+
+内存修改
+
+↓
+
+dirty
+
+↓
+
+debounce
+
+↓
+
+batch persistence
+
+例如用户连续输入时：
+
+不要：
+
+每字符：
+
+UPDATE SQLite
+
+而应该：
+
+停止输入一小段时间
+
+↓
+
+批量保存
+
+特殊情况下：
+
+Ctrl+S
+
+立即保存。
+
+程序关闭：
+
+尽可能 flush dirty state。
+
+==================================================
+二十、第十四阶段：Search
+===============
+
+第一版实现：
+
+Page title search
+
+Content search
+
+Block text search
+
+不要做复杂 AI search。
+
+搜索必须：
+
+异步
+
+不阻塞 UI
+
+结果实时显示
+
+支持 keyboard navigation。
+
+后续可以升级：
+
+SQLite FTS
+
+但第一版先留接口。
+
+页内查找（Ctrl+F，M7）是这一阶段的另一条，只查已经打开的那一页。它有一条画法规格：
+**计数条说 2 / 16，页面上就要看得见 16 个命中**。一个命中 = 一个 word-run 单元格
+（ADR-0041 的切分，ADR-0043 把它当成多出来的两个字节边界），命中的边界落在词中间就把词切开，
+落在标记里就把整段标记染上——标记那格永不可切。底色只负责说「这一格」，标记由边框承担：
+没有任何一种底色能同时做到「自己在白纸上达到 3:1」和「不压垮九种块文字色」，
+所以量出来的是 #ffe9a8 + #bd6408（浅色）与 #3d3413 + #a87718（深色）。
+命中在表格单元或分栏盒子里时没有自己的行，只能搭画它的那一行（ADR-0028）。
+「看得见」不等于「都是框」：抽样张那一页 16 个命中画出 14 个，剩下 2 个在被光标占住的那一块里，
+那里画的是编辑器自己的选中态而不是单元格——计数与画面必须能这样对上账，对不上就是漏画。
+引用块和高亮块各只有一个自己的 `Text`，所以它们一度什么框都不画，而计数条照报 16；
+现在凡是画正文的地方都走同一套 runs，各带自己的边框（引用块的缩进、高亮块让开 emoji 的那 40px）。
+
+==================================================
+二十一、第十五阶段：视觉质量迭代
+================
+
+到这个阶段，必须暂停功能开发，专门做视觉。
+
+要求 Agent 自己审查：
+
+* spacing
+* alignment
+* typography
+* hierarchy
+* hover
+* active
+* selected
+* focus
+* popup
+* menu
+* sidebar
+* scrollbar
+* empty state
+* loading state
+* error state
+
+不要出现：
+
+一个按钮 8px 圆角
+
+另一个 6px
+
+另一个 12px
+
+这种没有系统的设计。
+
+不要默认使用过多阴影。
+
+不要让每个区域都有 border。
+
+要让 UI 通过：
+
+字体
+
+间距
+
+颜色
+
+层级
+
+来形成视觉结构。
+
+==================================================
+二十二、第十六阶段：性能优化
+==============
+
+这一阶段不是：
+
+“把 UI 做丑来省内存”。
+
+性能优化必须优先来自结构。
+
+重点检查：
+
+1. QML/Slint Item 数量
+2. TextEdit 数量
+3. Text layout 次数
+4. 图片缓存
+5. string clone
+6. model 更新范围
+7. database write frequency
+8. timer 数量
+9. animation 数量
+10. redraw frequency
+
+重点目标：
+
+静止页面：
+
+尽量没有持续 CPU 工作。
+
+编辑：
+
+只更新受影响 Block。
+
+滚动：
+
+只处理必要内容。
+
+搜索：
+
+后台执行。
+
+保存：
+
+debounced。
+
+图片：
+
+lazy load。
+
+大型文档：
+
+virtualized。
+
+---
+
+## 长文档测试
+
+必须有：
+
+1000 block
+
+5000 block
+
+10000 block
+
+分别测试：
+
+打开
+
+滚动
+
+输入
+
+删除
+
+移动
+
+搜索
+
+切页
+
+退出
+
+不得只在 100 个 Block 下判断性能。
+
+==================================================
+二十三、第十七阶段：内存诊断
+==============
+
+如果 RAM 高，不能简单说：
+
+“Slint 就是这么高。”
+
+必须定位：
+
+Rust heap
+
+Slint runtime
+
+text cache
+
+image cache
+
+model
+
+document
+
+database
+
+OS graphics memory
+
+分别分析。
+
+尤其注意：
+
+Task Manager 中：
+
+Memory
+
+GPU Memory
+
+Private Working Set
+
+可能不是同一个东西。
+
+记录时至少区分：
+
+CPU-side memory
+
+GPU-side memory
+
+shared GPU memory
+
+不要把 GPU 显存直接当成普通 RAM。
+
+==================================================
+二十四、第十八阶段：Release Packaging
+===========================
+
+Windows Release：
+
+* release profile
+* LTO
+* strip/symbol strategy
+* panic strategy 根据需求决定
+* debug artifacts 分离
+
+但不要为了让 exe 数字看起来小，而牺牲启动性能或者可维护性。
+
+优先优化：
+
+runtime memory
+
+runtime CPU
+
+startup
+
+而不是：
+
+exe 文件大小
+
+==================================================
+二十五、第十九阶段：Crash Recovery
+========================
+
+必须考虑：
+
+突然退出
+
+崩溃
+
+断电
+
+数据库写入中断
+
+不能因为最后 1 秒没保存导致整个页面损坏。
+
+至少实现：
+
+atomic transaction
+
+safe migration
+
+backup / journal 策略
+
+启动时 database integrity check。
+
+==================================================
+二十六、第二十阶段：Import / Export
+=========================
+
+第一版：
+
+Markdown import
+
+Markdown export
+
+Plain text
+
+后续：
+
+HTML
+
+JSON
+
+不要求：
+
+Notion API
+
+Word
+
+PDF
+
+第一版不要做。
+
+一条通道规则在 2026-09-22 被 §三十八 的模板测试抓到并补上（ADR-0049）：**一个没有正文的块仍然要写出它的标记** —— 空的列表项写 `-`（编号项写 `1.`，且不带尾随空格），空的引用写 `>`，空的标题写 `#`。在此之前导出会把空列表项整行丢掉，于是「往返」这件事在空行上是假的：一份模板导出再导入就少一行。这条对普通页面导出同样成立，而且对模板尤其重要——一个空的 bullet 就是模板的内容，它是留给别人填的那一行。钉住它的是 `an_empty_block_exports_its_bare_marker_and_comes_back_as_itself`，五种能为空的块各走一遍。
+
+HTML 在 2026-09-27 被正式排除在内容格式之外（ADR-0119），它仍然留在上面「后续」那一项里，而且没有开工。三个读法差约百倍：当成**内容通道**（像 Markdown 那样导入/导出）是另一份 ~3k+ 行、且双向有损的解析/序列化（现成的 Markdown 通道本身是 `import_service.rs` 785 + `export_service.rs` 898 行，另加 1464 行测试）；当成**可渲染的 block** 要自建浏览器引擎，而 §二 与 §三十三 恰好禁掉了唯一便宜的替代（WebView），也违背规则 2 的低内存低 CPU；当成**文档格式**则是重写。所以现阶段 HTML 唯一的门是**系统浏览器**：桌面端命令面板有一条「在浏览器中打开 HTML…」（`CMD_OPEN_HTML`），把一个本地 `.html` 交给 `ShellExecuteW`，不抓取、不解析、不进资料库；Android 端对应 `Intent.ACTION_VIEW` 的外部打开路径（quire-compose ADR-0023）。
+
+==================================================
+二十七、第二十一阶段：Windows UX
+=====================
+
+Windows MVP 稳定之后再增加：
+
+* native context menu
+* file association
+* system tray —— 已做（ADR-0096）
+* global-ish shortcut 中可行的部分
+* startup options
+* drag/drop files
+* clipboard rich content —— 文字部分已由 ADR-0025 的富文本粘贴交付，位图部分 2026-09-21 交付（ADR-0035，见 §三十七 批次 A）；HTML/RTF 等其它富格式仍未做
+
+Slint 1.17 已经加入 drag and drop、system tray、tooltips、model row two-way bindings，可以优先利用这些现成能力，而不是自行造轮子。
+
+==================================================
+二十八、第二十二阶段：Android
+==================
+
+Windows 稳定以后才开始。
+
+共享：
+
+Document Model
+
+SQLite schema
+
+Command
+
+Undo/Redo
+
+Search
+
+Import
+
+Export
+
+尽可能共享：
+
+Slint UI components
+
+但不要把 Windows UI 强行缩成手机 UI。
+
+Android 需要：
+
+底部/侧边导航重新设计
+
+触摸交互
+
+虚拟键盘
+
+编辑器移动优化
+
+safe area
+
+touch target
+
+但核心模型保持相同。
+
+注意：Slint 当前 Android TextInput 仍有公开 issue/历史兼容性问题，所以 Android 文本编辑必须作为独立测试阶段，不能假设 Windows 文本编辑能力可以 100% 原样搬过去。对 Android 的 IME、光标、选区、删除、Enter、粘贴必须专门测试。
+
+==================================================
+二十九、MILESTONE
+=============
+
+M0 — Toolchain
+
+完成：
+
+* Rust
+* Slint
+* Windows build
+* Release build
+* GPU renderer
+* Benchmark baseline
+
+验收：
+
+能启动。
+
+GPU renderer 可确认。
+
+性能数据可记录。
+
+---
+
+M1 — Design System
+
+完成：
+
+* Theme
+* Typography
+* Colors
+* Icons
+* Sidebar
+* Toolbar
+* Popup
+* Button
+* Context Menu
+* Dark/Light
+
+验收：
+
+没有真实数据库也可以截图。
+
+视觉必须达到产品原型级。
+
+---
+
+M2 — App Shell
+
+完成：
+
+* Sidebar
+* Page tree
+* Main editor area
+* Search
+* Settings
+* page navigation
+
+验收：
+
+可以浏览 mock pages。
+
+---
+
+M3 — Local Document
+
+完成：
+
+* SQLite
+* Workspace
+* Page
+* Block
+* Auto save
+* Load on restart
+
+验收：
+
+关闭应用再打开，数据完整恢复。
+
+---
+
+M4 — Block Editor MVP
+
+完成：
+
+* paragraph
+* heading
+* todo
+* bullet
+* numbered
+* quote
+* code
+* divider
+* Enter
+* Backspace
+* Delete
+* Arrow
+* Copy
+* Paste
+* Undo
+* Redo
+
+验收：
+
+连续编辑 1000 blocks 不明显卡顿。
+
+---
+
+M5 — Notion Interaction
+
+完成：
+
+* Slash Command
+* Command Palette
+* Block menu
+* drag/drop
+* block reorder
+* keyboard shortcuts
+* selection/focus
+
+验收：
+
+核心交互连贯。
+
+---
+
+M6 — Rich Text
+
+完成：
+
+* bold
+* italic
+* inline code
+* link
+* strike
+* basic marks
+
+验收：
+
+保存/加载不丢失格式。
+
+---
+
+M7 — Performance
+
+完成：
+
+* virtualization
+* lazy rendering
+* lazy loading
+* debounce saving
+* background search
+* render optimization
+
+测试：
+
+1000
+
+5000
+
+10000 blocks
+
+验收：
+
+不存在明显的线性资源爆炸。
+
+---
+
+M8 — Windows RC
+
+完成：
+
+* crash recovery
+* installer/package
+* settings
+* import/export
+* performance regression
+* keyboard shortcuts
+* native Windows behavior
+
+验收：
+
+可以作为日常个人笔记软件长期使用。
+
+---
+
+M9 — Android
+
+Windows 稳定以后才开始。
+
+---
+
+M10 — Block 扩充（§三十七 批次 A + B）
+
+完成：
+
+* image（粘贴 / 本地插入 / 附件落盘 / 宽度档）
+* file + PDF 缩略图
+* table（简单表格）
+* toggle
+* columns
+
+验收：
+
+图片页与表格页在 10 000 块场景下的 RAM 不劣于现有基线的 1.2 倍；每种新块六处接线齐（types / storage / md io / Turn into / slash / 截图场景）。
+
+---
+
+M11 — Block 扩充（§三十七 批次 C）
+
+完成：
+
+* code 高亮
+* bookmark —— 2026-09-22 **撤回**，不做（ADR-0081）；卡片形状由 embed 承接（ADR-0040）
+* embed 卡片
+* math
+* TOC
+
+验收：
+
+不新增 JS/WASM 运行时；高亮不得让长代码块的输入延迟可感知。
+
+---
+
+M12 — Page 外观与属性（§三十八）
+
+完成：
+
+* icon —— 2026-09-22 已交付，ADR-0045（`pages.icon`）；原文里的「+ 本地图片」由 ADR-0046 决定不做在 icon 上，图片归 cover
+* cover —— 2026-09-22 已交付，ADR-0047（`pages.cover`，schema v12，可空，存 AttachmentId；固定遮罩把 §二十一 的可读性要求变成算术）
+* font（default / serif / mono）/ full width / small text —— 2026-09-21 已交付，ADR-0044
+* lock —— 2026-09-22 已交付，ADR-0048（`pages.locked`，schema v13；两层门：Rust 拒写 + .slint 拒光标）
+* version history —— 2026-09-22 已交付，ADR-0091（**不加迁移**：一个版本就是 §二十五 那条 `VACUUM INTO` 收窄到一页后落在 `versions/` 里的一个文件，读回来用的还是 `Repository::load`，所以「不另造一套存储」是结构上的而不是纪律上的；索引是每版两行 metadata——名字与它指着哪几个附件，好让 §三十七 的回收看不见那条指针时不会把版本喂成一张丢图的页；`MAX_PER_PAGE = 20` 每页各算，磁盘与 RAM 数字在 docs/PERFORMANCE.md：60 行的页 122 880 字节 = 库的 1%，二十版 5 000 行的页 = 库的 159%，RAM 是「一次只有一版在内存里」。三个动作三个面：命名是输入框、对比是点一行、恢复是看过之后才出现的按钮，且它是**一次 Ctrl+Z**、不回滚页的名字与长相）
+* 模板按钮 + 模板库 —— 2026-09-22 已交付，ADR-0049（`pages.template`，schema v14：模板就是一张页，看不见靠不挂树；`InsertForest` 让一次插入 = 一步撤销；五个预置经 §二十六 通道导入而不是写进 migration。顺带修掉 §二十六 一处真缺陷：空的列表项在导出时会整行消失）
+
+验收：
+
+schema migration 从旧库升上来不丢数据；锁定页任何输入都不被静默吞掉。
+
+---
+
+M13 — 引用层（§四十）
+
+完成：
+
+* @page mention、@date
+* 反向链接区
+* synced block
+
+验收：
+
+索引增量维护，打开页面的反向链接计算不随全库规模线性变慢。
+
+---
+
+M14 — Database（§三十九）
+
+按 §三十九 的视图顺序内部再切里程碑：先 table 视图 + 属性模型，再 board / list / calendar，再 gallery / timeline / form / chart，最后 relation / rollup / formula 与 linked database。
+
+验收：
+
+10 000 行库的 RAM、视图切换耗时、公式编辑面板耗时全部进 docs/PERFORMANCE.md；filter/sort 在 SQL 侧。
+
+---
+
+M10 与 M9 的先后：M9 已按 2026-09-20 的决定暂停，所以 M10 起可与 M8 尾巴交错排入。每个里程碑仍须走 §三十 的同一套流程：读架构 → 最小改动 → 编译 → 测试 → 检查 UI → 记录性能影响。
+
+==================================================
+三十、Agent 工作规则
+=============
+
+你不是一次性写完所有代码。
+
+严格按照 milestone 推进。
+
+每一次修改都应该：
+
+1. 阅读现有 architecture
+2. 找到相关模块
+3. 修改最小范围
+4. 编译
+5. 测试
+6. 检查 UI
+7. 记录性能影响
+
+不要：
+
+一次生成 5000 行代码。
+
+如果某个阶段变得复杂，先拆成子任务。
+
+==================================================
+三十一、Agent 的 UI 开发规则
+===================
+
+UI 是这个项目的重要竞争力。
+
+你必须愿意多次迭代 UI。
+
+不要因为：
+
+“功能已经能用”
+
+就停止。
+
+要不断检查：
+
+视觉层级
+
+间距
+
+字体
+
+颜色
+
+hover
+
+focus
+
+selected
+
+动画
+
+响应速度
+
+窗口 resize
+
+长文字
+
+中文
+
+英文
+
+高 DPI
+
+125%
+
+150%
+
+200%
+
+---
+
+## 视觉风格
+
+整体目标：
+
+Modern minimal productivity app
+
+而不是：
+
+传统企业软件
+
+也不是：
+
+Material Demo
+
+也不是：
+
+Fluent UI Demo
+
+也不是：
+
+“把 Notion 原样复制”。
+
+---
+
+## 三十二、Agent 的性能规则
+
+任何新增功能都要问：
+
+“它是否会长期占用 CPU？”
+
+“它是否会增加常驻 memory？”
+
+“它是否造成额外 render pass？”
+
+“它是否导致整个 document rebuild？”
+
+“它是否创建大量 UI Item？”
+
+“它是否增加 timer？”
+
+如果答案是“会”，必须说明原因。
+
+---
+
+## 三十三、特别禁止
+
+禁止：
+
+Electron
+
+Tauri
+
+WebView
+
+Chromium
+
+React
+
+Vue
+
+HTML UI
+
+CSS UI
+
+Node runtime
+
+大规模 JS
+
+Qt WebEngine
+
+任何不必要的后台轮询
+
+无限动画
+
+每帧业务逻辑
+
+10000 个永久 TextEdit
+
+每字符 SQLite transaction
+
+整个 Document rebuild
+
+UI 直接 SQL
+
+UI 直接文件 IO
+
+自己实现 Windows IME / TSF
+
+第一阶段实现云同步
+
+第一阶段实现实时协作
+
+第一阶段实现 AI
+
+第一阶段实现插件系统
+
+第一阶段实现发布为公开站点
+
+第一阶段实现评论、讨论与表情回应
+
+---
+
+2026-09-20 澄清：以上六项（云同步、实时协作、AI、插件、发布站点、评论）是唯一被明确排除的能力。§三十七 至 §四十 的块扩充、页面属性、Database、引用层都是要做的，不因 §三十五「功能数量排最后」而被无限推迟——该条只约束「不得为堆功能牺牲 UI 质量与 RAM/CPU」，不构成砍范围的许可。
+
+==================================================
+三十四、文档维护
+========
+
+必须维护：
+
+PLAN.md
+
+ARCHITECTURE.md
+
+UI_ARCHITECTURE.md
+
+EDITOR_ARCHITECTURE.md
+
+PERFORMANCE.md
+
+DECISIONS.md
+
+每个 Milestone 完成后更新。
+
+DECISIONS.md 记录：
+
+为什么选 Slint
+
+为什么选某个 renderer
+
+为什么不用 WebView
+
+为什么不用 Flutter
+
+为什么 Block Editor 采用当前模型
+
+为什么采用 virtualization
+
+为什么某个依赖被加入
+
+为什么某个依赖被移除
+
+这样以后 Agent 接手项目时，不需要重新推断整个架构。
+
+==================================================
+三十五、最终产品目标
+==========
+
+最终产品应该具备以下感觉：
+
+打开软件：
+
+启动快。
+
+窗口响应快。
+
+静止状态：
+
+CPU 很低。
+
+页面滚动：
+
+流畅。
+
+长页面：
+
+不会因为 Block 数量增加而发生明显资源爆炸。
+
+输入：
+
+即时响应。
+
+中文输入：
+
+正常。
+
+UI：
+
+现代、克制、漂亮。
+
+Sidebar：
+
+精致。
+
+Command Palette：
+
+快速。
+
+Block：
+
+有良好 hover / selected / focus feedback。
+
+页面：
+
+像成熟知识管理产品，而不是工程 Demo。
+
+最终不要追求：
+
+“功能最多”。
+
+而要追求：
+
+“核心体验非常完整”。
+
+整个项目最重要的优先级是：
+
+1. UI 视觉质量
+2. 编辑体验
+3. Windows 低 RAM
+4. Windows 低 CPU
+5. GPU 渲染
+6. 架构可维护性
+7. 功能数量
+
+不要为了增加功能数量破坏前五项。
+
+==================================================
+三十六、第一轮执行要求
+===========
+
+现在不要直接开始实现完整产品。
+
+先只完成：
+
+M0 + M1。
+
+也就是：
+
+1. 从 slint-rust-template 建立工程
+2. 确认 Slint 当前稳定版本
+3. 配好 Windows Release
+4. 验证至少两个 GPU renderer
+5. 建立 benchmark baseline
+6. 建立目录结构
+7. 建立 ARCHITECTURE.md
+8. 建立 PERFORMANCE.md
+9. 建立 PLAN.md
+10. 建立 Theme / Colors / Typography / Icons
+11. 做出完整 App Shell
+12. 做出 Sidebar
+13. 做出 Page Tree
+14. 做出 Main Editor placeholder
+15. 做出 Command Palette mock
+16. 做出 Light/Dark theme
+17. 完成一次视觉打磨
+18. 编译 Release
+19. 测试空闲 CPU/RAM
+20. 输出 M0/M1 完成报告
+
+完成这些以后再进入 Document Model 和 Block Editor。
+
+不要跳过 M0/M1 直接写数据库和编辑器。
+
+整个开发过程以“可运行、可测量、可回退、可持续扩展”为原则。
+
+==================================================
+三十七、第二十三阶段：Block 类型扩充
+==============
+
+§九「后续再添加」的那批块从本阶段起进入排期，不再是开放问题。
+
+已交付，不需要再做：
+
+callout（表情 + 底色）
+
+page / link-to-page，共享 blocks.page_ref（ADR-0026）
+
+toggle（批次 B 第一项，ADR-0028：折叠子树零 realized row，row→model 换算缝
+`visible_block_indices`）
+
+image（批次 A 第一项，ADR-0029：附件目录 + `attachments` 表、`MAX_EDGE` 降采样
+缓存、25/50/100 宽度档位、点击预览；ADR-0035：从剪贴板粘贴已接——Ctrl+V 读
+`CF_DIBV5`/`CF_DIB` 并在 `platform/dib.rs` 里解成 PNG，空块直接变成图片、有字的块
+在下方得到图片，剪贴板同时有文字与位图时文字优先。「一页图片被滚动时的实测」
+已交付（ADR-0036，`--pictures N` 基准场景 + 应用自报解码缓存）：32 MiB 预算按
+字节权重停在 9 张 1280×720 栅格（98.9 %），滚到它之前一页图片的代价与无图页
+一致，而屏幕上一张图片约占 9 MB 进程内存——是栅格的三倍，所以约束是视口不是缓存。
+本 kind 剩下的未做项只有真实照片熵与 HiDPI 下的同一批数字）
+
+file（批次 A 第二项，ADR-0030：不加 schema，复用 v7 的 `attachments` 行与
+`blocks.attachment` 列；`fs::copy` 流式落盘、全程不解码不设上限，所以 2 GB 附件
+与 2 KB 附件占同样的工作集；名字保留扩展名、体积走 `attachment-size` 回调、
+Open / Save-as 两个显式按钮（`ShellExecuteW`，不 spawn explorer）；Markdown
+导出写成链接而不是图片形状，因此能过导入器往返。PDF 首页缩略图按 2026-09-20
+用户指示推迟，未做）
+
+table（批次 B 第二项，ADR-0031：`blocks.columns` + v8 迁移，单元格是 Table 的
+子块（`table_cell` kind）、行主序平铺，所以 rows = cells / columns 是派生值不是
+存储值；Tab / Shift-Tab 跨格、越出末格增行，hover 边缘条增删行列；⋮⋮ Turn into
+双向（转成表格时整行文字进左上格，展平时格子变回段落）；Markdown 导出 GFM 表格，
+导入侧 `|a|b|` 仍按段落处理并有测试钉住。明确不是数据库视图）
+
+columns（批次 B 第三项，ADR-0032：不新增迁移，`columns` 块的 `blocks.columns` 存栏数，
+栏是它的 `column` 子块、栏内的行是栏的子块；投影把 layout 的内容摊成一个 `column-items`
+模型加一个 `column-boxes` 形状表，因为 Slint 没有递归组件，layout 的 row delegate 就是
+它自己那一条，所以分栏只在可见窗口内展开；平铺交给 Slint 1.18 的 FlexboxLayout，
+`alignment: stretch` + 每格 `horizontal-stretch: 1`；hover 边缘条增删栏（2 栏以下拒绝、
+3 栏以上拒绝），删栏时栏里的字回流到前一栏；Markdown 导出摊平成页面级段落）
+
+顺序按「日常笔记撞墙的速度」排，不按 Notion 的字母表排。
+
+---
+
+## 批次 A：媒体
+
+image：
+
+* 从剪贴板粘贴、从本地文件插入（rfd 已在依赖里）——2026-09-21 两条都做了：剪贴板
+  走 `platform::read_clipboard_image` + `platform/dib.rs`（ADR-0035），文件走 `rfd`
+  选择器；只认位图格式 `CF_DIBV5`/`CF_DIB`，不读 `CF_HTML`/`CF_RTF`，也不读应用
+  自注册的私有图片格式或资源管理器复制文件时的 `FileGroupDescriptorW`
+* 可选格式就是 `image` crate 特性里显式声明的那四种：png / jpeg / bmp / gif。
+  gif 是静图——解码器交回首帧，编辑器里没有动画时钟，也不打算有；其余解码器
+  能读的格式（webp / tiff 等）不进选择器，因为它们的行扩展名只能落到 `.img`
+  兜底，那属于「能存但说不清」，不做
+* 落盘到附件目录，数据库只存引用（attachments 表，§十八已预留）
+* 显示宽度可调（25 % / 50 % / 100 %），点击进入预览
+* 缓存与降采样计入 §二十二 的性能预算：一张 4000×3000 的原图不得以原始尺寸常驻内存
+
+file：
+
+* 任意文件附件，显示文件名 + 体积 + 打开 / 另存为
+* 音视频交给系统默认播放器，Quire 不做播放内核
+* 附件字节不得进入进程：流式复制落盘、只记长度，不设体积上限也不解码
+  （§二十二 优先于功能数量）
+
+PDF：
+
+* 先按 file 处理 + 首页缩略图；内嵌翻页阅读器不在本阶段
+* 2026-09-20 用户指示：首页缩略图这一半先跳过，PDF 目前只走上面的 file 路径，
+  所以 `.pdf` 与 `.zip` 除文件名外长得一样；缩略图的渲染路线待定
+
+附件回收（2026-09-21 交付，ADR-0037）：
+
+* Settings → STORAGE 一行的 Reclaim 按钮：删掉没有任何引用的 `attachments` 行，
+  行落库之后才删文件，结果用 `db-notice` 一行报出来（删了几个、释放多少字节）
+* 「有引用」算得比屏幕上宽：全部页面的块（不只是打开那页）+ 任何页面 undo **或**
+  redo 栈里的步骤 + 内部剪贴板复制的那一块。所以撤销契约一字不改——栈上还留得下
+  100 步，就还保护这 100 步；超出上限的老步骤不再受保护，这是承诺的边界
+* 只认数据库里读到的行，绝不列附件目录：`load_attachments` 失败时内存账本是空的，
+  列目录就等于把整个图库看成孤儿删掉
+* 在 UI 线程上同步跑：1 000 个孤儿约 0.5 s，可达性扫描不在时钟上（`docs/PERFORMANCE.md`）。
+  这个量级不做进度条——提示条就是反馈，而且再点一次不会多删任何东西
+* 仍然没做：没有行的裸文件（导入写成功、行没落库那一类）回收不了，属已知限制
+
+---
+
+## 批次 B：结构
+
+table（简单表格，不是 Database）—— 2026-09-20 已交付，ADR-0031：
+
+* N×M 单元格，Tab 跨格，最后一格 Tab 增行，增删行列
+* 单元格内是纯文本 + §十 的 inline marks
+* 明确不是数据库视图；schema、过滤、排序属于 §三十九
+* 交付时确定的边界（都不算缺陷，见 ADR-0031 的 Consequences）：单元格内没有
+  Enter 拆行、没有退格合并、没有上下键跨行，只有 Tab / Shift-Tab 走格；格子里做不了
+  链接（Ctrl+L 未接），加粗/斜体/行内码/删除线可用；把一行带 marks 的文字转成表格时
+  字留下、marks 丢掉；删除最后一行 / 最后一列被 plan 拒绝（表格至少 1×1）；
+  残缺网格（cell 数不是 columns 的整数倍）只读不可编辑
+
+toggle（折叠块）：
+
+* 任何块都能成为 toggle 父级，折叠状态入库
+* 折叠掉的子树不得保留 realized row（对齐 §十二 的 virtualization 前提）
+* 折叠是视图状态：只入库一个 folded 标志，Markdown 导出照常带上子树（§二十六），导入侧不还原
+* 只有 Toggle 画三角：把一个折叠着的块 Turn into 成别的种类，必须顺手展开它，否则子树回不来
+
+columns（分栏）—— 2026-09-20 已交付，ADR-0032：
+
+* 2 / 3 栏，栏内为块序列
+* 用 Slint 1.18 的 FlexboxLayout，不自己写排版
+* 与 §十二 冲突时优先保虚拟化：分栏只在可见窗口内展开
+* 交付形态：layout 是 `columns` 块，栏是它的 `column` 子块，栏里的行是栏的子块，
+  所以整套结构不需要新迁移（复用 v8 的 `blocks.columns` 存栏数）
+* 交付时确定的边界（都不算缺陷，见 ADR-0032 的 Consequences）：栏内的 ↑/↓ 只动光标、
+  不会离开 layout，Tab / Shift-Tab 在栏与栏之间走字但到两端就停住（出栏靠点击）；
+  空栏只写「Empty column」，点它才生成第一行；Markdown 导出把分栏摊平成页面级段落
+  （形状丢失、文字全留），导入侧本来就没有分栏语法
+
+---
+
+## 批次 C：引用与嵌入
+
+bookmark：~~链接卡片，抓标题与 favicon；离线或抓取失败退化为纯链接，且不得阻塞输入~~
+—— 2026-09-22 **撤回，不是推迟**（ADR-0081）
+
+* 更正一条依据：Quire **有** HTTP 客户端（`src/services/lan_client.rs`，无依赖的
+  HTTP/1.0 `GET`，给 `main.rs` 的 `--pull <url>` 用），所以准确的说法是
+  **没有 TLS、也没有一次不是用户刚刚要求的请求**——缺的是传输安全与同意，不是
+  「这个应用不联网」
+* 要走这条路就要在同一个里程碑里再进一棵 `rustls`（或 `native-tls`）依赖树，先回答
+  「Quire 会不会自己发请求」（同意），再定标题与 favicon 的落盘、容量与淘汰规则
+* 而 SPEC 真正要的卡片形状——表明链接属于谁、显示将要交出去的地址、离线降级——已由
+  **不抓取的** embed 卡片交付（ADR-0040）。差的那一点正好是需要网络的那一点
+
+embed：YouTube / Figma / Google Maps 一类链接转卡片。本阶段只做占位卡片 + 外部打开，不做内嵌浏览器（§二 与 §三十三 禁 WebView）—— 2026-09-21 已交付，ADR-0040
+
+* 交付形态：`BlockKind::Embed`（int 22，库里字符串 `"embed"`）的 `text` 存的就是那个地址本身；
+  卡片上的两行（属于谁 / 打开什么）是绘制时由 `core::embed` 两个纯回调现算的，模型里没有副本
+* 没有内嵌浏览器，所以「卡片 + 交给系统打开」就是功能的全部，不是它的降级形态
+* Markdown 里是一行裸地址（GFM 自动链接）：任何渲染器都把它显示成链接，包尖括号或写注释
+  标记只是多一个会被写坏的东西；导入侧只认「整行一个 token 且带 `http(s)://`」，
+  句子里的地址仍然是句子
+* 边界（不算缺陷）：不抓标题、不抓 favicon、不预览——`bookmark` 已于 2026-09-22
+  撤回（ADR-0081），所以这不是「还没做」，卡片显示的是域名而不是网页标题；识别不了的
+  域名就以域名本身为标签；未填地址时卡片说「No address yet」
+
+code 高亮：—— 2026-09-21 已交付，ADR-0042
+
+* 纯词法着色，先覆盖 rust / python / js / ts / md / json / bash
+* 不得为高亮引入 JS 运行时
+* 交付形态：块存的是「用哪门语言着色」（`blocks.lang` 一列，v9 迁移，`Change::BlockLangSet` 可撤销，
+  ⋮ 的 Language 子菜单只在 code 块上出现），字是绘制时派生的：`core::highlight::layer` 把整块文本
+  连同硬换行算成六份等长字符串，每份只留一种颜色的字符、其余换成不换行空格，Slint 侧六层 `Text`
+  逐字叠合，所以没有「两个排版器要对齐」这回事——runs 通道（ADR-0041）一个 run 是一格、不能断行，
+  当初正是这面墙把高亮挡在外面
+* 行高仍由 kind 0 那层量：量行的字符串与上色的字符串是同一份，多出来的最坏情况是一行空白，不是裁掉的页
+* 一个字符多宽只问字体一次（`Editor.slint` 里一个不可见的探针 `Text` 写 `UIState.code-advance`），
+  不在行内问：ListView 显示哪些行取决于滚动位置，而一块代码在哪断行不该取决于它
+* 着色只在块没被编辑时发生（`is-highlighted && !editing`），所以每敲一个键不做一次词法分析；
+  那五层是条件元素而不是 `visible: false`，因为后者拦不住 binding，等于每一行每次重绘都跑五遍词法
+* Markdown 是围栏上的 info string：```` ```rs ```` 读进来是 Rust，导出写 ```` ```rust ````；认不出的语言
+  折成 `Plain`，也就是不着色，而不是一个坏块
+* 边界（不算缺陷）：非 ASCII 字符宽度未知，所以六层都原样带上它、注释层最后画 —— 一行里既有注释又有
+  中文散文时，那串中文是灰色；列数按等宽字体算，`clip: true` 是这条假设的地板；没有语义分析，
+  `Vec` 与 `println!` 是名字不是类型检查
+
+math：—— 2026-09-21 已交付，ADR-0038
+
+* inline math 与 math block，LaTeX 子集
+* 渲染优先 Unicode 近似排版；要引入排版引擎必须先出 ADR 并附内存数字
+* 交付形态：库里存的是**源码**（`math` 块的 `text`、`math` mark 覆盖的字节区间），
+  渲染串是每次投影/求值时由 `core::math::to_unicode` 派生的，所以 TextEdit 与
+  两向绑定照旧说真话，也不加迁移
+* 交付时确定的边界（都不算缺陷）：没有排版引擎，所以 `\frac` 是一行的 `a/b`、
+  积分和求和只是符号加上下标；`\begin{pmatrix}` 一类环境整段原样回显（看不见
+  的东西才算丢）；不认识的命令原样回显；源码里的空格是内容不是语法，`\alpha \, \beta`
+  的空格会留在渲染串里；行内公式与粗体/斜体重叠时导出以 `$…$` 为最外层，被它包住的
+  其它 mark 在导出时丢掉（公式内部不叠加样式，字一个不少）
+
+TOC（目录块）：由当前页 heading 实时生成，点击跳转，派生数据不入库 —— 2026-09-21 已交付，ADR-0039
+
+* 交付形态：`BlockKind::Toc`（int 21，库里字符串 `"toc"`）只存「这里有一个目录块」这件事；
+  列表是每次投影时从本页标题现读的（`toc_entries`），所以改标题就等于改目录，不存在过期副本，
+  也不需要迁移
+* 被折叠或被容器藏起来的标题不进目录：目录复用的就是投影自己算出来的那份可见行清单，
+  点不到的链接比没有链接更糟
+* Markdown 里是一行标记 `<!-- quire:toc -->`：写进派生数据等于把本库的 block id 塞进别人的文档，
+  而这一行在任何渲染器里都不显形，读回来还是它自己
+* 边界（不算缺陷）：只列本页标题，没有「显示三级以下 / 紧凑模式」开关；一行一条，过长截断；
+  点击走 M8 就有的 `quire://block` 那条应用内跳转，所以它**移动光标但不滚动视口**——
+  Slint 1.18 的普通 `ListView` 没有 `bring-into-view`，锚点跳转本来就有同一条限制
+
+synced block：依赖 §四十 的引用基础设施，排在它之后
+
+---
+
+## 硬性约束
+
+每加一种块必须同时改到：core/types.rs 的 BlockKind、storage 的 kind 字符串、Markdown 导入导出（§二十六）、⋮⋮ 的 Turn into、slash 菜单、截图场景。
+
+少一处即视为未完成。
+
+凡是「行是动态的」块都要多改两处，因为（2026-09-20 实现 toggle 时确认，table
+于 ADR-0031 命中同一条）：
+
+* projection（`project_blocks`）必须真的把隐藏的子树从 rows 里删掉，不是留一个 `visible: false` 的 delegate
+* 凡是拿 row index 当 model index 用的地方（现在是 §八 的拖拽落点）都要做一次 row→model 换算；折叠一发生，这两个编号就不再看同一个位置
+
+==================================================
+三十八、第二十四阶段：Page 外观与属性
+============
+
+§十七 的 Page Tree 只管结构，不管页面本身长什么样。本阶段补上。
+
+数据前提：pages 表加列（icon / cover / font / layout / locked / template），走 §十八 的 migration，schema 版本 +1，旧库必须能无损升上来。—— 2026-09-21 落了 font + layout 两列（schema v10，ADR-0044），2026-09-22 落了 icon 一列（schema v11，ADR-0045），同日落了 cover 一列（schema v12，ADR-0047，可空而不是 `DEFAULT 0`：`0` 是一个合法的 AttachmentId，「没有封面」必须是第三种值），同日落了 locked 一列（schema v13，ADR-0048，`NOT NULL DEFAULT 0`），同日落了 template 一列（schema v14，ADR-0049，同样 `NOT NULL DEFAULT 0`：「不是模板」也是一个值）；这些步骤共用一个 `add_page_columns`，所以一个半途的库（有人手工加过列、或从备份恢复到步骤中间）是收敛而不是报错。
+
+## 图标与封面
+
+icon：emoji 选择器 + 本地图片；未设置时用标题首字符占位，侧边栏与页面标题同步显示 —— 2026-09-22 交付 emoji 选择器那一半，ADR-0045（`pages.icon`，存 emoji 本身而不是选择器的下标）。本地图片那一半见下面第二段的决定。
+
+「占位」这句按位置读成三条，因为三处的空槽含义不同（ADR-0045）：树里的行 = 标题首字符（那里的槽原本是一个跟这页无关的通用页图标，首字符才「说了点这页的事」）；Favorites / Recent 的行 = 只显示存下来的 emoji，没有就保留星形与时钟（那两处的图标是「这一节是什么」的记号，被首字符吃掉是丢信息不是占位）；编辑器大标题上方 = 什么都不画（把标题首字符再放大 60px 画一遍是回声，不是占位）。「同步显示」落在写入路径上：一次 `set_page_icon` 同时刷新 hero 与整棵侧边栏，两处读的是同一个存储值。
+
+「+ 本地图片」这一半 2026-09-22 决定**不做在 icon 上**，ADR-0046：附件只有一档 `MAX_EDGE = 1280` 的降采样（为 ~780px 的正文列准备的），塞进 16px 的侧栏槽位要么让每次侧栏重建去解一张 6.5 MB 工作集的图，要么加第二档缓存——而第二档意味着 M10 的回收扫描要多认识一个引用者（icon 是**页**指向附件，不是块），否则用户的图标会被当成没人指的文件回收掉。图片的去处是下面的 cover，那里本来就要求换图 / 移除与标题对比度。
+
+cover：本地图片，可换图 / 移除；封面之上的标题对比度必须过 §二十一 的可读性要求，不得用最弱配色 —— 2026-09-22 交付，ADR-0047（`pages.cover`，schema v12，存 **AttachmentId** 而不是路径：§三十七 的回收扫描只能从数据库里回答「还有谁指着这个文件」，一列路径是它解不回来的字符串，于是用户自己的封面会变成下一次回收的牺牲品）。换图 / 移除都在页面 ⋯ 里，移除只在有封面的时候存在。
+
+「不得用最弱配色」读成一条可以证伪的话，而不是一个态度（ADR-0047）：应用不可能在每次开页时按 hero 尺寸解一张任意 JPEG 去问它最亮的像素是多少，而逐图自适应的色又是一个 ADR-0039 拒绝给它存储的派生值。所以用**一层固定遮罩**把要求变成算术——`#0000009e`（黑，α 是一个字节：`0x9e` = 158，α = 0.6196），任何照片像素合成后 ≤ 255 − 158 = **97** sRGB，相对亮度 ≤ 0.1195，白字在上是 **6.19:1**，而 4.5:1 这条线本身要求 α ≥ 0.535。最坏情况是一张纯白的图，所以 `page-cover-white` 就是照着它拍的，`benchmarks/scripts/contrast_probe.ps1` 从渲染出的 PNG 上量比值（实测最坏底色 `#616161`，152 002 px 采样），并且脚本自带 known-answer 臂（21:1 / 1:1 / 6.19:1）与一个 1.61:1 的必然失败臂——门禁要能说不，才算说过。封面之上的字**与**页面自己的 emoji 都走 `text-on-accent`：第一次量图就抓到漏掉的那个，一个 `#1f2328` 的火箭坐在 `#232439` 的照片上，1.04:1。
+
+## 页面版式
+
+font：default / serif / mono 三档，按页生效 —— 2026-09-21 已交付，ADR-0044（`pages.font`）
+
+full width：页级开关 —— 2026-09-21 已交付，ADR-0044（`pages.layout` bit 1）
+
+small text：页级开关 —— 2026-09-21 已交付，ADR-0044（`pages.layout` bit 2）
+
+三者只作用于当前页的排版 token，不得下沉成 per-block 字号。—— 交付方式：三档开关存在页上，`PageType` 全局从 `UIState` 派生出文档层的 token，119 处调用点从 `Typography.*` 改读 `PageType.*`，chrome 仍读 `Typography`；block 表与 `Block` 结构一个字段都没加。入口是顶栏 ⋯ 菜单的 Style 子菜单。
+
+## 锁定与版本历史
+
+lock：只读开关。TextInput、slash 菜单、拖拽、⋮⋮ 的编辑项全部关闭，并且给出可见的锁定状态，不能静默吞输入。—— 2026-09-22 交付，ADR-0048（`pages.locked`，schema v13，`INTEGER NOT NULL DEFAULT 0`：「没锁」是一个值而不是一种缺席，所以这列不像 cover 那样可空，迁移也就是一条不用回填的 `ADD COLUMN`）。
+
+句子里的四个关闭点读成**两层门**（ADR-0048）：Rust 那一层拒的是写——`exec_editor` 那个所有块命令共用的漏斗，加上漏斗旁边的三个入口（checkbox 的回调直接进命令层；`clear_block_ref`；`duplicate_page_block` 在命令层看到块之前先经树造出一个子页）。.slint 那一层拒的是光标——`EditorBlock.editing` 多出一个 `!UIState.page-locked` 项，因为一个陈旧的 `editing-id` 会在重新加锁之后仍然留着一个活输入框；只在命令层设门，等于允许一个「按 Enter 才说不」的文本框存在。撤销也在锁后面，但**拒的不是丢**：锁之前建起来的 undo 栈原样留着，解锁之后接着用。
+
+「⋮⋮ 的编辑项全部关闭」读成**删掉**而不是置灰，因为那个菜单没有 disabled 状态可以说「不行」；留下的是两行只取的：Copy link to block 与 Copy block。「给出可见的锁定状态」是三处像素：标题上方一颗 pill（"Page locked · ⋯ to unlock"）、⋯ 里那一行自己变成 Unlock page、以及变短的 ⋮⋮。「不能静默吞输入」由通知条承担，而去重的依据是**屏幕上那一行字**（bar 是粘的， dismiss 才走），因为拖拽的 hover 每个重绘帧都要问一次 `can_move_block_to`；hover 自己不说话——落点线消失就是那个手势的反馈，紧随其后的那一次 drop 才值得一句。
+
+不在锁里的：页面自己的外观（icon / cover / Style / favorite 照写，那是 §三十八 前面几段的特性）、树操作（移动 / 删除 / 复制页面）、以及一切**读**（导航、搜索、展开折叠）。`ToggleFold` 因此是锁内唯一仍然执行的命令——§三十七 把它登记成持久化的*视图*状态，加锁不该让用户失去这页的大纲。门里写着一个具名例外，所以它由一条断言钉住：其余十条命令返回 `None` 的同时 `ToggleFold` 必须还是 `Some`。复制页面**不**带上这把锁，与带上字体 / icon / 封面相反——外观跟着走是因为副本该长成源的样子，锁不跟着走是因为「复制一个locked的页」正是用户想改它又不动原版的动作。
+
+version history —— 2026-09-22 交付，ADR-0091。下面三条就是本节对它的原文要求，每条后面接它落成了什么：
+
+* 复用 §二十五 的 snapshot 机制，不另造一套存储 —— 读成**照抄那一条语句**：一个版本就是 `backup::snapshot` 的 `VACUUM INTO` 副本（同一个 `synchronous=OFF` 的交易，同样靠 `Database::open` 回来验一遍），然后**收窄到一页**——删掉别的页（`blocks.page … ON DELETE CASCADE` 连带块行、`block_children`、`marks` 一起走）、清空两张 FTS 表、再 `VACUUM` 把省下的页交还给文件系统。于是「不另造一套存储」不是一句态度：`versions::read` 用的就是应用开库时那个 `Repository::load`，一个版本**就是**那个格式，所以它无从与格式走散。代价写在这里：一个版本是一个文件，`user_version` 停在 14，这一片一条迁移都不加——M12 前五刀每刀一列（v10…v14），这一刀什么列都没有。
+* 用户可见：命名版本、与当前版本对比、恢复 —— 三个动作落在**三个面**上（一个 popup 的两个视图）：命名是底部那行输入框（永远在，因为「现在」随时值得一版），对比是点一行，恢复是**只在对比之后才出现**的那颗按钮——把一页换掉之前，用户得先看过它变成什么。行带的是**行号**不是时间戳，因为 Slint 的 `int` 是 32 位而 unix 秒不是。对比是**行级**的、以 block id 认身份（快照带着这页自己的行，所以没动的行两边同 id），编辑一行只付一次比较而非每行一次（先剪公共头尾）；中间段超过 `ALIGN_CELLS = 1 << 18` 个配对就**报成整片重写**而不是算完——多出来的行仍然句句为真，而一个要等一秒才开的面板比一个多显示几行的面板更坏。恢复走命令系统而不是换文件：一批 `exec_all`（先 `InsertForest`，再逐个删当前的**根**，子树跟着走）= **一次 Ctrl+Z**，新行另发 id、重排 order key，flush / FTS / 重启看到的只是一页寻常地变了。**页的名字与长相故意不回滚**——版本是页的*内容*的版本。两道门都是继承来的：`locked_refusal()`（ADR-0048）与「只有屏幕上这页能恢复」。
+* 保留策略必须给出磁盘与 RAM 数字，不接受无限增长 —— `versions::MAX_PER_PAGE = 20`，每页各算，从**最旧**那头砍，而且面板自己把数字念出来。数字与测量命令在 docs/PERFORMANCE.md：9.9 MB 的库里，一页 60 行的版本是 122 880 字节（1%），5 000 行的是 790 528（7%），二十版长页是 15 810 560（**159%**）；RAM 侧是「一次只有一版在内存里」——一条短暂连接（SQLite 默认页缓存 ≈2 MB，Quire 不改 `cache_size`）加上两侧各一份 `Block`（实测 136 字节/块，5 000 行 = 680 000 字节）与那张 ≤1 MiB 的对齐表。顺带一条本可以溜过去的：**空 FTS 表不等于空索引**——`DELETE FROM search_blocks` 之后行数报 0，`search_blocks_data` 仍留着 368 行 / 1.4 MB 的全库用词，于是「一页的快照」在字节上还是「整个库的副本」；现在跑完 `DELETE` 再发 FTS5 的 `rebuild` 命令（`delete-all` 更短而这里被 SQLite 拒绝：它只给 contentless / external-content 表用），断言也从「你会去查的那两张表的行数」搬到了 `_data` 上——因为骗人的正是那个行数。
+
+## 模板
+
+页面内模板按钮 + 新建页面时选模板 —— 2026-09-22 交付，ADR-0049。页面内那一半开在**两个**已经存在的入口上：slash 菜单与「+」把手的插入菜单（`open_slash_insert`），两者的候选表尾都接上模板库（`template_slash_rows`），hint 列写死一个 `Template` 词，因为模板不在树里、没有面包屑可给；`TEMPLATE_SLASH_BASE` 远在任何块类型整数之上，所以 `slash_selected_kind` 能分清「这行是模板」与「这行是它不认识的类型」——后者会被 `kind_from_int` 折成 Paragraph，那是唯一一种**静默**错法的结局。新建页面时选模板那一半是 ⋯ → Templates → Use as new page：`create_page` 然后一次插入，于是新页从它第一个变化起就是一张普通页（在树里、在搜索里、在自己的 undo 栈上），模板继续藏在它后面，标题取模板的名字（一张用户刚挑过形状的用「Untitled」什么也不说）。
+
+workspace 模板库：预置若干本地模板，导入导出走 §二十六 的 Markdown 通道 —— 五个预置（`core::template::PRESETS`：Meeting notes / Weekly review / Project brief / Bug report / Long-form draft），按「多久会有人需要」排序而不是字母序。它们是**内容而不是资源**：不读文件、不下载，任何库都带着这五个。落库的方式是 `seed_builtin_templates` 而不是 migration（ADR-0049）：v14 只加列就停，因为自己写块行的迁移得手工对齐 order key、`block_children` 与两张 FTS 表，而菜单里 Import 那一行调的 `import_template` 已经把三件事都做对了 —— 于是内置库是被**导入**的，不是被发明的，可能出错的代码路径只有一条。两道门各管一个方向：settings 旗标 `builtin-templates-seeded` 让「删掉五个」这件事活得过重启（否则菜单的 Delete 行是一句谎），名字检查让一次半途而废的 seed 可以重试（旗标在正文**之后**才记，否则什么都没写进去的会话会旗标为已种而永远缺图）。没有库可种的会话（`persistence.is_none()`）直接拒绝——headless 的 bench 场景与视觉捕获因此自己画一份库，而不是看见这五个。
+
+模板的表示必须是「块序列的副本」，不得引入第二套内容格式。—— 交付方式是遵从而不是对抗：模板**就是**一张页，`pages.template` 一列（schema v14，`NOT NULL DEFAULT 0`，形状与 v13 的 locked 一模一样）是它身上唯一一条普通页没有的事实，正文与所有页面共用 `blocks` 表。于是 marks / 颜色 / `lang` / `columns` / `img_percent` / 一个 `Page` 引用在复制时一律随行，一行新的映射代码都不需要；`fill_template` 二十行就够了，因为它 clone 的是行：id 由文档自己的分配器另发（副本永不会与源相撞），order key 原样留着（一个 key 只在一页之内有意义，而新模板没有东西可与它撞），parent 指针重映射到副本上——把一个表的格子、一个 toggle 的孩子绑在一起的正是这一步。代价也写在这里：预置模板只能装 Markdown 装得下的东西（§二十六 的解析器没有颜色 / callout / table / 分栏的语法，要了就会悄悄变成一个段落），而用户「Save as template」存下来的那份不同，它是真实行的副本，源页有什么就留什么。
+
+「看不见」读成**不挂树**，而不是一长串过滤器（ADR-0049）：`create_template` 造一页、翻一个旗标，既不进 `roots` 也不进任何父亲的 `children`，所以所有走树的枚举器（侧栏、页面树、命令面板、Move-to、Recents）免费跳过它——没有一份「记得要过滤」的清单需要后来人维护。四把不走树的门各自补了一项：`open_page` 在 `mark_opened` 之前返回（打开会写 `recents` 与 `current-page` meta，那是模板再多不能出现的两个地方）；`search_index::matches` 的 join 上多一个 `AND p.template = 0`；LAN 分享过滤页列表与子页遍历，而 `/api/page/<模板 id>.md` 回答 **404** 而不是它自己的 Markdown，因为对岸没有办法表达「模板」，那会把它落成一张普通页。第五把门考虑过并且**拒绝**：不给模板的行建索引——那会让 `insert_block` 去问自己脚下这页是不是模板（一份 join 已经知道的事实出现第二个真相源），而 `rebuild` 必须与 `insert` 对「哪些行属于索引」持不同意见，于是模板会在一次重建之后开始出现在搜索结果里。钉住这条的测试除了断言命中为空，还断言 `search_blocks` 里的原始行数，好让「看不见」不能被解释成「没数据」。
+
+`InsertForest` 是「一次插入 = 一步撤销」的那条命令（ADR-0049）：十一块的模板按一次 Ctrl+Z 就该全走，而不是留下九块；它产出的变化清单就是普通 `BlockInserted`，所以 flush、FTS 与重启看到的都只是「这页长了几行」。锚点上那行**空的** paragraph 是同批被替换掉的（「+」那一行与新建页的第一行都是空的，模板落在光标下面一行看起来像没生效），这只有 `exec_all` 拿前态给每条命令做计划才成立；它返回第一个插入块的 id，因为这条命令可能**删掉**用户点的那一行，光标留在一个已不存在的块上是一次点击之外的编辑失败。`fill_template` 不产生 undo 步骤，这是设计而非缺口：历史栈属于用户正在打字的那一页，而模板页从来不是开着的——存错的回头路是 Templates > Delete。
+
+入口是页面 ⋯ → **Templates** 一行（菜单因此十三行；一行而不是六行，因为那一行的标签就是特性的名字），子菜单六行：Insert template / Use as new page / Save as template / Export Markdown / Import Markdown / Delete template。标签短是被迫的而且是可查的：全应用共用一个 184px 的 `ContextMenu`，它的行是 elide 而不是换行，第一版渲染里六行有四行结尾是省略号——对象已经被用户站着的那个子菜单和紧随其后的库选择器各说了一遍，所以留下的是能一眼读完的那一行。没有「edit template」那一行，因为改一个模板的方式就是拿它开一页、编辑、再存回去；保存**从不**覆盖，所以旧的那份会留在库里直到用户删掉它，而库里可以有两个同名模板（按年龄排而不是按标题排）。Delete 不再弹确认框（那是用户从自己起的名字里挑的第二下点击，行本身已经画成危险色），但它必须说话：通知条点名被删掉的是哪一个。`delete_page` 回答的是「删掉的是不是屏幕上那页」而不是成没成功，对模板恒为 `false`，所以测试断言的是前后两次 `workspace.contains()`。锁页拒绝插入（门在 `exec_all_on_open_page` 上，不需要模板专属的一项）但照样提供「Save as template」——把正文抄出去不是往这页里写。回收扫描（§三十七）一项都没加：模板的行就是 book 里的块行，`doc.all_blocks()` 已经把它们指着的图算作引用者，而旗标自己不指向任何文件。
+
+## 本阶段不做
+
+依赖账号/成员的属性语义（Person 的协作含义、权限）；评论；发布为站点。
+
+==================================================
+三十九、第二十五阶段：Database
+=============
+
+这是 Quire 与 Notion 差距最大的一层。
+
+Database 不是 §九 块类型清单里的一行，它自带 model / storage / UI 三层，因此独立成阶段，阶段内再切里程碑。—— 2026-09-22 Track 3 **D0 只做决策与探针，未交付功能**：实体形状 ADR-0060、列定义 ADR-0061、值 ADR-0062、record 与 page 的关系 ADR-0063、视图定义 ADR-0064、Markdown 通道 ADR-0065。第一条性能红线已用 headless 探针证明通道存在（`core::database::window`：10 000 行 realize **31** 行，窗口 **6 806 B** 对全表 **2 259 800 B**，原始行 `benchmarks/results/2026-09-22-track3-probe.jsonl`），实现自 D1 起。
+
+## 对象模型
+
+database：一组 record + 一份 schema（列定义、视图定义）—— 实体形状定于 ADR-0060：自己的 `databases` 行，由一个新的 `Database` 块经 `blocks.db_ref` 指过去（同 ADR-0026 的 `page_ref`）；「整页数据库」就是首块是它的普通页，八个视图是同一个实体的八种 `layout`，不是八个块种类。列定义与视图定义分别见 ADR-0061 / ADR-0064 —— 2026-09-22 **D1 落了这一层的存储**：`databases` / `db_properties` / `db_records` / `db_values` / `db_value_items` / `db_views` 六张表（schema **v12–v15**，一步一语义单位）与 `core::database` 的对象模型；行只活在窗口里（ADR-0067），批量路径不许把这一层弄丢（ADR-0066）。**块仍未点亮**：ADR-0060 的六个接点整批留待画视图的那一刀（D3）。
+
+record：一行，可以同时是一个 page（页面即行，这是 Notion 的核心而不是装饰）
+
+view：同一份数据的一个投影（过滤 + 排序 + 分组 + 可见列 + 布局）
+
+property：列，带类型
+
+record 与 page 的关系必须可逆：删 record 与删页面的行为都要有明确定义，且都进 undo。—— 2026-09-22 契约定于 ADR-0063：record **拥有**它的 page（`db_records.page`，`UNIQUE(page)`，`ON DELETE CASCADE`）；标题只有一个家（有 page 在 `pages.title`，无 page 在 `db_values`，读的时候 `COALESCE`）；record 默认没有 page，第一次打开才建，建页与标题搬家是同一个 `Command` 的一批 change；删 record 是 `[DbValueDeleted…, DbRecordDeleted, PageDeleted?]` 一批（`Entry` 的 `apply`/`revert` 一起算，一次 Ctrl+Z）。**已知缺口**：侧边栏自己的删页从来没进过 undo，那条路上丢的 record 是丢的——ADR-0063 明写，不假装闭环。测试 2026-09-22 落在 D1（`tests/integration/storage_test.rs` 的 `database_layer`：两条删除路径 + record 与 page 的重建 + 批量路径），命令层那个「一次 Ctrl+Z」随 D3 的 `Command`。
+
+## 属性类型
+
+必做：title / text / number / select / multi-select / status / date / checkbox / url / email / phone / files / created time / last edited time —— 2026-09-22 存储形状定于 ADR-0061（列定义是 `db_properties` 行表，只有 select 的选项列表是行内 JSON）与 ADR-0062（值是 `db_values` 一行一列，`text`/`num`/`flag` 三列 + `db_value_items` 给列表型）—— 2026-09-22 D1 落了**存储**：每种形状都有往返测试，「空」= 没有行（不是空串、不是 0），select 的选项 config 原样存 JSON。逐类型的渲染与语义（选项名、日期格式、附件显示）仍是 D2。—— 2026-09-22 **D2 交付**（ADR-0068…ADR-0071）：14 种属性的**输入与渲染规则**落在 `core::database_property`（数字/日期/勾选的接受与拒绝逐条成文，url / email / phone **只提示不改写**，选项存 id 不存标签，附件显示名字，未知的选项 id 与已删的文件 id 各自显示自己），`created time` / `last edited time` 由 `db_records.created` / `.edited` 两列投影（v17，写路径盖章，永不写进 `db_values`），排序由 `SortSpec` 编译进 SQL 的 `ORDER BY`（数字按 `num` 排、日期按定宽文本排、空值显式排在最后，`EXPLAIN QUERY PLAN` 为证）。
+
+降级处理：person —— 没有账号体系，退化为工作区内本地成员名单，纯字符串—— 2026-09-22 落于 ADR-0071：仍然没有成员表、没有成员 id、没有账号（ADR-0061 的折叠不动），名单由 `SqliteRepository::workspace_people()` 从值里现算（存储 kind 为 `person` 的列的去重非空值），改名就是改一个字符串。
+
+需计算：formula / rollup / relation（含双向关系）
+
+公式引擎的限制：纯词法 + 自写解释器，不引入 JS / WASM 运行时；表达式必须有限求值；relation 环检测在保存时做，不在渲染时做。—— 2026-09-22 **D6 交付 formula**（ADR-0082/0083 随刀）：引擎是 `core::database_formula` 的纯词法 + 递归下降 + 树遍历解释器（零新依赖），类型 number / text / boolean / date + Empty（Empty 传染，`text(x)` 是唯一显式转换，无隐式转换），函数七个 `if length round abs min max text`；四个求值预算是常量（tokens 2 048 / depth 32 / steps 10 000 / result 65 536）；表达式存列自己的 `config` JSON（ADR-0082，`PropertyConfigSet` 整文档替换、一步 undo），**值不入库、投影时现算**（ADR-0062/0039 的纪律）；环检测在保存时做（`would_cycle`，渲染时只有深度上限兜旧文档，画 `Error` 不挂）；公式列的排序/过滤被拒绝（要比较就得先算全列，正是红线禁止的事）。**rollup / relation 已交付**（2026-09-22 **D9**，ADR-0088/0089/0090）：Track 2 的引用基础设施（`reference.rs` / `backlinks.rs`）到 D9 仍未提交，所以按 ADR-0084 写死的形态单独落一刀，不另造轮子——relation 是列值为**目标库 `RecordId` 列表**的 `CellValue::Items`（ADR-0088，存 id 不存标题），一对关系是一次**对合**（involution）：配对的判据是「候选已声明 target 指回我」或「候选是自由列（没声明 target）」，一次 `Command::SetRelation` 把前向格与镜像格写成**一批 change**（一次 Ctrl+Z），所以**环在结构上不可表示**（不是渲染时检测，是存不下）；rollup 是列 config `{"relation","column","aggregate"}` 的六种聚合（None / Count / Sum / Min / Max / Average，复用 `database_formula` 的 `arith` 与 `extreme`），**值不入库、投影窗口时现算**（ADR-0062 的纪律），配置期拒绝跨库环，读路径对计算列返回空映射 ⇒ **嵌套 rollup 的深度上限为 0**（ADR-0089）。relation / rollup 列都**不是行内可编辑**的（选择走 picker）。**D9 只落状态层与文档**：`.slint` 的列类型菜单、record picker 弹层、rollup 三段配置器仍未接（D5 留下的欠账一并记在 REPORT_TRACK3 §D9），用户视角还够不着——同 D0 的诚实边界。—— 2026-09-23 **D10 清了这笔欠账**：三个入口都接到了 `.slint`：列类型菜单是 Columns 弹层的第二个面板（`db-columns-panel == 1`，列表由新组件 `DatabasePickList` 画，行是 Rust 推下来的 `DbPickRow`，把拒绝的话写在灰掉的行上而不是弹窗里）；relation 的编辑器是 `DatabaseRelationPopup`（一窗三态：target 库、back-pointer、按 needle 搜索的 record picker，选中的行画 tick）；rollup 的三段配置器是 `DatabaseRollupPopup`（一句三段话，每段开自己的 `DatabasePickList`，chooser 逐行走 `check_config`）。后两个是窗口级 `PopupWindow`，照 D10 既有的规矩从 `apply_scene_overlay` 打开；出口是 `close-on-click-outside` 与各自的 `*-closed` 回调，回调里 Rust 收回窗口标志（D10 收尾补的一处：Columns 弹层的类型面板关掉时要复位 panel/property/title，否则下次打开落在过期的菜单上）。**Escape 那一半只有画面证据**，键盘与开屏焦点要人手测（REPORT_TRACK3 §D10 的 6.1）。状态层同刀补了三处：**改类型**是新的 `Command::SetDatabasePropertyKind`（ADR-0062 的 `PropertyKindSet`，值不转换，计算列改走普通列会先给一句「得先定义」的提示，同 kind 的点击零 change 因此不花 undo 步）；**过滤算子按 kind 收敛**（`FilterOp::ops_for`，不该出现的算子在选择器里就没得选，而 `FilterValue::Missing` ⇄ `Json::Null` 那条「规则在、值没填」的语义在 `build_clause` 里被修成真的不加约束）；**搜索的计数与缓存键**（`layout_total` 以前无视 needle、`DbWindow` 以前没把 needle 当键，换词不重画）。像素这一刀说了四次「不」：`✓` `✕` `⋯` 三个码位不在 Segoe UI 的字体脸里（ADR-0092：要用户看的标记一律画，不用字形），已交付的三处文案随之改写。数据库块的 16 亮 + 16 暗场景进了 sweep 基线，rollup 的截图同时是 ADR-0089 的端到端证据（Total = 8 + 6 = 14）。仍没做的：真窗口里的手测（截图/点击自动化在本项目禁用，见 REPORT_TRACK3 §D9 的边界），以及 relation 的**双向扇出无上限**（10 000 条 fan-out 28.5 ms vs 9.1 ms 对照 = 3.12×，是产品决策不是 bug，等用户定）。ADR-0062 记下了一条：formula / rollup / relation **不存值**，投影时现算，`created time` / `last edited time` 的来源（当时 `pages`/`db_records` 都没有时间戳列）留 D2 出 ADR，不写进 `db_values`（否则就是 ADR-0039 禁止的双写）—— 2026-09-22 D2 交付：ADR-0068 给 `db_records` 加 `created` / `edited` 两列（v17，`YYYY-MM-DDTHH:MM` 本地墙钟，由 SQLite 的 `strftime` 在写路径盖章），读路径对这两种 kind 从不查 `db_values`。
+
+## 视图
+
+table → board → list → calendar → gallery → timeline → form → chart
+
+顺序即实现顺序。chart 放最后，且不得为此引入图表库：先用现有绘制 primitive 做 bar / line / pie 三种。—— 2026-09-22 形状定于 ADR-0060（八种是同一个 `Database` 块的 `db_views.layout`，不是八个块种类）与 ADR-0064（视图定义持久化）。「+」插入菜单里那六行 muted 占位（`INSERT_ITEMS` 的 `Table view` / `Board` / `Gallery` / `List view` / `Calendar` / `Timeline`，`id = -1`）就是其中六种 layout，点亮它们 = 给这些行真 id，不是加块种类。2026-09-22 D1 落了**视图定义的存储**（`db_views`：名字 / layout / 顺序是列，规则是一份 JSON，ADR-0064），视图本身（渲染与切换器）仍未有，六行仍不可选。 —— 2026-09-22 **D3 交付 table**（ADR-0072…ADR-0075 随刀）：`DatabaseView` / `DatabaseCell` / `DatabaseSwitcher` 三个组件与 `BlockKind::Database` 块（`blocks.db_ref`，v18）点亮，窗口投影真的从 SQL 取行（`core::database::window` 算出 `LIMIT`/`OFFSET`，10 000 行只 realize 视口那一窗，行的 y 由 `db-row-start` 摆回滚动面的原位——「行是动态的」两条规则照 §三十七）；视图切换器是真实的 tab 条（今天每库一个视图，D5 加第二个视图只是加一行）；「+」菜单的 `Table view` 行点亮（真 id），其余五行仍 muted，board 起的七种打开时以自己的 layout 名明说「not in this build yet」。 —— 2026-09-22 **D5 交付 board / list / calendar / gallery / timeline / form 六种**（ADR-0078 / ADR-0079 随刀）：每个布局自己的「窗口单位」（board 的卡片槽位、gallery 的卡片行、calendar 的固定 6×7 格 + 每天至多 3 条折叠计数、timeline 的泳道 + 一次 min/max 定轴、「无日期不显示」是语句里的 is-not-empty 子句、form 不读行只建行），全部照「计数先算、窗口后开」；board 复用 D4 的 `groups` 键与 `GROUP BY`，calendar/timeline 的时间轴是视图文档的新键 `date`/`end`（零迁移），视图切换器「+」点亮（`AddDatabaseView` 一个 change，创建即切换，chart 仍以名字拒绝）；插入菜单其余四行仍 muted（ADR-0079）。 —— 2026-09-22 **D7 交付 chart**（第八种，随 ADR-0078 的窗口单位契约落地）：plot 画的是**聚合不是行**——一次 `GROUP BY`（复用 D4 的 `group_counts`，与 board 的列、分组表的组头是同一查询）给出的 (键, 计数) 序列，键数由选项有界的分组列封顶，10 000 行的库 realize **0** 行、画几个形状；三种形状 bar / line / pie 全用现有 primitive（bar 是等宽 Rectangle、line 是一条 viewbox 缩放的多段线、pie 是 Rust 端 κ 近似三次曲线的逐片 Path，无图表库），形状存视图文档的 `chart` 键（ADR-0074 的读改写，bar / line / pie 三键切换，切换只改形状不改数据）；无分组列时画「Pick a column to group by」，计数文案照实说；切换器「+」的第八行与 `db_add_view` 的 chart 拒绝随之点亮。
+
+## 操作
+
+filter / sort / group by / 视图内搜索 / 行内编辑 / 列宽与隐藏列 / 视图切换器；视图与 schema 一起持久化 —— 2026-09-22 **D3 交付行内编辑、列宽与隐藏列、视图切换器**（ADR-0072…ADR-0075）：行内编辑接了 title / text / number 的行内输入、checkbox 的整格点击、select / status 的格内选项列表（一个 `TextInput` 纪律照旧，值经列自己的 kind 解析，ADR-0069）；列宽是 permille、存进视图文档（ADR-0074 的原样透传），隐藏列走窗口级 Columns popup（title 列锁定，ADR-0063）；切换是会话态（ADR-0073）。—— 2026-09-22 **D4 交付 filter / sort / group by**（ADR-0076/0077）：过滤树与多键排序编译进窗口读的同一条语句（`storage::database_query` 出文本与绑定、`database_store` 执行，「不在 UI 侧过滤」是模块边界而不是纪律），计数先 `COUNT(*)` 后开窗，过滤 10 000 行剩 3 行就 realize 3 行；分组是**条目投影**——组头是条目不是行（窗口算术跑在 Σ(count+1) 上，组内行各自 LIMIT/OFFSET），组列表只对 option-bounded 的 checkbox / select / status 开放；过滤树整棵读不开时丢弃并在视图上**可见提示**，单条不可读的子句丢弃并计数（ADR-0064 的删列规则）；面板只编辑扁平子集（根 and/or + 子句级非），嵌套树照常过滤但拒绝被面板改写。 —— 2026-09-22 **D7 交付视图内搜索**（ADR-0087）：选路是**数据库自己的 SQL 谓词**（`INSTR(LOWER(expr), LOWER(?)) > 0` 的 OR，编译进窗口读的同一 `WHERE`，count / 组查询 / 组内切片同吃），不是 §二十 的 FTS5 索引——`search_pages`/`search_blocks` 只镜像页标题与块文本、不索引 `db_values`，挂进去就要为每格写入加一条维护路径、为每条批量路径加一条清理规则，还要背上「哪个写入者记得索引」的滞后边界；`INSTR` 是全扫（与 D4 的 contains 同价同界，LOWER 只折 ASCII），但**零副本零滞后**。搜索范围 = 视图可见的承载文本的列 + 标题（数字/勾选/选项 id/列表/计算列不搜，理由在 ADR）；needle 是**会话态**（ADR-0073 的规则用于一次提问），不进视图文档、导出带 `search: None`，头部计数槽即搜索框的开关。视图定义怎么存定于 ADR-0064：视图是 `db_views` 行（名字 / layout / 顺序是列），**规则**（过滤 + 排序 + 分组 + 可见列 + 列宽）是一份 JSON 文档，判据是本 ADR 与 ADR-0061/0062 共用的那一句「SQL 有东西要在它上面过滤吗」——列和值要在，视图规则不用。
+
+linked database：引用另一个库的某个视图，不复制数据 —— 2026-09-22 **D7 交付**（ADR-0085）：形态是**同一个 Database 块 + 同一根 `db_ref`**（不是新 kind、不是第二列、零迁移）——`Command::LinkDatabase` 把一行变成指向**已存在**实体的 Database 块，读与写本来就全部经 `db_ref` 解析，所以「读源库的数据与视图定义、写回也写源库」是结构成立的（世上只有一份数据，没有可漂移的副本）；SPEC 草案里的 `(db, view)` 中 view 一半按 ADR-0073 归会话态，存储只指库。入口是 slash/插入菜单的 `Linked view` 行 → 数据库 picker → 一批落地；源实体死（只有撤销建库块一条路）走 ADR-0060 既有的 `(deleted database)` 一行。
+
+数据库模板：新建 record 时的预填 —— 2026-09-22 **D7 交付**（ADR-0086）：模板是 `databases` 行上的一个 JSON 文档（v20，`''` = 无模板），每个值都是 `CellValue` 存储形状的**原样副本**（不引入第二套内容格式，与 Track 1 页面模板同一条纪律；两边没有需要仲裁的共享形状，报告已说明）；行槽的 T 把一行现存值存成模板（一个 change 一步 undo），`db_add_record` / `db_form_submit` 把模板格作为普通 `SetDatabaseCell` 并入**建行同批**（一次 Ctrl+Z 连行带预填一起撤）；公式列与两个时间戳不进模板（无存储值可拷，ADR-0062/0068）。
+
+**Markdown 通道（§二十六 是内容通道）定于 ADR-0065**：database 导出成它**当前显示的那个视图**的 GFM 表格（title 列在最前，一列一个可见属性，一行一条 record，按视图的顺序与成员，即过滤排序照做）；页-backed 的 record 标题写成 `[title](quire://page/<id>)`。**不写标记行**（`<!-- quire:toc -->` 那种先例不适用：目录没有别的表示，表格本身就是真表示）。导入侧不改：管道行回来是段落（ADR-0031 为简单表格定的同一条），所以一次导出/导入丢掉 schema、类型、record 身份——这是决定，不是遗漏。代价：`export_page(blocks)` 拿不到 record，导出时由调用方把渲染好的行传进来，不让导出层学会开数据库。
+
+## 性能红线
+
+Database 是本规格里唯一会自然长出「大量行 × 大量属性」的功能，§二十二 / §二十三 的规则在这里最容易破：
+
+* 10 000 行的库不得全量 realize；视图先算可见窗口再取行 —— 2026-09-22 **通道已证明存在**（D0，ADR-0060）：`core::database::window` 先算 `[start, end)` 再取行，`RowWindow::fetch()` 就是那次查询的 `LIMIT`/`OFFSET`；10 000 行、32 px 行高、720 px 视口、8 行 overscan 时 realize **31** 行（窗口 0..31；滚到中间 39 行、底部 31 行），窗口那 31 行占 **6 806 B** 堆，全表 10 000 行占 **2 259 800 B**（332×），只要 id 的 `Vec<u64>` 是 80 000 B。可重复：`cargo test --lib database::`（断言）与 `cargo test --release --lib -- --ignored --nocapture a_window_costs`（数字），原始行 `benchmarks/results/2026-09-22-track3-probe.jsonl`。2026-09-22 **D1 补上了 SQL 那一半**：窗口真的作为 `LIMIT`/`OFFSET` 执行（`storage::database_store::window_rows`），10 000 条 record 落库后一次窗口读拿回 31 行（10 000 行的对照也量了，见 `benchmarks/results/2026-09-22-track3-d1-window.jsonl`）。**仍然只证明了投影与查询，没证明帧**：没有 `.slint` 视图，没跑过 `bench.ps1`。
+* filter / sort 在 SQL 侧完成，不在 UI 侧过滤 —— 2026-09-22 **形状已交付**（D4，ADR-0076/0077）：过滤与排序编译进窗口读的语句，计数先 `COUNT(*)` 后开窗（ADR-0062 的形状——`num REAL` 可索引、日期是定宽 ISO 文本——在这里兑现成比较发生在 SQLite 自己的类型系统里）；**耗时对照仍是统一测试的数字**（「10 000 行的库加一个过滤条件的窗口读」对「取回 10 000 行再在内存里过滤」，量法记在 REPORT_TRACK3 §D4）。
+* formula / rollup 必须可增量重算，禁止每次输入全库重算 —— 2026-09-22 **D6 交付 formula 半边**（ADR-0083）：求值只发生在投影窗口（六布局共用的 `db_table_rows` → `db_paint_formulas`），求值集 = realize 行 × 可见公式列，**没有遍历全表的求值路径**；依赖是本行的（引擎回调无 record 参数——公式在结构上引用不到别的行），改一格后值可能变化的格 ⊆ {该行} × 依赖闭包；`db_formula_evals` 计数器钉住量法——统一测试要量「改一格后 evals 增量 = 窗口行数 × 可见公式列数，与 COUNT(*) 无关」与「值实际变化的格 ⊆ 依赖闭包」两个数。没有跨刷新的值缓存：失效要覆盖 undo/redo/批量替换的每条写路径，漏一条就是画陈旧值，比确定性的微秒级重复求值更糟（ADR-0083）。导出是显式全视图产物、按行现算，不属输入红线（同 ADR-0083 的边界）。rollup 等 relation（ADR-0084），**2026-09-22 D9 随 relation 落地并继承同一契约**（ADR-0089）：求值集 = realize 行 × 可见 rollup 列，经 `values_of` 对被引 record 一次批量取值再折叠，**没有遍历被引表的路径**；探针量化在 fan-out 10 000（整表被引）时窗口读 **28.5 ms** 对对照 **9.1 ms**（**3.12×**，窗口为活标题 + 值两遍付账，见 `benchmarks/results/2026-09-22-m14-relation-rollup.jsonl`），契约是「被 **fan-out** 封顶、与**表大小**无关」，而 fan-out 今天**无上限**（整表被引时即整表的值都要读）——这是留开的产品决定，缺口照实记在 REPORT_TRACK3 §D9。
+* 数字进 docs/PERFORMANCE.md：10 000 行的 RAM、切换视图耗时、打开公式编辑器的耗时 —— 仍欠着（没有 UI 臂就进不了 PERFORMANCE.md 的 §Method）。D1 的建库与窗口读数落在 `benchmarks/results/`，随 D3 / D8 与真窗口读数一起收口。探针的窗口数字落在 `benchmarks/results/2026-09-22-track3-probe.jsonl`（进程 private 2.0 → 5.1 MB，即把 10 000 行真的拿进内存要 ≈3.1 MB，而窗口只要 6.8 KB），三个正式数字随 D3 / D8 进 PERFORMANCE.md。 —— 2026-09-22 **D8 收口**：三个数字进了 `docs/PERFORMANCE.md` 的 `## M14`（原始行 `benchmarks/results/2026-09-22-track3-d8.jsonl`）：① 10 000 行的库开在窗口上只占**几 KB** 行对象（31 行，与 100 行库同价），全量 realize 才要 1.16–2.26 MB（≈330×），是永不发生的那一支；② 切到视图顶部 = 解码 + `COUNT(*)` + 一次窗口读 ≈ **0.35–1.0 ms**，但 `OFFSET` 走到表尾要 **16–25 ms**（cursor 取窗实测 212–356 µs，约 80× 之下，是退役它的现成路子），分组视图的 `GROUP BY` 再 +5–18 ms；③ 打开公式编辑器 = 解析一条嵌套式子 **1.6–3.4 µs**、单格求值 68–129 ns，把 10 000 行全重算是窗口重算的 **108×** 且投影无路径去做（ADR-0083）。仍**未测帧**：Slint 重画 31 个 delegate、日历 42 格、chart 构 path 的墙钟，要真窗口 + `bench.ps1` 的 RAM/像素臂才量得到，headless 探针替不了它（与 D0 同一条界限）。
+
+## 排期前提
+
+本阶段在 §三十七 批次 B（table / toggle / columns）与 §四十 的引用基础设施之后开始，否则简单表格和 relation 会各造一遍轮子。
+
+==================================================
+四十、第二十六阶段：引用、提及与反向链接
+=============
+
+@page mention：§十 的 Inline Model 新增一种 span（存目标 page id，不存标题）。输入 @ 弹页面选择器，复用 §十五 slash 弹窗的第三种模式（ADR-0026 已验证这条弹窗可复用）。
+
+—— 2026-09-22 已交付，ADR-0050（存储形态与 Markdown 往返语法）。span 复用 `marks` 表唯一那列载荷（`url = "quire://page/<id>"`，`kind = "mention"`），**不新增列**。chip 的标题由**投影层**向 workspace 现问（`MentionTitles`），所以改名自然跟随、没有任何字符被重写——代价的另一面是删页时也没人去改引用，退化因此是投影层的职责（见下面「页面别名」）。选择器是 slash 弹窗的**第四种模式**（`slash-pick-mention`）：第一行是日期，其余是 workspace 的页面；应用时发一条 `InsertReference`，因为 `exec_all` 对批内每条命令都按同一份 pre-state 计划，「替换 `@` 之后的过滤文字」与「落一颗 mark」必须是一步（否则后者的按旧文本长度 clamp 会把它切错），顺带也是**一步撤销**。点击 chip 走 M8 就有的 `quire://page/<id>` → `open-link` 路径。悬空（目标页已删）时 chip 读作 `(deleted page)` 并灰化。
+
+@date：落 date 型 inline span。
+
+—— 2026-09-22 已交付，ADR-0050。日期**存自己的 ISO 文本**（同一列载荷 `url`），不存"今天的编号"：格式的唯一定义在 `core/date.rs`（`is_iso_date` / `to_iso` / `today_iso`），导入侧与选择器写盘共用它，所以库里不会出现两种写法。渲染成独立的 `clock` chip，与 mention 在视觉上分开——日期不是指向页面的引用，它没有地址。
+
+反向链接区：页面底部列出所有引用本页的块。派生数据，不双写入库。
+
+—— 2026-09-22 已交付，ADR-0051。**不加表、不加列、不挂 FTS5**：migration 16 只加两条索引（`marks(kind, url)` 与 `blocks(page_ref)`），查询在 `storage/backlinks.rs`，每次投影现算（`refresh_backlinks`，由 `reproject_blocks` 调用）。面板**折叠 5 行 / 展开 50 行**，超出的部分由一行总量交代，所以被引 200 次也不会把正文挤出屏幕；按来源页分组，组头只在每组第一行画。点一行跳到来源块，来源在别的页就先开那一页——和文本里的 `quire://block/` 链接走同一个 `jump_to_block`。
+
+反向链接索引与 §二十 的搜索索引一起增量维护，不得每次打开页面全库扫描。
+
+—— 2026-09-22 达成，但**路线与原文不同**，见 ADR-0051：这条 ADR 撤掉了本 track 早先的"挂进 FTS5 增量路径"草案，改为"两条索引 + 派生投影"。挂进搜索索引意味着多一份派生数据、也就多一条必须维护它的写入路径（删一条 mention 要从 `search_blocks.content` 里摘掉 `__backlink:` token，而摘的动作会把用户正文一起重写），而索引由 SQLite 从磁盘上已有的行建出来，**没有可漂移的副本**。"不得全库扫描"这句**有对照数字**：同一进程、同一个库（1 200 页 / 100 200 条 mark）里把 `idx_marks_reference` drop 掉再跑同一条查询，折叠读从 **78 µs 变成 6 068 µs**（`docs/PERFORMANCE.md` "T2 · the backlink panel is one index seek"），页面打开本身 +0.06 ms（折叠）/ +0.07 ms（展开），对 §二十二 的 50 ms 预算。
+
+页面别名：因为引用存的是 ID，重命名后所有引用自然显示新标题。
+
+—— 2026-09-22 已交付，ADR-0051「后果」小节。**这一条不需要新功能，需要的是证明**，三处各有测试钉住：chip（`a_mention_run_reads_the_live_title_and_degrades_when_the_page_is_gone`）、反向链接面板的分组标题（`the_backlink_panel_groups_by_page_and_names_each_page_as_it_is_called_now`）、Markdown 导出（`an_export_that_knows_the_workspace_names_each_page_as_it_is_called_now`，导出侧走 `export_page_with(..., &|id| ws.title_of(id))`）。「引用存 id」的三种代价也定义并钉住了：目标页**被删** → chip 与块级引用行都读 `(deleted page)`（`deleting_a_page_degrades_the_chip_that_named_it`）；目标 id **指向本库不存在的页**（手改过库 / 旧备份）走的是同一条代码路径——都是"workspace 报不出这个名字"，所以退化是同一句话，不另造一套。顺带修了一个真 bug：`delete_page` 删掉**非当前页**之后没有重投影，屏幕上的 chip 会一直显示旧标题（这正是"可见退化"要挡的那类失败：没有任何东西会去纠正它）。目标页被**移动**到别的父页不属于退化——id 没变，所以引用照旧解析，`renaming_moving_and_losing_the_page_a_reference_points_at` 把改名、移父、id 落空三件事放在一条测试里按顺序走了一遍，并断言那颗 chip 所在的块在三种情况下**逐字节未变**（引用只存 id，改的是一个页面，不是三千个引用它的块）。
+
+synced block 建在这一层之上：一个块被多处引用，编辑任意一处全部生效。
+
+—— 2026-09-22 已交付，ADR-0052。**一块内容只有一份**：`Synced`（kind 24）自己不持有文本，
+`blocks.sync_ref`（migration 19）指向源块，行画的是源块的 text 与 marks，投影时解析、不第二次写
+（`sync_target`）。编辑绑到源块（`content_of` / 行的 `content-id`），所以"两处同时变"真的只写一处，
+一步 Ctrl+Z 撤掉。四个语义都在 ADR 里落了字：删镜像只删这一行（无外键、无级联）、删源让镜像可见退化成
+`(deleted source)` 并变只读、undo 无需合并、**环检测在写入那一刻做不在渲染时做**（`sync_would_cycle`，
+有上界；`sync_target` 也带 `SYNC_RESOLVE_MAX`，旧备份里的环是"画错"而不是"挂住"）。
+只同步**一个块**不同步整棵子树 —— 那会让行数变成动态的，§三十七 那两处附加改动（真删子树、row→model）
+在这一刀被判定为用不到，不是被漏掉。Markdown **导出摊平**（镜像导成源块那一行，照 ADR-0032 columns
+的先例），**导入有意不认新语法** —— §二十六 把 Markdown 定成内容通道不是保真格式，block id 跨库没有意义，
+造个记号只会产出"导进来立刻失去源"的块。六接点：`BlockKind::Synced` / kind 24 / 导出摊平+导入按名字
+回读 / `TURN_INTO_ITEMS = SLASH_ITEMS` / slash 与 "+" 两个菜单 / 场景 `synced`、`synced-source-gone`
+及各自的 `dark-` 臂。**未验证**：真键盘输入、源与镜像同时在屏时两个输入框的焦点争用、真点一次跳转。
+
+==================================================
+四十一、第二十七阶段：笔记与任务
+=============
+
+形态：与「文章」（页面 / 块编辑器）并列的**第二个顶级区域**，不是一个新块类型。
+
+—— 2026-09-24 已交付，ADR-0097、ADR-0098。区域由 `UIState.active-area`（`"docs"` / `"organizer"`）选择，`AppShell` 里是两个并列的 `if`，所以任何时候只有一个挂载：编辑器不是区域的子节点，反之亦然，一次按键不可能落到没显示的那一边。侧边栏「笔记 / 任务」两行、palette 的「打开笔记 / 打开任务」两条命令都能进；点侧边栏任意页面（或 palette 跳页、反向链接跳转、`Alt+←/→` 后退前进）即离开——这一句写在 `show_open_page` 里，所以四条入口不用各记一次。标题栏照旧说自己在哪：区域里写「笔记」/「任务」，`show_open_page` 把页面的标题放回来，两个方向共用一个机制。
+
+数据层：三个新表 + 九个行级 Change + 九条命令，都在 quire-core，与页面/块无关。
+
+—— 2026-09-24 已交付，ADR-0098（行级粒度）、ADR-0100（tags / subtasks 存 JSON 列）。`notes`（v24）/ `task_lists`（v25）/ `tasks`（v26）三步迁移，`CURRENT_VERSION` 23 → 26；`core::organizer` 是实体层（`Note` / `TaskList` / `Task` / `Subtask` / `Priority` / `Repeat` / `OrganizerCatalog`），`storage::organizer_store` 是它唯一的 SQL。**行级**而不是逐字段：merge 是按整行比较的（`PartialEq`），一次编辑在快照层面本来就是整行重写，所以「变更列表 / 存储 / merge / 撤销步骤」四者说的是同一件事。`tags` 与 `subtasks` 反规范化成 JSON 列：它们永远跟着宿主行读写、没有独立身份、也不会被单独查询，而 catalog 是整体载入内存的。**枚举存字符串**（`as_str` / `try_from_str` / `from_stored`），与 `BlockKind` / `PropertyKind` 一致。
+
+笔记：标题 + 正文（v1 纯文本，保留换行）+ 置顶 + 标签。
+
+—— 2026-09-24 已交付，ADR-0103。正文**不渲染 Markdown**：§三十八 已经为模板拒绝过"第二种内容格式"，笔记没有理由再引一遍；一行 `body TEXT` 存用户敲的字，换行就是换行。
+
+任务：标题、备注、完成、截止日期、优先级、清单、标签、子任务、重复规则。
+
+—— 2026-09-24 已交付。`due` 存 `YYYY-MM-DD` 文本（§四十 date 的同一格式，固定宽度所以字节序即时间序），不存时间戳——用户说的是"周五到期"，不是"某个瞬间"；`completed_at` 是 unix 秒，勾选时写、取消勾选时清空，两个字段不会各说各话。`repeat` v1 **只存规则、只显示规则**，不在完成后自动把 `due` 往后推：那是一次没有自己 undo 的派生写入，留到下一步做。
+
+收集箱是**哨兵**，不是一行。
+
+—— 2026-09-24 已交付，ADR-0101。`ListId(0)` 表示"不在任何清单里"，`task_lists` 里没有这一行，所以 `tasks.list` 不建外键（与 `blocks.attachment` 同一思路）。两条可能写进 id 0 的命令（建清单 / 删清单）在 `plan` 里直接拒绝。**删清单不级联**：`DeleteTaskList { list, moved }` 把它的任务搬进收集箱，与删清单**同一批**、同一 Ctrl+Z——"删掉我的清单"绝不能是一种丢任务的方式，而 SQL 级联会把这个问题交给存储层，那里没有任何 undo 能够到。读侧另有一条兜底：任务的 `list` 指向一个已不存在的清单时（一次 merge 可能只落地清单的删除、而指向它的任务留在本地，两者是两行），该任务按收集箱显示，而不是从所有视图里消失。
+
+智能视图全部**派生**，不存储。
+
+—— 2026-09-24 已交付。收集箱 / 今天 / 近七天 / 全部 / 已完成是同一个 catalog 上的谓词，"今天"与"近七天"用一次时钟读出的三个 ISO 串比较（`OrgDates`），行上的「今天 / 明天 / 已逾期」徽章读的是同一份日期，所以跨零点不会出现"归到一天、画成另一天"。选择器只有**一个**，两半：`org-list ≥ 0` 选清单，否则 `org-view` 选智能视图。排序三档（添加顺序 / 优先级 / 截止日期），默认是任务自己的 `ord`——另外两档是对这个顺序**提问**，不是替换它。哪些在看是**会话状态**（ADR-0073 的老规矩），重启回到「笔记 · 收集箱」——"回到"这一半由 ADR-0110 说清楚：只有"上一次站在哪个区域"会落盘，tab 与过滤器不会，所以只有重开在区域里时才谈得上回到收集箱。
+
+撤销：区域有**自己的栈**。
+
+—— 2026-09-24 已交付，ADR-0099。`core::ORGANIZER_STACK` 是一个页面不可能持有的 `PageId`（`u64::MAX`；页面 id 来自 `max+1`，构造上到不了），而 `History` 正是按 `PageId` 分栈的——所以"Ctrl+Z 只撤销你正在看的东西"不需要任何新机制：区域里的一次 Ctrl+Z 走组织器的条目，编辑器里的一次走当前页的条目，两个列表不可能互相装进对方的步骤。`ui_state_weak`、`db_refresh_page` 那类区域相关的钩子一个都不用改，因为 organizer 的变更对文档是 no-op（`Document::apply` 的 `_ => {}` 臂）。
+
+编辑即一行：一次提交是一行，一次 Ctrl+Z 是一行。
+
+—— 2026-09-24 已交付。文本字段（标题 / 正文 / 备注 / 标签 / 子任务标题 / 截止）绑定到各自的 `org-*-draft`，由 `org-field-edited` 报告字段槽，Rust 300 ms 后提交——与正文行、数据库单元格同一条节奏，所以一串击键是**一步**而不是每字符一步。行没变就**不是一步**（`org_edit_note/task/list` 返回 `None`），而且**不改写 `edited`**：点进标题再点出去是用户一直在做的事，它既不该压一条历史，也不该让这一行看起来比上一次真编辑更新。勾选 / 优先级 / 清单 / 重复 / 截止的快捷按钮是立即提交。删除**曾经**是立即的一步并在提示条里写「已删除「…」— Ctrl+Z 可撤销」——2026-09-26 由 ADR-0108 改成延迟删除 + 撤销条，见下面那条。
+
+同步：与文档同一条 LAN 快照，快照版本升到 **2**（2026-09-26 因回收站墓碑再升到 **3**，2026-09-28 因 organizer 的键与仲裁换成 唯一 ID + revision 再升到 **4**，见下面两条）。
+
+—— 2026-09-24 已交付，ADR-0102。`SyncSnapshot` 多三个扁平集合（`notes` / `tasks` / `lists`），`MergeCtx` 多三个分配器（draw 自 `next_note/task/list` 三个水位）；任务唯一的跨行引用 `list` 按 `list_map` 重映射，而 `0` 不在映射表里，所以收集箱永远是收集箱。**升版是这一片的关键动作**：版本闸是精确相等，若还是 1，新端发给旧端的 `notes` 会被 serde 静默丢弃，旧端回传的 merged 快照里没有 notes，新端的**删除检测**（merged id 集 vs 本地 id 集）就会把用户刚建的笔记删掉。升版后新旧端在 `from_json` 直接互相拒绝：响亮、立刻、可修。代价写在这里：**两端必须一起更新**，所以两个 shell 的推送是一起做的。
+
+—— 2026-09-28 已交付，ADR-0122、ADR-0123（compose ADR-0024、ADR-0025）。**谁能为哪一个集合说话**，是这一片唯一的新规则，其余都是它的推论。merge 是三路的，而"缺失"是它的三个输入之一：影子有、本机有、对端的答案里没有 ＝ 对端删了。这条在两台都持有那一层的设备之间是对的，在桌面与一个根本没有那张表的壳之间是灾难，因为壳的空列表说的是**它的构建**，不是用户的数据。第一轮看不出来（影子正是用桌面自己的数据库喂进去的），删发生在第二轮——这就是"配对的时候明明好好的，过一小时表格没了"。规则：`peer_carries_the_whole_library(kind)` 只让 `windows` / `macos` / `linux` 的沉默算删除，Android 与**未播种的 kind**（入站 push 就是这个）不算；不算的答案是**把本机自己的行填回 merged**——一次填三处（差量、回推给对端的快照、落盘的影子），所以下一轮读到的还是同一片沉默，而不是新闻；并在日志里报出保留了几项（一次写着"已同步"而两边差着一整层的往返，用户需要知道差的是哪一层）。反方向的推论是 compose 的 ADR-0024：入站快照在**门口修剪**而不是整轮 409，被修掉的行不进影子。两个集合故意不对称：**附件行不能收**，因为 `sync_unsyncable` 拒绝导出带附件行的库，一轮好心就把这台设备的同步永久关掉；`AttachmentDeleted` 也不发，一行附件旁边站着文件、站着指向它的图片块，误判丢的是文件而不是一行 stale。**表格块不是表格行**（compose ADR-0025）：旧闸门读的是块，而闸门在 `Engine::start` **之前**，`Some` 意味着不起线程、不监听、不广播、不配对，`sync_export` 又每轮再问一次——于是与一台"任何一页有过一张表"的桌面成功同步一次，就把这台手机的同步永远关掉，屏幕上写的还是"请用桌面端同步"。块照旧跟着它的页走（这里画 `▦ 数据库` 占位），行的沉默由上面那条 gate 兜住。**导出要响亮**：先 `force_flush`（最后几秒的击键还在写队列里，漏掉它们的快照在对端读成"你没改过"），`records_of` / `values_of` 的错误往外传，"有 schema 却没有可读仓库"直接拒绝；而 pump 在失败时**丢掉 reply channel**——对端于是看到一次失败的请求（503），永远不是一份短一点的快照。**跨页的移动是一个 move**（ADR-0123）：块的差量读**全库快照**（`local_all` 与 `merged_present`），删除的判据是"整个 merged 里没有这个 id"，`page` 变了发 `BlockMovedToPage`。旧的按页判读把一个块的两页读成两件不相干的事——离开的那页发删除、加入的那页发插入，而 `blocks.id` 是 UNIQUE，`SqliteRepository::apply` 一个 batch 一条事务、首错即回滚，于是那一页**所有**别的更改一起没了；内存里更糟，`Document::apply` 的 `BlockInserted` 只看它被交到的那一只 vec，同一条块在两页各留一份。落到用户手里是丢一段还是重一段，取决于导出把两页排在什么顺序，所以测试两个方向都跑。**入站 push 必须已在配对表里**：core 的 server 凭快照自报的名字给任何 POST 者发明一条 `paired: true`，请求无法自证，壳是唯一的门（两端各问同一个问题）。自动周期只拨**最近 60 秒广播过**的对端（广播 4 秒一次；不响的设备它的服务器也停了，那一轮只会等到超时）。同步页补上完成一次配对需要的五件事：本机名称可改、间隔四枚 chip、本机地址带端口（无路由写 `未联网`）、进行中的 `●`（5 分钟未回算失败）、最近记录十二行**含冲突**。**页树在动它之前先问它建不建得出来**（ADR-0124）：merge 一行一行地判，而页树是一个对象，于是 merged 的页列表不自动是一棵能建的树，而两种形状都从平常的两台设备里长出来。① 对端删了父页（它自己的删除连带把子页从快照里拿走），本机这一侧刚好改了那个子页——子页是"两边都动过"所以留下，父页是删除；apply 先跑删除，`delete_page` 连带把子页从会话里也拿掉，接着插入的循环就在一个不存在的父 id 底下把它塞回去，`Workspace::attach` 对此的答案是 `.expect("parent exists")`，而它跑在 **UI 线程**上（同步落地是一条 pump 排空的 `Job`）——所以应用不是同步错了，是停了。② 两边各把对方的页装进了自己：`move_page` 拒掉后一半（正确），旧代码不看返回值照旧 `record`，于是 `pages.parent` 里是一个环而内存的树不是，重启时 `from_persisted` 给不出任何 `roots`——**侧栏空了而每一行都还在盘上**。现在：找不到父的页落在顶层，被拒的移动让本机自己的位置站着不动（ADR-0048 那条"跟着命令走的写必须看命令的返回值"），而真正建出来的父子与顺序**写回 merged 那一行**——那一行是回推给对端的答案也是落盘的影子，一条本机守不住的断言每一轮都会被重新争一次。两台设备各留各的树并在日志里各说一句，这是环的诚实答案；自动挑一个赢家是产品决定，不在这里替用户做。两条都经变异验证：短路守卫后新测试死在 `workspace.rs:156`（`parent exists`）。仍然没有：附件删除跨端、`meta` / `settings` 进快照，以及**九条要改 `quire-core` 的事项**（推不取附件字节、一个文件读不到就废一整轮、入站 push 说不来自己的 kind 且记的是临时端口、`GET /sync/snapshot` 与 `/sync/attachment/<id>` 来者不拒、`adopt_uuids` 按整数 id 归一让两个不同的行**共用一个唯一 ID**、引擎问「本机有哪些附件」也按整数 id 所以撞了 id 的那一份**永远不被取**（桌面端只能在应用时数出「对端有 N 个附件没有把文件带过来」并写进日志）、被记下的冲突在下一轮被**无声地**再判一次）——逐条写在 `docs/ROADMAP.md` §"Sync backlog owned by `quire-core`"，最后三条是探针跑出来的或直接读自取字节的循环，不是猜的。
+
+
+笔记与任务按**唯一 ID** 合并，**revision** 说了算。
+
+—— 2026-09-28 已交付，core ADR-0004、ADR-0125（compose ADR-0026）。参考实现（`aw-sync-rust`）对这两类行的做法是两件事：`serialize.rs` 的 `logical_key` 用 **uuid** 当逻辑键，`conflict.rs` 的 `incoming_newer` 用 **rev = (updated_at 毫秒, device_id) 字典序**仲裁。而 merge 的头一行本来就自称是这套「adapted to Quire's integer ids」——它把 **id** 当成了键，于是两件事故都有探针证据：两条不同的行会共用同一个 uuid（ROADMAP 第 7 条），以及冲突两边各自写进自己的 shadow、下一轮被静默改判（第 8 条）。这一刀把「adapted」补成「是」。**键**：`notes` / `tasks` 按 uuid 匹配——两台设备各自把第一篇笔记落在 row 1 就是**两条**笔记（整数是各设备自己的水位，uuid 才是名字），于是 organizer 上的 renumber 级联整个消失，只有"对方有这个 uuid 而本机没有"的行才需要插入，插入时给一个本机的**新** id，并把 `remote id → local id` 映射交出来，所以一条回复的 `ref_note` 会跟着它答的那一行走到落点（引用**仍然**存整型 id，改存 uuid 要动 wire 字段和两端的引用渲染，没做）。**仲裁**：两边都有这一行就比 **rev**（`"{millis:013}-{device}"`，字符串比较即数值比较），新的赢；两台设备从同样两个字符串算出同样一个答案，所以**发现冲突的那一轮就是解决它的那一轮**。列表仍走 id 键那一半（清单没有 uuid）。**为什么 rev 要单独一列**：区域刻意让 `edited` 在进回收站 / 恢复时**不动**（详细信息的「修改」才不会说谎），所以一次入站和撤销它的那次恢复会盖同一个章，没有任何比较能排序它们。**为什么 shadow 还在**：它是唯一能分辨"本机从没有过这一行"和"本机清空过回收站"的东西——墓碑随行旅行（ADR-0003），清空没有行可以带话，而无状态的 LWW（参考实现的做法，它没有 purge）会把缺席读成"从没见过"，下一轮把用户清空掉的东西**复活**。**迁移 30** 加 `rev` 列并按 `MAX(edited, deleted_at) * 1000` 就地回填（空 rev 会和所有空 rev 打平，等于没有仲裁依据）；每个 organizer 写都盖新的 rev，而且盖在**两个壳各自唯一的那个漏斗**上（桌面 `exec_org` / `exec_org_all`，手机 `apply` / `apply_all`），不是二十个造行的调用点各记一次；**`before` 那一半绝不盖**——undo 写回去的是它，盖了就等于让撤销过的行比撤销它的那次编辑更新，对手下一轮把撤销过的值又拿回来。桌面为此多一个 `now_millis()`（墙上时钟毫秒，不是本会话的单调钟：rev 是要跟对手比的），手机把本机 id 放在 `Organizer` 上（开库时给一次）。**代价写在这里**：`SNAPSHOT_VERSION` **3 → 4**，两端必须一起更新。这不是 wire 形状变化（`rev` 是 defaulted），是**语义**变化：还在按 id 归并的旧构建会把我们的行按它自己编的 id 回过来，那是静默发散而不是可见失败，所以版本门直接拒绝。**权衡过没走的**：只修 uuid 归并那一处（最便宜，但 organizer 仍然按一个不是身份的整数合并，级联和"冲突下一轮被改判"都留着）；以及干脆去掉 shadow 做全量 LWW（更简单、也正是参考实现的样子，但这边的回收站有真的**清空**）。
+
+笔记与任务合并之后，界面上的**刷新**才补上：一次与**每台**已配对设备的往返。
+
+—— 2026-09-28 已交付，ADR-0127（compose ADR-0029）。两个 tab 的表头各多一枚「刷新」，按下去是**一轮与所有已配对设备的同步**，不是重画本地列表。请求是一次 `sync-now-all()` / `{"op":"syncNowAll"}`——**不带设备 id**：按它的意思是「我有一篇笔记不在这里」，而"哪一台设备有"不是那一刻要问的问题（按设备挑是把选择还给用户，正好在他最不想做选择的时候）。**它是一轮同步而不是一次重载**：一份正确但缺了别处那篇笔记的列表，和一份从没刷新过的列表长得一模一样，而只有同步轮能把它补全。**谁会被拨**这条规则从定时器里搬出来成为 `peers_due_for_a_round`（桌面）/ `Session::peers_due_for_a_round`（手机），定时器改为调它——手动和自动必须是同一批设备。已配对但**当前不在广播**的设备不会静默被跳过：状态栏里点名"（某某不在本网络上，已跳过）"，因为一次悄悄漏掉设备的往返，正是那个"看起来成功了"的往返。**按钮只在有已配对设备时出现**（`UIState.sync-has-paired` / `SyncState.peers`），一个唯一答案只能是「还没有配对任何设备」的按钮是挡路的，配对本来就发生在设置里。顺带修掉的既有缺陷：`handle_sync_job` 的 `Job::ApplyRemote` 分支**重画了页面、块、数据库，唯独没重画组织器**——`org_refresh` 漏掉了，于是一次合并进三篇新笔记的往返之后，笔记/任务两个 tab 画着的还是拉取之前的列表，这正是同步页那枚「立即同步」一直"能用、但什么也不显示"的原因。**没有做的**：页面区不加刷新（页面走同一条 `ApplyRemote` 且本来就在重画，编辑器工具条上放一个会离开应用、而它背后的数据又不是会过期的那一半的按钮，是加一个说不清的控件）；也没做下拉刷新手势（要一个和列表自身滚动手势打架的识别器）。**未验证**：两端真机往返的实机交互。
+
+局域网内的设备**自己就会同步**，而笔记是一张**卡片**，「全部笔记」不再是一块蓝底。
+
+—— 2026-09-28 已交付，ADR-0128（core ADR-0005，compose ADR-0030）。三件事。①**「配对」整个去掉**：没有配对按钮、没有「发起配对」、`peers_due_for_a_round` 里没有 `paired` 过滤。`Job::Discovered` 把广播到的设备记成 `paired: true`，入站 push 的门问的是**唯一还剩的那个问题**——这个 id 我们听到过吗？没广播过的地址推来的快照仍然拒绝。每行的「立即同步」、设备表、wire 上的 `SyncRow.paired` 和 core 的 `/sync/pair` 端点都留着（老版本的对端还会发），但这个壳自己的界面不再产生任何一个。**为什么这么做不花代价**：广播本身就是明文 JSON `{id, name, kind, port}`，每 4 秒发一次，收到就写进设备表——配对从来不是一张凭证，只是把同一个问题问了第二遍。安全边界从「一个会自报身份的进程」变成「任何能连到 5878 的东西」，这是用户自己选的。**升级路径**：旧版本写下的设备表里可能有 `paired: false` 的行，现在没有代码会改写它，所以去掉过滤是必须的，否则那些设备永远看不见（`one_round_dials_every_device_the_book_holds` 钉住）。②**笔记是卡片**：`Colors.surface` + 1 px `Colors.border` + `Theme.radius-lg`，就是 `OrgBoardCard` 那套配方，也是 Compose 端从收件箱第一天起就在画的东西。**6 px 的间隙是行的 margin 之外的一层透明包裹**——`ListView` 没有 `spacing`，而 `margin` 在这个 Slint 版本上不可靠；卡片贴在那个盒子顶端，所以第一张不会比别的低一截。任务行**故意不动**。③**选中的筛选 chip 是中性的**：「全部笔记」默认就是选中的，所以蓝底 + 蓝框 + 蓝底上的蓝字是给一件用户本来就知道的事上了三重信号；现在是 `surface-hover` 一层抬起面 + `border-strong` 边 + `text-primary` 字。强调色回到它该做的事（同步进行中、清除筛选），而不是花在一个「开着的过滤器」上。**顺带修掉的**：那个「Android 未能把写入的更改落盘」是**本机**在失败——推快照时要 flush 自己的写队列，而没有 `busy_timeout` 时和后台写入撞上就是立刻失败（core ADR-0005）；文案也改成「本机」，因为日志那一列写的是对端的名字。**没做的**：任务行卡片（明确只要了笔记）、页面区的刷新（页面本来就在重画）。
+
+同步是一个**页面**，不是一个设置小节。
+
+—— 2026-09-29 已交付，ADR-0132。同步这一片整个从设置弹窗搬出来，成为 `ui/components/SyncPage.slint`，侧边栏「任务」和「搜索」之间有它自己的一行（`ROW_PINNED_SYNC = -14`，`ROW_PINNED_*` 的老规矩），`active-area` 从两值变成三值。**为什么是页面**：设备表（设备 / 类型 / IP / 端口 / 最后在线 / 最后同步 / 状态 七列）、同步统计、以及五十行存储日志，是三样你**回去看**的东西；400 px 的弹窗装不下任何一样，它装下的是每台设备两行字加一个「立即同步」——这正是它读起来"特别简陋"的原因。参考实现也是页面（`aw-qtui/syncpage.cpp`，自带 tab widget），所以这不是重新设计，是抄形状。**三个盒子是参考的三个 tab**（设备 / 统计 / 日志），做成一枚分段控件而不是三个 bool，这样同一时刻恰好一个为真，和笔记/任务两个 tab 同一个规矩。
+
+**列是拆开的**。`SyncRow` 多出 `kind` 和 `port`，因为参考那里 `setColumnWidth(0, 180)` 旁边就是 `setColumnWidth(1, 70)`——平台是设备的事实，不是它名字上的一个括号。`port` 和 `ip` 合成一个 `ip:port` 字符串而不是独立一列：每个 Quire 都听 5878，一个常量是标点不是列。`last-seen` 是新的，而且它是**同一个事实的第二个读法**而不是新事实：`last_sync` 是 RFC 3339 **字符串**，`last_seen` 是 **unix 秒**（`PeerRecord` 自己的注释），所以 `seen_age_label` 是同一把梯子问了一个数字，多出一个字符串读法没有的分支——`0` 是设备表里的"从没听到过"，不是 1970 年。
+
+**统计的「变化」是影子上的差量**，按**唯一 ID** 对齐，而且它**故意不是** `PartialEq` 在整行上。第一版就是那么写的，被测试当场抓住：`SNote.id` 是**每台设备自己的行号**，在它上面派生相等等于报告"每条笔记在每台设备上都变了"，永远如此。现在比较的是 `moved_rows(theirs, mine, key, content)`，`content` 跳过 `id`、留下 `rev`——于是这里的"变了"和 merge 仲裁一行时说的"变了"是同一件事。它数**两个方向**：只有影子有的一行是**要进来**的，只有本机有的一行是**要出去**的；只看向对端那一版的计数，会在用户刚写完一篇笔记按下「立即同步」的那一刻报「变化 0」，而那正是这个数字存在的唯一理由。统计的**本机那一半是一次导出**（`sync_export` 调一次，不是每台对端一次）——它跑在"页面开着时每 5 秒刷新"的循环里。
+
+**这一页故意没有的**，因为引擎答不出来：没有配对按钮（ADR-0128——设备在表上正是因为它广播过）、没有手填地址（ADR-0128 同一句，Android 端的「按 IP 添加」已经删了）、没有安全码列。影子是用设备密钥加密的，而这个壳没有任何可以拿去过一遍对端屏幕的东西，一列十六进制是一个没人能据以行动的数。
+
+**三个入口，一轮同步**。`start_round_with_every_peer` 被笔记列表的刷新、页面的「立即同步全部」、以及同步那一行右键的「立即同步全部」共用（后者走 `invoke_sync_now_all`，因为引擎的命令 channel 在 `start_sync` 里而菜单派发在 `wire` 里）。它**故意不等于**定时器那一轮：定时器拨同一批设备（`peers_due_for_a_round` 共用）但不响的设备静默跳过，因为没人在等一个后台 tick；手动那一轮不能，因为用户按下的就是「这一轮」的请求，而悄悄漏掉一台设备的往返正是那个"看起来成功了"的往返。每 250 ms 重建模型的 pump 现在把这一页也算作"开着"。
+
+**「没有刷新按钮」这件事本身值得记一笔**：它不是遗漏。笔记列表的刷新只在 `sync-has-peers` 为真时画，而那个标记问的是 `peers_due_for_a_round` 而不是行数——局域网里没有设备时按钮正确地不出现，而一个唯一答案只能是「还没有别的设备」的按钮是挡路的。同步页面上的 ⟳ 是另一回事，它**永远在**，因为在那里它重读的是**设备表**（发现是每 4 秒一次 UDP 广播，行早就在表里了，按钮只是让它早点显出来）——两个不同的问题，两个不同的按钮。
+
+**场景的种子走的是真路径**：`sync_note_device` 和 `sync_log_push`，也就是一次真广播和一轮真同步各自走的函数；手搓一个 `SyncRow` 会拍出一张没有任何代码路径能造出来的表。三台设备各代表一种状态（在线且刚同步过 / 离线但表里还留着 / 在线但从没同步过），因为三列相同的行拍不出这三列在回答三个不同的问题。
+
+笔记的**边缘**按 ActivityWatch 的数字来，不再按"看起来舒服"的数字。
+
+—— 2026-09-29 已交付，ADR-0133。这条抱怨说的是**边缘**，而边缘恰恰是这个壳从来没抄过的那一半：卡片**本身**（面、边、圆角）早就是抄的，所以卡片看着像 AW 而它周围的列表不像。数字全部写进 `OrganizerArea.slint` 里用着它们的那几行，可以对着 `aw-qtui/src/inboxpage.cpp` 逐条核：列表内缩 20/20/16/16（参考的 `listLay` 与 `toolbar` 两行）、卡片间隙上 5 下 6（`wrapLay->setContentsMargins(si(20), si(5), si(20), si(6))`）、卡片内边距 10/10/14/10（`lay->setContentsMargins(si(14), si(10), si(10), si(12))`）、年龄行与正文之间 6 px（`m_col->setSpacing(si(6))`）、搜索框 240 px、刷新是一枚 30 px 的 ⟳ 而不是两个字。
+
+其中两条不是品味。**20 px 的列表内缩**是让一张卡片读起来像卡片的东西：14 px 时表头左缘和卡片左缘差 6 px，于是表头读起来像**旁边**的控件而不是它的顶部，一条笔记的第一个字落在 22 px 处而参考落在 34 px 处。**5/6 的间隙**是"一叠分开的笔记"和"一列共用边的盒子"的区别——旧的 6 px 也在，但卡片自己的 8 px 内边距把空气吃掉了，于是卡片离自己的文字和离邻居一样近。
+
+**排序盒是新的**，是参考的 `sortBox`（108 px，三档 最新创建 / 最新更新 / 按内容）。它是**自己的属性和自己的回调**，不是任务那三档的第四个槽：两半的顺序没有共同点，而一枚含义随 tab 变的三槽控件是没人读得懂的控件。「置顶」**不是**一个排序档——置顶的笔记在三档下都留在最上面，因为那就是置顶的意思，把它做成一档等于读者一换顺序列表就重排。空列表画的是**空状态**而不是一张空列表：空的 `ListView` 是 0 px 高，否则 ＋ 就浮在一片虚空里；它带一个 `filtered` 标志，因为"你还没有笔记"和"这个筛选没命中你那九十篇里的任何一篇"是两句话。
+
+**没做的**：卡片**内容**的形状（标题 / 摘要两行、正文 14 px 整段、标签并进正文底部）没有照搬——这一轮要的是边缘和细节，卡片里放什么已经是 ADR-0115 定过的；Fab 的位置（距边 20 px）本来就已经和参考一致。**代价**：卡片的高度仍然是两处写死的和（外层 item 盒与卡片自己的内容），因为 `ListView` 没有 `spacing` 而 `margin` 不可靠，两处必须同步——`VerticalLayout` 里的 `Text` 取的是**首选高度**而不是这里钉的 20 px，所以不写死 `height` 每张卡片底下都会多一条空面。这是已知成本，也是卡片高度再出错时该先看的地方。
+
+笔记卡片：**单击只选中**，笔记页与详细信息都走右键。
+
+—— 2026-09-29 已交付，ADR-0137。单击一张卡片以前会把笔记页（标题 / 正文 / 评论）浮层盖在列表上，于是"浏览一列笔记"变成"打开五条再关掉，只为了比较其中两条"——列表最基本的那件事被取消了。现在单击只移动高亮；笔记页是右键菜单的「打开」，「详细信息」是同一菜单里独立的一项（它以前够不着，因为它在浮层里要往下滚才看得到，而那一段只有先点开笔记才够得着）。**打开的笔记与高亮的笔记是两个值**，这是这一刀的全部机制：浮层的门是 `org-note-detail.id >= 0`，而 `org-note-detail` 与高亮共用同一个变量，所以点击与打开无法分开。现在 `org-selected-note` 只由右键菜单的「打开 / 详细信息」和撰写浮层的 ➤ 写——四个写点，没有一个是点击。**单击不再载入草稿**（`org_load_drafts` 跟着打开路径走了）：草稿是浮层自己的字段，在点击时载入会把浮层上一次敲了一半的字提交到用户只是**指了一下**的那条笔记上。**右键会移动高亮**（以前刻意不会）：菜单里每个动作都作用于被打开菜单的那条笔记，而点击已经不再选中，所以右键一条没点过的行会作用到恰好开着的那条。两个门（`⋯` 与右键）本来就走同一个 `org-note-menu-requested`，所以这是加一行而不是加两条路。**权衡过没走的**：双击打开（可达，但仍然是"看一眼就替换掉正在读的列表"，而且笔记自己的页面上就摆着一行写着「打开」的菜单项）；每张卡片一枚详情按钮（为一部分行才问的问题在每一行上放一个控件，而且正是本文件开头禁止的那种只有 hover 才有的入口）。
+
+笔记的标签筛选**回到右侧栏**。
+
+—— 2026-09-29 已交付，ADR-0138。笔记这半边重新有了自己的标签列（`全部笔记` 带笔记计数 / 标签树 / 每标签的子树计数 / 反向筛选 / 清除筛选），列表表头那一行只剩 `搜索笔记`、`排序`、`回收站`。这一刀**部分回退 ADR-0118**，而 ADR-0118 有一半是对的：它拿"两个 tab 是侧边栏 pinned 行的复制"当理由删掉整列，那两个 tab 确实是复制、也确实永久没了（它们现在是侧边栏的两行，`org-open-requested` 从侧边栏那两行发）。被顺手一起删掉的另一半——标签**树**——不是任何东西的复制，而 chip 条装不下它：标签是**数据**，chip 条因此要装进一个 `ScrollView` 横向滚，滚掉的正好是"你正处在哪条路径里"那一个 `↑` chip。一列一次显示一层路径并给出明确的退出方式，这正是导航栏存在的理由；它在**右边**，理由是 ADR-0112 给的：参考实现把筛选放在右边，而那是右手不必越过正在筛选的那些行就能够到的方向。**任务这半边没动**：它仍有自己的列（智能视图 / 清单 / 它自己的 `OrgTagColumn`），两半的列从不同屏，而且挂的是**同一个** `OrgTagColumn` 组件，所以 include / exclude / 清除筛选只有一套实现。**顶栏没有被留空**：删掉 chips 之后搜索框会和排序框贴在一起，所以这一行现在是左块（搜索 240 px）右块（排序 + 回收站），排序留在行尾是 ADR-0133 的理由——它**重排**列表而不**收窄**列表，所以它属于门边而不属于筛选器中间。**连带修掉的既有缺陷**：标签列的选中行以前是 `Colors.surface-selected`（`bg-elev2` 混 22% 强调色），而「全部笔记」是**默认**选中的——默认就响的东西不是状态而是 shout，与 ADR-0128 对筛选 chip 的那条是同一条理由。改成中性抬起底色（`surface-overlay`）+ 2px 强调色竖条 + `text-primary` 字，三个提示没有一个是饱和色块。**代价写在这里**：1280 px 下笔记列表窄了约 208 px，卡片比之前窄；这与 ADR-0112 已经做过、和参考实现也在做的同一笔交换，替代品是一个没有层级的标签筛选器。`notes-filter` 场景不受影响——它直接调 `org_exclude_toggled`，也就是 ⊖ 控件走的那条调用。
+
+设置弹窗里的文字**可以选中**。
+
+—— 2026-09-29 已交付，ADR-0135。这个弹窗里的字符串正是别人**问起这个应用**时所要的那几个：版本、渲染器、以及数据文件夹。一个 Slint `Text` 不能获得焦点、不能持有选区，Ctrl+C 会落到最后一个获得焦点的输入框上——而这个弹窗唯一的另一个输入框是那个 0×0 的 Escape 代理。于是最需要拿走的那串字恰恰是唯一拿不走的。版本、渲染器、数据文件夹、快捷键表的两列、以及两条开关说明都改成 `read-only: true` 的 `TextInput`（`CopyableText`），选中后 Ctrl+A / Ctrl+C。**`read-only` 正好是够用的原语**：可聚焦、可选区、响应 `Copy` 与 `SelectAll`、拒绝其余一切——Slint 1.18 把 `Copy` / `SelectAll` 排在 read-only 检查**之前**，`Paste` / `Cut` / `Undo` / `Redo` / 字符输入排在之后，这个顺序正是它依赖的东西（`i-slint-core` `items/text.rs`）。**光标保留**：它就是那个可供性——一行没有光标的字就是一个 label，而 label 正是这些行以前的样子；不保留它，这个改动就是在换一种方式继续不 selectable。**不加边框也不加底色**：字段外观说的是"可以编辑"，而这里唯一的动作是选中复制，所以那一层 `Rectangle` 画成透明无边，并且**不声明自己的 `TouchArea`**——一个盖在输入框上的 TouchArea 会把点击和拖选一起吃掉。**数据文件夹改成换行**：它以前是 `no-wrap` + `elide`，尾巴——恰恰是辨认文件夹的那一段——被截掉，**而**看得见的那部分还不能选中；一个被截断后又被选中的 elide 比没有字更糟：它看着对，内容是错的。**权衡过没走的**：整个弹窗做成一个大可选块（章节标题、快捷键表、按钮标签都会跟着可选，而点哪儿都会在 chrome 里落一个光标）；数值行上的右键「复制」菜单（一个看起来像 label 的行上，三次操作才够到两次点击加 Ctrl+C 就能拿到的串，而且不显眼）。**仍然是纯 `Text` 的行**：设置 / 外观 / 笔记 / 共享 / 存储 / 快捷键 / 关于这些**标题**，以及「版本」「渲染器」「数据文件夹」这几个**字段名**——它们是 chrome，复制一个标题不是任何人需要做的事。
+
+界面：一张卡片，三栏——左导航列、中间的行、右边选中的那一行本身。
+
+—— 2026-09-24 已交付；2026-09-25 按 activitywatch 的任务页重做版面（ADR-0104）。`ui/components/OrganizerArea.slint` 是唯一的新组件，而现在它是**一张卡片、三栏**：左栏是导航列（208 px，智能视图与清单各占一行、带计数，`已完成` 钉在底部），中栏是行（52 px：圆勾选框 / 标题 / 标签与清单胶囊 / 优先级字形 ▲◆▼ / 截止徽章 / 清单色点 / 一个 `⋯` 打开共用的右键菜单），右栏是详情面板（340 px，**常驻**，不再从 0 宽度滑出——所以选中一行不会再让左边的列表重排）。详情面板是一页表单：清单、优先级、重复三行是**带边框的选项行**，截止是日期输入加"今天／清除"，子任务在自己的框里、`＋` 行也在框内。底栏两件事：显示已完成开关，以及全局的 已完成 X / Y。工具条的"列表／平铺"分段控件切到**看板**：一列一个清单（收集箱也是一个普通列），卡片可跨列拖拽（复用页面树那套 `DragArea`/`DropArea`），每列的 `＋ 添加任务` 直接建到该列。标题栏是**当前 tab 的**标题栏：笔记数笔记（`4 条笔记`），看板数清单（`3 个清单 · 5 项待办`），清单数自己的 `N 项待办`。子任务是**点一下才变成输入框**（不同行不能共用一个 draft，这是本仓"同一时刻只有一个活动输入"的老规矩）。行高等几何是桌面的（导航行 32 / 任务行 52 / 看板列 232 px），触屏镜像用更大的尺寸（任务行 58 / 看板列 252 px）并**一律不画快捷键提示**（quick-add 的"回车创建"在触屏副本里不传 `hint`）。
+
+**布局陷阱（ADR-0104）**：内容是一个 layout 的 `Rectangle`，`horizontal-stretch: 1` 单独**不会**让它变宽——它的 `max-width` 来自那个 layout 的 preferred 宽度，拉伸因子没有可分配的余量。所以本文件里每一处要吃剩余宽度的地方都写成 `horizontal-stretch: 1; max-width: 100000px;`（`OrgInput` 早就学会了同一条：min/max **加** stretch）。装滚动区域的框同理：它的最小高度来自里面的列表，光写 `height` 只是 preferred，会被列表顶回去，要两端都钉住。
+
+标签是**路径**，笔记能**转为待办**。
+
+—— 2026-09-26 已交付，ADR-0107。`项目/工作` 是**一个**标签：过滤器按**段边界前缀**（`项目` 收 `项目` 与 `项目/工作`，不收 `项目2`），笔记页的标签列只显示**一层**——当前路径的直接子段，各带子树计数，同一篇笔记每个前缀只数一次（两个 `项目/*` 标签仍然是一篇笔记）——列上另有一行 `↑ 上级` 和当前路径的面包屑（`org-tag-label` / `org-tag-parent` 由 Rust 给：切分路径是模型的事，界面只负责画）。`tags_label` / `tag_list_model` 把胶囊画成 `#项目 / 工作`，于是**行上的 `tags` 不再是可以回读的输入值**：标签输入框改向 catalog 要原文（`org_note_tags_text` / `org_task_tags_text`），这是这次改动里唯一的坑，两个方向都有测试钉住。详情面板的 ✓ 是**转为待办**：建一条收集箱任务——标题取笔记自己的标题，没有就取正文首行并剥掉开头的 Markdown，正文整段进「备注」，标签随行——然后**把笔记交给撤销条**，没有二次确认。它是组织器栈上的**四步**（建 / 标题 / 标签 / 备注），因为 quire-core 没有一次做完整个转换的命令；**删笔记不是这四步里的一步**——2026-09-26 ADR-0108 把它交给撤销条，`org_note_to_task` 只建任务。Compose 壳用同一套规则，所以同一篇笔记在两端转出来的任务是一样的。
+
+删除是**延迟**的，回头路是一条**撤销条**。
+
+—— 2026-09-26 已交付，ADR-0108（它推翻了本节"编辑即一行"里"删除是立即的一步 + 提示条"那一条）。🗑、`⋯` 菜单的删除、转为待办交出去的笔记，走的都是 `org_defer_delete`：把 id **藏起来**，一条命令都不写。`org_undo_pending` 把藏起来的放回来，还是不写。只有 3000 ms 到期的 `org_commit_pending(token)` 才进命令系统——所以**撤销一条柱子不压历史**：这条改动之前，把一次删除退回去意味着在组织器栈上倒退一步用户从没走过的路。只有一个槽、一个 token、一个定时器（`wire` 顶上那一个泄漏的 `slint::Timer`，四处共用），第二次删除**先提交**第一次（两根柱子挡不住两件事），token 的存在就是为了让被顶掉的旧定时器扑空。隐藏发生在**全部八个投影**里（笔记行 / 标签子树 / 任务行 / 智能视图计数 / 页头 / 底部进度 / 看板 / 清单胶囊），界面上的每个数字都必须跟像素同意——Compose 的对应物没把导航计数一起滤掉，这个不对称**没有照抄**。柱子是**窗口级**的（`AppShell`，不是 `OrganizerArea`），因为挂起的删除活得比区域长：切回编辑器时那些行仍然等在这条柱子后面。几何：380×46，右下各留 24 px，宽度写死而不是按内容算——`HorizontalLayout` 不能带 `background`，所以胶囊必须是一个自报尺寸的 `Rectangle`，而定了宽的内部 layout 才能让文本吃余量（`horizontal-stretch`）、按钮拿自己的 preferred 宽度，长标题走省略号而不是把「撤销」推出窗口；「撤销」按钮另外带一句 `enabled: UIState.org-undo-text != ""`，因为"`visible: false` 的子树还吃不吃点击"这件事文档没写，而窗口右下角不该压在一份没读的语义上。到期与撤销都**不重读草稿**（`org_load_drafts` 会把 `org-field` 归零并按行重写每一格草稿，用户此刻正打在详情面板里的字符就没了），所以提交字段必须发生在挂起删除**之前**。一次批量删除 = 一个批次 = 一条柱子（`org_batch_label`：一行报标题，几行报条数）。**代价写在这里**：窗口过了之后删除是 N 步，Ctrl+Z 要按 N 次；而转为待办的柱子只把**笔记**放回来，任务留着（再退一步才是它自己）。另一条边界：三秒内退出应用，这次删除不落地，重启后行会回来——方向是安全的，没有任何东西被毁。测试四条（`a_pending_delete_hides_the_row_without_adding_a_step` / `undoing_a_pending_delete_writes_nothing` / `only_the_bar_expiring_performs_the_delete` / `every_projection_excludes_a_pending_row`），其中第三条是它抓出 `org_defer_delete` 里那个 `if let` 借用未落就 `borrow_mut` 的 panic 的。场景 `undo-bar` / `dark-undo-bar` **不装定时器**：截图等不过那三秒，等到点拍到的就是"已删除"而不是"待撤销"，那是另一张图、也不是要看的那张。
+
+笔记页另有一块**详细信息**，它是**折在正文下面的**，不是弹出来的。
+
+—— 2026-09-26 已交付，ADR-0109。参考实现把它做成手机上的底部抽屉，Slint 没有抽屉，而六行只读的东西开一个 `PopupWindow` 等于窗口里再开一个窗口；放在正文**上面**又会每次把用户正在打字的那个框往下推。于是它是一个 `▸ 详细信息` 折行 + 六行只读：编号 / 创建 / 修改 / 标签 / 长度 / 置顶，末尾一句**资料库没有的东西**——「没有历史版本：资料库只保存当前这一份，撤销可以回退编辑，但没有按时间恢复的版本」，参考实现也是这么写的，它宁可说一句空话也不画一个空的历史列表。六个值**全部由 Rust 决定成文本**（`org_note_details`）：日期要时钟，长度要按**字符**数（按字节数会把四个字的中文笔记报成十二个词），标签要那个 `#项目 / 工作` 的胶囊写法。日期是这一块**故意与参考不同**的地方：那边是 `yyyy-MM-dd HH:mm`，这边是 `2026-09-26 · 刚刚`——`org_when` 的注释早就写明了原因（这里没有时钟所属的时区，写出来的分钟要么是按 UTC 算的、对读者就是错的，要么是一次谁也不拥有的换算），`core::date::today_iso` 也是同一个理由选了 UTC。三十天之后 `org_when` 的粗单位用完、直接回日期，那时**年龄就是日期**，所以只印一次（这条是 `an_instant_prints_its_day_and_its_age_once` 钉住的，写早一点会印出两个一样的日期）。因为这一块接管了「上次何时改的」，详情栏自己那行 `修改 刚刚` **删掉了**——那是本壳自己发明的，参考的笔记页只有标题 / 正文 / 标签 / 回复。`org-note-details-open` 是 `UIState` 的属性而不是组件内部的：一个没有场景的折块就是一个没有 sweep 量的折块。场景 `notes-info` 的第一版**没调 `org_load_drafts`**，于是拍到的是标题、标签、正文全空而详细信息明明写着 `#会议 #核心` 的那一页——块是对的，场景在说谎，这正是场景必须走真实写入路径的理由。**仍然没有**：评论与引用那两行（要下一次 core bump）、任务侧的详细信息、以及笔记栏自己的滚动（长正文现在会被裁，这一刀只是把债写下来）。
+
+收件箱是**家**：返回栈认得两个区域，而窗口记住上一次站在哪。
+
+—— 2026-09-26 已交付，ADR-0110。`NavHistory` 从前装的是 `Vec<i32>`——一个**表示不了"窗口现在在哪个区域"**的栈，于是 `Alt+←` 从笔记区按下去不是离开区域，而是**跳过**它、把一个文档画在刚还在显示笔记的窗口底下（用户刚走过的那扇门在身后消失了）。现在栈里是 `NavStop`：`Page(i32)` 或 `Org(tab)`，`Org(0)` 就是家。后退的规则一条没变（走到已经在的地方不算一步、被删的页跳过而不是打开、栈有上限），变的是它能停在区域上。`back` 与 `step` 分家：栈空时 `back` 把**正在离开的这一站压进前进栈**再答"家"，所以这条向下走的路是**可逆**的（在家里按 `Alt+→` 回到你来的那篇文档）；只有已经在家（以及 id 0 = 什么都没开）才走到头。`nav_here()` 是**读出来的**（`active-area` + `org-tab`，也就是窗口画自己用的那两个事实），不是另存一份——一条改了区域却没告诉历史的路径，就不会把栈指到别处去。`org_open` 拆成"这一步"（记账）和 `org_show`（只画）：栈已经付过的一步不该再买一张票，`navigate` 和启动落点都走后者。文件里只多**一行 meta**：`current-page` 旁边一个 `current-area`，`open_page` 写 `docs`、`mark_home_area` 写 `organizer`。它走 `record`（持久化漏斗）而不是 undo 历史，所以走进区域不是 `Ctrl+Z` 能退的一步；它是**一行数据而不是 schema**，`user_version` 没动，别的壳读到不认识的键只是忽略；而 meta 根本**不进 LAN 快照**（`SyncSnapshot` 没有 meta 集合），所以"窗口站在哪"是本机的事，一次拉取不会把别人没走过的地板塞给对方。**家指的是「笔记」这个 tab，不是「笔记 + 收集箱」**：哪个 tab、哪个过滤器开着，仍然是不落盘的会话状态（ADR-0073），所以一个在 任务·某标签 结束的工程会重开在 笔记·收集箱 —— 新进程的默认值就是收集箱，启动时的家因此确实就是收件箱；而在一次会话之内，回到家是回到那个 tab 上你最后选的过滤器，那正是"后退"应有的意思。基准夹具不是会话：`start_stop` 在 `--blocks` 时拒绝回家，所以 sweep 的每一臂仍旧从自己的文档开始，**这一片理应一个像素都不移动**。**没有照搬的两条**：参考的另外两个后退步（收捕获浮层、离开某行的表单）在桌面没有对应物——这里的区域是列表 + 详情的常驻分栏，没有模态东西要关，所以路是"目的地 → 家"；也没有新快捷键，`Alt+←` 就是桌面的返回手势，侧边栏那行「笔记」就是一步到家的门，再加一个 `Alt+Home` 只是给同一个地方装第二个门。
+
+多选是一个**带种类的集合**，而一批只花**一步**撤销。
+
+—— 2026-09-26 已交付，ADR-0111。它是一个**模式**而不是一个过滤器：勾上的行仍然在它原来那一行里，只是旁边多了一个框。三个门——栏上的「多选」（笔记栏一直有，任务栏只在列表模式有）、任务行 `⋯` 里的「多选」（进去就带着这一行已经选上，那是参考的长按在桌面上的对应物），和四个场景。进了模式之后点行 = 选/不选，走的是**同一批回调**（`org-note-selected` / `org-task-selected` / `org-task-done-toggled`），所以一次勾选动不了详情栏。任务行首那个框在两种意思之间换：多选时是"选没选"，平时是"做没做完"（`OrgCheck` 画 `task.picked`，连圆的方的也一起换）；笔记行本来没有框，这一刀给它加了一个，画在行里**最后一个孩子**的位置，所以答话的是它自己的 `TouchArea`。**那个框是盖在行右上角的**，所以标题那一行给它让开：多选时 `padding-right: 22px`、平时 0。量过的证据是 `notes-select` 里那一行故意写长的标题——它的墨迹停在 x 853，框的边框从 x 883 开始，中间 30 px 是干净的背景；不让开的话文本区会一路铺到行自己的右内边距（约 x 902），也就是从一枚 18 px 的框底下穿过去，而**没勾上的框内部是透明的**，那等于把边框画在省略号上。下面那行摘录不需要让：框在它上面就结束了。**选中的 id 在 Rust，模式在窗口**，而那个 `BTreeSet<i64>` 带一个"是哪一半"的标记——参考两端共用一个 `Set<Long>`，那是它悄悄带着的一个 bug：笔记 3 和任务 3 都是 `3`，一个活过 tab 切换的集合会点亮**另一种**行，然后 删除 就动了没人选过的东西。栏在多选时是**整条换掉**的（`已选 N 项 · 全选/取消全选 · 复制|完成 · 删除 · ✕`），因为正在问的问题已经不是"这一列是什么"。`org_shown_ids` 读的是**投影出来的 `VecModel`**，不是把过滤再算一遍——"什么是正在画的"就是那两个模型，第二份过滤就是第二个答案，而它随时能跟像素不同意；这也是 全选 能对两件事同时诚实的原因：一个过滤器滤掉的行，和**撤销条**后面那行（ADR-0108）——柱子后面那行不点亮、不计数、不进批次。**那个 N 也是一次交集**（`org_selection_ids` ∩ 正在画的），因为「全选 / 取消全选」那句标签和那个数读的是同两个计数，它们不能互相打脸。移动就退出：`org_show` 在画之前清掉标记和 id，所以没有一条路径能把一个集合留在 tab 后面，✕ 是同一个调用——**而这枚 ✕ 是画出来的**（`OrgButton.icon-name` → `Icon { name: "x" }`）：第一版它占着行末那个槽位、槽位里每个像素都是 `FFFFFF`，因为 `✕` 是 U+2715（Dingbats），本机字体链里没有一枚面带着它，于是**模式唯一的门是隐形的**（`DatabaseFilterPopup` 的注释早就写过同一件事）。对照是 `☑`（U+2611）：它在 `tasks` 里**有墨**（x 563–577、y 198–204）——为了拍到它，种子里的子任务搬到了收集箱那一行，因为此前**没有任何臂画过那枚计数**，字体表在这两枚上都猜错了，只有渲染能定。**故意没绑 Escape**：`AppWindow.slint` 里一条 Escape 都没有，加一条就是把这枚键从编辑器和每个 `TextInput` 手里抢走。**一批 = 一步**，这是比参考多给的一条：那边的 完成 是 N 次单行写，所以 N 次 Ctrl+Z 才退得完；`exec_all` 把整批命令按同一个前状态规划、只压**一条**历史，`exec_org_all` 是同一个调用套 `ORGANIZER_STACK`，所以批次落在区域的栈上而不是页面的栈上。顺带把撤销条也升级了——`org_commit_pending` 现在一次发出整批挂起的行，所以"窗口过了之后删除是 N 步"这句现在只对**几根柱子**成立，一根柱子是一步。**core 一行没动、rev 没 bump**：`exec_all` 和 `ORGANIZER_STACK` 在 pin 的 `d43b095` 就已经有了，所以这一刀能排在要 bump 三端的 引用/评论 之前。复制什么都不写：正文（没正文的报它的标题）、按页面画出来的顺序、空行分隔，而顺序和批次读的是同一份交集。测试六条（`a_batched_delete_costs_one_step_and_one_undo_returns_every_row` / `completing_a_batch_ticks_every_row_as_one_step` / `picking_rows_fills_the_set_and_writes_nothing` / `select_all_covers_the_rows_showing_and_not_the_one_behind_the_bar` / `a_pick_never_crosses_from_notes_into_tasks` / `copied_text_is_the_bodies_in_the_order_the_page_drew_them`）。**仍然没有**：看板里的多选（平铺的卡片没有 `⋯`，栏上那颗按钮在 `org-mode==1` 时不出现——这是刻意的，平铺按清单分列，一次"把整列滤掉"的批量删除不是一件事）、任务侧的详细信息、笔记栏自己的滚动。
+
+标签列在**右边**、一个标签可以被**排除**，而 AI 的一批指令是**一步**。
+
+—— 2026-09-26 已交付，ADR-0112。顺序变成 `[列表] │ [详情] │ [标签]`：参考实现把筛选放在右边，"不想看的 tag"这件事，手指从右边够到不必穿过它正要隐藏的那些行。筛选多了**反向**那一半——每个标签行右边一枚**画出来的** ⊖（不是 `⊘`：本机字体链里没有这枚字，而斜杠版又撞上这个 Slint 没有 `rotation-angle`），被排除的路径连同**子树**一起消失（`tag_matches` 把答案反过来），行变灰、⊖ 点亮、列上多一行 `排除 #项目 #工作`，再加一行 `清除筛选`。集合在 Rust（`org_excluded`，`BTreeSet<String>`），行只是它的投影；两半矛盾的地方在**提问的控件**上解决：点一条被排除的路径就是取消排除，排除正在「仅显示」的那条路径就把「仅显示」撤掉。任务侧**也有了**标签筛选（此前一条都没有），两半共用同一个 `OrgTagColumn`、同一条 include 路径和同一个排除集合，切 tab 把两者清掉——笔记的路径不是任务的路径。`复制` 现在带上每行的**唯一 ID**：工作流是"复制 → AI → 一批指令回来"，而指令必须点名一个在**回答的那台设备上**仍是同一行的名字，整数 `id` 不是（core ADR-0002，它会被 merge 重编号），`uuid` 是；老对端送来、还没有 uuid 的行退回 `local:<id>`，没有一行是匿名的。`指令…` 收参考服务端那套 `{"operations":[…]}`，只是这一端**本地执行**（这个应用没有服务端，库就是旁边那个文件）：笔记 `create / update / delete / add_tags / remove_tags / set_tags / comment`，任务再多 `set_completed / move / set_priority / set_due / add_subtask / set_subtask / remove_subtask`。`add_tags`/`remove_tags` 是**增量**，AI 不必先知道这一行现在有什么标签；这一半做不到的动作用**动作名**报错（`笔记不支持动作 set_completed`）并计进"失败"，绝不静默跳过；`restore` 同样——这一版的删除是删掉、没有回收站可回，所以它不进模板（模板只该是能用的东西）但在解析器里按名字拒掉（点名比消失可读）。一批是**一步**撤销，而且批内的操作**互相看得见**：`exec_all` 把每条命令都对着同一个前状态规划，而整行写入经不起同一行被写两次，所以解析器在一份**目录副本**上模拟整批——`add_tags` 后面的 `update` 保住那个标签，`create` 刚铸出的 uuid 在同一批里就能被点到；每条命令的 `before` 是上一条留下的行，于是这一批自己的 revert 把每一步都走回去，一次 Ctrl+Z 回到最初那一行。这一刀把 `quire-core` 的 pin 从 `d43b095` 推到 `4899857`（唯一 ID + 引用一起来），于是**回复**第一次在界面上成立：`comment` 写一条 `ref_note` 指向目标的行（core ADR-0001），笔记列表与标签列**跳过**回复行，详情栏在正文下面把它们列成 `评论 N`——不做的话，一条 `comment` 指令会造出一条看起来完全普通的笔记。**仍然没有**：从界面写回复（回复框）、任务侧的详细信息、引用/评论其余那两项交互。
+
+清单从自己的 `⋯` 管理，回复在笔记本页上写。
+
+—— 2026-09-26 已交付，ADR-0113。ADR-0112 列表里那两句"仍然没有"在这一刀收尾：清单此前只能建、不能改名改色删除，而回复此前只有 `指令` 的 `comment` 一条门路。任务侧的清单行多了一枚 `⋯`（悬停或选中时画出来，与任务行那枚同一形状），打开的是**共用**的右键菜单——页面树和任务行用的同一套 `UIState.menu-rows` / `menu-action`，清单和任务一样走 `menu-node-id`，所以一个机制两种行：`重命名 / 颜色 / 删除清单`，而 `颜色` 把弹层换成**闭环调色板**（六枚色块行，当前颜色打勾——`ORG_LIST_COLORS` 而不是 `ColorKind::ALL`，主题默认色不是一枚点能有的颜色）。重命名是**就地的**：行自己的名字变成一个 `TextInput`（侧边栏改页名那一套搬进 32 px 的导航行），回车提交、Escape 放回原名、空名字拒掉；它读的是**新**属性 `org-list-renaming` 而**不是**侧边栏的 `renaming-id`——两个 id 空间重叠，编号撞上清单的页面会顶上一个改名框。回复框在**笔记本页**上：`引用` 的回复列表从 ADR-0112 起是只读的，现在正文下面有一个输入框和一枚 `评论`，回车或按钮提交、**不走 300 ms**——回复是一次**创建**，半行不是一行（快速添加那条老规矩）。`org_create_reply` 用与其它笔记同一条 `CreateNote` 写一条 `ref_note` 指向父行的笔记，父行不在就**拒掉**而不是造一条悬空引用：悬空是 **merge** 留下的东西，不是一次写入该发明的。顺带把 `ContextMenu` 补齐——它从有 `MenuRow` 起就带着 `check` 与 `swatch` 两个字段，而这个弹层一直没画；清单的颜色选择要色块，同一段渲染也终于给页面菜单的 Style 行画上了勾（`page-style` 场景因此多出三个勾，那是它本来就该有的样子）。`org-list-color-set` / `org-list-deleted` 两个从未接线过的回调**删掉**了，`⋯` 就是那扇门。删清单的文案照旧说搬了多少条任务进收集箱，而视图只在**正在看的那个清单**被删时退回收集箱——被删的是旁边那个清单时不该把视图挪走。**仍然没有**：回收站、笔记历史 / 恢复版本、任务侧的详细信息。
+
+删除是一枚**墓碑**，回收站是同一份目录的另半边。
+
+—— 2026-09-26 已交付，ADR-0114、core ADR-0003。此前两次写明"没有回收站"，理由都是同一句：要 core 先有软删除。这一刀把三端一起补上。core 里 `notes` / `tasks` 各多一列 `deleted_at`（迁移 29，可空、**不 backfill**——旧行本来就是活的），`trash` / `restore` 是普通的 `UpdateNote` / `UpdateTask`，`purge` 才走 `DeleteNote`；于是变更流、存储、merge、撤销步**全都原样**，删除仍然只花一次 Ctrl+Z。壳这边：🗑、行菜单的删除、多选栏的删除都改成**盖章**；导航列在两半各多一行 `回收站`——它是**列表翻了个面**，不是第四个视图，所以显示的是用户正站着的那半，计数也是那半的；行里直接画 `恢复` / `彻底删除` 两枚按钮（笔记行本来没有 ⋯，而回收站是一张"逐个决定"的短名单）；表头多一枚 `清空回收站`（整批一次 `exec_all`，一次 Ctrl+Z 全部回来）。**投影只多问一个问题**：所有绘制路径从 `catalog.notes` 换成 `live_notes()`，回收站自己的投影读 `trashed_*`——这正是 core 长出这四个访问器的理由，集合是 core 的，"取哪一半"就该 core 回答。几处刻意的取舍：盖墓碑**不动 `edited`**（内容没变，详细信息的「修改」不该因此说它刚被写过）；**标签筛选不作用于回收站**（标签列的计数来自活行，拿一个别处画出来的数字去收窄回收站就是自相矛盾），而**搜索框作用于它**（搜回收站是一个有答案的问题），点标签 / 视图 / 清单都会退出回收站；被扔进回收站的回复离开它所在的线程，任务的清单胶囊也不再数它——看不见的东西还占着一个数字，就是窗口在跟自己打架。`指令` 的 `delete` 现在意思是**移入回收站**（与 🗑 同一个动词），并新增 `restore` 作为它的反面，模板与对话框的动作表都写上了。**pin bump**：`4899857 → fbfdaca`，快照版本 **2 → 3**——uuid 是"缺少一个值"，墓碑是"值错了"（看不见墓碑的对端会把它读成一次普通远端编辑，把删掉的东西**复活**），所以闸门这次关上了，两个 shell 必须一起更新。**仍然没有**：自动清空策略，以及任何历史（回收站知道一行**什么时候**进去，不知道它原来长什么样）。
+
+笔记卡片照参考重排，卡片有了自己的 `⋯`，而新建一条笔记是一枚**悬浮 ＋** 加一层**撰写浮层**。
+
+—— 2026-09-27 已交付，ADR-0115。三件事，都是笔记页此前缺的、而参考实现（以及本仓的 Compose 壳）已经有了的。**卡片**：一行按参考的读法重排——**年龄在最上面左边**（`刚刚` / `3 分钟前`）、置顶的 `⚑` 挨着它、本行的 `⋯` 在最右边，然后是笔记自己的字（标题一行、正文首行一行），**标签最后**。旧版面以标题打头、把年龄埋在标签那一行，于是一列笔记是按"捕获来的笔记根本没有的那个字段"在扫。行高改成**按画出来的东西算**（看板卡片的同一套写法）：没有标题的笔记就是少一行，而写死的 62 px 会给每一条捕获来的笔记留下一条空白。四处**故意与参考不同**：这边的笔记有 `title` 而参考的没有，所以标题保留自己的一行（不塞进正文）；摘录仍然**只一行**、走省略号，而不是参考那种"整段正文最多 600 字"的信息流——这个列表是拿来扫的，整段正文就在右边那栏；参考卡片的 `⚠ 冲突` / `🗑 待同步` 不画（本壳没有冲突这个概念，而挂起的行在撤销条后面，本来就看不见）；`↩ 父笔记预览` 也不画（回复不是列表行，ADR-0112 起就是）。**卡片的菜单**：行上多了一枚 `⋯`（悬停或选中时画出来），而**右键**卡片任意处开的是**同一个**菜单——参考用长按，指针表达同一个问题的动作是右键，页面树的行本来就这么答。两个门走同一个 `org-note-menu-requested`，笔记和任务、清单一样走 `menu-node-id`，所以一个机制三种行：`置顶 / 取消置顶`（两个 id，与任务那对 `标记为已完成 / 标记为未完成` 同一个理由：动作不该回头去读那一行）、`打开`、`详细信息`（顺带把正文下面那块折起来的东西展开）、`复制内容`、`复制唯一 ID`、`转为待办`、`删除`。**不给的两行**：`编辑`（详情栏就是编辑器，卡片不是第二个编辑器，参考需要它是因为它的卡片根本不能就地改）、`评论`（输入框就在正文下面）。**两个门在回收站里和多选时都关着**，所以菜单里**没有回收站分支**——回收站的行自己画着 `恢复` / `彻底删除`，这与任务行的规矩一致（`fill_org_task_menu` 同样没有这一支）。与任务那枚不同的是：打开菜单**不动选中**，因为任务的 `⋯` 顺便就是"打开"那一下，而笔记的 `打开` 是菜单里的一行。**悬浮 ＋ 与撰写浮层**：列表右下角一枚 56 px 的圆形强调色按钮（20 px 内缩，投影是**画出来的**一层暗板——这个渲染器没有 `drop-shadow`），它开的不是一条空行而是**浮层**：一张压在区域上的卡片（与 `指令` 同一形状、同一层叠位置），底部居中、最宽 620 px，点遮罩 / ✕ / Escape 都关，字段出现的那一帧就 `focus()`，占位句写的是这一层唯一的约定（`记录点什么… 使用 #标签 标记`），右下角一枚 40 px 的圆形 **➤**（`IcSend`，画出来的：`➤` 是 U+27A4，与 `✕` / `⊘` 同一条字体链的教训），草稿为空时按 0.4 变暗而**不是消失**（按钮就在眼睛已经落着的地方，会消失的控件要让人找两次），Rust 那边也照旧拒一次。**送出去之前什么都不写**：草稿是一个属性、浮层是一个模式，所以关掉它——✕、Escape、点遮罩——丢掉的是半条笔记，文件、catalog 和撤销栈都原封不动；**这正是它不是"先建一条空行"的理由**（一条因为按了 ＋ 才存在的行，是每个计数和每次重建都得扛着的东西）。`#标签` 的解析是 Compose 壳 `MarkdownText.tagTokens` 的**逐字副本**（`note_tag_tokens`：按空格 / 换行 / 制表 / 两个逗号 / 顿号切开，`#` 打头且至少两个字符，末尾的 `.!。!？)）:：;；` 不算名字的一部分，光秃秃的 `#` 和纯数字的名字丢掉，首次出现顺序去重）——两壳之间唯一必须**逐字节相同**的东西，因为同一句话在两端要归到同一个标签下：`issue #3` 不会凭空立一个叫 `3` 的标签，而中文没有空格，所以 `#工作。还有` 本来就是**一个** token（两端一样）。**代价写在这里**：＋ 是浮在列表上的，最后几行会从它底下滚过去（参考的几何就是这样，它的 Fab 也一样）；撰写层**没有** markdown 工具条（ADR-0103 定了正文 v1 纯文本，而桌面有键盘，不需要为宽度省字）。
+
+笔记页只剩**一栏**，笔记本身是一层**浮层**，撰写层会给**标签建议**。
+
+—— 2026-09-27 已交付，ADR-0118。它把本节 2026-09-24 那条"一张卡片、三栏"的几何在**笔记这一半**上推翻了（任务那一半一栏没动）。①**侧边栏**：点「笔记 / 任务」时页面树里上一次打开的页面仍然高亮着——`SidebarItem` 的高亮读 `node.selected`（Rust 对 `open_page` 的投影），而组织器**不打开页面**，于是树里那一行和钉住的「笔记」同时点亮；行现在画 `node.selected && active-area != "organizer"`，树上的高亮一直就是"正在看某篇页面"的意思。②**右边的两条栏都删掉**（208 px 导航列 + 340 px 详情列），导航列里的东西搬进列表自己的**筛选条**（表头第二行：`搜索笔记` 搜索框、标签 chips、`回收站`）——`OrgFilterChip` 是 `OrgTagColumn` 的语义重画成一排药丸：当前路径的**下一层**、各带子树计数、各带同一条画出来的 ⊖（反向筛选）、加上顶层的 `全部笔记`、被排除的集合自己那枚标记 chip、以及 `清除筛选`；形状取自 compose 壳的 `OrgTagChips` + `TagFilterBar`，所以两端现在连**筛选的手势**都一样。**笔记开成压在行上的浮层**（420 px、距卡片上/右各 16 px、一层画出来的暗板、内部可滚动、角落一枚 ✕、Escape 绑同一个调用且只在浮层开着时动手），点另一行就换，✕ / Escape 只是把选中放下、什么都不写。**任务那一半保留两条栏是刻意的**：收集箱 / 今天 / 最近 7 天 / 清单**就是**那半边自己的导航，没有别处可放；`org_show` 在真正的 tab 切换时清掉标签过滤（ADR-0112），所以两半的过滤永远不会被认错。③**标签建议**：撰写层的字段每次编辑都向 Rust 要一份 `#token` 的建议托盘（`org-capture-draft-changed` → `AppState::org_tag_suggestions`），画成自己头顶上一排 chips；点一枚就把半截 token 换成整个标签并把 `org-capture-caret` 交回给字段。规则是**最后一个 `#` 之后的那一段**（切法与同一个字段的 `note_tag_tokens` 同一条），前缀既比整个标签也比**最后一段**（`#工` 因此找得到 `项目/工作`），池子是活目录的两半，最多五枚——这是 compose 壳 `tagSuggestions` / `applyTagSuggestion` 的移植。④**设置**从 `no-auto-close` 改成 `close-on-click-outside`：前者是唯一一种**从外面关不掉**的策略（引擎吃掉那次点击，而对话框又无视它），所以此前只有「完成」和 Escape 能收走它。**顺手修掉的既有缺陷**：回收站行里 `恢复` / `彻底删除` 那一对用 `parent.width - self.width - 10px` 定位，而 `HorizontalLayout` 会**铺满**父元素，所以 `self.width` 是整行宽、那对按钮落在行的左边缘、正好压在笔记自己的字上（上面那 132 px 的 `padding-right` 正是给它们留的）；改用 `preferred-width`。**代价写在这里**：建议托盘读的是草稿**尾部**的 token 而不是光标所在的那一段（Slint 的 `TextInput` 不暴露光标位置，compose 壳读的是 `field.selection.start`）——光标在行尾时两者一致，只有用户把光标移回行中间时才会**少给一次建议**，绝不会把标签写到错的那一段上。
+
+场景：`notes` / `notes-detail` / `notes-info` / `notes-search` / `notes-select` / `notes-filter` / `notes-commands` / `notes-reply` / `notes-capture` / `notes-capture-empty` / `notes-menu` / `tasks` / `tasks-detail` / `tasks-list` / `tasks-overdue` / `tasks-board` / `tasks-select` / `tasks-list-menu` / `tasks-list-color` / `tasks-list-rename` / `bin` / `tasks-bin` / `undo-bar` 及十九个 `dark-` 臂（ADR-0118 起另有 `notes-capture-suggest` / `dark-notes-capture-suggest`）。
+
+—— 2026-09-24 已交付。全部进 `sweep.ps1` 的 `$all`。它们自己种数据（四则笔记 / 两个清单 / 六条任务，日期相对今天算，所以徽章什么时候跑都成立），而且**走真实写入路径**（`org_create_*` / `org_*_set`）——场景是会话，不是夹具，所以"新建一条笔记"里的 bug 会在 sweep 里现形而不是躲在它后面。**未验证**：真键盘输入（中文 IME 在正文多行框里的行为）、真机触屏长按、两端互相同步的实机往返。
+
