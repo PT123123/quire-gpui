@@ -443,6 +443,19 @@ impl Workspace {
                     cx.notify();
                 }
             }
+            InputEvent::ActivateLink(url) => {
+                if let Some(page_id) = url
+                    .strip_prefix("quire://page/")
+                    .and_then(|id| id.parse::<u64>().ok())
+                {
+                    self.activate_page(quire_core::core::types::PageId(page_id), window, cx);
+                } else if url.starts_with("https://")
+                    || url.starts_with("http://")
+                    || url.starts_with("mailto:")
+                {
+                    cx.open_url(url);
+                }
+            }
         }
     }
     fn change_block_kind(&mut self, kind: BlockKind, window: &mut Window, cx: &mut Context<Self>) {

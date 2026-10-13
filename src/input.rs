@@ -49,6 +49,7 @@ pub enum InputEvent {
     ToggleMark(MarkKind),
     RemoveBlock,
     DismissSlash,
+    ActivateLink(String),
 }
 
 pub struct TextInput {
@@ -299,11 +300,20 @@ impl TextInput {
     fn mouse_down(&mut self, event: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         self.buffer.cancel();
         window.focus(&self.focus);
-        self.selecting = true;
         if let (Some(layout), Some(bounds)) = (&self.layout, self.bounds) {
             let byte = layout
                 .index(event.position - bounds.origin)
                 .min(self.buffer.text.len());
+            if event.modifiers.control
+                && let Some(link) = self.marks.iter().find(|mark| {
+                    mark.kind == MarkKind::Link && mark.start <= byte && byte < mark.end
+                })
+            {
+                cx.emit(InputEvent::ActivateLink(link.url.clone()));
+                cx.notify();
+                return;
+            }
+            self.selecting = true;
             if event.modifiers.shift {
                 self.buffer.select_to(byte);
             } else {
