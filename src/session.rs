@@ -1302,6 +1302,44 @@ mod tests {
     }
 
     #[test]
+    fn backlink_projection_finds_page_blocks_after_flush_and_reopen() -> Result<()> {
+        let scratch = quire_core::testing::ScratchDir::new("gpui-backlinks");
+        let path = scratch.path().join("test.db");
+        let (target_page, source_page, source_block);
+        {
+            let mut session = Session::open(&path)?;
+            target_page = session.page.id;
+            source_page = session.create_page(None);
+            source_block = session.blocks()[0].id;
+            session.execute(Command::SetBlockType {
+                id: source_block,
+                kind: BlockKind::Page,
+            });
+            session.document.apply(&[Change::BlockRefSet {
+                id: source_block,
+                page: Some(target_page),
+            }]);
+            session.persistence.record(vec![Change::BlockRefSet {
+                id: source_block,
+                page: Some(target_page),
+            }]);
+            session.persistence.force_flush()?;
+            let refs = session.repo.references(target_page, 20)?;
+            assert_eq!(refs.len(), 1);
+            assert_eq!(refs[0].page, source_page);
+            assert_eq!(refs[0].block, source_block);
+            assert!(refs[0].block_level);
+            assert_eq!(session.repo.reference_count(target_page)?, 1);
+        }
+        let reopened = Session::open(&path)?;
+        let refs = reopened.repo.references(target_page, 20)?;
+        assert_eq!(refs.len(), 1);
+        assert_eq!(refs[0].page, source_page);
+        assert_eq!(refs[0].block, source_block);
+        Ok(())
+    }
+
+    #[test]
     fn page_duplication_remaps_nested_blocks_and_preserves_content() -> Result<()> {
         let scratch = quire_core::testing::ScratchDir::new("gpui-page-duplicate");
         let path = scratch.path().join("test.db");

@@ -285,6 +285,7 @@ pub struct Workspace {
     find_matches: Vec<(BlockId, Range<usize>)>,
     find_index: Option<usize>,
     find_open: bool,
+    backlinks_open: bool,
     inputs: BTreeMap<u64, Entity<TextInput>>,
     subscriptions: Vec<Subscription>,
     palette: Palette,
@@ -342,6 +343,7 @@ impl Workspace {
             find_matches: Vec::new(),
             find_index: None,
             find_open: false,
+            backlinks_open: false,
             inputs: BTreeMap::new(),
             subscriptions: Vec::new(),
             palette: Palette::load(theme),
@@ -1899,6 +1901,56 @@ impl Render for Workspace {
         let text = Palette::color(&p.fg);
         let muted = Palette::color(&p.muted);
         let accent = Palette::color(&p.accent);
+        let backlinks_count = self
+            .session
+            .repo
+            .reference_count(self.session.page.id)
+            .unwrap_or(0);
+        let backlink_rows = if self.backlinks_open {
+            self.session
+                .repo
+                .references(self.session.page.id, 500)
+                .unwrap_or_default()
+                .into_iter()
+                .map(|reference| {
+                    let page_id = reference.page;
+                    let block_id = reference.block;
+                    let page_title = self
+                        .session
+                        .pages
+                        .iter()
+                        .find(|page| page.id == page_id)
+                        .map(|page| page.title.clone())
+                        .unwrap_or_else(|| "已删除页面".into());
+                    let preview = if reference.text.trim().is_empty() {
+                        "页面引用".to_owned()
+                    } else {
+                        reference.text
+                    };
+                    div()
+                        .id(SharedString::from(format!(
+                            "backlink-{page_id:?}-{block_id:?}"
+                        )))
+                        .w_full()
+                        .px(px(9.))
+                        .py(px(6.))
+                        .rounded(px(5.))
+                        .cursor_pointer()
+                        .hover(|row| row.bg(Palette::color(&p.bg).opacity(0.28)))
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.activate_page(page_id, window, cx);
+                            this.focus(block_id, 0, window, cx);
+                            this.backlinks_open = false;
+                            cx.notify();
+                        }))
+                        .child(div().text_size(px(11.)).text_color(muted).child(page_title))
+                        .child(div().text_color(text).child(preview))
+                })
+                .collect::<Vec<_>>()
+        } else {
+            Vec::new()
+        };
+        let backlinks_empty = backlink_rows.is_empty();
         let cover_path = self
             .session
             .page
@@ -3378,6 +3430,21 @@ impl Render for Workspace {
                             )
                             .child(
                                 div()
+                                    .id("page-backlinks-toggle")
+                                    .px(px(7.))
+                                    .py(px(4.))
+                                    .rounded(px(5.))
+                                    .cursor_pointer()
+                                    .text_color(if self.backlinks_open { accent } else { muted })
+                                    .hover(|s| s.bg(Palette::color(&p.elevated)))
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.backlinks_open = !this.backlinks_open;
+                                        cx.notify();
+                                    }))
+                                    .child(format!("反向链接 · {backlinks_count}")),
+                            )
+                            .child(
+                                div()
                                     .id("page-width")
                                     .px(px(7.))
                                     .py(px(4.))
@@ -3662,6 +3729,45 @@ impl Render for Workspace {
                                                 .text_color(muted)
                                                 .mb(px(12.))
                                                 .child("此页面已锁定"),
+                                        )
+                                    })
+                                    .when(self.backlinks_open, |d| {
+                                        d.child(
+                                            div()
+                                                .id("page-backlinks-panel")
+                                                .w_full()
+                                                .max_h(px(220.))
+                                                .overflow_y_scroll()
+                                                .mb(px(12.))
+                                                .rounded(px(6.))
+                                                .border_1()
+                                                .border_color(Palette::color(&p.border))
+                                                .bg(Palette::color(&p.elevated))
+                                                .px(px(8.))
+                                                .py(px(6.))
+                                                .flex()
+                                                .flex_col()
+                                                .gap(px(2.))
+                                                .child(
+                                                    div()
+                                                        .px(px(9.))
+                                                        .py(px(4.))
+                                                        .text_size(px(11.))
+                                                        .text_color(muted)
+                                                        .child(format!(
+                                                            "引用此页面的内容 · {backlinks_count}"
+                                                        )),
+                                                )
+                                                .when(backlinks_empty, |panel| {
+                                                    panel.child(
+                                                        div()
+                                                            .px(px(9.))
+                                                            .py(px(7.))
+                                                            .text_color(muted)
+                                                            .child("暂无反向链接"),
+                                                    )
+                                                })
+                                                .children(backlink_rows),
                                         )
                                     })
                                     .children(rows),
