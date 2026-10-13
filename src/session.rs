@@ -661,6 +661,7 @@ impl Session {
                 let valid_child = b.parent.is_some_and(|parent| {
                     self.document.block(parent).is_some_and(|parent| {
                         parent.kind == BlockKind::Toggle
+                            || parent.kind == BlockKind::Column
                             || (matches!(
                                 b.kind,
                                 BlockKind::Bullet | BlockKind::Numbered | BlockKind::Todo

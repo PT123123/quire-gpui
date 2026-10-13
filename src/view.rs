@@ -63,6 +63,7 @@ fn slash_items() -> &'static [(&'static str, &'static str, BlockKind)] {
         ("提示块", "callout", BlockKind::Callout),
         ("分隔线", "divider", BlockKind::Divider),
         ("表格", "table grid", BlockKind::Table),
+        ("分栏", "columns layout", BlockKind::Columns),
     ]
 }
 
@@ -454,15 +455,7 @@ impl Workspace {
         if let Some(id) = target {
             self.session.execute(Command::SetBlockType { id, kind });
             self.sync_inputs(window, cx);
-            self.active = Some(if kind == BlockKind::Table {
-                self.session
-                    .blocks()
-                    .iter()
-                    .find(|block| block.parent == Some(id) && block.kind == BlockKind::TableCell)
-                    .map_or(id, |cell| cell.id)
-            } else {
-                id
-            });
+            self.active = Some(self.first_child_editor(id, kind).unwrap_or(id));
             self.restore_focus(window, cx);
             self.schedule_save(false, window, cx);
         }
@@ -495,6 +488,71 @@ impl Workspace {
         self.sync_inputs(window, cx);
         self.schedule_save(false, window, cx);
     }
+    fn add_columns_column(&mut self, id: BlockId, window: &mut Window, cx: &mut Context<Self>) {
+        if self.session.page.locked {
+            return;
+        }
+        self.session.execute(Command::ColumnsAddColumn { id });
+        self.sync_inputs(window, cx);
+        self.schedule_save(false, window, cx);
+    }
+    fn remove_columns_column(&mut self, id: BlockId, window: &mut Window, cx: &mut Context<Self>) {
+        if self.session.page.locked {
+            return;
+        }
+        self.session.execute(Command::ColumnsDeleteColumn { id });
+        self.sync_inputs(window, cx);
+        self.schedule_save(false, window, cx);
+    }
+    fn add_column_block(
+        &mut self,
+        column_id: BlockId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.session.page.locked {
+            return;
+        }
+        self.session
+            .execute(Command::ColumnsAddBlock { id: column_id });
+        let next = self
+            .session
+            .blocks()
+            .iter()
+            .filter(|block| block.parent == Some(column_id) && block.kind == BlockKind::Paragraph)
+            .max_by_key(|block| block.order)
+            .map(|block| block.id);
+        self.sync_inputs(window, cx);
+        if let Some(id) = next {
+            self.active = Some(id);
+            self.focus(id, 0, window, cx);
+        }
+        self.schedule_save(false, window, cx);
+    }
+    fn first_child_editor(&self, id: BlockId, kind: BlockKind) -> Option<BlockId> {
+        match kind {
+            BlockKind::Table => self
+                .session
+                .blocks()
+                .iter()
+                .find(|block| block.parent == Some(id) && block.kind == BlockKind::TableCell)
+                .map(|block| block.id),
+            BlockKind::Columns => {
+                let column = self
+                    .session
+                    .blocks()
+                    .iter()
+                    .find(|block| block.parent == Some(id) && block.kind == BlockKind::Column)?
+                    .id;
+                self.session
+                    .blocks()
+                    .iter()
+                    .find(|block| block.parent == Some(column) && self.session.editable(block.id))
+                    .map(|block| block.id)
+            }
+            _ => None,
+        }
+    }
     fn select_slash_kind(
         &mut self,
         id: BlockId,
@@ -508,15 +566,7 @@ impl Workspace {
         self.slash_menu = None;
         self.session.convert_prefix(id, String::new(), kind);
         self.sync_inputs(window, cx);
-        self.active = Some(if kind == BlockKind::Table {
-            self.session
-                .blocks()
-                .iter()
-                .find(|block| block.parent == Some(id) && block.kind == BlockKind::TableCell)
-                .map_or(id, |cell| cell.id)
-        } else {
-            id
-        });
+        self.active = Some(self.first_child_editor(id, kind).unwrap_or(id));
         self.restore_focus(window, cx);
         self.schedule_save(false, window, cx);
     }
@@ -1317,6 +1367,7 @@ impl Render for Workspace {
                 ("提示", BlockKind::Callout),
                 ("分隔线", BlockKind::Divider),
                 ("表格", BlockKind::Table),
+                ("分栏", BlockKind::Columns),
             ]
             .into_iter()
             .map(|(label, kind)| {
@@ -1361,7 +1412,7 @@ impl Render for Workspace {
             .blocks()
             .iter()
             .filter(|block| {
-                if block.kind == BlockKind::TableCell {
+                if matches!(block.kind, BlockKind::TableCell | BlockKind::Column) {
                     return false;
                 }
                 let mut parent = block.parent;
@@ -1374,6 +1425,9 @@ impl Render for Workspace {
                     else {
                         break;
                     };
+                    if matches!(parent_block.kind, BlockKind::Column | BlockKind::TableCell) {
+                        return false;
+                    }
                     if parent_block.folded {
                         return false;
                     }
@@ -1528,6 +1582,101 @@ impl Render for Workspace {
                 } else {
                     Vec::new()
                 };
+                let columns = if kind == BlockKind::Columns {
+                    self.session
+                        .blocks()
+                        .iter()
+                        .filter(|column| {
+                            column.parent == Some(block_id) && column.kind == BlockKind::Column
+                        })
+                        .cloned()
+                        .collect::<Vec<_>>()
+                } else {
+                    Vec::new()
+                };
+                let column_views = columns
+                    .iter()
+                    .map(|column| {
+                        let column_id = column.id;
+                        let lines = self
+                            .session
+                            .blocks()
+                            .iter()
+                            .filter(|line| line.parent == Some(column_id))
+                            .map(|line| {
+                                let line_id = line.id;
+                                let input = self.inputs.get(&line_id.0).cloned();
+                                div()
+                                    .w_full()
+                                    .min_h(px(30.))
+                                    .py(px(4.))
+                                    .when_some(input.filter(|_| !self.closing), |row, input| {
+                                        row.child(input)
+                                    })
+                                    .when(
+                                        self.closing || !self.inputs.contains_key(&line_id.0),
+                                        |row| row.child(line.text.clone()),
+                                    )
+                            })
+                            .collect::<Vec<_>>();
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .min_h(px(80.))
+                            .px(px(9.))
+                            .py(px(7.))
+                            .flex()
+                            .flex_col()
+                            .gap(px(5.))
+                            .border_1()
+                            .border_color(Palette::color(&p.border))
+                            .children(lines)
+                            .child(
+                                div()
+                                    .id(SharedString::from(format!(
+                                        "columns-add-block-{}",
+                                        column_id.0
+                                    )))
+                                    .mt(px(5.))
+                                    .cursor_pointer()
+                                    .text_color(muted)
+                                    .hover(|button| button.text_color(accent))
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        this.add_column_block(column_id, window, cx)
+                                    }))
+                                    .child("＋ 添加内容"),
+                            )
+                    })
+                    .collect::<Vec<_>>();
+                let columns_count = columns.len();
+                let column_actions = vec![
+                    div()
+                        .id(SharedString::from(format!("columns-add-{}", block_id.0)))
+                        .px(px(7.))
+                        .py(px(3.))
+                        .cursor_pointer()
+                        .text_color(muted)
+                        .hover(|button| button.text_color(accent))
+                        .when(columns_count < 3, |button| {
+                            button.on_click(cx.listener(move |this, _, window, cx| {
+                                this.add_columns_column(block_id, window, cx)
+                            }))
+                        })
+                        .child("＋ 分栏"),
+                    div()
+                        .id(SharedString::from(format!("columns-remove-{}", block_id.0)))
+                        .px(px(7.))
+                        .py(px(3.))
+                        .cursor_pointer()
+                        .text_color(muted)
+                        .hover(|button| button.text_color(accent))
+                        .when(columns_count > 2, |button| {
+                            button.on_click(cx.listener(move |this, _, window, cx| {
+                                this.remove_columns_column(block_id, window, cx)
+                            }))
+                        })
+                        .child("− 分栏"),
+                ];
                 div()
                     .id(("block", block.id.0))
                     .w_full()
@@ -1581,12 +1730,20 @@ impl Render for Workspace {
                                     .children(table_rows)
                                     .child(div().flex().gap(px(6.)).children(table_actions))
                             })
+                            .when(kind == BlockKind::Columns, |view| {
+                                view.flex_col()
+                                    .gap(px(7.))
+                                    .child(div().w_full().flex().gap(px(8.)).children(column_views))
+                                    .child(div().flex().gap(px(6.)).children(column_actions))
+                            })
                             .when(kind == BlockKind::Divider, |view| {
                                 view.py(px(8.))
                                     .child(div().w_full().h(px(1.)).bg(Palette::color(&p.border)))
                             })
                             .when(
-                                kind != BlockKind::Divider && kind != BlockKind::Table,
+                                kind != BlockKind::Divider
+                                    && kind != BlockKind::Table
+                                    && kind != BlockKind::Columns,
                                 |view| {
                                     view.font_family(if kind == BlockKind::Code {
                                         "Cascadia Code"
