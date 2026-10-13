@@ -150,6 +150,7 @@ pub struct Workspace {
     title_input: Entity<TextInput>,
     title_subscription: Option<Subscription>,
     search_input: Entity<TextInput>,
+    link_target_input: Entity<TextInput>,
     search_subscription: Option<Subscription>,
     search_query: String,
     inputs: BTreeMap<u64, Entity<TextInput>>,
@@ -157,6 +158,7 @@ pub struct Workspace {
     palette: Palette,
     theme_picker_open: bool,
     icon_picker_open: bool,
+    link_editor_open: bool,
     color_picker: Option<(BlockId, bool)>,
     confirm_delete_page: Option<quire_core::core::types::PageId>,
     slash_menu: Option<BlockId>,
@@ -184,11 +186,17 @@ impl Workspace {
         search_input.update(cx, |input, _| {
             input.placeholder = Some("搜索页面和正文".into());
         });
+        let link_target_input =
+            cx.new(|cx| TextInput::new(String::new(), Vec::new(), 12., window, cx));
+        link_target_input.update(cx, |input, _| {
+            input.placeholder = Some("https://… 或 quire://page/ID".into())
+        });
         let mut this = Self {
             session,
             title_input,
             title_subscription: None,
             search_input,
+            link_target_input,
             search_subscription: None,
             search_query: String::new(),
             inputs: BTreeMap::new(),
@@ -196,6 +204,7 @@ impl Workspace {
             palette: Palette::load(theme),
             theme_picker_open: false,
             icon_picker_open: false,
+            link_editor_open: false,
             color_picker: None,
             confirm_delete_page: None,
             slash_menu: None,
@@ -1008,6 +1017,62 @@ impl Workspace {
         self.restore_focus(window, cx);
         self.schedule_save(false, window, cx);
     }
+    fn toggle_link_editor(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.link_editor_open = !self.link_editor_open;
+        if self.link_editor_open {
+            self.link_target_input.update(cx, |input, input_cx| {
+                input.reset(String::new(), Vec::new(), 0, input_cx)
+            });
+            let input = self.link_target_input.clone();
+            input.update(cx, |input, _| window.focus(&input.focus));
+        }
+        cx.notify();
+    }
+    fn apply_link(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.composing(cx) || self.closing {
+            return;
+        }
+        let Some(id) = self.active else {
+            return;
+        };
+        let Some(input) = self.inputs.get(&id.0) else {
+            return;
+        };
+        let selection = input.read(cx).buffer.selection.clone();
+        if selection.is_empty() {
+            self.status = "先选中要添加链接的文字".into();
+            cx.notify();
+            return;
+        }
+        let url = self
+            .link_target_input
+            .read(cx)
+            .buffer
+            .committed()
+            .trim()
+            .to_owned();
+        if !(url.starts_with("https://")
+            || url.starts_with("http://")
+            || url.starts_with("mailto:")
+            || url.starts_with("quire://page/"))
+        {
+            self.status = "链接需使用 http、https、mailto 或 quire://page/ID".into();
+            cx.notify();
+            return;
+        }
+        self.session.execute(Command::ToggleMark {
+            id,
+            start: selection.start,
+            end: selection.end,
+            kind: quire_core::core::types::MarkKind::Link,
+            url,
+            date: None,
+        });
+        self.link_editor_open = false;
+        self.sync_inputs(window, cx);
+        self.focus(id, selection.end, window, cx);
+        self.schedule_save(false, window, cx);
+    }
     fn select_theme(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
         self.palette = Palette::load(id);
         self.theme_picker_open = false;
@@ -1818,6 +1883,38 @@ impl Render for Workspace {
                     .child(label)
             })
             .collect::<Vec<_>>();
+        let link_editor = if self.link_editor_open {
+            div()
+                .id("link-editor")
+                .w_full()
+                .h(px(34.))
+                .px(px(12.))
+                .flex()
+                .items_center()
+                .gap(px(8.))
+                .border_b_1()
+                .border_color(Palette::color(&p.border))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .child(self.link_target_input.clone()),
+                )
+                .child(
+                    div()
+                        .id("apply-link")
+                        .px(px(9.))
+                        .py(px(4.))
+                        .rounded(px(4.))
+                        .cursor_pointer()
+                        .text_color(accent)
+                        .hover(|button| button.bg(Palette::color(&p.elevated)))
+                        .on_click(cx.listener(|this, _, window, cx| this.apply_link(window, cx)))
+                        .child("应用链接"),
+                )
+        } else {
+            div().id("link-editor-closed")
+        };
         let rows = self
             .session
             .blocks()
@@ -2708,8 +2805,23 @@ impl Render for Workspace {
                     .children(kind_buttons)
                     .child(div().w(px(1.)).h(px(18.)).bg(Palette::color(&p.border)))
                     .children(mark_buttons)
+                    .child(
+                        div()
+                            .id("link-editor-toggle")
+                            .px(px(8.))
+                            .py(px(5.))
+                            .rounded(px(5.))
+                            .cursor_pointer()
+                            .text_color(Palette::color(&p.accent))
+                            .hover(|button| button.bg(Palette::color(&p.elevated)))
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.toggle_link_editor(window, cx)
+                            }))
+                            .child("链接"),
+                    )
                     .children(attachment_buttons),
             )
+            .child(link_editor)
             .child(
                 div()
                     .flex()
