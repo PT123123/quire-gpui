@@ -48,6 +48,23 @@ fn ordered_page_tree(
     out
 }
 
+fn slash_items() -> &'static [(&'static str, &'static str, BlockKind)] {
+    &[
+        ("文本", "text paragraph", BlockKind::Paragraph),
+        ("标题 1", "h1 heading", BlockKind::Heading1),
+        ("标题 2", "h2 heading", BlockKind::Heading2),
+        ("标题 3", "h3 heading", BlockKind::Heading3),
+        ("项目列表", "bullet list", BlockKind::Bullet),
+        ("编号列表", "numbered list", BlockKind::Numbered),
+        ("待办", "todo task", BlockKind::Todo),
+        ("折叠块", "toggle", BlockKind::Toggle),
+        ("引用", "quote", BlockKind::Quote),
+        ("代码", "code", BlockKind::Code),
+        ("提示块", "callout", BlockKind::Callout),
+        ("分隔线", "divider", BlockKind::Divider),
+    ]
+}
+
 #[derive(Clone, serde::Deserialize)]
 struct Palette {
     id: String,
@@ -89,6 +106,7 @@ pub struct Workspace {
     theme_picker_open: bool,
     icon_picker_open: bool,
     confirm_delete_page: Option<quire_core::core::types::PageId>,
+    slash_menu: Option<BlockId>,
     status: String,
     error: bool,
     active: Option<BlockId>,
@@ -125,6 +143,7 @@ impl Workspace {
             theme_picker_open: false,
             icon_picker_open: false,
             confirm_delete_page: None,
+            slash_menu: None,
             status: "已保存".into(),
             error: false,
             active: None,
@@ -281,6 +300,9 @@ impl Workspace {
                 } else {
                     self.session.replace(id, text.clone(), *boundary);
                 }
+                self.slash_menu = (text.starts_with('/')
+                    && !text[1..].chars().any(char::is_whitespace))
+                .then_some(id);
                 if let (Some(block), Some(input)) = (
                     self.session.document.block(id),
                     self.inputs.get(&id.0).cloned(),
@@ -294,6 +316,23 @@ impl Workspace {
                 self.schedule_save(false, window, cx);
             }
             InputEvent::Split(caret) => {
+                if self.slash_menu == Some(id) {
+                    let query = self
+                        .session
+                        .document
+                        .block(id)
+                        .and_then(|block| block.text.strip_prefix('/'))
+                        .unwrap_or("")
+                        .to_lowercase();
+                    if let Some((_, _, kind)) = slash_items().iter().find(|(label, keywords, _)| {
+                        query.is_empty()
+                            || label.to_lowercase().contains(&query)
+                            || keywords.contains(&query)
+                    }) {
+                        self.select_slash_kind(id, *kind, window, cx);
+                        return;
+                    }
+                }
                 let index = self
                     .session
                     .document
@@ -375,6 +414,11 @@ impl Workspace {
                 self.schedule_save(false, window, cx);
             }
             InputEvent::RemoveBlock => self.delete_block(id, window, cx),
+            InputEvent::DismissSlash => {
+                if self.slash_menu.take().is_some() {
+                    cx.notify();
+                }
+            }
         }
     }
     fn change_block_kind(&mut self, kind: BlockKind, window: &mut Window, cx: &mut Context<Self>) {
@@ -391,6 +435,23 @@ impl Workspace {
             self.restore_focus(window, cx);
             self.schedule_save(false, window, cx);
         }
+    }
+    fn select_slash_kind(
+        &mut self,
+        id: BlockId,
+        kind: BlockKind,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.composing(cx) || self.session.page.locked {
+            return;
+        }
+        self.slash_menu = None;
+        self.session.convert_prefix(id, String::new(), kind);
+        self.sync_inputs(window, cx);
+        self.active = Some(id);
+        self.restore_focus(window, cx);
+        self.schedule_save(false, window, cx);
     }
     fn toggle_todo(&mut self, id: BlockId, window: &mut Window, cx: &mut Context<Self>) {
         if self.closing || self.session.page.locked {
@@ -1286,6 +1347,41 @@ impl Render for Workspace {
                 let is_todo = block.kind == BlockKind::Todo;
                 let is_toggle = block.kind == BlockKind::Toggle;
                 let kind = block.kind;
+                let slash_query = block.text.strip_prefix('/').unwrap_or("").to_lowercase();
+                let slash_options = if self.slash_menu == Some(block_id) {
+                    slash_items()
+                        .iter()
+                        .filter(|(label, keywords, _)| {
+                            slash_query.is_empty()
+                                || label.to_lowercase().contains(&slash_query)
+                                || keywords.contains(slash_query.as_str())
+                        })
+                        .map(|(label, keywords, item_kind)| {
+                            let item_kind = *item_kind;
+                            div()
+                                .id(SharedString::from(format!(
+                                    "slash-option-{}-{item_kind:?}",
+                                    block_id.0
+                                )))
+                                .w_full()
+                                .h(px(28.))
+                                .px(px(9.))
+                                .flex()
+                                .items_center()
+                                .justify_between()
+                                .rounded(px(4.))
+                                .cursor_pointer()
+                                .hover(|option| option.bg(Palette::color(&p.elevated)))
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    this.select_slash_kind(block_id, item_kind, window, cx)
+                                }))
+                                .child(*label)
+                                .child(div().text_size(px(10.)).text_color(muted).child(*keywords))
+                        })
+                        .collect::<Vec<_>>()
+                } else {
+                    Vec::new()
+                };
                 div()
                     .id(("block", block.id.0))
                     .w_full()
@@ -1332,6 +1428,8 @@ impl Render for Workspace {
                         div()
                             .flex_1()
                             .min_w_0()
+                            .flex()
+                            .flex_col()
                             .when(kind == BlockKind::Divider, |view| {
                                 view.py(px(8.))
                                     .child(div().w_full().h(px(1.)).bg(Palette::color(&p.border)))
@@ -1349,7 +1447,8 @@ impl Render for Workspace {
                                     self.closing || !self.inputs.contains_key(&block.id.0),
                                     |view| view.child(block.text.clone()),
                                 )
-                            }),
+                            })
+                            .children(slash_options),
                     )
                     .child(
                         div()

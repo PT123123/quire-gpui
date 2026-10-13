@@ -48,6 +48,7 @@ pub enum InputEvent {
     Outdent,
     ToggleMark(MarkKind),
     RemoveBlock,
+    DismissSlash,
 }
 
 pub struct TextInput {
@@ -259,6 +260,7 @@ impl TextInput {
     }
     fn escape(&mut self, _: &Escape, _: &mut Window, cx: &mut Context<Self>) {
         self.buffer.cancel();
+        cx.emit(InputEvent::DismissSlash);
         cx.notify();
     }
     fn indent_list(&mut self, _: &IndentList, _: &mut Window, cx: &mut Context<Self>) {
