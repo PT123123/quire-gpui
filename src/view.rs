@@ -299,6 +299,8 @@ pub struct Workspace {
     confirm_delete_page: Option<quire_core::core::types::PageId>,
     slash_menu: Option<BlockId>,
     slash_selection: usize,
+    mention_menu: Option<(BlockId, usize, String)>,
+    mention_selection: usize,
     status: String,
     error: bool,
     active: Option<BlockId>,
@@ -357,6 +359,8 @@ impl Workspace {
             confirm_delete_page: None,
             slash_menu: None,
             slash_selection: 0,
+            mention_menu: None,
+            mention_selection: 0,
             status: "已保存".into(),
             error: false,
             active: None,
@@ -573,6 +577,16 @@ impl Workspace {
                     && !text[1..].chars().any(char::is_whitespace))
                 .then_some(id);
                 self.slash_selection = 0;
+                self.mention_menu = self.inputs.get(&id.0).and_then(|input| {
+                    let input = input.read(cx);
+                    let caret = input.buffer.caret();
+                    if input.buffer.composing() || caret != text.len() {
+                        return None;
+                    }
+                    quire_core::core::reference::trigger_at(text)
+                        .map(|at| (id, at, text[at + 1..caret].to_lowercase()))
+                });
+                self.mention_selection = 0;
                 if self.find_open {
                     self.find_index = None;
                     self.refresh_find_matches();
@@ -590,6 +604,20 @@ impl Workspace {
                 self.schedule_save(false, window, cx);
             }
             InputEvent::Split(caret) => {
+                if let Some((mention_id, at, _)) = self
+                    .mention_menu
+                    .clone()
+                    .filter(|(mention_id, _, _)| *mention_id == id)
+                {
+                    let matches = self.mention_matches();
+                    if let Some(page) = matches
+                        .get(self.mention_selection.min(matches.len().saturating_sub(1)))
+                        .cloned()
+                    {
+                        self.select_mention(mention_id, at, page, window, cx);
+                        return;
+                    }
+                }
                 if self
                     .session
                     .document
@@ -656,6 +684,20 @@ impl Workspace {
                 self.schedule_save(false, window, cx);
             }
             InputEvent::Navigate(direction) => {
+                if self
+                    .mention_menu
+                    .as_ref()
+                    .is_some_and(|(mention_id, _, _)| *mention_id == id)
+                {
+                    let count = self.mention_matches().len();
+                    if count > 0 {
+                        self.mention_selection = (self.mention_selection as i64 + *direction as i64)
+                            .rem_euclid(count as i64)
+                            as usize;
+                        cx.notify();
+                    }
+                    return;
+                }
                 if self.slash_menu == Some(id) {
                     let query = self
                         .session
@@ -785,7 +827,9 @@ impl Workspace {
                 if self.find_open {
                     self.close_find(window, cx);
                 }
-                if self.slash_menu.take().is_some() {
+                let slash_closed = self.slash_menu.take().is_some();
+                let mention_closed = self.mention_menu.take().is_some();
+                if slash_closed || mention_closed {
                     cx.notify();
                 }
             }
@@ -1213,6 +1257,45 @@ impl Workspace {
         self.restore_focus(window, cx);
         self.schedule_save(false, window, cx);
     }
+    fn mention_matches(&self) -> Vec<quire_core::core::types::Page> {
+        let Some((_, _, query)) = &self.mention_menu else {
+            return Vec::new();
+        };
+        self.session
+            .pages
+            .iter()
+            .filter(|page| {
+                !page.template && (query.is_empty() || page.title.to_lowercase().contains(query))
+            })
+            .take(20)
+            .cloned()
+            .collect()
+    }
+    fn select_mention(
+        &mut self,
+        id: BlockId,
+        at: usize,
+        page: quire_core::core::types::Page,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.composing(cx) || self.session.page.locked {
+            return;
+        }
+        self.mention_menu = None;
+        let caret = at + page.title.len();
+        self.session.execute(Command::InsertReference {
+            id,
+            at,
+            label: page.title,
+            kind: quire_core::core::types::MarkKind::Mention,
+            url: quire_core::core::page_uri(page.id),
+            date: None,
+        });
+        self.sync_inputs(window, cx);
+        self.focus(id, caret, window, cx);
+        self.schedule_save(false, window, cx);
+    }
     fn toggle_todo(&mut self, id: BlockId, window: &mut Window, cx: &mut Context<Self>) {
         if self.closing || self.session.page.locked {
             return;
@@ -1485,6 +1568,7 @@ impl Workspace {
         }
         if self.session.select_page(id) {
             self.session.visit_page(id);
+            self.mention_menu = None;
             self.find_index = None;
             self.refresh_find_matches();
             self.active = None;
@@ -2758,6 +2842,43 @@ impl Render for Workspace {
                         .blocks()
                         .iter()
                         .any(|child| child.parent == Some(block_id));
+                let mention_options = if let Some((_, at, _)) = self
+                    .mention_menu
+                    .clone()
+                    .filter(|(mention_id, _, _)| *mention_id == block_id)
+                {
+                    self.mention_matches()
+                        .into_iter()
+                        .enumerate()
+                        .map(|(option_index, page)| {
+                            let page_id = page.id;
+                            let title = page.title.clone();
+                            div()
+                                .id(SharedString::from(format!(
+                                    "mention-option-{block_id:?}-{page_id:?}"
+                                )))
+                                .w_full()
+                                .h(px(28.))
+                                .px(px(9.))
+                                .flex()
+                                .items_center()
+                                .justify_between()
+                                .rounded(px(4.))
+                                .cursor_pointer()
+                                .hover(|option| option.bg(Palette::color(&p.elevated)))
+                                .when(option_index == self.mention_selection, |option| {
+                                    option.bg(Palette::color(&p.elevated))
+                                })
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    this.select_mention(block_id, at, page.clone(), window, cx)
+                                }))
+                                .child(title)
+                                .child(div().text_size(px(10.)).text_color(muted).child("页面"))
+                        })
+                        .collect::<Vec<_>>()
+                } else {
+                    Vec::new()
+                };
                 let slash_query = block.text.strip_prefix('/').unwrap_or("").to_lowercase();
                 let slash_options = if self.slash_menu == Some(block_id) {
                     slash_items()
@@ -3418,7 +3539,8 @@ impl Render for Workspace {
                                     )
                                 },
                             )
-                            .children(slash_options),
+                            .children(slash_options)
+                            .children(mention_options),
                     )
                     .child(
                         div()

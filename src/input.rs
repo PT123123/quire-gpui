@@ -335,7 +335,9 @@ impl TextInput {
                 .min(self.buffer.text.len());
             if event.modifiers.control
                 && let Some(link) = self.marks.iter().find(|mark| {
-                    mark.kind == MarkKind::Link && mark.start <= byte && byte < mark.end
+                    matches!(mark.kind, MarkKind::Link | MarkKind::Mention)
+                        && mark.start <= byte
+                        && byte < mark.end
                 })
             {
                 cx.emit(InputEvent::ActivateLink(link.url.clone()));

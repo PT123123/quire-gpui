@@ -1502,6 +1502,51 @@ mod tests {
     }
 
     #[test]
+    fn page_mention_is_an_atomic_undoable_reference() -> Result<()> {
+        let scratch = quire_core::testing::ScratchDir::new("gpui-page-mention");
+        let path = scratch.path().join("test.db");
+        let (target_page, source_page, block_id);
+        {
+            let mut session = Session::open(&path)?;
+            target_page = session.page.id;
+            session.create_page(None);
+            source_page = session.page.id;
+            block_id = session.blocks()[0].id;
+            session.execute(Command::ReplaceText {
+                id: block_id,
+                text: "see @未".into(),
+            });
+            session.execute(Command::InsertReference {
+                id: block_id,
+                at: 4,
+                label: "未命名".into(),
+                kind: quire_core::core::types::MarkKind::Mention,
+                url: quire_core::core::page_uri(target_page),
+                date: None,
+            });
+            let block = session.document.block(block_id).unwrap();
+            assert_eq!(block.page, source_page);
+            assert_eq!(block.text, "see 未命名");
+            assert_eq!(block.marks.len(), 1);
+            assert_eq!(
+                block.marks[0].kind,
+                quire_core::core::types::MarkKind::Mention
+            );
+            assert_eq!(block.marks[0].url, quire_core::core::page_uri(target_page));
+            session.undo();
+            assert_eq!(session.document.block(block_id).unwrap().text, "see @未");
+            assert!(session.document.block(block_id).unwrap().marks.is_empty());
+            session.redo();
+            session.persistence.force_flush()?;
+        }
+        let reopened = Session::open(&path)?;
+        let mention = &reopened.document.block(block_id).unwrap().marks[0];
+        assert_eq!(mention.kind, quire_core::core::types::MarkKind::Mention);
+        assert_eq!(mention.url, quire_core::core::page_uri(target_page));
+        Ok(())
+    }
+
+    #[test]
     fn page_duplication_remaps_nested_blocks_and_preserves_content() -> Result<()> {
         let scratch = quire_core::testing::ScratchDir::new("gpui-page-duplicate");
         let path = scratch.path().join("test.db");
