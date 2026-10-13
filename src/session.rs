@@ -271,6 +271,43 @@ impl Session {
             .get(&id.as_u64())
             .map(|attachment| self.attachment_store.stored_path(attachment))
     }
+    pub fn set_page_cover_from(&mut self, path: &Path) -> Result<()> {
+        if self.page.locked {
+            bail!("此页面已锁定");
+        }
+        let id = AttachmentId(self.next_attachment_id);
+        self.next_attachment_id = self.next_attachment_id.saturating_add(1);
+        let attachment = self
+            .attachment_store
+            .import_file(id, path)
+            .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+        self.attachments.insert(id.as_u64(), attachment.clone());
+        self.page.cover = Some(id);
+        if let Some(page) = self.pages.iter_mut().find(|page| page.id == self.page.id) {
+            page.cover = Some(id);
+        }
+        self.persistence.record(vec![
+            Change::AttachmentAdded(attachment),
+            Change::PageCoverSet {
+                id: self.page.id,
+                cover: Some(id),
+            },
+        ]);
+        Ok(())
+    }
+    pub fn clear_page_cover(&mut self) {
+        if self.page.locked || self.page.cover.is_none() {
+            return;
+        }
+        self.page.cover = None;
+        if let Some(page) = self.pages.iter_mut().find(|page| page.id == self.page.id) {
+            page.cover = None;
+        }
+        self.persistence.record(vec![Change::PageCoverSet {
+            id: self.page.id,
+            cover: None,
+        }]);
+    }
     pub fn select_page(&mut self, id: PageId) -> bool {
         self.end_typing();
         let Some(page) = self

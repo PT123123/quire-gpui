@@ -638,6 +638,33 @@ impl Workspace {
             }
         }
     }
+    fn pick_page_cover(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.session.page.locked || self.closing {
+            return;
+        }
+        let Some(path) = rfd::FileDialog::new()
+            .set_title("设置页面封面")
+            .add_filter("图片", &["png", "jpg", "jpeg", "gif", "bmp"])
+            .pick_file()
+        else {
+            return;
+        };
+        match self.session.set_page_cover_from(&path) {
+            Ok(()) => {
+                self.status = "封面已更新，正在保存…".into();
+                self.schedule_save(false, window, cx);
+            }
+            Err(error) => {
+                self.status = format!("设置封面失败：{error}");
+                self.error = true;
+                cx.notify();
+            }
+        }
+    }
+    fn clear_page_cover(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.session.clear_page_cover();
+        self.schedule_save(false, window, cx);
+    }
     fn add_table_row(
         &mut self,
         id: BlockId,
@@ -1331,6 +1358,11 @@ impl Render for Workspace {
         let text = Palette::color(&p.fg);
         let muted = Palette::color(&p.muted);
         let accent = Palette::color(&p.accent);
+        let cover_path = self
+            .session
+            .page
+            .cover
+            .and_then(|cover| self.session.attachment_display_path(cover));
         let theme_options = if self.theme_picker_open {
             let palettes: Vec<Palette> =
                 serde_json::from_str(include_str!("palettes.json")).expect("checked-in palettes");
@@ -2481,6 +2513,44 @@ impl Render for Workspace {
                             )
                             .child(
                                 div()
+                                    .id("page-cover-picker")
+                                    .px(px(7.))
+                                    .py(px(4.))
+                                    .rounded(px(5.))
+                                    .cursor_pointer()
+                                    .text_color(Palette::color(&p.accent))
+                                    .hover(|s| s.bg(Palette::color(&p.elevated)))
+                                    .when(!self.session.page.locked, |button| {
+                                        button.on_click(cx.listener(|this, _, window, cx| {
+                                            this.pick_page_cover(window, cx)
+                                        }))
+                                    })
+                                    .child(if self.session.page.cover.is_some() {
+                                        "更换封面"
+                                    } else {
+                                        "设置封面"
+                                    }),
+                            )
+                            .when(self.session.page.cover.is_some(), |bar| {
+                                bar.child(
+                                    div()
+                                        .id("page-cover-clear")
+                                        .px(px(6.))
+                                        .py(px(4.))
+                                        .rounded(px(5.))
+                                        .cursor_pointer()
+                                        .text_color(muted)
+                                        .hover(|s| s.bg(Palette::color(&p.elevated)))
+                                        .when(!self.session.page.locked, |button| {
+                                            button.on_click(cx.listener(|this, _, window, cx| {
+                                                this.clear_page_cover(window, cx)
+                                            }))
+                                        })
+                                        .child("清除"),
+                                )
+                            })
+                            .child(
+                                div()
                                     .id("page-lock")
                                     .px(px(7.))
                                     .py(px(4.))
@@ -2717,6 +2787,16 @@ impl Render for Workspace {
                                     .pb(px(128.))
                                     .flex()
                                     .flex_col()
+                                    .when_some(cover_path, |page, path| {
+                                        page.child(
+                                            img(path)
+                                                .w_full()
+                                                .h(px(180.))
+                                                .object_fit(ObjectFit::Cover)
+                                                .rounded(px(8.))
+                                                .mb(px(16.)),
+                                        )
+                                    })
                                     .child(
                                         div()
                                             .text_size(px(38.))
