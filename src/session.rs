@@ -638,6 +638,51 @@ impl Session {
             locked,
         }]);
     }
+
+    pub fn set_sync_source(&mut self, id: BlockId, source: Option<BlockId>) -> bool {
+        if self.page.locked {
+            return false;
+        }
+        let Some(block) = self.document.block(id) else {
+            return false;
+        };
+        if block.page != self.page.id || block.kind != BlockKind::Synced {
+            return false;
+        }
+        if source
+            .is_some_and(|source_id| source_id == id || self.document.block(source_id).is_none())
+        {
+            return false;
+        }
+        let previous = block.sync_ref;
+        let previous_text = block.text.clone();
+        if previous == source {
+            return true;
+        }
+        self.end_typing();
+        let mut apply = Vec::new();
+        let mut revert = Vec::new();
+        if !previous_text.is_empty() {
+            apply.push(Change::BlockTextSet {
+                id,
+                text: String::new(),
+            });
+            revert.push(Change::BlockTextSet {
+                id,
+                text: previous_text,
+            });
+        }
+        apply.push(Change::BlockSyncSet { id, source });
+        revert.insert(
+            0,
+            Change::BlockSyncSet {
+                id,
+                source: previous,
+            },
+        );
+        self.apply_entry(Entry { apply, revert });
+        true
+    }
     pub fn set_block_folded(&mut self, id: BlockId, folded: bool) {
         let Some(block) = self.document.block(id) else {
             return;
@@ -1336,6 +1381,51 @@ mod tests {
         assert_eq!(refs.len(), 1);
         assert_eq!(refs[0].page, source_page);
         assert_eq!(refs[0].block, source_block);
+        Ok(())
+    }
+
+    #[test]
+    fn synced_block_follows_source_and_undoes_its_reference() -> Result<()> {
+        let scratch = quire_core::testing::ScratchDir::new("gpui-synced-block");
+        let path = scratch.path().join("test.db");
+        let mut session = Session::open(&path)?;
+        let source = session.blocks()[0].id;
+        let synced = session.document.alloc_block_id();
+        let mut block = session.document.block(source).unwrap().clone();
+        block.id = synced;
+        block.kind = BlockKind::Synced;
+        block.text = "stale text".into();
+        block.parent = None;
+        block.order = OrderKey::between(Some(block.order), None).unwrap();
+        block.sync_ref = None;
+        session
+            .document
+            .apply(&[Change::BlockInserted(block.clone())]);
+        session
+            .persistence
+            .record(vec![Change::BlockInserted(block)]);
+        session.execute(Command::ReplaceText {
+            id: source,
+            text: "live source".into(),
+        });
+        assert!(session.set_sync_source(synced, Some(source)));
+        assert_eq!(
+            session.document.block(synced).unwrap().sync_ref,
+            Some(source)
+        );
+        assert!(session.document.block(synced).unwrap().text.is_empty());
+        session.undo();
+        assert_eq!(session.document.block(synced).unwrap().sync_ref, None);
+        assert_eq!(session.document.block(synced).unwrap().text, "stale text");
+        session.redo();
+        session.persistence.force_flush()?;
+        drop(session);
+        let reopened = Session::open(&path)?;
+        assert_eq!(
+            reopened.document.block(synced).unwrap().sync_ref,
+            Some(source)
+        );
+        assert_eq!(reopened.document.block(source).unwrap().text, "live source");
         Ok(())
     }
 

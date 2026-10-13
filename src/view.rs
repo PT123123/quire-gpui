@@ -184,6 +184,7 @@ fn slash_items() -> &'static [(&'static str, &'static str, BlockKind)] {
         ("代码", "code", BlockKind::Code),
         ("数学公式", "math latex formula", BlockKind::Math),
         ("链接卡片", "embed link card", BlockKind::Embed),
+        ("同步块", "synced block mirror", BlockKind::Synced),
         ("提示块", "callout", BlockKind::Callout),
         ("分隔线", "divider", BlockKind::Divider),
         ("表格", "table grid", BlockKind::Table),
@@ -1951,6 +1952,18 @@ impl Render for Workspace {
             Vec::new()
         };
         let backlinks_empty = backlink_rows.is_empty();
+        let sync_sources = self
+            .session
+            .blocks()
+            .iter()
+            .filter(|block| {
+                self.inputs.contains_key(&block.id.0)
+                    && !block.text.trim().is_empty()
+                    && block.kind != BlockKind::Synced
+            })
+            .take(20)
+            .map(|block| (block.id, block.text.clone()))
+            .collect::<Vec<_>>();
         let cover_path = self
             .session
             .page
@@ -2335,6 +2348,7 @@ impl Render for Workspace {
                 ("代码", BlockKind::Code),
                 ("数学公式", BlockKind::Math),
                 ("链接卡片", BlockKind::Embed),
+                ("同步块", BlockKind::Synced),
                 ("提示", BlockKind::Callout),
                 ("分隔线", BlockKind::Divider),
                 ("表格", BlockKind::Table),
@@ -2575,6 +2589,35 @@ impl Render for Workspace {
                                     this.focus(heading_id, 0, window, cx)
                                 }))
                                 .child(label)
+                        })
+                        .collect::<Vec<_>>()
+                } else {
+                    Vec::new()
+                };
+                let sync_candidates = if kind == BlockKind::Synced && block.sync_ref.is_none() {
+                    sync_sources
+                        .iter()
+                        .filter(|(source_id, _)| *source_id != block_id)
+                        .map(|(source_id, source_text)| {
+                            let source_id = *source_id;
+                            div()
+                                .id(SharedString::from(format!(
+                                    "sync-source-{block_id:?}-{source_id:?}"
+                                )))
+                                .w_full()
+                                .px(px(8.))
+                                .py(px(5.))
+                                .rounded(px(4.))
+                                .cursor_pointer()
+                                .text_color(muted)
+                                .hover(|row| row.bg(Palette::color(&p.bg).opacity(0.3)))
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    if this.session.set_sync_source(block_id, Some(source_id)) {
+                                        this.sync_inputs(window, cx);
+                                        this.schedule_save(false, window, cx);
+                                    }
+                                }))
+                                .child(source_text.clone())
                         })
                         .collect::<Vec<_>>()
                 } else {
@@ -3057,6 +3100,41 @@ impl Render for Workspace {
                                             .child(quire_core::core::math::to_unicode(&block.text)),
                                     )
                             })
+                            .when(kind == BlockKind::Synced, |view| {
+                                if let Some(source) = block
+                                    .sync_ref
+                                    .and_then(|id| self.session.document.block(id))
+                                {
+                                    view.rounded(px(5.))
+                                        .px(px(10.))
+                                        .py(px(8.))
+                                        .border_l_2()
+                                        .border_color(Palette::color(&p.accent))
+                                        .bg(Palette::color(&p.elevated))
+                                        .child(
+                                            div()
+                                                .text_color(
+                                                    self.palette.block_text(block.color.slot()),
+                                                )
+                                                .child(source.text.clone()),
+                                        )
+                                } else {
+                                    view.flex_col()
+                                        .gap(px(2.))
+                                        .rounded(px(5.))
+                                        .px(px(8.))
+                                        .py(px(7.))
+                                        .bg(Palette::color(&p.elevated))
+                                        .child(
+                                            div()
+                                                .text_size(px(11.))
+                                                .font_weight(FontWeight::SEMIBOLD)
+                                                .text_color(muted)
+                                                .child("选择要同步的内容块"),
+                                        )
+                                        .children(sync_candidates)
+                                }
+                            })
                             .when(kind == BlockKind::Embed, |view| {
                                 let url = block.text.clone();
                                 let title = quire_core::core::embed::describe(&url);
@@ -3188,6 +3266,7 @@ impl Render for Workspace {
                                     && kind != BlockKind::Table
                                     && kind != BlockKind::Columns
                                     && kind != BlockKind::Toc
+                                    && kind != BlockKind::Synced
                                     && kind != BlockKind::Image
                                     && kind != BlockKind::File,
                                 |view| {
