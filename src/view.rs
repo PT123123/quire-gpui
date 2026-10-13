@@ -2847,35 +2847,50 @@ impl Render for Workspace {
                     .clone()
                     .filter(|(mention_id, _, _)| *mention_id == block_id)
                 {
-                    self.mention_matches()
-                        .into_iter()
-                        .enumerate()
-                        .map(|(option_index, page)| {
-                            let page_id = page.id;
-                            let title = page.title.clone();
+                    let matches = self.mention_matches();
+                    if matches.is_empty() {
+                        vec![
                             div()
-                                .id(SharedString::from(format!(
-                                    "mention-option-{block_id:?}-{page_id:?}"
-                                )))
+                                .id(SharedString::from(format!("mention-empty-{block_id:?}")))
                                 .w_full()
                                 .h(px(28.))
                                 .px(px(9.))
                                 .flex()
                                 .items_center()
-                                .justify_between()
-                                .rounded(px(4.))
-                                .cursor_pointer()
-                                .hover(|option| option.bg(Palette::color(&p.elevated)))
-                                .when(option_index == self.mention_selection, |option| {
-                                    option.bg(Palette::color(&p.elevated))
-                                })
-                                .on_click(cx.listener(move |this, _, window, cx| {
-                                    this.select_mention(block_id, at, page.clone(), window, cx)
-                                }))
-                                .child(title)
-                                .child(div().text_size(px(10.)).text_color(muted).child("页面"))
-                        })
-                        .collect::<Vec<_>>()
+                                .text_color(muted)
+                                .child("没有匹配页面"),
+                        ]
+                    } else {
+                        matches
+                            .into_iter()
+                            .enumerate()
+                            .map(|(option_index, page)| {
+                                let page_id = page.id;
+                                let title = page.title.clone();
+                                div()
+                                    .id(SharedString::from(format!(
+                                        "mention-option-{block_id:?}-{page_id:?}"
+                                    )))
+                                    .w_full()
+                                    .h(px(28.))
+                                    .px(px(9.))
+                                    .flex()
+                                    .items_center()
+                                    .justify_between()
+                                    .rounded(px(4.))
+                                    .cursor_pointer()
+                                    .hover(|option| option.bg(Palette::color(&p.elevated)))
+                                    .when(option_index == self.mention_selection, |option| {
+                                        option.bg(Palette::color(&p.elevated))
+                                    })
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        this.select_mention(block_id, at, page.clone(), window, cx)
+                                    }))
+                                    .child(title)
+                                    .child(div().text_size(px(10.)).text_color(muted).child("页面"))
+                            })
+                            .collect::<Vec<_>>()
+                    }
                 } else {
                     Vec::new()
                 };
@@ -3301,6 +3316,34 @@ impl Render for Workspace {
                                                 )
                                                 .child(source.text.clone()),
                                         )
+                                        .child(
+                                            div()
+                                                .id(SharedString::from(format!(
+                                                    "replace-sync-source-{block_id:?}"
+                                                )))
+                                                .w(px(92.))
+                                                .px(px(8.))
+                                                .py(px(4.))
+                                                .rounded(px(4.))
+                                                .cursor_pointer()
+                                                .text_size(px(11.))
+                                                .text_color(accent)
+                                                .hover(|button| {
+                                                    button.bg(Palette::color(&p.border))
+                                                })
+                                                .on_click(cx.listener(
+                                                    move |this, _, window, cx| {
+                                                        if this
+                                                            .session
+                                                            .set_sync_source(block_id, None)
+                                                        {
+                                                            this.sync_inputs(window, cx);
+                                                            this.schedule_save(false, window, cx);
+                                                        }
+                                                    },
+                                                ))
+                                                .child("更换来源"),
+                                        )
                                 } else {
                                     view.flex_col()
                                         .gap(px(2.))
@@ -3370,6 +3413,34 @@ impl Render for Workspace {
                                                         .child("打开页面"),
                                                 )
                                             },
+                                        )
+                                        .child(
+                                            div()
+                                                .id(SharedString::from(format!(
+                                                    "replace-page-reference-{block_id:?}"
+                                                )))
+                                                .w(px(92.))
+                                                .px(px(8.))
+                                                .py(px(4.))
+                                                .rounded(px(4.))
+                                                .cursor_pointer()
+                                                .text_size(px(11.))
+                                                .text_color(muted)
+                                                .hover(|button| {
+                                                    button.bg(Palette::color(&p.border))
+                                                })
+                                                .on_click(cx.listener(
+                                                    move |this, _, window, cx| {
+                                                        if this
+                                                            .session
+                                                            .set_page_reference(block_id, None)
+                                                        {
+                                                            this.sync_inputs(window, cx);
+                                                            this.schedule_save(false, window, cx);
+                                                        }
+                                                    },
+                                                ))
+                                                .child("更改目标"),
                                         )
                                 } else {
                                     view.flex_col()
