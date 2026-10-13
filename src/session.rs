@@ -683,6 +683,48 @@ impl Session {
         self.apply_entry(Entry { apply, revert });
         true
     }
+
+    pub fn set_page_reference(&mut self, id: BlockId, target: Option<PageId>) -> bool {
+        if self.page.locked {
+            return false;
+        }
+        let Some(block) = self.document.block(id) else {
+            return false;
+        };
+        if block.page != self.page.id || !matches!(block.kind, BlockKind::Page | BlockKind::Link) {
+            return false;
+        }
+        if target.is_some_and(|page_id| {
+            !self
+                .pages
+                .iter()
+                .any(|page| page.id == page_id && !page.template)
+        }) {
+            return false;
+        }
+        let previous = block.page_ref;
+        let previous_text = block.text.clone();
+        if previous == target {
+            return true;
+        }
+        self.end_typing();
+        let mut apply = Vec::new();
+        let mut revert = Vec::new();
+        if !previous_text.is_empty() {
+            apply.push(Change::BlockTextSet {
+                id,
+                text: String::new(),
+            });
+            revert.push(Change::BlockTextSet {
+                id,
+                text: previous_text,
+            });
+        }
+        apply.push(Change::BlockRefSet { id, page: target });
+        revert.insert(0, Change::BlockRefSet { id, page: previous });
+        self.apply_entry(Entry { apply, revert });
+        true
+    }
     pub fn set_block_folded(&mut self, id: BlockId, folded: bool) {
         let Some(block) = self.document.block(id) else {
             return;
@@ -1426,6 +1468,45 @@ mod tests {
             Some(source)
         );
         assert_eq!(reopened.document.block(source).unwrap().text, "live source");
+        Ok(())
+    }
+
+    #[test]
+    fn page_reference_clears_old_text_and_undoes_target_change() -> Result<()> {
+        let scratch = quire_core::testing::ScratchDir::new("gpui-page-reference");
+        let path = scratch.path().join("test.db");
+        let (source_page, target_page, block_id);
+        {
+            let mut session = Session::open(&path)?;
+            source_page = session.page.id;
+            target_page = session.create_page(None);
+            block_id = session.blocks()[0].id;
+            session.replace(block_id, "old block label".into(), true);
+            session.execute(Command::SetBlockType {
+                id: block_id,
+                kind: BlockKind::Link,
+            });
+            assert!(session.set_page_reference(block_id, Some(source_page)));
+            assert_eq!(
+                session.document.block(block_id).unwrap().page_ref,
+                Some(source_page)
+            );
+            assert!(session.document.block(block_id).unwrap().text.is_empty());
+            session.undo();
+            assert_eq!(session.document.block(block_id).unwrap().page_ref, None);
+            assert_eq!(
+                session.document.block(block_id).unwrap().text,
+                "old block label"
+            );
+            session.redo();
+            session.persistence.force_flush()?;
+        }
+        let reopened = Session::open(&path)?;
+        assert_eq!(
+            reopened.document.block(block_id).unwrap().page_ref,
+            Some(source_page)
+        );
+        assert!(reopened.pages.iter().any(|page| page.id == target_page));
         Ok(())
     }
 

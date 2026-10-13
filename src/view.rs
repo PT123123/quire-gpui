@@ -185,6 +185,8 @@ fn slash_items() -> &'static [(&'static str, &'static str, BlockKind)] {
         ("数学公式", "math latex formula", BlockKind::Math),
         ("链接卡片", "embed link card", BlockKind::Embed),
         ("同步块", "synced block mirror", BlockKind::Synced),
+        ("页面", "page embed child page", BlockKind::Page),
+        ("链接到页面", "link page reference", BlockKind::Link),
         ("提示块", "callout", BlockKind::Callout),
         ("分隔线", "divider", BlockKind::Divider),
         ("表格", "table grid", BlockKind::Table),
@@ -1964,6 +1966,13 @@ impl Render for Workspace {
             .take(20)
             .map(|block| (block.id, block.text.clone()))
             .collect::<Vec<_>>();
+        let page_candidates = self
+            .session
+            .pages
+            .iter()
+            .filter(|page| page.id != self.session.page.id && !page.template)
+            .map(|page| (page.id, page.title.clone()))
+            .collect::<Vec<_>>();
         let cover_path = self
             .session
             .page
@@ -2349,6 +2358,8 @@ impl Render for Workspace {
                 ("数学公式", BlockKind::Math),
                 ("链接卡片", BlockKind::Embed),
                 ("同步块", BlockKind::Synced),
+                ("页面", BlockKind::Page),
+                ("页面链接", BlockKind::Link),
                 ("提示", BlockKind::Callout),
                 ("分隔线", BlockKind::Divider),
                 ("表格", BlockKind::Table),
@@ -2618,6 +2629,37 @@ impl Render for Workspace {
                                     }
                                 }))
                                 .child(source_text.clone())
+                        })
+                        .collect::<Vec<_>>()
+                } else {
+                    Vec::new()
+                };
+                let page_reference_candidates = if matches!(kind, BlockKind::Page | BlockKind::Link)
+                    && block.page_ref.is_none()
+                {
+                    page_candidates
+                        .iter()
+                        .map(|(target_page, title)| {
+                            let target_page = *target_page;
+                            div()
+                                .id(SharedString::from(format!(
+                                    "page-reference-target-{block_id:?}-{target_page:?}"
+                                )))
+                                .w_full()
+                                .px(px(8.))
+                                .py(px(5.))
+                                .rounded(px(4.))
+                                .cursor_pointer()
+                                .text_color(muted)
+                                .hover(|row| row.bg(Palette::color(&p.bg).opacity(0.3)))
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    if this.session.set_page_reference(block_id, Some(target_page))
+                                    {
+                                        this.sync_inputs(window, cx);
+                                        this.schedule_save(false, window, cx);
+                                    }
+                                }))
+                                .child(title.clone())
                         })
                         .collect::<Vec<_>>()
                 } else {
@@ -3135,6 +3177,76 @@ impl Render for Workspace {
                                         .children(sync_candidates)
                                 }
                             })
+                            .when(matches!(kind, BlockKind::Page | BlockKind::Link), |view| {
+                                if let Some(target_id) = block.page_ref {
+                                    let target_title = self
+                                        .session
+                                        .pages
+                                        .iter()
+                                        .find(|page| page.id == target_id)
+                                        .map(|page| page.title.clone())
+                                        .unwrap_or_else(|| "目标页面已删除".into());
+                                    view.flex_col()
+                                        .gap(px(5.))
+                                        .rounded(px(6.))
+                                        .border_1()
+                                        .border_color(Palette::color(&p.border))
+                                        .px(px(10.))
+                                        .py(px(8.))
+                                        .bg(Palette::color(&p.elevated))
+                                        .child(
+                                            div()
+                                                .font_weight(FontWeight::SEMIBOLD)
+                                                .child(target_title),
+                                        )
+                                        .when(
+                                            self.session
+                                                .pages
+                                                .iter()
+                                                .any(|page| page.id == target_id),
+                                            |card| {
+                                                card.child(
+                                                    div()
+                                                        .id(SharedString::from(format!(
+                                                            "open-page-reference-{block_id:?}"
+                                                        )))
+                                                        .w(px(92.))
+                                                        .px(px(8.))
+                                                        .py(px(4.))
+                                                        .rounded(px(4.))
+                                                        .cursor_pointer()
+                                                        .text_color(accent)
+                                                        .hover(|button| {
+                                                            button.bg(Palette::color(&p.border))
+                                                        })
+                                                        .on_click(cx.listener(
+                                                            move |this, _, window, cx| {
+                                                                this.activate_page(
+                                                                    target_id, window, cx,
+                                                                );
+                                                            },
+                                                        ))
+                                                        .child("打开页面"),
+                                                )
+                                            },
+                                        )
+                                } else {
+                                    view.flex_col()
+                                        .gap(px(2.))
+                                        .rounded(px(5.))
+                                        .px(px(8.))
+                                        .py(px(7.))
+                                        .bg(Palette::color(&p.elevated))
+                                        .child(
+                                            div()
+                                                .text_size(px(11.))
+                                                .font_weight(FontWeight::SEMIBOLD)
+                                                .text_color(muted)
+                                                .child("选择目标页面"),
+                                        )
+                                        .children(page_reference_candidates)
+                                }
+                            })
                             .when(kind == BlockKind::Embed, |view| {
                                 let url = block.text.clone();
                                 let title = quire_core::core::embed::describe(&url);
@@ -3267,6 +3379,8 @@ impl Render for Workspace {
                                     && kind != BlockKind::Columns
                                     && kind != BlockKind::Toc
                                     && kind != BlockKind::Synced
+                                    && kind != BlockKind::Page
+                                    && kind != BlockKind::Link
                                     && kind != BlockKind::Image
                                     && kind != BlockKind::File,
                                 |view| {
