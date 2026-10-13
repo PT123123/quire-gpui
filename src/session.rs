@@ -320,6 +320,17 @@ impl Session {
             locked,
         }]);
     }
+    pub fn set_block_folded(&mut self, id: BlockId, folded: bool) {
+        let Some(block) = self.document.block(id) else {
+            return;
+        };
+        if block.folded == folded {
+            return;
+        }
+        let change = Change::BlockFoldedSet { id, folded };
+        self.document.apply(std::slice::from_ref(&change));
+        self.persistence.record(vec![change]);
+    }
     pub fn move_page(&mut self, id: PageId, delta: i32) -> bool {
         let Some(target) = self
             .pages

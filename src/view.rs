@@ -397,6 +397,13 @@ impl Workspace {
         self.session.execute(Command::ToggleTodoChecked { id });
         self.schedule_save(false, window, cx);
     }
+    fn toggle_block_folded(&mut self, id: BlockId, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(block) = self.session.document.block(id) else {
+            return;
+        };
+        self.session.set_block_folded(id, !block.folded);
+        self.schedule_save(false, window, cx);
+    }
     fn delete_block(&mut self, id: BlockId, window: &mut Window, cx: &mut Context<Self>) {
         if self.closing || self.session.page.locked {
             return;
@@ -1078,6 +1085,7 @@ impl Render for Workspace {
                 ("• 列表", BlockKind::Bullet),
                 ("1. 列表", BlockKind::Numbered),
                 ("☐ 待办", BlockKind::Todo),
+                ("折叠块", BlockKind::Toggle),
                 ("引用", BlockKind::Quote),
                 ("代码", BlockKind::Code),
                 ("提示", BlockKind::Callout),
@@ -1124,12 +1132,36 @@ impl Render for Workspace {
             .session
             .blocks()
             .iter()
+            .filter(|block| {
+                let mut parent = block.parent;
+                while let Some(parent_id) = parent {
+                    let Some(parent_block) = self
+                        .session
+                        .blocks()
+                        .iter()
+                        .find(|candidate| candidate.id == parent_id)
+                    else {
+                        break;
+                    };
+                    if parent_block.folded {
+                        return false;
+                    }
+                    parent = parent_block.parent;
+                }
+                true
+            })
             .enumerate()
             .map(|(index, block)| {
+                let block_index = self
+                    .session
+                    .blocks()
+                    .iter()
+                    .position(|candidate| candidate.id == block.id)
+                    .unwrap_or(index);
                 let prefix = match block.kind {
                     BlockKind::Bullet => "•".to_owned(),
                     BlockKind::Numbered => {
-                        let count = self.session.blocks()[..index]
+                        let count = self.session.blocks()[..block_index]
                             .iter()
                             .rev()
                             .take_while(|previous| {
@@ -1147,11 +1179,13 @@ impl Render for Workspace {
                             "☐".to_owned()
                         }
                     }
+                    BlockKind::Toggle => if block.folded { "▸" } else { "▾" }.to_owned(),
                     _ => String::new(),
                 };
                 let input = self.inputs.get(&block.id.0).cloned();
                 let block_id = block.id;
                 let is_todo = block.kind == BlockKind::Todo;
+                let is_toggle = block.kind == BlockKind::Toggle;
                 let kind = block.kind;
                 div()
                     .id(("block", block.id.0))
@@ -1182,10 +1216,14 @@ impl Render for Workspace {
                             .w(px(18.))
                             .flex_shrink_0()
                             .text_color(muted)
-                            .when(is_todo, |prefix| {
+                            .when(is_todo || is_toggle, |prefix| {
                                 prefix.cursor_pointer().on_click(cx.listener(
                                     move |this, _, window, cx| {
-                                        this.toggle_todo(block_id, window, cx)
+                                        if is_todo {
+                                            this.toggle_todo(block_id, window, cx)
+                                        } else {
+                                            this.toggle_block_folded(block_id, window, cx)
+                                        }
                                     },
                                 ))
                             })

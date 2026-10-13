@@ -88,6 +88,7 @@
 - 页面行提供删除入口，二次确认后通过 core `PageDeleted` 删除整棵子树；拒绝删除最后一个非模板页面，删除当前页面后切到父页或剩余首个页面。
 - 主题入口从单步循环改为主题面板，展示 12 套渐变预览，选择后保存 `gpui.theme` 设置。
 - 侧栏页面树可滚动；收藏页面出现在独立导航分组，点击可切换页面。
+- Toggle 块可折叠/展开子块；折叠状态经 core `BlockFoldedSet` 保存。
 - `cargo fmt --all` 与 `cargo build -j 8 --target-dir target-next` 通过（dev profile）；主题面板、页面排序和删除尚未做真人回归，也未做截图比对。
 - 功能矩阵由 `tools/extract-parity.mjs` 重生成：246 callbacks / 261 properties / 188 scenes；主题语义 sidecar 已更新。
 - 页面移动目前提供同级排序与缩进/反缩进；拖放排序、最近分组、slash 与块菜单、链接与引用目标交互、其余块与页面类型、数据库视图、整理区、设置/同步/MCP/速记、托盘、多窗口、DPI/性能及全量参考图对照仍缺。
