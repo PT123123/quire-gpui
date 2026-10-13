@@ -1326,36 +1326,48 @@ impl Render for Workspace {
         };
         let icon_options = if self.icon_picker_open {
             div()
-                .id("page-icon-grid")
-                .w_full()
-                .max_h(px(244.))
-                .overflow_y_scroll()
-                .flex()
-                .flex_wrap()
-                .gap(px(3.))
-                .children(
-                    std::iter::once("")
-                        .chain(quire_core::core::icon::PICKER.iter().copied())
-                        .map(|icon| {
-                            let selected = self.session.page.icon == icon;
-                            div()
-                                .id(SharedString::from(format!("page-icon-{icon}")))
-                                .size(px(25.))
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .rounded(px(5.))
-                                .cursor_pointer()
-                                .when(selected, |row| row.bg(Palette::color(&p.bg).opacity(0.35)))
-                                .hover(|row| row.bg(Palette::color(&p.bg).opacity(0.5)))
-                                .on_click(cx.listener(move |this, _, window, cx| {
-                                    this.select_page_icon(icon, window, cx)
-                                }))
-                                .child(if icon.is_empty() { "×" } else { icon })
-                        }),
+                .id("page-icon-popover")
+                .w(px(224.))
+                .p(px(7.))
+                .rounded(px(8.))
+                .border_1()
+                .border_color(Palette::color(&p.border))
+                .bg(Palette::color(&p.elevated))
+                .child(
+                    div()
+                        .id("page-icon-grid")
+                        .w_full()
+                        .max_h(px(228.))
+                        .overflow_y_scroll()
+                        .flex()
+                        .flex_wrap()
+                        .gap(px(3.))
+                        .children(
+                            std::iter::once("")
+                                .chain(quire_core::core::icon::PICKER.iter().copied())
+                                .map(|icon| {
+                                    let selected = self.session.page.icon == icon;
+                                    div()
+                                        .id(SharedString::from(format!("page-icon-{icon}")))
+                                        .size(px(25.))
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .rounded(px(5.))
+                                        .cursor_pointer()
+                                        .when(selected, |row| {
+                                            row.bg(Palette::color(&p.bg).opacity(0.35))
+                                        })
+                                        .hover(|row| row.bg(Palette::color(&p.bg).opacity(0.5)))
+                                        .on_click(cx.listener(move |this, _, window, cx| {
+                                            this.select_page_icon(icon, window, cx)
+                                        }))
+                                        .child(if icon.is_empty() { "×" } else { icon })
+                                }),
+                        ),
                 )
         } else {
-            div().id("page-icon-grid")
+            div().id("page-icon-popover")
         };
         let query = self.search_query.trim().to_lowercase();
         let page_rows = ordered_page_tree(&self.session.pages, !query.is_empty())
@@ -2301,7 +2313,16 @@ impl Render for Workspace {
                                         } else {
                                             &self.session.page.icon
                                         }
-                                    )),
+                                    ))
+                                    .when(self.icon_picker_open, |button| {
+                                        button.child(
+                                            anchored()
+                                                .anchor(Corner::BottomLeft)
+                                                .offset(point(px(0.), px(5.)))
+                                                .snap_to_window()
+                                                .child(icon_options),
+                                        )
+                                    }),
                             )
                             .child(
                                 div()
@@ -2428,7 +2449,6 @@ impl Render for Workspace {
                             .gap(px(12.))
                             .child(div().font_weight(FontWeight::SEMIBOLD).child("Quire"))
                             .children(theme_options)
-                            .child(icon_options)
                             .child(
                                 div()
                                     .h(px(30.))
