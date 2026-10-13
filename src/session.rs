@@ -491,6 +491,50 @@ impl Session {
         self.ensure_page_has_block();
         Some(new_id)
     }
+    pub fn duplicate_block(&mut self, id: BlockId) -> Option<BlockId> {
+        if self.page.locked {
+            return None;
+        }
+        self.end_typing();
+        let kind = self.document.block(id)?.kind;
+        let source = self.blocks().to_vec();
+        let mut subtree = HashSet::from([id]);
+        loop {
+            let descendants = source
+                .iter()
+                .filter(|block| block.parent.is_some_and(|parent| subtree.contains(&parent)))
+                .map(|block| block.id)
+                .filter(|block| !subtree.contains(block))
+                .collect::<Vec<_>>();
+            if descendants.is_empty() {
+                break;
+            }
+            subtree.extend(descendants);
+        }
+        let forest = source
+            .into_iter()
+            .filter(|block| subtree.contains(&block.id))
+            .collect::<Vec<_>>();
+        let existing = self
+            .blocks()
+            .iter()
+            .map(|block| block.id)
+            .collect::<HashSet<_>>();
+        let command = if forest.len() > 1 && !matches!(kind, BlockKind::Table | BlockKind::Columns)
+        {
+            Command::InsertForest {
+                anchor: Some(id),
+                blocks: forest,
+            }
+        } else {
+            Command::DuplicateBlock { id }
+        };
+        self.execute(command);
+        self.blocks()
+            .iter()
+            .find(|block| !existing.contains(&block.id))
+            .map(|block| block.id)
+    }
     pub fn set_page_title(&mut self, title: String) {
         if self.page.locked || self.page.title == title {
             return;
@@ -1307,6 +1351,64 @@ mod tests {
         assert_eq!(copies.len(), 2);
         assert_eq!(copies[1].parent, Some(copies[0].id));
         assert_eq!(copies[0].marks[0].url, "https://example.com");
+        Ok(())
+    }
+
+    #[test]
+    fn nested_block_duplicate_copies_its_subtree_as_one_undo_step() -> Result<()> {
+        let scratch = quire_core::testing::ScratchDir::new("gpui-block-duplicate");
+        let path = scratch.path().join("test.db");
+        let mut session = Session::open(&path)?;
+        let root_id = session.blocks()[0].id;
+        session.execute(Command::SetBlockType {
+            id: root_id,
+            kind: BlockKind::Toggle,
+        });
+        session.replace(root_id, "Toggle".into(), false);
+        let mut child = session.document.block(root_id).unwrap().clone();
+        child.id = session.document.alloc_block_id();
+        child.parent = Some(root_id);
+        child.order = OrderKey::between(Some(child.order), None).unwrap();
+        child.kind = BlockKind::Paragraph;
+        child.text = "Nested".into();
+        child.marks.clear();
+        let child_id = child.id;
+        session
+            .document
+            .apply(&[Change::BlockInserted(child.clone())]);
+        session
+            .persistence
+            .record(vec![Change::BlockInserted(child)]);
+
+        let copy_id = session.duplicate_block(root_id).unwrap();
+        let copied_root = session.document.block(copy_id).unwrap();
+        assert_eq!(copied_root.kind, BlockKind::Toggle);
+        assert!(!copied_root.folded);
+        let copied_child = session
+            .blocks()
+            .iter()
+            .find(|block| block.parent == Some(copy_id))
+            .unwrap();
+        assert_eq!(copied_child.text, "Nested");
+        assert_ne!(
+            copied_child.id,
+            session.document.block(child_id).unwrap().id
+        );
+
+        session.undo();
+        assert!(session.document.block(copy_id).is_none());
+        assert_eq!(session.blocks().len(), 2);
+        session.redo();
+        assert_eq!(session.blocks().len(), 4);
+        assert_eq!(
+            session
+                .blocks()
+                .iter()
+                .find(|block| block.parent == Some(copy_id))
+                .unwrap()
+                .text,
+            "Nested"
+        );
         Ok(())
     }
 }

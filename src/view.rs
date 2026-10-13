@@ -1050,6 +1050,25 @@ impl Workspace {
         }
         self.schedule_save(false, window, cx);
     }
+    fn duplicate_block(&mut self, id: BlockId, window: &mut Window, cx: &mut Context<Self>) {
+        if self.closing || self.session.page.locked || self.composing(cx) {
+            return;
+        }
+        let Some(kind) = self.session.document.block(id).map(|block| block.kind) else {
+            return;
+        };
+        let duplicate = self.session.duplicate_block(id);
+        self.sync_inputs(window, cx);
+        if let Some(duplicate) = duplicate {
+            self.active = Some(
+                self.first_child_editor(duplicate, kind)
+                    .unwrap_or(duplicate),
+            );
+            self.restore_focus(window, cx);
+        }
+        self.status = "块副本已创建，正在保存…".into();
+        self.schedule_save(false, window, cx);
+    }
     fn move_block(&mut self, id: BlockId, delta: i32, window: &mut Window, cx: &mut Context<Self>) {
         if self.closing || self.session.page.locked {
             return;
@@ -2692,6 +2711,20 @@ impl Render for Workspace {
                                         this.toggle_color_picker(block_id, true, cx)
                                     }))
                                     .child("▧"),
+                            )
+                            .child(
+                                div()
+                                    .id(SharedString::from(format!("duplicate-block-{block_id:?}")))
+                                    .px(px(2.))
+                                    .cursor_pointer()
+                                    .text_color(muted)
+                                    .hover(|button| button.text_color(accent))
+                                    .when(!self.session.page.locked, |button| {
+                                        button.on_click(cx.listener(move |this, _, window, cx| {
+                                            this.duplicate_block(block_id, window, cx)
+                                        }))
+                                    })
+                                    .child("⧉"),
                             )
                             .when(move_allowed, |actions| {
                                 actions
