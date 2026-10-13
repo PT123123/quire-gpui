@@ -2,7 +2,7 @@ use crate::input::{InputEvent, TextInput};
 use gpui::{prelude::*, *};
 use quire_core::core::{
     command::Command,
-    types::{BlockId, BlockKind, ColorKind, Lang},
+    types::{Block, BlockId, BlockKind, ColorKind, Lang},
 };
 use quire_gpui::session::Session;
 use std::{
@@ -38,9 +38,72 @@ fn find_matches_in(text: &str, query: &str) -> Vec<Range<usize>> {
     ranges
 }
 
+fn toc_headings(blocks: &[Block]) -> Vec<(BlockId, u8, String)> {
+    blocks
+        .iter()
+        .filter_map(|block| {
+            let level = block.kind.heading_level()?;
+            let mut parent = block.parent;
+            let mut hidden = false;
+            let mut guard = 0;
+            while let Some(parent_id) = parent {
+                let Some(ancestor) = blocks.iter().find(|candidate| candidate.id == parent_id)
+                else {
+                    break;
+                };
+                if ancestor.folded || ancestor.kind == BlockKind::TableCell {
+                    hidden = true;
+                    break;
+                }
+                parent = ancestor.parent;
+                guard += 1;
+                if guard >= 32 {
+                    hidden = true;
+                    break;
+                }
+            }
+            (!hidden).then(|| {
+                (
+                    block.id,
+                    level,
+                    if block.text.is_empty() {
+                        "无标题".to_owned()
+                    } else {
+                        block.text.clone()
+                    },
+                )
+            })
+        })
+        .collect()
+}
+
 #[cfg(test)]
-mod find_tests {
-    use super::find_matches_in;
+mod view_tests {
+    use super::{find_matches_in, toc_headings};
+    use quire_core::core::types::{Block, BlockId, BlockKind, ColorKind, Lang, OrderKey, PageId};
+
+    fn block(id: u64, kind: BlockKind, text: &str, parent: Option<BlockId>, folded: bool) -> Block {
+        Block {
+            id: BlockId(id),
+            page: PageId(1),
+            parent,
+            order: OrderKey(id),
+            kind,
+            text: text.into(),
+            checked: false,
+            marks: Vec::new(),
+            color: ColorKind::Default,
+            background: ColorKind::Default,
+            page_ref: None,
+            folded,
+            attachment: None,
+            img_percent: 100,
+            columns: 0,
+            lang: Lang::Plain,
+            db_ref: None,
+            sync_ref: None,
+        }
+    }
 
     #[test]
     fn find_matches_are_non_overlapping_case_insensitive_and_utf8_aligned() {
@@ -50,6 +113,25 @@ mod find_tests {
         );
         assert_eq!(find_matches_in("标题标题", "标题"), [0..6, 6..12]);
         assert!(find_matches_in("anything", "").is_empty());
+    }
+
+    #[test]
+    fn toc_lists_headings_and_omits_folded_subtrees() {
+        let blocks = [
+            block(1, BlockKind::Toggle, "Section", None, true),
+            block(
+                2,
+                BlockKind::Heading2,
+                "Hidden heading",
+                Some(BlockId(1)),
+                false,
+            ),
+            block(3, BlockKind::Heading1, "Visible heading", None, false),
+        ];
+        assert_eq!(
+            toc_headings(&blocks),
+            vec![(BlockId(3), 1, "Visible heading".into())]
+        );
     }
 }
 
@@ -104,6 +186,7 @@ fn slash_items() -> &'static [(&'static str, &'static str, BlockKind)] {
         ("分隔线", "divider", BlockKind::Divider),
         ("表格", "table grid", BlockKind::Table),
         ("分栏", "columns layout", BlockKind::Columns),
+        ("目录", "toc table of contents", BlockKind::Toc),
     ]
 }
 
@@ -2200,6 +2283,7 @@ impl Render for Workspace {
                 ("分隔线", BlockKind::Divider),
                 ("表格", BlockKind::Table),
                 ("分栏", BlockKind::Columns),
+                ("目录", BlockKind::Toc),
             ]
             .into_iter()
             .map(|(label, kind)| {
@@ -2414,6 +2498,32 @@ impl Render for Workspace {
                 let is_todo = block.kind == BlockKind::Todo;
                 let is_toggle = block.kind == BlockKind::Toggle;
                 let kind = block.kind;
+                let toc_entries = if kind == BlockKind::Toc {
+                    toc_headings(self.session.blocks())
+                        .into_iter()
+                        .map(|(heading_id, level, label)| {
+                            div()
+                                .id(SharedString::from(format!(
+                                    "toc-entry-{block_id:?}-{heading_id:?}"
+                                )))
+                                .h(px(25.))
+                                .pl(px(6. + (level.saturating_sub(1) as f32 * 14.)))
+                                .pr(px(6.))
+                                .flex()
+                                .items_center()
+                                .rounded(px(4.))
+                                .cursor_pointer()
+                                .text_color(text)
+                                .hover(|row| row.bg(Palette::color(&p.bg).opacity(0.34)))
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    this.focus(heading_id, 0, window, cx)
+                                }))
+                                .child(label)
+                        })
+                        .collect::<Vec<_>>()
+                } else {
+                    Vec::new()
+                };
                 let image_path = if kind == BlockKind::Image {
                     block
                         .attachment
@@ -2840,6 +2950,44 @@ impl Render for Workspace {
                                 view.py(px(8.))
                                     .child(div().w_full().h(px(1.)).bg(Palette::color(&p.border)))
                             })
+                            .when(kind == BlockKind::Toc, |view| {
+                                if toc_entries.is_empty() {
+                                    view.flex_col()
+                                        .gap(px(3.))
+                                        .rounded(px(5.))
+                                        .px(px(8.))
+                                        .py(px(7.))
+                                        .bg(Palette::color(&p.elevated))
+                                        .child(
+                                            div()
+                                                .text_size(px(11.))
+                                                .font_weight(FontWeight::SEMIBOLD)
+                                                .text_color(muted)
+                                                .child("目录"),
+                                        )
+                                        .child(
+                                            div()
+                                                .py(px(3.))
+                                                .text_color(muted)
+                                                .child("此页面还没有标题"),
+                                        )
+                                } else {
+                                    view.flex_col()
+                                        .gap(px(2.))
+                                        .rounded(px(5.))
+                                        .px(px(8.))
+                                        .py(px(7.))
+                                        .bg(Palette::color(&p.elevated))
+                                        .child(
+                                            div()
+                                                .text_size(px(11.))
+                                                .font_weight(FontWeight::SEMIBOLD)
+                                                .text_color(muted)
+                                                .child("目录"),
+                                        )
+                                        .children(toc_entries)
+                                }
+                            })
                             .when_some(image_path, |view, path| {
                                 let width =
                                     700. * f32::from(block.img_percent.clamp(10, 100)) / 100.;
@@ -2927,6 +3075,7 @@ impl Render for Workspace {
                                 kind != BlockKind::Divider
                                     && kind != BlockKind::Table
                                     && kind != BlockKind::Columns
+                                    && kind != BlockKind::Toc
                                     && kind != BlockKind::Image
                                     && kind != BlockKind::File,
                                 |view| {
