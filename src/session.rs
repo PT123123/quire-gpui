@@ -609,19 +609,21 @@ impl Session {
                         | BlockKind::Quote
                         | BlockKind::Code
                         | BlockKind::Callout
+                        | BlockKind::Toggle
                 );
-                let list_child = b.parent.is_some_and(|parent| {
-                    matches!(
-                        b.kind,
-                        BlockKind::Bullet | BlockKind::Numbered | BlockKind::Todo
-                    ) && self.document.block(parent).is_some_and(|parent| {
-                        matches!(
-                            parent.kind,
-                            BlockKind::Bullet | BlockKind::Numbered | BlockKind::Todo
-                        )
+                let valid_child = b.parent.is_some_and(|parent| {
+                    self.document.block(parent).is_some_and(|parent| {
+                        parent.kind == BlockKind::Toggle
+                            || (matches!(
+                                b.kind,
+                                BlockKind::Bullet | BlockKind::Numbered | BlockKind::Todo
+                            ) && matches!(
+                                parent.kind,
+                                BlockKind::Bullet | BlockKind::Numbered | BlockKind::Todo
+                            ))
                     })
                 });
-                simple_kind && (b.parent.is_none() || list_child)
+                simple_kind && (b.parent.is_none() || valid_child)
             })
     }
     pub fn end_typing(&mut self) {

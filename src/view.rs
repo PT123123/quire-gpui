@@ -1089,6 +1089,7 @@ impl Render for Workspace {
                 ("引用", BlockKind::Quote),
                 ("代码", BlockKind::Code),
                 ("提示", BlockKind::Callout),
+                ("分隔线", BlockKind::Divider),
             ]
             .into_iter()
             .map(|(label, kind)| {
@@ -1233,18 +1234,24 @@ impl Render for Workspace {
                         div()
                             .flex_1()
                             .min_w_0()
-                            .font_family(if kind == BlockKind::Code {
-                                "Cascadia Code"
-                            } else {
-                                "Segoe UI"
+                            .when(kind == BlockKind::Divider, |view| {
+                                view.py(px(8.))
+                                    .child(div().w_full().h(px(1.)).bg(Palette::color(&p.border)))
                             })
-                            .when_some(input.filter(|_| !self.closing), |view, input| {
-                                view.child(input)
-                            })
-                            .when(
-                                self.closing || !self.inputs.contains_key(&block.id.0),
-                                |view| view.child(block.text.clone()),
-                            ),
+                            .when(kind != BlockKind::Divider, |view| {
+                                view.font_family(if kind == BlockKind::Code {
+                                    "Cascadia Code"
+                                } else {
+                                    "Segoe UI"
+                                })
+                                .when_some(input.filter(|_| !self.closing), |view, input| {
+                                    view.child(input)
+                                })
+                                .when(
+                                    self.closing || !self.inputs.contains_key(&block.id.0),
+                                    |view| view.child(block.text.clone()),
+                                )
+                            }),
                     )
                     .child(
                         div()
