@@ -1101,14 +1101,8 @@ impl Workspace {
             cx.notify();
             return;
         }
-        self.session.execute(Command::ToggleMark {
-            id,
-            start: selection.start,
-            end: selection.end,
-            kind: quire_core::core::types::MarkKind::Link,
-            url,
-            date: None,
-        });
+        self.session
+            .set_link(id, selection.start, selection.end, url);
         self.link_editor_open = false;
         self.sync_inputs(window, cx);
         self.focus(id, selection.end, window, cx);

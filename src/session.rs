@@ -487,6 +487,64 @@ impl Session {
         self.document.apply(std::slice::from_ref(&change));
         self.persistence.record(vec![change]);
     }
+    pub fn set_link(&mut self, id: BlockId, start: usize, end: usize, url: String) {
+        if self.page.locked {
+            return;
+        }
+        self.end_typing();
+        let Some(block) = self.document.block(id).cloned() else {
+            return;
+        };
+        let (start, end) = (
+            start.min(end).min(block.text.len()),
+            start.max(end).min(block.text.len()),
+        );
+        if start == end || !block.text.is_char_boundary(start) || !block.text.is_char_boundary(end)
+        {
+            return;
+        }
+        let mut marks = Vec::new();
+        for mark in &block.marks {
+            if mark.kind != quire_core::core::types::MarkKind::Link
+                || mark.end <= start
+                || mark.start >= end
+            {
+                marks.push(mark.clone());
+                continue;
+            }
+            if mark.start < start {
+                let mut left = mark.clone();
+                left.end = start;
+                marks.push(left);
+            }
+            if mark.end > end {
+                let mut right = mark.clone();
+                right.start = end;
+                marks.push(right);
+            }
+        }
+        marks.push(Mark {
+            start,
+            end,
+            kind: quire_core::core::types::MarkKind::Link,
+            url,
+            date: None,
+        });
+        marks.sort_by_key(|mark| (mark.start, mark.end));
+        if marks == block.marks {
+            return;
+        }
+        let entry = Entry {
+            apply: vec![Change::BlockMarksSet { id, marks }],
+            revert: vec![Change::BlockMarksSet {
+                id,
+                marks: block.marks,
+            }],
+        };
+        self.document.apply(&entry.apply);
+        self.persistence.record(entry.apply.clone());
+        self.history.push(self.page.id, entry);
+    }
     pub fn move_page(&mut self, id: PageId, delta: i32) -> bool {
         let Some(target) = self
             .pages
