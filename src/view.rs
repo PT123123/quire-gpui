@@ -593,6 +593,19 @@ impl Workspace {
         self.sync_inputs(window, cx);
         self.schedule_save(false, window, cx);
     }
+    fn set_image_width(
+        &mut self,
+        id: BlockId,
+        percent: u16,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.session.page.locked {
+            return;
+        }
+        self.session.execute(Command::SetImageWidth { id, percent });
+        self.schedule_save(false, window, cx);
+    }
     fn pick_attachment(&mut self, image: bool, window: &mut Window, cx: &mut Context<Self>) {
         if self.session.page.locked || self.closing {
             return;
@@ -1822,6 +1835,31 @@ impl Render for Workspace {
                     None
                 };
                 let image_missing = kind == BlockKind::Image && image_path.is_none();
+                let image_width_controls = if kind == BlockKind::Image {
+                    [50u16, 75, 100]
+                        .into_iter()
+                        .map(|percent| {
+                            let selected = block.img_percent == percent;
+                            div()
+                                .id(SharedString::from(format!(
+                                    "image-width-{block_id:?}-{percent}"
+                                )))
+                                .px(px(6.))
+                                .py(px(2.))
+                                .rounded(px(3.))
+                                .cursor_pointer()
+                                .text_size(px(10.))
+                                .text_color(if selected { accent } else { muted })
+                                .when(selected, |chip| chip.bg(Palette::color(&p.bg).opacity(0.4)))
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    this.set_image_width(block_id, percent, window, cx)
+                                }))
+                                .child(format!("{percent}%"))
+                        })
+                        .collect::<Vec<_>>()
+                } else {
+                    Vec::new()
+                };
                 let file_path = if kind == BlockKind::File {
                     block
                         .attachment
@@ -2217,7 +2255,10 @@ impl Render for Workspace {
                             .when_some(image_path, |view, path| {
                                 let width =
                                     700. * f32::from(block.img_percent.clamp(10, 100)) / 100.;
-                                view.child(img(path).w(px(width)).max_h(px(520.)).rounded(px(5.)))
+                                view.flex_col()
+                                    .gap(px(4.))
+                                    .child(img(path).w(px(width)).max_h(px(520.)).rounded(px(5.)))
+                                    .child(div().flex().gap(px(3.)).children(image_width_controls))
                             })
                             .when(image_missing, |view| {
                                 view.child(div().text_color(muted).child("图片附件不可用"))
