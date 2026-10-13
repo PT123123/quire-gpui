@@ -46,6 +46,7 @@ pub enum InputEvent {
     Split(usize),
     Merge,
     Navigate(i32),
+    NavigateHorizontal(i32),
     Focused,
     Indent,
     Outdent,
@@ -153,6 +154,10 @@ impl TextInput {
         if self.buffer.composing() {
             return;
         }
+        if self.buffer.selection.is_empty() && self.buffer.caret() == 0 {
+            cx.emit(InputEvent::NavigateHorizontal(-1));
+            return;
+        }
         let p = if self.buffer.selection.is_empty() {
             self.buffer.previous()
         } else {
@@ -163,6 +168,10 @@ impl TextInput {
     }
     fn right(&mut self, _: &Right, _: &mut Window, cx: &mut Context<Self>) {
         if self.buffer.composing() {
+            return;
+        }
+        if self.buffer.selection.is_empty() && self.buffer.caret() == self.buffer.text.len() {
+            cx.emit(InputEvent::NavigateHorizontal(1));
             return;
         }
         let p = if self.buffer.selection.is_empty() {

@@ -488,7 +488,42 @@ impl Workspace {
                     }
                     return;
                 }
+                if let Some(table_id) = self
+                    .session
+                    .document
+                    .block(id)
+                    .filter(|block| block.kind == BlockKind::TableCell)
+                    .and_then(|block| block.parent)
+                {
+                    let columns = self
+                        .session
+                        .document
+                        .block(table_id)
+                        .map_or(1, |table| i32::from(table.columns.max(1)));
+                    self.navigate_table_cell(id, columns * *direction, window, cx);
+                    return;
+                }
                 if let Some(index) = self.session.document.index_of(self.session.page.id, id) {
+                    let next = index as i64 + *direction as i64;
+                    if next >= 0
+                        && let Some(block) = self.session.blocks().get(next as usize)
+                    {
+                        let target = block.id;
+                        let caret = if *direction < 0 { block.text.len() } else { 0 };
+                        self.focus(target, caret, window, cx);
+                    }
+                }
+            }
+            InputEvent::NavigateHorizontal(direction) => {
+                if self
+                    .session
+                    .document
+                    .block(id)
+                    .is_some_and(|block| block.kind == BlockKind::TableCell)
+                {
+                    self.navigate_table_cell(id, *direction, window, cx);
+                } else if let Some(index) = self.session.document.index_of(self.session.page.id, id)
+                {
                     let next = index as i64 + *direction as i64;
                     if next >= 0
                         && let Some(block) = self.session.blocks().get(next as usize)
@@ -797,17 +832,23 @@ impl Workspace {
             self.session
                 .execute(Command::TableAddRow { id: table_id, row });
             self.sync_inputs(window, cx);
-            let last_cell = self
+            let target_column = if delta == columns as i32 {
+                index % columns
+            } else {
+                0
+            };
+            let mut cells = self
                 .session
                 .blocks()
                 .iter()
                 .filter(|block| {
                     block.parent == Some(table_id) && block.kind == BlockKind::TableCell
                 })
-                .max_by_key(|block| block.order)
-                .map(|block| block.id);
-            if let Some(last_cell) = last_cell {
-                self.focus(last_cell, 0, window, cx);
+                .collect::<Vec<_>>();
+            cells.sort_by_key(|block| block.order);
+            if let Some(target) = cells.get(cells.len().saturating_sub(columns) + target_column) {
+                let target = target.id;
+                self.focus(target, 0, window, cx);
             }
             self.schedule_save(false, window, cx);
         }
