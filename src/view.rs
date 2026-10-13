@@ -189,6 +189,7 @@ pub struct Workspace {
     session: Session,
     title_input: Entity<TextInput>,
     title_subscription: Option<Subscription>,
+    title_edit_original: Option<String>,
     search_input: Entity<TextInput>,
     find_input: Entity<TextInput>,
     link_target_input: Entity<TextInput>,
@@ -245,6 +246,7 @@ impl Workspace {
             session,
             title_input,
             title_subscription: None,
+            title_edit_original: None,
             search_input,
             find_input,
             link_target_input,
@@ -274,22 +276,47 @@ impl Workspace {
             smoke,
         };
         let title_input = this.title_input.clone();
-        this.title_subscription =
-            Some(
-                cx.subscribe_in(&title_input, window, |this, _, event, window, cx| {
-                    if let InputEvent::Edited { text, boundary } = event {
-                        if this.session.page.locked {
-                            let title = this.session.page.title.clone();
-                            this.title_input.update(cx, |input, cx| {
-                                input.reset(title.clone(), Vec::new(), title.len(), cx)
-                            });
-                        } else {
-                            this.session.set_page_title(text.clone());
-                            this.schedule_save(*boundary, window, cx);
-                        }
+        this.title_subscription = Some(cx.subscribe_in(
+            &title_input,
+            window,
+            |this, _, event, window, cx| match event {
+                InputEvent::Focused => {
+                    if this.title_edit_original.is_none() {
+                        this.title_edit_original = Some(this.session.page.title.clone());
                     }
-                }),
-            );
+                }
+                InputEvent::Edited { text, boundary } => {
+                    if this.session.page.locked {
+                        let title = this.session.page.title.clone();
+                        this.title_input.update(cx, |input, cx| {
+                            input.reset(title.clone(), Vec::new(), title.len(), cx)
+                        });
+                    } else {
+                        if this.title_edit_original.is_none() {
+                            this.title_edit_original = Some(this.session.page.title.clone());
+                        }
+                        this.session.set_page_title(text.clone());
+                        this.schedule_save(*boundary, window, cx);
+                    }
+                }
+                InputEvent::DismissSlash => {
+                    if let Some(title) = this.title_edit_original.take() {
+                        this.session.set_page_title(title.clone());
+                        this.title_input.update(cx, |input, cx| {
+                            let len = title.len();
+                            input.reset(title, Vec::new(), len, cx);
+                        });
+                        this.schedule_save(true, window, cx);
+                    }
+                }
+                InputEvent::Split(_) => {
+                    this.title_edit_original = None;
+                    this.focus_first(window, cx);
+                }
+                InputEvent::Blurred => this.title_edit_original = None,
+                _ => {}
+            },
+        ));
         let search_input = this.search_input.clone();
         this.search_subscription =
             Some(
@@ -301,17 +328,20 @@ impl Workspace {
                 }),
             );
         let find_input = this.find_input.clone();
-        this.find_subscription =
-            Some(
-                cx.subscribe_in(&find_input, window, |this, _, event, _, cx| {
-                    if let InputEvent::Edited { text, .. } = event {
-                        this.find_query = text.clone();
-                        this.find_index = None;
-                        this.refresh_find_matches();
-                        cx.notify();
-                    }
-                }),
-            );
+        this.find_subscription = Some(cx.subscribe_in(
+            &find_input,
+            window,
+            |this, _, event, window, cx| match event {
+                InputEvent::Edited { text, .. } => {
+                    this.find_query = text.clone();
+                    this.find_index = None;
+                    this.refresh_find_matches();
+                    cx.notify();
+                }
+                InputEvent::DismissSlash => this.close_find(window, cx),
+                _ => {}
+            },
+        ));
         this.sync_inputs(window, cx);
         let persistence = this.session.persistence.clone();
         let lock = this.flush_lock.clone();
@@ -611,6 +641,7 @@ impl Workspace {
                 self.active = Some(id);
                 cx.notify();
             }
+            InputEvent::Blurred => {}
             InputEvent::Indent => {
                 if self
                     .session
@@ -661,6 +692,9 @@ impl Workspace {
             }
             InputEvent::RemoveBlock => self.delete_block(id, window, cx),
             InputEvent::DismissSlash => {
+                if self.find_open {
+                    self.close_find(window, cx);
+                }
                 if self.slash_menu.take().is_some() {
                     cx.notify();
                 }
@@ -875,6 +909,7 @@ impl Workspace {
         self.find_index = None;
         self.refresh_find_matches();
         self.active = None;
+        self.title_edit_original = None;
         let page_title = self.session.page.title.clone();
         self.title_input.update(cx, |input, cx| {
             let len = page_title.len();
@@ -1363,6 +1398,7 @@ impl Workspace {
             self.find_index = None;
             self.refresh_find_matches();
             self.active = None;
+            self.title_edit_original = None;
             let title = self.session.page.title.clone();
             self.title_input.update(cx, |input, cx| {
                 let len = title.len();
@@ -1439,6 +1475,7 @@ impl Workspace {
         self.find_index = None;
         self.refresh_find_matches();
         self.active = None;
+        self.title_edit_original = None;
         let title = self.session.page.title.clone();
         self.title_input.update(cx, |input, cx| {
             let len = title.len();
@@ -1493,6 +1530,7 @@ impl Workspace {
             self.active = None;
             self.find_index = None;
             self.refresh_find_matches();
+            self.title_edit_original = None;
             let title = self.session.page.title.clone();
             self.title_input.update(cx, |input, cx| {
                 let len = title.len();

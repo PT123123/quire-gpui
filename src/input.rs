@@ -48,6 +48,7 @@ pub enum InputEvent {
     Navigate(i32),
     NavigateHorizontal(i32),
     Focused,
+    Blurred,
     Indent,
     Outdent,
     ToggleMark(MarkKind),
@@ -89,6 +90,7 @@ impl TextInput {
             // Abandon uncommitted composition on blur; never save a pinyin preview.
             this.buffer.cancel();
             this.selecting = false;
+            cx.emit(InputEvent::Blurred);
             cx.notify();
         })
         .detach();
@@ -284,8 +286,11 @@ impl TextInput {
         cx.emit(InputEvent::Split(self.buffer.caret()));
     }
     fn escape(&mut self, _: &Escape, _: &mut Window, cx: &mut Context<Self>) {
+        let composing = self.buffer.composing();
         self.buffer.cancel();
-        cx.emit(InputEvent::DismissSlash);
+        if !composing {
+            cx.emit(InputEvent::DismissSlash);
+        }
         cx.notify();
     }
     fn indent_list(&mut self, _: &IndentList, _: &mut Window, cx: &mut Context<Self>) {
