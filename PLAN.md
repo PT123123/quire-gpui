@@ -15,7 +15,7 @@
 - [x] 阅读全部交接文档，核对快照 manifest 与旧版工作区差异。113 个文件 SHA-256 全量重算一致；`git_status_short` 与 `../quire-desktop` 当前 10 个脏文件逐行一致；本地 `quire-core` HEAD 正是 pin 的 `db0e95f`（2026-10-14 复核）。
 - [~] 从组件、UIState 回调、controller、state、core 服务建立完整功能矩阵。骨架已生成：246 callback / 261 property / 188 场景 / 44 个 .slint，见 `docs/PARITY.md`、`docs/PARITY.csv`；**语义列（预期行为、快捷键、持久化、undo、测试步骤）未填**，14 个只有声明的 callback 已单独核实。core 侧 50 个 Command 与 10 个 MCP 工具尚未与矩阵交叉。
 - [~] 以官方资料核对 GPUI 与 GPUI Kit/组件库组合。一手事实已核验并写入 `docs/ADR-001-GPUI-STACK.md`（分发方式、Windows 成熟度、中文 IME 未关闭 issue 清单、渐变 API、gpui-kit 绑 fork）；**「运行 Windows 最小程序」未做**，7 条探针已获准在下一轮随第一竖切执行。
-- [ ] 固定 Rust toolchain、MSVC、GPUI/组件库依赖与 Cargo.lock，记录 ADR。ADR 已写但结论待探针；本机工具链缺口已量化：rustc 1.98.0（上游钉 1.98.1）、CMake 4.4.3 满足、SDK 10.0.26100 满足、**VS 2022 Community 未装 Spectre-mitigated libs**。
+- [~] Rust 1.98.0 通过 `rust-toolchain.toml` 固定，GPUI 0.2.2、core revision 和 `Cargo.lock` 已钉；dev/release 均可构建。MSVC/SDK 环境可用（SDK 10.0.26100，fxc 10.0.26100.7705）；完整安装与多机复现尚未验。
 - [~] 确定独立应用标识、开发数据目录、日志目录和测试库策略。core 侧事实已查清（`APP_DIR_NAME="Quire"`、`--db` 压倒一切、`--portable`、legacy 迁移），**已定（2026-10-14）：独立数据目录 + 保留旧版并存**，见 `docs/13-DECISIONS-NEEDED.md` 第 4 条。
 - [x] 在同机采集旧版主要页面和 12 主题参考图，保存采集命令与版本。312 张 PNG / 30.6MB 在 `reference/shots/`，含二进制 SHA-256、构建命令、重复哈希读出的五条事实与未覆盖清单，见 `docs/14-REFERENCE-SHOTS.md`。
 

@@ -36,7 +36,7 @@ gpui 的 Windows IME 预编辑路径存在，且发布版里就有：`gpui 0.2.2
 - 但 HLSL 着色器的插值参数取自**该绘制四边形自身的包围盒**，不是窗口几何：0.2.2 的 `src/platform/windows/shaders.hlsl:331 gradient_color(..., Bounds bounds, ...)` 之后按 `bounds.size` 展开短边算方向投影（main 的 `crates/gpui_windows/src/shaders.hlsl` 同构）。所以"整窗一条连续 ramp、不随文档滚动"必须靠把根元素铺满窗口来实现，滚动容器内部不能再各画一条。这与 docs/04 的要求一致，属于可实现但需实测确认。
 - **框架自带的 element 比原先写的多**（这是对本节旧结论的更正）。0.2.2 的 `src/elements/` 直接导出：`list.rs`（`List`/`ListState`/`ListScrollEvent`/`ListMeasuringBehavior`，即可变高虚拟化列表）、`uniform_list.rs`（`uniform_list()`/`UniformListScrollHandle`）、`anchored.rs`（`anchored()`/`AnchoredState`，锚定弹层）、`canvas.rs`、`animation.rs`、`img`/`svg`/`text`；`examples/` 另带 `data_table.rs`、`uniform_list.rs`、`input.rs`、`scrollable.rs`。缺的是 `TextInput`（见第二节 #64389）和托盘，不是"列表和弹层全部自研"。
 - 每显示器 DPI：`resources/windows/gpui.manifest.xml` 声明 `dpiAwareness = PerMonitorV2`，且 default features 含 `windows-manifest`，`build.rs::embed_resource()` 会把 `gpui.rc` + manifest 用 `embed_resource::compile(...).manifest_required()` 打进二进制——不是只有仓库里的资源文件。与旧版要求同档。
-- **release 构建有一道额外的工具链门**：`build.rs` 的 `compile_shaders()` 带 `#[cfg(not(debug_assertions))]`，只在 release 下用 `fxc.exe` 编 `shaders.hlsl`（可用 `GPUI_FXC_PATH` 指定）。本次实测全部走 dev profile，没碰到它；打候选版之前要单独验一次 release。
+- **release 构建已在本机验证通过**：`cargo build --release -j 8 --target-dir target-release` 用时 6m13s，dev 与 release 都能构建。Windows SDK 的 `fxc.exe` 位于默认 Kits 路径，版本 `10.0.26100.7705`；release 产物目录包含 GPUI 生成的 HLSL 字节码头文件和嵌入的 Windows manifest/资源。还未启动 release exe 做运行时验收。
 - 无边框/自绘标题栏：0.2.2 的 Windows 侧有 `titlebar.appears_transparent`（`window.rs:380`，默认 true → `hide_title_bar`）并在 `events.rs:705/767/884` 参与非客户端区计算与命中测试；`zoom()`/`is_maximized()`/`minimize()`/`toggle_fullscreen()`/`set_window_placement()` 都在（`window.rs:302-310, 523, 778-800`）。注意 `window.rs:270-274` 那段剥 `WS_CAPTION` 是**全屏路径**，不是通用无边框路径，别照抄。Snap 是否走原生 Win32 仍属推断，探针 6 要实测。
 
 ## 四、工具链成本（本机实测，2026-10-14）
@@ -50,7 +50,7 @@ gpui 的 Windows IME 预编辑路径存在，且发布版里就有：`gpui 0.2.2
 | CMake / wasmtime | 本次 439 个 crate 的构建日志里零命中 | 与独立 gpui 应用无关，别预先安装 |
 | Spectre-mitigated libs | `VC/Tools/MSVC/*/Lib/Spectre` 不存在（find 结果 0 个目录），构建照样通过 | **不是门**，撤回"需在 VS Installer 勾选" |
 | Windows SDK / MSVC | 10.0.26100 + MSVC 14.44.35207 | 满足 |
-| fxc.exe | dev 构建不需要；release 的 `build.rs` 会编 HLSL | 打候选版前单独验 release |
+| fxc.exe | dev 不需要；release 已用默认路径 `C:\Program Files (x86)\Windows Kits\10\bin\10.0.26100.0\x64\fxc.exe` 编译 HLSL | 已通过，版本 10.0.26100.7705 |
 | 依赖体量 | `Cargo.lock` **709** 个包（对比旧版 Slint 工程 619） | 首次 `cargo build` 3m46s，后续增量 9s |
 
 ## 五、决策选项
@@ -107,7 +107,7 @@ cargo build -j 8 --bin input --bin hello_world   # 439 crates，dev 3m46s；增�
 - Windows 上 gpui 的实际拖动/缩放/IME 表现（只有 issue 列表，没有本机复现记录；起窗已证，**输入行为与 Snap 行为未证**）。
 - A2 的 git 依赖能否在本机解析、`gpui_platform` 等未发布兄弟 crate 走 git path 依赖是否成立。
 - B（Kit）那三个 crate 的实际快照 commit、patch 面，以及 `gpui-component` 是否自带等价 `TextInput`。
-- release 构建（需要 fxc 编 HLSL）是否顺畅。
+- release exe 启动、窗口行为和最终安装包运行时表现（release 编译及 HLSL 编译已过，应用尚未启动）。
 - 输入到显示延迟、启动耗时。gpui 侧的内存数字目前只有"空示例 90MB 级 Working Set（dev）"，不能当作应用基线。
 - App 是否强制主线程（未找到明文规定，只有 `background_executor`/`foreground_executor` API）。
 - Zed 编辑器的块渲染能否复用：`crates/editor` 等未发布，跨 crate 内部路径依赖属未知领域。
