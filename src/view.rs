@@ -606,6 +606,21 @@ impl Workspace {
         }
         self.schedule_save(false, window, cx);
     }
+    fn move_block(&mut self, id: BlockId, delta: i32, window: &mut Window, cx: &mut Context<Self>) {
+        if self.closing || self.session.page.locked {
+            return;
+        }
+        let caret = self
+            .inputs
+            .get(&id.0)
+            .map(|input| input.read(cx).buffer.caret());
+        self.session.execute(Command::MoveBlock { id, delta });
+        self.sync_inputs(window, cx);
+        if let Some(caret) = caret {
+            self.focus(id, caret, window, cx);
+        }
+        self.schedule_save(false, window, cx);
+    }
     fn toggle_selected_mark(
         &mut self,
         kind: quire_core::core::types::MarkKind,
@@ -1472,6 +1487,12 @@ impl Render for Workspace {
                 let is_todo = block.kind == BlockKind::Todo;
                 let is_toggle = block.kind == BlockKind::Toggle;
                 let kind = block.kind;
+                let move_allowed = !matches!(kind, BlockKind::Table | BlockKind::Columns)
+                    && !self
+                        .session
+                        .blocks()
+                        .iter()
+                        .any(|child| child.parent == Some(block_id));
                 let slash_query = block.text.strip_prefix('/').unwrap_or("").to_lowercase();
                 let slash_options = if self.slash_menu == Some(block_id) {
                     slash_items()
@@ -1763,15 +1784,52 @@ impl Render for Workspace {
                     )
                     .child(
                         div()
-                            .id(SharedString::from(format!("delete-block-{block_id:?}")))
-                            .px(px(4.))
-                            .cursor_pointer()
-                            .text_color(muted)
-                            .hover(|button| button.text_color(accent))
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                this.delete_block(block_id, window, cx)
-                            }))
-                            .child("×"),
+                            .flex()
+                            .items_center()
+                            .gap(px(2.))
+                            .when(move_allowed, |actions| {
+                                actions
+                                    .child(
+                                        div()
+                                            .id(SharedString::from(format!(
+                                                "move-block-up-{block_id:?}"
+                                            )))
+                                            .px(px(2.))
+                                            .cursor_pointer()
+                                            .text_color(muted)
+                                            .hover(|button| button.text_color(accent))
+                                            .on_click(cx.listener(move |this, _, window, cx| {
+                                                this.move_block(block_id, -1, window, cx)
+                                            }))
+                                            .child("↑"),
+                                    )
+                                    .child(
+                                        div()
+                                            .id(SharedString::from(format!(
+                                                "move-block-down-{block_id:?}"
+                                            )))
+                                            .px(px(2.))
+                                            .cursor_pointer()
+                                            .text_color(muted)
+                                            .hover(|button| button.text_color(accent))
+                                            .on_click(cx.listener(move |this, _, window, cx| {
+                                                this.move_block(block_id, 1, window, cx)
+                                            }))
+                                            .child("↓"),
+                                    )
+                            })
+                            .child(
+                                div()
+                                    .id(SharedString::from(format!("delete-block-{block_id:?}")))
+                                    .px(px(4.))
+                                    .cursor_pointer()
+                                    .text_color(muted)
+                                    .hover(|button| button.text_color(accent))
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        this.delete_block(block_id, window, cx)
+                                    }))
+                                    .child("×"),
+                            ),
                     )
             })
             .collect::<Vec<_>>();

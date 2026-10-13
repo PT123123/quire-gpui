@@ -95,6 +95,7 @@
 - 在段落开头输入 `/` 会显示块类型菜单；继续输入会按中文名称或英文关键词过滤，点击或按 Enter 会转换当前块并清掉命令文本，Escape 关闭菜单。
 - 普通表格块已接入 core 的表格结构：可编辑格子、追加行/列、Enter 移到下一个格；完整行列删除、键盘网格导航与数据库属性视图仍未做。
 - Columns 分栏布局接入 core 命令：可在 2–3 栏间增删、在每栏追加段落并编辑已有内容；块内拖放、完整嵌套交互与视觉对照仍未验。
+- 没有子树的普通块可通过行尾箭头在同级上/下移动，复用 core `MoveBlock`；容器及拥有子块的块不显示此操作，拖放排序仍未实现。
 - `rust-toolchain.toml` 固定 Rust 1.98.0；release 首次构建通过（6m13s），`fxc.exe` 编译 HLSL、Windows 资源与 GPUI 依赖都成功，尚未启动 release exe。
 - `cargo fmt --all` 与 `cargo build -j 8 --target-dir target-next` 通过（dev profile）；主题面板、页面排序和删除尚未做真人回归，也未做截图比对。
 - 功能矩阵由 `tools/extract-parity.mjs` 重生成：246 callbacks / 261 properties / 188 scenes；主题语义 sidecar 已更新。
