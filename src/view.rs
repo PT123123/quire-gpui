@@ -1298,37 +1298,37 @@ impl Render for Workspace {
             Vec::new()
         };
         let icon_options = if self.icon_picker_open {
-            [
-                "", "📄", "📝", "📚", "💡", "🎯", "✅", "🧠", "🌱", "🔥", "📌", "⭐", "🚀", "🗂️",
-                "🏠",
-            ]
-            .into_iter()
-            .map(|icon| {
-                let selected = self.session.page.icon == icon;
-                let label = if icon.is_empty() {
-                    "清除图标".to_owned()
-                } else {
-                    format!("{icon}  {icon}")
-                };
-                div()
-                    .id(SharedString::from(format!("page-icon-{icon}")))
-                    .w_full()
-                    .h(px(28.))
-                    .px(px(8.))
-                    .flex()
-                    .items_center()
-                    .rounded(px(5.))
-                    .cursor_pointer()
-                    .when(selected, |row| row.bg(Palette::color(&p.bg).opacity(0.35)))
-                    .hover(|row| row.bg(Palette::color(&p.bg).opacity(0.5)))
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        this.select_page_icon(icon, window, cx)
-                    }))
-                    .child(label)
-            })
-            .collect::<Vec<_>>()
+            div()
+                .id("page-icon-grid")
+                .w_full()
+                .max_h(px(244.))
+                .overflow_y_scroll()
+                .flex()
+                .flex_wrap()
+                .gap(px(3.))
+                .children(
+                    std::iter::once("")
+                        .chain(quire_core::core::icon::PICKER.iter().copied())
+                        .map(|icon| {
+                            let selected = self.session.page.icon == icon;
+                            div()
+                                .id(SharedString::from(format!("page-icon-{icon}")))
+                                .size(px(25.))
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .rounded(px(5.))
+                                .cursor_pointer()
+                                .when(selected, |row| row.bg(Palette::color(&p.bg).opacity(0.35)))
+                                .hover(|row| row.bg(Palette::color(&p.bg).opacity(0.5)))
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    this.select_page_icon(icon, window, cx)
+                                }))
+                                .child(if icon.is_empty() { "×" } else { icon })
+                        }),
+                )
         } else {
-            Vec::new()
+            div().id("page-icon-grid")
         };
         let query = self.search_query.trim().to_lowercase();
         let page_rows = ordered_page_tree(&self.session.pages, !query.is_empty())
@@ -2361,7 +2361,7 @@ impl Render for Workspace {
                             .gap(px(12.))
                             .child(div().font_weight(FontWeight::SEMIBOLD).child("Quire"))
                             .children(theme_options)
-                            .children(icon_options)
+                            .child(icon_options)
                             .child(
                                 div()
                                     .h(px(30.))
