@@ -87,6 +87,7 @@ pub struct Workspace {
     subscriptions: Vec<Subscription>,
     palette: Palette,
     theme_picker_open: bool,
+    icon_picker_open: bool,
     confirm_delete_page: Option<quire_core::core::types::PageId>,
     status: String,
     error: bool,
@@ -122,6 +123,7 @@ impl Workspace {
             subscriptions: Vec::new(),
             palette: Palette::load(theme),
             theme_picker_open: false,
+            icon_picker_open: false,
             confirm_delete_page: None,
             status: "已保存".into(),
             error: false,
@@ -466,7 +468,33 @@ impl Workspace {
     }
     fn toggle_theme_picker(&mut self, cx: &mut Context<Self>) {
         self.theme_picker_open = !self.theme_picker_open;
+        self.icon_picker_open = false;
         cx.notify();
+    }
+    fn toggle_icon_picker(&mut self, cx: &mut Context<Self>) {
+        self.icon_picker_open = !self.icon_picker_open;
+        self.theme_picker_open = false;
+        cx.notify();
+    }
+    fn select_page_icon(&mut self, icon: &str, window: &mut Window, cx: &mut Context<Self>) {
+        if self.composing(cx) || self.session.page.icon == icon {
+            self.icon_picker_open = false;
+            cx.notify();
+            return;
+        }
+        let id = self.session.page.id;
+        self.session.page.icon = icon.to_owned();
+        if let Some(page) = self.session.pages.iter_mut().find(|page| page.id == id) {
+            page.icon = icon.to_owned();
+        }
+        self.session
+            .persistence
+            .record(vec![quire_core::core::persistence::Change::PageIconSet {
+                id,
+                icon: icon.to_owned(),
+            }]);
+        self.icon_picker_open = false;
+        self.schedule_save(false, window, cx);
     }
     fn toggle_full_width(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let full_width = !self.session.page.full_width;
@@ -835,6 +863,39 @@ impl Render for Workspace {
                         .child(format!("{}{}", label, if selected { "  ✓" } else { "" }))
                 })
                 .collect::<Vec<_>>()
+        } else {
+            Vec::new()
+        };
+        let icon_options = if self.icon_picker_open {
+            [
+                "", "📄", "📝", "📚", "💡", "🎯", "✅", "🧠", "🌱", "🔥", "📌", "⭐", "🚀", "🗂️",
+                "🏠",
+            ]
+            .into_iter()
+            .map(|icon| {
+                let selected = self.session.page.icon == icon;
+                let label = if icon.is_empty() {
+                    "清除图标".to_owned()
+                } else {
+                    format!("{icon}  {icon}")
+                };
+                div()
+                    .id(SharedString::from(format!("page-icon-{icon}")))
+                    .w_full()
+                    .h(px(28.))
+                    .px(px(8.))
+                    .flex()
+                    .items_center()
+                    .rounded(px(5.))
+                    .cursor_pointer()
+                    .when(selected, |row| row.bg(Palette::color(&p.bg).opacity(0.35)))
+                    .hover(|row| row.bg(Palette::color(&p.bg).opacity(0.5)))
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.select_page_icon(icon, window, cx)
+                    }))
+                    .child(label)
+            })
+            .collect::<Vec<_>>()
         } else {
             Vec::new()
         };
@@ -1310,6 +1371,27 @@ impl Render for Workspace {
                             .gap(px(6.))
                             .child(
                                 div()
+                                    .id("page-icon-picker")
+                                    .px(px(7.))
+                                    .py(px(4.))
+                                    .rounded(px(5.))
+                                    .cursor_pointer()
+                                    .text_color(Palette::color(&p.accent))
+                                    .hover(|s| s.bg(Palette::color(&p.elevated)))
+                                    .on_click(
+                                        cx.listener(|this, _, _, cx| this.toggle_icon_picker(cx)),
+                                    )
+                                    .child(format!(
+                                        "图标 · {}",
+                                        if self.session.page.icon.is_empty() {
+                                            "选择"
+                                        } else {
+                                            &self.session.page.icon
+                                        }
+                                    )),
+                            )
+                            .child(
+                                div()
                                     .id("page-lock")
                                     .px(px(7.))
                                     .py(px(4.))
@@ -1433,6 +1515,7 @@ impl Render for Workspace {
                             .gap(px(12.))
                             .child(div().font_weight(FontWeight::SEMIBOLD).child("Quire"))
                             .children(theme_options)
+                            .children(icon_options)
                             .child(
                                 div()
                                     .h(px(30.))
