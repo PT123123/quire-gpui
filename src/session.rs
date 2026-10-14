@@ -5,7 +5,9 @@ use quire_core::{
         command::{self, Command},
         document::{Document, Entry},
         history::History,
-        organizer::{self, Note, NoteId, OrganizerCatalog},
+        organizer::{
+            self, ListId, Note, NoteId, OrganizerCatalog, Priority, Repeat, Subtask, Task, TaskId,
+        },
         persistence::{Change, Repository},
         types::{
             Attachment, AttachmentId, Block, BlockId, BlockKind, Mark, ORGANIZER_STACK, OrderKey,
@@ -832,6 +834,108 @@ impl Session {
         self.apply_organizer_entry(entry);
         true
     }
+    pub fn create_task(&mut self, title: String) -> TaskId {
+        let id = TaskId(
+            self.organizer
+                .tasks
+                .iter()
+                .map(|task| task.id.0)
+                .max()
+                .unwrap_or(0)
+                .saturating_add(1)
+                .max(1),
+        );
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default();
+        let millis = now.as_millis().min(i64::MAX as u128) as i64;
+        let seconds = now.as_secs().min(i64::MAX as u64) as i64;
+        let last_order = self
+            .organizer
+            .tasks_in(ListId::INBOX)
+            .map(|task| task.ord)
+            .max();
+        let task = Task {
+            id,
+            uuid: organizer::new_uuid(),
+            list: ListId::INBOX,
+            title,
+            notes: String::new(),
+            priority: Priority::None,
+            due: None,
+            repeat: Repeat::None,
+            done: false,
+            completed_at: None,
+            tags: Vec::new(),
+            subtasks: Vec::<Subtask>::new(),
+            created: seconds,
+            edited: seconds,
+            ord: OrderKey::between(last_order, None).unwrap_or(OrderKey(
+                last_order.unwrap_or(OrderKey::FIRST).0.saturating_add(1),
+            )),
+            deleted_at: None,
+            rev: organizer::rev(millis, "quire-gpui"),
+        };
+        if let Some(entry) = command::plan(
+            &mut self.document,
+            ORGANIZER_STACK,
+            Command::CreateTask { task },
+        ) {
+            self.apply_organizer_entry(entry);
+        }
+        id
+    }
+    pub fn update_task_content(&mut self, id: TaskId, title: String, notes: String) -> bool {
+        self.update_task(id, |task| {
+            task.title = title;
+            task.notes = notes;
+        })
+    }
+    pub fn set_task_done(&mut self, id: TaskId, done: bool) -> bool {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs()
+            .min(i64::MAX as u64) as i64;
+        self.update_task(id, |task| {
+            task.done = done;
+            task.completed_at = done.then_some(now);
+        })
+    }
+    pub fn set_task_trashed(&mut self, id: TaskId, trashed: bool) -> bool {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs()
+            .min(i64::MAX as u64) as i64;
+        self.update_task(id, |task| {
+            task.deleted_at = trashed.then_some(now);
+        })
+    }
+    fn update_task(&mut self, id: TaskId, update: impl FnOnce(&mut Task)) -> bool {
+        let Some(before) = self.organizer.task(id).cloned() else {
+            return false;
+        };
+        let mut after = before.clone();
+        update(&mut after);
+        if before == after {
+            return false;
+        }
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default();
+        after.edited = now.as_secs().min(i64::MAX as u64) as i64;
+        after.rev = organizer::rev(now.as_millis().min(i64::MAX as u128) as i64, "quire-gpui");
+        let Some(entry) = command::plan(
+            &mut self.document,
+            ORGANIZER_STACK,
+            Command::UpdateTask { id, before, after },
+        ) else {
+            return false;
+        };
+        self.apply_organizer_entry(entry);
+        true
+    }
     fn apply_organizer_entry(&mut self, entry: Entry) {
         self.document.apply(&entry.apply);
         self.apply_organizer_changes(&entry.apply);
@@ -850,6 +954,15 @@ impl Session {
                     }
                 }
                 Change::NoteDeleted { id } => self.organizer.notes.retain(|note| note.id != *id),
+                Change::TaskAdded(task) => self.organizer.tasks.push(task.clone()),
+                Change::TaskUpdated(task) => {
+                    if let Some(existing) =
+                        self.organizer.tasks.iter_mut().find(|t| t.id == task.id)
+                    {
+                        *existing = task.clone();
+                    }
+                }
+                Change::TaskDeleted { id } => self.organizer.tasks.retain(|task| task.id != *id),
                 _ => {}
             }
         }
@@ -1729,6 +1842,46 @@ mod tests {
         assert!(!note.uuid.is_empty());
         assert!(note.pinned);
         assert!(note.is_trashed());
+        Ok(())
+    }
+
+    #[test]
+    fn organizer_task_crud_completion_and_trash_use_core_history() -> Result<()> {
+        let scratch = quire_core::testing::ScratchDir::new("gpui-organizer-task");
+        let path = scratch.path().join("test.db");
+        let task_id;
+        {
+            let mut session = Session::open(&path)?;
+            task_id = session.create_task("发布 GPUI 版".into());
+            assert_eq!(session.organizer.task(task_id).unwrap().list, ListId::INBOX);
+            assert!(session.update_task_content(
+                task_id,
+                "发布候选版".into(),
+                "检查安装包和回退说明".into(),
+            ));
+            assert!(session.set_task_done(task_id, true));
+            assert!(
+                session
+                    .organizer
+                    .task(task_id)
+                    .unwrap()
+                    .completed_at
+                    .is_some()
+            );
+            assert!(session.undo_organizer());
+            assert!(!session.organizer.task(task_id).unwrap().done);
+            assert!(session.set_task_trashed(task_id, true));
+            assert!(session.organizer.task(task_id).unwrap().is_trashed());
+            assert!(session.undo_organizer());
+            assert!(!session.organizer.task(task_id).unwrap().is_trashed());
+            session.persistence.force_flush()?;
+        }
+        let reopened = Session::open(&path)?;
+        let task = reopened.organizer.task(task_id).unwrap();
+        assert_eq!(task.title, "发布候选版");
+        assert_eq!(task.notes, "检查安装包和回退说明");
+        assert!(!task.done);
+        assert!(!task.is_trashed());
         Ok(())
     }
 

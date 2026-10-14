@@ -295,3 +295,11 @@ GPUI 应用已超出第一竖切，但离完整复刻仍有较大差距。用户
 - 整理区内 Ctrl+Z / Ctrl+Shift+Z 使用 organizer 独立撤销栈；撤销重做后重载当前编辑内容，软删除可以撤销恢复。
 - 新增隔离库测试覆盖创建、更新、多行文本、撤销重做、置顶、软删除、恢复及 flush/reopen。
 - 验证：15 项测试通过；`cargo build --release -j 8 --target-dir target-check` 通过；独立临时 SQLite 库 `--smoke-test` 写入后经 `--dump-state` 重启读回两块内容一致。OS IME 外的真实界面逐项手工验收未覆盖。未覆盖任务/清单、标签与回收站专页。
+
+## 第三十三轮：整理区任务收集箱
+
+- 整理区加入笔记/任务页签；任务列表从 core organizer 加载 inbox，支持新建任务、编辑标题/多行备注、完成/重新打开和移入回收站。
+- 任务详情显示完成状态、优先级与截止日期；当前 GPUI 可编辑标题/备注、切换完成，优先级/截止日期仍只读，且还没有清单管理与日期/优先级选择器。
+- 任务创建/更新/完成/删除均走 core `CreateTask` / `UpdateTask` 与 organizer 独立 history stack，flush 后由 core SQLite repository 持久化；PARITY sidecar 补充对应笔记/任务行为。
+- 新增隔离 SQLite 测试覆盖 inbox 创建、标题备注修改、完成时间、撤销、软删除/恢复及重启读取。
+- 验证：16 项测试通过；`cargo build --release -j 8 --target-dir target-check` 通过；独立临时库 UI smoke 通过并重启读回；parity 生成器复跑成功且 sidecar 保留 28 个手工语义项。未做真人逐项 UI 验收。整理区仍未完成（无列表/清单/标签/智能视图/平铺/批量/托盘速记等）。

@@ -306,7 +306,9 @@ pub struct Workspace {
     mention_menu: Option<(BlockId, usize, String)>,
     mention_selection: usize,
     organizer_open: bool,
+    organizer_tasks: bool,
     selected_note: Option<quire_core::core::organizer::NoteId>,
+    selected_task: Option<quire_core::core::organizer::TaskId>,
     note_title_draft: String,
     note_body_draft: String,
     status: String,
@@ -380,7 +382,9 @@ impl Workspace {
             mention_menu: None,
             mention_selection: 0,
             organizer_open: false,
+            organizer_tasks: false,
             selected_note: None,
+            selected_task: None,
             note_title_draft: String::new(),
             note_body_draft: String::new(),
             status: "已保存".into(),
@@ -1548,35 +1552,50 @@ impl Workspace {
         self.schedule_save(true, window, cx);
     }
     fn commit_note_draft(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(id) = self.selected_note else {
-            return;
+        let changed = if let Some(id) = self.selected_note {
+            self.session.update_note_content(
+                id,
+                self.note_title_draft.clone(),
+                self.note_body_draft.clone(),
+            )
+        } else if let Some(id) = self.selected_task {
+            self.session.update_task_content(
+                id,
+                self.note_title_draft.clone(),
+                self.note_body_draft.clone(),
+            )
+        } else {
+            false
         };
-        if self.session.update_note_content(
-            id,
-            self.note_title_draft.clone(),
-            self.note_body_draft.clone(),
-        ) {
+        if changed {
             self.schedule_save(true, window, cx);
         }
     }
     fn reload_selected_note(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(id) = self.selected_note else {
-            return;
-        };
-        self.selected_note = None;
-        if self.session.organizer.note(id).is_some() {
-            self.select_note(id, window, cx);
+        if let Some(id) = self.selected_note {
+            self.selected_note = None;
+            if self.session.organizer.note(id).is_some() {
+                self.select_note(id, window, cx);
+                return;
+            }
+        } else if let Some(id) = self.selected_task {
+            self.selected_task = None;
+            if self.session.organizer.task(id).is_some() {
+                self.select_task(id, window, cx);
+                return;
+            }
         } else {
-            self.note_title_draft.clear();
-            self.note_body_draft.clear();
-            self.note_title_input.update(cx, |input, cx| {
-                input.reset(String::new(), Vec::new(), 0, cx);
-            });
-            self.note_body_input.update(cx, |input, cx| {
-                input.reset(String::new(), Vec::new(), 0, cx);
-            });
-            cx.notify();
+            return;
         }
+        self.note_title_draft.clear();
+        self.note_body_draft.clear();
+        self.note_title_input.update(cx, |input, cx| {
+            input.reset(String::new(), Vec::new(), 0, cx);
+        });
+        self.note_body_input.update(cx, |input, cx| {
+            input.reset(String::new(), Vec::new(), 0, cx);
+        });
+        cx.notify();
     }
     fn select_note(
         &mut self,
@@ -1584,13 +1603,14 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.selected_note == Some(id) {
+        if self.selected_note == Some(id) && self.selected_task.is_none() {
             return;
         }
         self.commit_note_draft(window, cx);
         let Some(note) = self.session.organizer.note(id).cloned() else {
             return;
         };
+        self.selected_task = None;
         self.selected_note = Some(id);
         self.note_title_draft = note.title.clone();
         self.note_body_draft = note.body.clone();
@@ -1604,6 +1624,33 @@ impl Workspace {
         });
         cx.notify();
     }
+    fn select_task(
+        &mut self,
+        id: quire_core::core::organizer::TaskId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.selected_task == Some(id) && self.selected_note.is_none() {
+            return;
+        }
+        self.commit_note_draft(window, cx);
+        let Some(task) = self.session.organizer.task(id).cloned() else {
+            return;
+        };
+        self.selected_note = None;
+        self.selected_task = Some(id);
+        self.note_title_draft = task.title.clone();
+        self.note_body_draft = task.notes.clone();
+        self.note_title_input.update(cx, |input, cx| {
+            let len = task.title.len();
+            input.reset(task.title, Vec::new(), len, cx);
+        });
+        self.note_body_input.update(cx, |input, cx| {
+            let len = task.notes.len();
+            input.reset(task.notes, Vec::new(), len, cx);
+        });
+        cx.notify();
+    }
     fn create_note(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.commit_note_draft(window, cx);
         let id = self.session.create_note();
@@ -1611,6 +1658,82 @@ impl Workspace {
         self.selected_note = None;
         self.select_note(id, window, cx);
         self.schedule_save(true, window, cx);
+    }
+    fn create_task(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.commit_note_draft(window, cx);
+        let id = self.session.create_task("新任务".into());
+        self.organizer_open = true;
+        self.organizer_tasks = true;
+        self.selected_note = None;
+        self.selected_task = None;
+        self.select_task(id, window, cx);
+        self.schedule_save(true, window, cx);
+    }
+    fn toggle_organizer_tab(&mut self, tasks: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if self.organizer_tasks == tasks {
+            return;
+        }
+        self.commit_note_draft(window, cx);
+        self.organizer_tasks = tasks;
+        self.selected_note = None;
+        self.selected_task = None;
+        if tasks {
+            let first_task = self
+                .session
+                .organizer
+                .live_tasks()
+                .next()
+                .map(|task| task.id);
+            if let Some(id) = first_task {
+                self.select_task(id, window, cx);
+            }
+        } else {
+            let first_note = self
+                .session
+                .organizer
+                .live_notes()
+                .next()
+                .map(|note| note.id);
+            if let Some(id) = first_note {
+                self.select_note(id, window, cx);
+            }
+        }
+        cx.notify();
+    }
+    fn toggle_task_done(
+        &mut self,
+        id: quire_core::core::organizer::TaskId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(task) = self.session.organizer.task(id) else {
+            return;
+        };
+        if self.session.set_task_done(id, !task.done) {
+            self.schedule_save(true, window, cx);
+        }
+    }
+    fn trash_task(
+        &mut self,
+        id: quire_core::core::organizer::TaskId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.commit_note_draft(window, cx);
+        if self.session.set_task_trashed(id, true) {
+            if self.selected_task == Some(id) {
+                self.selected_task = None;
+                self.note_title_draft.clear();
+                self.note_body_draft.clear();
+                self.note_title_input.update(cx, |input, cx| {
+                    input.reset(String::new(), Vec::new(), 0, cx);
+                });
+                self.note_body_input.update(cx, |input, cx| {
+                    input.reset(String::new(), Vec::new(), 0, cx);
+                });
+            }
+            self.schedule_save(true, window, cx);
+        }
     }
     fn toggle_note_pin(
         &mut self,
@@ -1651,16 +1774,30 @@ impl Workspace {
         self.commit_note_draft(window, cx);
         self.organizer_open = !self.organizer_open;
         if self.organizer_open {
-            let first_note = self
-                .session
-                .organizer
-                .live_notes()
-                .next()
-                .map(|note| note.id);
-            if self.selected_note.is_none()
-                && let Some(note) = first_note
-            {
-                self.select_note(note, window, cx);
+            if self.organizer_tasks {
+                let first_task = self
+                    .session
+                    .organizer
+                    .live_tasks()
+                    .next()
+                    .map(|task| task.id);
+                if self.selected_task.is_none()
+                    && let Some(task) = first_task
+                {
+                    self.select_task(task, window, cx);
+                }
+            } else {
+                let first_note = self
+                    .session
+                    .organizer
+                    .live_notes()
+                    .next()
+                    .map(|note| note.id);
+                if self.selected_note.is_none()
+                    && let Some(note) = first_note
+                {
+                    self.select_note(note, window, cx);
+                }
             }
         } else {
             self.restore_focus(window, cx);
@@ -3957,6 +4094,87 @@ impl Render for Workspace {
                     )
             })
             .collect::<Vec<_>>();
+        let mut tasks = self
+            .session
+            .organizer
+            .live_tasks()
+            .cloned()
+            .collect::<Vec<_>>();
+        tasks.sort_by_key(|task| task.ord);
+        let task_rows = tasks
+            .into_iter()
+            .map(|task| {
+                let id = task.id;
+                let done = task.done;
+                let selected = self.selected_task == Some(id);
+                let title = if task.title.trim().is_empty() {
+                    "无标题任务".to_owned()
+                } else {
+                    task.title
+                };
+                div()
+                    .id(SharedString::from(format!("organizer-task-{id:?}")))
+                    .w_full()
+                    .px(px(9.))
+                    .py(px(7.))
+                    .rounded(px(5.))
+                    .cursor_pointer()
+                    .text_color(if selected { accent } else { text })
+                    .when(selected, |row| row.bg(Palette::color(&p.bg).opacity(0.34)))
+                    .hover(|row| row.bg(Palette::color(&p.bg).opacity(0.28)))
+                    .on_click(
+                        cx.listener(move |this, _, window, cx| this.select_task(id, window, cx)),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(6.))
+                            .child(
+                                div()
+                                    .id(SharedString::from(format!("organizer-task-done-{id:?}")))
+                                    .w(px(18.))
+                                    .h(px(18.))
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .rounded(px(9.))
+                                    .border_1()
+                                    .border_color(if done { accent } else { muted })
+                                    .text_color(accent)
+                                    .cursor_pointer()
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        this.toggle_task_done(id, window, cx)
+                                    }))
+                                    .child(if done { "✓" } else { "" }),
+                            )
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .text_color(if done { muted } else { text })
+                                    .child(title),
+                            )
+                            .child(
+                                div()
+                                    .id(SharedString::from(format!("organizer-task-trash-{id:?}")))
+                                    .px(px(3.))
+                                    .text_color(muted)
+                                    .cursor_pointer()
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        this.trash_task(id, window, cx)
+                                    }))
+                                    .child("×"),
+                            ),
+                    )
+            })
+            .collect::<Vec<_>>();
+        let task_summary = self.selected_task.and_then(|id| {
+            self.session
+                .organizer
+                .task(id)
+                .map(|task| (id, task.done, task.priority.label(), task.due.clone()))
+        });
         let organizer_view = div()
             .id("organizer-main")
             .flex()
@@ -3978,9 +4196,54 @@ impl Render for Workspace {
                     .child(
                         div()
                             .flex()
+                            .gap(px(6.))
+                            .child(
+                                div()
+                                    .id("organizer-tab-notes")
+                                    .flex_1()
+                                    .px(px(9.))
+                                    .py(px(6.))
+                                    .rounded(px(5.))
+                                    .cursor_pointer()
+                                    .text_color(if !self.organizer_tasks { accent } else { muted })
+                                    .when(!self.organizer_tasks, |tab| {
+                                        tab.bg(Palette::color(&p.elevated))
+                                    })
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.toggle_organizer_tab(false, window, cx)
+                                    }))
+                                    .child("笔记"),
+                            )
+                            .child(
+                                div()
+                                    .id("organizer-tab-tasks")
+                                    .flex_1()
+                                    .px(px(9.))
+                                    .py(px(6.))
+                                    .rounded(px(5.))
+                                    .cursor_pointer()
+                                    .text_color(if self.organizer_tasks { accent } else { muted })
+                                    .when(self.organizer_tasks, |tab| {
+                                        tab.bg(Palette::color(&p.elevated))
+                                    })
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.toggle_organizer_tab(true, window, cx)
+                                    }))
+                                    .child("任务"),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .flex()
                             .items_center()
                             .justify_between()
-                            .child(div().font_weight(FontWeight::SEMIBOLD).child("笔记"))
+                            .child(div().font_weight(FontWeight::SEMIBOLD).child(
+                                if self.organizer_tasks {
+                                    "任务"
+                                } else {
+                                    "笔记"
+                                },
+                            ))
                             .child(
                                 div()
                                     .id("organizer-create-note")
@@ -3991,7 +4254,11 @@ impl Render for Workspace {
                                     .text_color(accent)
                                     .hover(|button| button.bg(Palette::color(&p.elevated)))
                                     .on_click(cx.listener(|this, _, window, cx| {
-                                        this.create_note(window, cx)
+                                        if this.organizer_tasks {
+                                            this.create_task(window, cx);
+                                        } else {
+                                            this.create_note(window, cx);
+                                        }
                                     }))
                                     .child("＋"),
                             ),
@@ -4002,7 +4269,8 @@ impl Render for Workspace {
                             .flex_1()
                             .h_full()
                             .overflow_y_scroll()
-                            .children(note_rows),
+                            .when(self.organizer_tasks, |list| list.children(task_rows))
+                            .when(!self.organizer_tasks, |list| list.children(note_rows)),
                     ),
             )
             .child(
@@ -4012,40 +4280,83 @@ impl Render for Workspace {
                     .h_full()
                     .px(px(48.))
                     .py(px(48.))
-                    .when(self.selected_note.is_some(), |editor| {
-                        editor
-                            .max_w(px(760.))
-                            .mx_auto()
-                            .w_full()
-                            .flex()
-                            .flex_col()
-                            .gap(px(18.))
-                            .child(
-                                div()
-                                    .text_size(px(30.))
-                                    .font_weight(FontWeight::BOLD)
-                                    .child(self.note_title_input.clone()),
-                            )
-                            .child(
-                                div()
-                                    .id("organizer-note-body")
-                                    .flex_1()
-                                    .min_h(px(300.))
-                                    .child(self.note_body_input.clone()),
-                            )
-                    })
-                    .when(self.selected_note.is_none(), |empty| {
-                        empty
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .text_color(muted)
-                            .child(
-                                div()
-                                    .text_size(px(14.))
-                                    .child("选择一篇笔记，或新建笔记开始记录。"),
-                            )
-                    }),
+                    .when(
+                        self.selected_note.is_some() || self.selected_task.is_some(),
+                        |editor| {
+                            editor
+                                .max_w(px(760.))
+                                .mx_auto()
+                                .w_full()
+                                .flex()
+                                .flex_col()
+                                .gap(px(18.))
+                                .when_some(task_summary, |pane, (id, done, priority, due)| {
+                                    pane.child(
+                                        div()
+                                            .flex()
+                                            .items_center()
+                                            .gap(px(10.))
+                                            .text_color(muted)
+                                            .child(format!(
+                                                "{} · 优先级 {} · 截止 {}",
+                                                if done { "已完成" } else { "待完成" },
+                                                priority,
+                                                due.as_deref().unwrap_or("未设置")
+                                            ))
+                                            .child(
+                                                div()
+                                                    .id("organizer-task-toggle-done")
+                                                    .px(px(8.))
+                                                    .py(px(4.))
+                                                    .rounded(px(4.))
+                                                    .cursor_pointer()
+                                                    .text_color(accent)
+                                                    .hover(|button| {
+                                                        button.bg(Palette::color(&p.elevated))
+                                                    })
+                                                    .on_click(cx.listener(
+                                                        move |this, _, window, cx| {
+                                                            this.toggle_task_done(id, window, cx)
+                                                        },
+                                                    ))
+                                                    .child(if done {
+                                                        "重新打开"
+                                                    } else {
+                                                        "标记完成"
+                                                    }),
+                                            ),
+                                    )
+                                })
+                                .child(
+                                    div()
+                                        .text_size(px(30.))
+                                        .font_weight(FontWeight::BOLD)
+                                        .child(self.note_title_input.clone()),
+                                )
+                                .child(
+                                    div()
+                                        .id("organizer-note-body")
+                                        .flex_1()
+                                        .min_h(px(300.))
+                                        .child(self.note_body_input.clone()),
+                                )
+                        },
+                    )
+                    .when(
+                        self.selected_note.is_none() && self.selected_task.is_none(),
+                        |empty| {
+                            empty
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .text_color(muted)
+                                .child(div().text_size(px(14.)).child(if self.organizer_tasks {
+                                    "选择一项任务，或新建任务开始安排。"
+                                } else {
+                                    "选择一篇笔记，或新建笔记开始记录。"
+                                }))
+                        },
+                    ),
             );
         let page_content = if self.organizer_open {
             organizer_view
@@ -4442,8 +4753,9 @@ impl Render for Workspace {
                                         this.toggle_organizer(window, cx)
                                     }))
                                     .child(format!(
-                                        "整理区 · {}",
-                                        self.session.organizer.live_notes().count()
+                                        "整理区 · {} 笔记 · {} 任务",
+                                        self.session.organizer.live_notes().count(),
+                                        self.session.organizer.live_tasks().count()
                                     )),
                             )
                             .children(theme_options)
