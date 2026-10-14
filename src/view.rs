@@ -195,6 +195,57 @@ fn database_kind_label(kind: quire_core::core::database::PropertyKind) -> &'stat
     }
 }
 
+fn database_filter_op_label(
+    op: quire_core::core::database_view::FilterOp,
+    kind: quire_core::core::database::PropertyKind,
+) -> &'static str {
+    use quire_core::core::database::PropertyKind as Kind;
+    use quire_core::core::database_view::FilterOp as Op;
+    match op {
+        Op::Contains if matches!(kind, Kind::MultiSelect | Kind::Files) => "包含项",
+        Op::Contains => "包含",
+        Op::Eq => "是",
+        Op::Ne => "不是",
+        Op::Gt if matches!(kind, Kind::Date | Kind::CreatedTime | Kind::LastEditedTime) => "晚于",
+        Op::Gt => ">",
+        Op::Gte if matches!(kind, Kind::Date | Kind::CreatedTime | Kind::LastEditedTime) => {
+            "不早于"
+        }
+        Op::Gte => "≥",
+        Op::Lt if matches!(kind, Kind::Date | Kind::CreatedTime | Kind::LastEditedTime) => "早于",
+        Op::Lt => "<",
+        Op::Lte if matches!(kind, Kind::Date | Kind::CreatedTime | Kind::LastEditedTime) => {
+            "不晚于"
+        }
+        Op::Lte => "≤",
+        Op::AnyOf if matches!(kind, Kind::MultiSelect | Kind::Files) => "包含任一",
+        Op::AnyOf => "属于",
+        Op::IsEmpty => "为空",
+        Op::IsNotEmpty => "不为空",
+    }
+}
+
+fn database_filter_value_from_text(
+    kind: quire_core::core::database::PropertyKind,
+    text: &str,
+) -> Option<quire_core::core::database_view::FilterValue> {
+    use quire_core::core::database::PropertyKind as Kind;
+    use quire_core::core::database_view::FilterValue;
+    match kind {
+        Kind::Number => text
+            .trim()
+            .parse::<f64>()
+            .ok()
+            .filter(|value| value.is_finite())
+            .map(FilterValue::Number),
+        Kind::Date | Kind::CreatedTime | Kind::LastEditedTime => {
+            quire_core::core::database_view::is_stored_date(text)
+                .then(|| FilterValue::Text(text.to_owned()))
+        }
+        _ => Some(FilterValue::Text(text.to_owned())),
+    }
+}
+
 fn editable_database_kinds() -> [quire_core::core::database::PropertyKind; 9] {
     use quire_core::core::database::PropertyKind as Kind;
     [
@@ -282,11 +333,11 @@ fn toc_headings(blocks: &[Block]) -> Vec<(BlockId, u8, String)> {
 #[cfg(test)]
 mod view_tests {
     use super::{
-        find_matches_in, link_target_range, parse_organizer_tags, toc_headings,
-        without_filter_property,
+        database_filter_value_from_text, find_matches_in, link_target_range, parse_organizer_tags,
+        toc_headings,
     };
-    use quire_core::core::database::{PropertyId, PropertyKind};
-    use quire_core::core::database_view::{FilterClause, FilterNode, FilterOp, FilterValue};
+    use quire_core::core::database::PropertyKind;
+    use quire_core::core::database_view::FilterValue;
     use quire_core::core::types::{
         Block, BlockId, BlockKind, ColorKind, Lang, Mark, MarkKind, OrderKey, PageId,
     };
@@ -364,35 +415,26 @@ mod view_tests {
     }
 
     #[test]
-    fn replacing_title_filter_keeps_other_property_rules() {
-        let title_rule = FilterNode::Clause(FilterClause {
-            property: PropertyId(1),
-            kind: PropertyKind::Title,
-            op: FilterOp::IsEmpty,
-            value: FilterValue::Missing,
-        });
-        let text_rule = FilterNode::Clause(FilterClause {
-            property: PropertyId(2),
-            kind: PropertyKind::Text,
-            op: FilterOp::Contains,
-            value: FilterValue::Text("draft".into()),
-        });
-        let tree = FilterNode::All(vec![title_rule, text_rule.clone()]);
+    fn database_filter_values_validate_numeric_and_date_inputs_without_rewriting_text() {
         assert_eq!(
-            without_filter_property(tree, PropertyId(1)),
-            Some(text_rule)
+            database_filter_value_from_text(PropertyKind::Number, " 12.5 "),
+            Some(FilterValue::Number(12.5))
         );
         assert_eq!(
-            without_filter_property(
-                FilterNode::Clause(FilterClause {
-                    property: PropertyId(1),
-                    kind: PropertyKind::Title,
-                    op: FilterOp::IsNotEmpty,
-                    value: FilterValue::Missing,
-                }),
-                PropertyId(1),
-            ),
+            database_filter_value_from_text(PropertyKind::Number, "NaN"),
             None
+        );
+        assert_eq!(
+            database_filter_value_from_text(PropertyKind::Date, "2026-10-15"),
+            Some(FilterValue::Text("2026-10-15".into()))
+        );
+        assert_eq!(
+            database_filter_value_from_text(PropertyKind::Date, "15/10/2026"),
+            None
+        );
+        assert_eq!(
+            database_filter_value_from_text(PropertyKind::Text, " a  b "),
+            Some(FilterValue::Text(" a  b ".into()))
         );
     }
 
@@ -470,42 +512,6 @@ fn link_target_range(
                 && caret <= mark.end
         })
         .map(|mark| (mark.start, mark.end))
-}
-
-fn without_filter_property(
-    node: quire_core::core::database_view::FilterNode,
-    property: quire_core::core::database::PropertyId,
-) -> Option<quire_core::core::database_view::FilterNode> {
-    use quire_core::core::database_view::FilterNode;
-    match node {
-        FilterNode::Clause(clause) if clause.property == property => None,
-        FilterNode::Clause(clause) => Some(FilterNode::Clause(clause)),
-        FilterNode::All(children) => {
-            let children = children
-                .into_iter()
-                .filter_map(|child| without_filter_property(child, property))
-                .collect::<Vec<_>>();
-            match children.len() {
-                0 => None,
-                1 => children.into_iter().next(),
-                _ => Some(FilterNode::All(children)),
-            }
-        }
-        FilterNode::Any(children) => {
-            let children = children
-                .into_iter()
-                .filter_map(|child| without_filter_property(child, property))
-                .collect::<Vec<_>>();
-            match children.len() {
-                0 => None,
-                1 => children.into_iter().next(),
-                _ => Some(FilterNode::Any(children)),
-            }
-        }
-        FilterNode::Not(child) => {
-            without_filter_property(*child, property).map(|child| FilterNode::Not(Box::new(child)))
-        }
-    }
 }
 
 fn slash_items() -> &'static [(&'static str, &'static str, BlockKind)] {
@@ -695,6 +701,10 @@ pub struct Workspace {
     selected_database_views: HashMap<u64, ViewId>,
     database_columns_open: Option<(u64, u64)>,
     database_filter_open: Option<(u64, u64)>,
+    database_filter_panel: usize,
+    database_filter_edit_row: Option<usize>,
+    database_filter_value_input: Entity<TextInput>,
+    database_filter_value_active: Option<(u64, u64, u64, usize)>,
     database_property_kind_open: Option<(u64, u64)>,
     database_column_drag: Option<DatabaseColumnDrag>,
     database_search_open: Option<u64>,
@@ -824,6 +834,11 @@ impl Workspace {
             cx.new(|cx| TextInput::new(String::new(), Vec::new(), 12., window, cx));
         let database_search_input =
             cx.new(|cx| TextInput::new(String::new(), Vec::new(), 12., window, cx));
+        let database_filter_value_input =
+            cx.new(|cx| TextInput::new(String::new(), Vec::new(), 12., window, cx));
+        database_filter_value_input.update(cx, |input, _| {
+            input.placeholder = Some("输入筛选值后按 Enter".into());
+        });
         let database_property_name_input =
             cx.new(|cx| TextInput::new(String::new(), Vec::new(), 11., window, cx));
         database_search_input.update(cx, |input, _| {
@@ -896,6 +911,10 @@ impl Workspace {
             database_column_drag: None,
             database_search_open: None,
             database_search_text: String::new(),
+            database_filter_panel: 0,
+            database_filter_edit_row: None,
+            database_filter_value_input,
+            database_filter_value_active: None,
             selected_database_record: None,
             active_database_cell: None,
             active_database_property_edit: None,
@@ -971,6 +990,21 @@ impl Workspace {
                     this.restore_focus(window, cx);
                     cx.notify();
                 }
+            },
+        ));
+        let database_filter_value_input = this.database_filter_value_input.clone();
+        this.subscriptions.push(cx.subscribe_in(
+            &database_filter_value_input,
+            window,
+            |this, _, event, window, cx| match event {
+                InputEvent::Edited { .. } => cx.notify(),
+                InputEvent::Split(_) => this.commit_database_filter_value(window, cx),
+                InputEvent::DismissSlash => {
+                    this.database_filter_value_active = None;
+                    this.restore_focus(window, cx);
+                    cx.notify();
+                }
+                _ => {}
             },
         ));
         let note_title_input = this.note_title_input.clone();
@@ -1559,6 +1593,13 @@ impl Workspace {
             InputEvent::Focused => {
                 self.session.end_typing();
                 if self
+                    .database_filter_open
+                    .is_some_and(|(filter_block, _)| filter_block != id.0)
+                {
+                    self.database_filter_open = None;
+                    self.database_filter_value_active = None;
+                }
+                if self
                     .block_menu_open
                     .is_some_and(|(menu_block, _)| menu_block != id)
                 {
@@ -1619,12 +1660,14 @@ impl Workspace {
             InputEvent::RemoveBlock => self.delete_block(id, window, cx),
             InputEvent::DismissSlash => {
                 let block_menu_closed = self.block_menu_open.take().is_some();
+                let filter_menu_closed = self.database_filter_open.take().is_some();
+                self.database_filter_value_active = None;
                 if self.find_open {
                     self.close_find(window, cx);
                 }
                 let slash_closed = self.slash_menu.take().is_some();
                 let mention_closed = self.mention_menu.take().is_some();
-                if block_menu_closed || slash_closed || mention_closed {
+                if block_menu_closed || filter_menu_closed || slash_closed || mention_closed {
                     cx.notify();
                 }
             }
@@ -2658,12 +2701,12 @@ impl Workspace {
             }
         }
     }
-    fn set_database_title_filter(
+    fn edit_database_filter(
         &mut self,
         block: BlockId,
         db: quire_core::core::database::DatabaseId,
         view_id: ViewId,
-        op: Option<quire_core::core::database_view::FilterOp>,
+        edit: impl FnOnce(&mut quire_core::core::database_view::FlatFilter),
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -2679,53 +2722,346 @@ impl Workspace {
         else {
             return;
         };
-        let title = self.session.databases.title_property(db);
         let mut definition =
             quire_core::core::database_view::ViewDefinition::parse(&view.definition);
-        let existing = definition
-            .rules(db, &self.session.databases)
-            .filter
-            .and_then(|filter| without_filter_property(filter, title?.id));
-        let title_filter = op.and_then(|op| {
-            let property = title?;
-            Some(quire_core::core::database_view::FilterNode::Clause(
-                quire_core::core::database_view::FilterClause {
-                    property: property.id,
-                    kind: property.kind,
-                    op,
-                    value: quire_core::core::database_view::FilterValue::Missing,
-                },
-            ))
-        });
-        let filter = match (existing, title_filter) {
-            (Some(existing), Some(title_filter)) => {
-                Some(quire_core::core::database_view::FilterNode::All(vec![
-                    existing,
-                    title_filter,
-                ]))
-            }
-            (Some(existing), None) => Some(existing),
-            (None, title_filter) => title_filter,
+        let rules = definition.rules(db, &self.session.databases);
+        let Some(mut flat) =
+            quire_core::core::database_view::FlatFilter::from_tree(rules.filter.as_ref())
+        else {
+            self.status = "此视图含嵌套筛选规则，当前无法安全编辑".into();
+            self.error = false;
+            cx.notify();
+            return;
         };
-        definition.set_filter(filter.as_ref());
+        edit(&mut flat);
+        let tree = flat.to_tree();
+        definition.set_filter(Some(&tree));
         match self
             .session
             .set_database_view_definition(block, view_id, definition.to_text())
         {
             Ok(true) => {
-                self.database_filter_open = None;
+                self.error = false;
                 self.schedule_save(true, window, cx);
                 cx.notify();
             }
-            Ok(false) => {
-                self.database_filter_open = None;
-                cx.notify();
-            }
+            Ok(false) => cx.notify(),
             Err(error) => {
                 self.status = format!("数据库筛选保存失败：{error}");
                 self.error = true;
                 cx.notify();
             }
+        }
+    }
+    fn set_database_filter_match(
+        &mut self,
+        block: BlockId,
+        db: quire_core::core::database::DatabaseId,
+        view_id: ViewId,
+        any: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.edit_database_filter(block, db, view_id, |flat| flat.any = any, window, cx);
+    }
+    fn add_database_filter_clause(
+        &mut self,
+        block: BlockId,
+        db: quire_core::core::database::DatabaseId,
+        view_id: ViewId,
+        property: quire_core::core::database::PropertyId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(column) = self
+            .session
+            .databases
+            .properties_of(db)
+            .find(|column| column.id == property)
+            .cloned()
+        else {
+            return;
+        };
+        let Some(op) = quire_core::core::database_view::FilterOp::ops_for(column.kind)
+            .first()
+            .copied()
+        else {
+            return;
+        };
+        let mut index = 0;
+        self.edit_database_filter(
+            block,
+            db,
+            view_id,
+            |flat| {
+                index = flat.clauses.len();
+                flat.clauses
+                    .push(quire_core::core::database_view::FlatClause {
+                        clause: quire_core::core::database_view::FilterClause {
+                            property,
+                            kind: column.kind,
+                            op,
+                            value: quire_core::core::database_view::FilterValue::Missing,
+                        },
+                        invert: false,
+                    });
+            },
+            window,
+            cx,
+        );
+        self.database_filter_edit_row = Some(index);
+        self.database_filter_panel = 0;
+    }
+    fn remove_database_filter_clause(
+        &mut self,
+        block: BlockId,
+        db: quire_core::core::database::DatabaseId,
+        view_id: ViewId,
+        row: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.edit_database_filter(
+            block,
+            db,
+            view_id,
+            |flat| {
+                if row < flat.clauses.len() {
+                    flat.clauses.remove(row);
+                }
+            },
+            window,
+            cx,
+        );
+        self.database_filter_edit_row = None;
+    }
+    fn set_database_filter_op(
+        &mut self,
+        block: BlockId,
+        db: quire_core::core::database::DatabaseId,
+        view_id: ViewId,
+        row: usize,
+        op: quire_core::core::database_view::FilterOp,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.edit_database_filter(
+            block,
+            db,
+            view_id,
+            |flat| {
+                if let Some(clause) = flat.clauses.get_mut(row)
+                    && quire_core::core::database_view::FilterOp::ops_for(clause.clause.kind)
+                        .contains(&op)
+                {
+                    clause.clause.op = op;
+                    clause.clause.value = quire_core::core::database_view::FilterValue::Missing;
+                }
+            },
+            window,
+            cx,
+        );
+        self.database_filter_edit_row = Some(row);
+        self.database_filter_panel = 0;
+    }
+    fn toggle_database_filter_not(
+        &mut self,
+        block: BlockId,
+        db: quire_core::core::database::DatabaseId,
+        view_id: ViewId,
+        row: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.edit_database_filter(
+            block,
+            db,
+            view_id,
+            |flat| {
+                if let Some(clause) = flat.clauses.get_mut(row) {
+                    clause.invert = !clause.invert;
+                }
+            },
+            window,
+            cx,
+        );
+    }
+    fn clear_database_filter(
+        &mut self,
+        block: BlockId,
+        db: quire_core::core::database::DatabaseId,
+        view_id: ViewId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.edit_database_filter(block, db, view_id, |flat| flat.clauses.clear(), window, cx);
+        self.database_filter_edit_row = None;
+    }
+    fn toggle_database_filter_option(
+        &mut self,
+        block: BlockId,
+        db: quire_core::core::database::DatabaseId,
+        view_id: ViewId,
+        row: usize,
+        option: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.edit_database_filter(
+            block,
+            db,
+            view_id,
+            move |flat| {
+                let Some(clause) = flat.clauses.get_mut(row) else {
+                    return;
+                };
+                if clause.clause.op == quire_core::core::database_view::FilterOp::AnyOf {
+                    let mut items = match &clause.clause.value {
+                        quire_core::core::database_view::FilterValue::Any(items) => items.clone(),
+                        quire_core::core::database_view::FilterValue::Text(item) => {
+                            vec![item.clone()]
+                        }
+                        _ => Vec::new(),
+                    };
+                    if let Some(at) = items.iter().position(|item| *item == option) {
+                        items.remove(at);
+                    } else {
+                        items.push(option);
+                    }
+                    clause.clause.value = if items.is_empty() {
+                        quire_core::core::database_view::FilterValue::Missing
+                    } else {
+                        quire_core::core::database_view::FilterValue::Any(items)
+                    };
+                } else {
+                    clause.clause.value = match &clause.clause.value {
+                        quire_core::core::database_view::FilterValue::Text(item)
+                            if *item == option =>
+                        {
+                            quire_core::core::database_view::FilterValue::Missing
+                        }
+                        _ => quire_core::core::database_view::FilterValue::Text(option),
+                    };
+                }
+            },
+            window,
+            cx,
+        );
+        self.database_filter_panel = 0;
+    }
+    fn set_database_filter_flag(
+        &mut self,
+        block: BlockId,
+        db: quire_core::core::database::DatabaseId,
+        view_id: ViewId,
+        row: usize,
+        checked: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.edit_database_filter(
+            block,
+            db,
+            view_id,
+            |flat| {
+                if let Some(clause) = flat.clauses.get_mut(row) {
+                    clause.clause.value =
+                        quire_core::core::database_view::FilterValue::Flag(checked);
+                }
+            },
+            window,
+            cx,
+        );
+    }
+    fn begin_database_filter_value(
+        &mut self,
+        block: BlockId,
+        db: quire_core::core::database::DatabaseId,
+        view_id: ViewId,
+        row: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(view) = self
+            .session
+            .databases
+            .views
+            .iter()
+            .find(|view| view.id == view_id && view.db == db)
+        else {
+            return;
+        };
+        let rules = quire_core::core::database_view::ViewDefinition::parse(&view.definition)
+            .rules(db, &self.session.databases);
+        let Some(clause) =
+            quire_core::core::database_view::FlatFilter::from_tree(rules.filter.as_ref())
+                .and_then(|flat| flat.clauses.get(row).map(|flat| flat.clause.clone()))
+        else {
+            return;
+        };
+        let text = match clause.value {
+            quire_core::core::database_view::FilterValue::Missing => String::new(),
+            quire_core::core::database_view::FilterValue::Text(text) => text,
+            quire_core::core::database_view::FilterValue::Number(number) => number.to_string(),
+            quire_core::core::database_view::FilterValue::Flag(flag) => flag.to_string(),
+            quire_core::core::database_view::FilterValue::Any(values) => values.join(","),
+        };
+        self.database_filter_value_active = Some((block.0, db.0, view_id.0, row));
+        self.database_filter_value_input.update(cx, |input, cx| {
+            let len = text.len();
+            input.reset(text, Vec::new(), len, cx);
+            window.focus(&input.focus);
+        });
+        cx.notify();
+    }
+    fn commit_database_filter_value(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some((block, db, view, row)) = self.database_filter_value_active else {
+            return;
+        };
+        let text = self
+            .database_filter_value_input
+            .read(cx)
+            .buffer
+            .committed()
+            .to_owned();
+        let db = quire_core::core::database::DatabaseId(db);
+        let view_id = ViewId(view);
+        let current_view = self
+            .session
+            .databases
+            .views
+            .iter()
+            .find(|candidate| candidate.id == view_id && candidate.db == db);
+        let kind = current_view.and_then(|current_view| {
+            let rules =
+                quire_core::core::database_view::ViewDefinition::parse(&current_view.definition)
+                    .rules(db, &self.session.databases);
+            quire_core::core::database_view::FlatFilter::from_tree(rules.filter.as_ref())
+                .and_then(|flat| flat.clauses.get(row).map(|clause| clause.clause.kind))
+        });
+        let Some(value) = kind.and_then(|kind| database_filter_value_from_text(kind, &text)) else {
+            self.status = "筛选值无效；数字需为有限数值，日期请使用 YYYY-MM-DD".into();
+            self.error = true;
+            cx.notify();
+            return;
+        };
+        self.edit_database_filter(
+            BlockId(block),
+            db,
+            view_id,
+            move |flat| {
+                let Some(clause) = flat.clauses.get_mut(row) else {
+                    return;
+                };
+                clause.clause.value = value;
+            },
+            window,
+            cx,
+        );
+        self.database_filter_value_active = None;
+        if let Some(input) = self.inputs.values().next() {
+            let focus = input.read(cx).focus.clone();
+            window.focus(&focus);
         }
     }
     fn toggle_database_column(
@@ -6583,43 +6919,204 @@ impl Render for Workspace {
                                     let filter_open = selected_view.is_some_and(|view_id| {
                                         self.database_filter_open == Some((block_id.0, view_id.0))
                                     });
+                                    let active_view_id = selected_view.expect("database table has selected view");
+                                    let filter_columns = self
+                                        .session
+                                        .databases
+                                        .properties_of(db_id)
+                                        .cloned()
+                                        .collect::<Vec<_>>();
+                                    let flat_filter = quire_core::core::database_view::FlatFilter::from_tree(view_filter.as_ref());
                                     let filter_picker = filter_open.then(|| {
-                                        let options = [
-                                            ("名称有内容", Some(quire_core::core::database_view::FilterOp::IsNotEmpty)),
-                                            ("名称为空", Some(quire_core::core::database_view::FilterOp::IsEmpty)),
-                                            ("清除全部筛选", None),
-                                        ];
-                                        div()
+                                        let mut popup = div()
+                                            .id(SharedString::from(format!(
+                                                "db-filter-panel-{}-{}",
+                                                block_id.0, active_view_id.0
+                                            )))
                                             .w_full()
+                                            .max_h(px(360.))
+                                            .overflow_y_scroll()
                                             .px(px(8.))
                                             .py(px(6.))
                                             .flex()
+                                            .flex_col()
                                             .gap(px(5.))
                                             .border_b_1()
-                                            .border_color(db_border)
-                                            .children(options.into_iter().map(|(label, op)| {
-                                                let view_id = selected_view.expect("filter menu needs an active view");
-                                                div()
-                                                    .id(SharedString::from(format!(
-                                                        "db-title-filter-{}-{}-{}",
-                                                        block_id.0,
-                                                        view_id.0,
-                                                        label
-                                                    )))
-                                                    .px(px(8.))
-                                                    .py(px(5.))
-                                                    .rounded(px(4.))
-                                                    .text_size(px(11.))
-                                                    .text_color(text)
-                                                    .cursor_pointer()
-                                                    .hover(|item| item.bg(db_hover))
-                                                    .on_click(cx.listener(move |this, _, window, cx| {
-                                                        this.set_database_title_filter(
-                                                            block_id, db_id, view_id, op, window, cx,
+                                            .border_color(db_border);
+                                        if let Some(flat) = flat_filter.clone() {
+                                            match self.database_filter_panel {
+                                                0 => {
+                                                    let any = flat.any;
+                                                    popup = popup.child(
+                                                        div()
+                                                            .flex()
+                                                            .items_center()
+                                                            .gap(px(5.))
+                                                            .text_size(px(11.))
+                                                            .text_color(muted)
+                                                            .child("匹配")
+                                                            .children([(false, "全部"), (true, "任一")].into_iter().map(|(match_any, label)| {
+                                                                div()
+                                                                    .id(SharedString::from(format!("db-filter-match-{}-{}", block_id.0, match_any)))
+                                                                    .px(px(8.))
+                                                                    .py(px(4.))
+                                                                    .rounded(px(4.))
+                                                                    .text_color(if any == match_any { accent } else { muted })
+                                                                    .when(!self.session.page.locked, |button| button.cursor_pointer().hover(|button| button.bg(db_hover)))
+                                                                    .on_click(cx.listener(move |this, _, window, cx| this.set_database_filter_match(block_id, db_id, active_view_id, match_any, window, cx)))
+                                                                    .child(label)
+                                                            })),
+                                                    );
+                                                    for (index, flat_clause) in flat.clauses.iter().enumerate() {
+                                                        let clause = &flat_clause.clause;
+                                                        let row_property = self.session.databases.properties_of(db_id).find(|property| property.id == clause.property);
+                                                        let name = row_property.map(|property| property.name.as_str()).unwrap_or("已删除的列");
+                                                        let op_name = database_filter_op_label(clause.op, clause.kind);
+                                                        let editing = self.database_filter_value_active == Some((block_id.0, db_id.0, active_view_id.0, index));
+                                                        let value_row = if matches!(clause.op, quire_core::core::database_view::FilterOp::IsEmpty | quire_core::core::database_view::FilterOp::IsNotEmpty) {
+                                                            div().text_size(px(11.)).text_color(muted).child("无需值").into_any_element()
+                                                        } else if clause.kind == quire_core::core::database::PropertyKind::Checkbox {
+                                                            let checked = matches!(&clause.value, quire_core::core::database_view::FilterValue::Flag(true));
+                                                            let label = match &clause.value {
+                                                                quire_core::core::database_view::FilterValue::Flag(true) => "☑ 已勾选",
+                                                                quire_core::core::database_view::FilterValue::Flag(false) => "□ 未勾选",
+                                                                _ => "选择…",
+                                                            };
+                                                            div()
+                                                                .id(SharedString::from(format!("db-filter-flag-{}-{}", block_id.0, index)))
+                                                                .px(px(8.))
+                                                                .py(px(4.))
+                                                                .rounded(px(4.))
+                                                                .text_size(px(11.))
+                                                                .text_color(text)
+                                                                .cursor_pointer()
+                                                                .hover(|item| item.bg(db_hover))
+                                                                .on_click(cx.listener(move |this, _, window, cx| this.set_database_filter_flag(block_id, db_id, active_view_id, index, !checked, window, cx)))
+                                                                .child(label)
+                                                                .into_any_element()
+                                                        } else if matches!(clause.kind, quire_core::core::database::PropertyKind::Select | quire_core::core::database::PropertyKind::Status | quire_core::core::database::PropertyKind::MultiSelect | quire_core::core::database::PropertyKind::Files) {
+                                                            let label = row_property.map(|property| {
+                                                                let options = quire_core::core::database_property::PropertyOptions::from_config(&property.config);
+                                                                match &clause.value {
+                                                                    quire_core::core::database_view::FilterValue::Text(id) => options.iter().find(|option| option.id.to_string() == *id).map(|option| option.name.clone()).unwrap_or_else(|| id.clone()),
+                                                                    quire_core::core::database_view::FilterValue::Any(ids) => ids.iter().map(|id| options.iter().find(|option| option.id.to_string() == *id).map(|option| option.name.as_str()).unwrap_or(id)).collect::<Vec<_>>().join(", "),
+                                                                    _ => String::new(),
+                                                                }
+                                                            }).unwrap_or_default();
+                                                            div()
+                                                                .id(SharedString::from(format!("db-filter-option-value-{}-{}", block_id.0, index)))
+                                                                .px(px(8.))
+                                                                .py(px(4.))
+                                                                .rounded(px(4.))
+                                                                .text_size(px(11.))
+                                                                .text_color(if label.is_empty() { muted } else { text })
+                                                                .cursor_pointer()
+                                                                .hover(|item| item.bg(db_hover))
+                                                                .on_click(cx.listener(move |this, _, _, cx| {
+                                                                    this.database_filter_edit_row = Some(index);
+                                                                    this.database_filter_panel = 3;
+                                                                    cx.notify();
+                                                                }))
+                                                                .child(if label.is_empty() { "选择值…".to_owned() } else { label })
+                                                                .into_any_element()
+                                                        } else if editing {
+                                                            div().w(px(250.)).h(px(26.)).child(self.database_filter_value_input.clone()).into_any_element()
+                                                        } else {
+                                                            let value = clause.value.display();
+                                                            div()
+                                                                .id(SharedString::from(format!("db-filter-value-{}-{}", block_id.0, index)))
+                                                                .min_w(px(90.))
+                                                                .px(px(8.))
+                                                                .py(px(4.))
+                                                                .rounded(px(4.))
+                                                                .text_size(px(11.))
+                                                                .text_color(if value.is_empty() { muted } else { text })
+                                                                .cursor_pointer()
+                                                                .hover(|item| item.bg(db_hover))
+                                                                .on_click(cx.listener(move |this, _, window, cx| this.begin_database_filter_value(block_id, db_id, active_view_id, index, window, cx)))
+                                                                .child(if value.is_empty() { "输入值…".to_owned() } else { value })
+                                                                .into_any_element()
+                                                        };
+                                                        popup = popup.child(
+                                                            div()
+                                                                .w_full()
+                                                                .px(px(6.))
+                                                                .py(px(5.))
+                                                                .flex()
+                                                                .flex_col()
+                                                                .gap(px(4.))
+                                                                .rounded(px(5.))
+                                                                .border_1()
+                                                                .border_color(db_border)
+                                                                .child(
+                                                                    div()
+                                                                        .flex()
+                                                                        .items_center()
+                                                                        .gap(px(4.))
+                                                                        .child(div().flex_1().text_size(px(11.)).text_color(text).child(name.to_owned()))
+                                                                        .child(div().id(SharedString::from(format!("db-filter-op-open-{}-{}", block_id.0, index))).px(px(7.)).py(px(4.)).rounded(px(4.)).text_size(px(11.)).text_color(muted).cursor_pointer().hover(|button| button.bg(db_hover)).on_click(cx.listener(move |this, _, _, cx| { this.database_filter_edit_row = Some(index); this.database_filter_panel = 2; cx.notify(); })).child(op_name))
+                                                                        .child(div().id(SharedString::from(format!("db-filter-not-{}-{}", block_id.0, index))).px(px(6.)).py(px(3.)).rounded(px(4.)).text_size(px(11.)).text_color(if flat_clause.invert { accent } else { muted }).cursor_pointer().hover(|button| button.bg(db_hover)).on_click(cx.listener(move |this, _, window, cx| this.toggle_database_filter_not(block_id, db_id, active_view_id, index, window, cx))).child("¬"))
+                                                                        .child(div().id(SharedString::from(format!("db-filter-remove-{}-{}", block_id.0, index))).px(px(6.)).py(px(3.)).rounded(px(4.)).text_size(px(11.)).text_color(muted).cursor_pointer().hover(|button| button.bg(db_hover)).on_click(cx.listener(move |this, _, window, cx| this.remove_database_filter_clause(block_id, db_id, active_view_id, index, window, cx))).child("×")),
+                                                                )
+                                                                .child(value_row),
                                                         );
-                                                    }))
-                                                    .child(label)
-                                            }))
+                                                    }
+                                                    popup = popup.child(
+                                                        div()
+                                                            .flex()
+                                                            .gap(px(5.))
+                                                            .children([
+                                                                div().id("db-filter-add").px(px(8.)).py(px(5.)).rounded(px(4.)).text_size(px(11.)).text_color(text).cursor_pointer().hover(|button| button.bg(db_hover)).on_click(cx.listener(|this, _, _, cx| { this.database_filter_panel = 1; cx.notify(); })).child("＋ 添加规则"),
+                                                                div().id("db-filter-clear").px(px(8.)).py(px(5.)).rounded(px(4.)).text_size(px(11.)).text_color(muted).cursor_pointer().hover(|button| button.bg(db_hover)).on_click(cx.listener(move |this, _, window, cx| this.clear_database_filter(block_id, db_id, active_view_id, window, cx))).child("全部清空"),
+                                                            ]),
+                                                    );
+                                                }
+                                                1 => {
+                                                    popup = popup.child(div().text_size(px(11.)).text_color(muted).child("‹ 选择属性"));
+                                                    popup = popup.children(filter_columns.iter().filter(|property| !quire_core::core::database_view::FilterOp::ops_for(property.kind).is_empty()).map(|property| {
+                                                        let property_id = property.id;
+                                                        let name = property.name.clone();
+                                                        div().id(SharedString::from(format!("db-filter-column-{}-{}", db_id.0, property_id.0))).w_full().px(px(8.)).py(px(5.)).rounded(px(4.)).flex().justify_between().text_size(px(11.)).text_color(text).cursor_pointer().hover(|item| item.bg(db_hover)).on_click(cx.listener(move |this, _, window, cx| { this.add_database_filter_clause(block_id, db_id, active_view_id, property_id, window, cx); })).child(name).child(database_kind_label(property.kind))
+                                                    }));
+                                                }
+                                                2 => {
+                                                    popup = popup.child(div().text_size(px(11.)).text_color(muted).child("‹ 选择比较方式"));
+                                                    if let Some(row) = self.database_filter_edit_row
+                                                        && let Some(clause) = flat.clauses.get(row)
+                                                    {
+                                                        let kind = clause.clause.kind;
+                                                        popup = popup.children(quire_core::core::database_view::FilterOp::ops_for(kind).iter().copied().map(|op| {
+                                                            let label = database_filter_op_label(op, kind);
+                                                            div().id(SharedString::from(format!("db-filter-op-{}-{}-{}", block_id.0, row, op.as_str()))).w_full().px(px(8.)).py(px(5.)).rounded(px(4.)).text_size(px(11.)).text_color(text).cursor_pointer().hover(|item| item.bg(db_hover)).on_click(cx.listener(move |this, _, window, cx| this.set_database_filter_op(block_id, db_id, active_view_id, row, op, window, cx))).child(label)
+                                                        }));
+                                                    }
+                                                }
+                                                3 => {
+                                                    popup = popup.child(div().text_size(px(11.)).text_color(muted).child("‹ 选择值"));
+                                                    if let Some(row) = self.database_filter_edit_row
+                                                        && let Some(clause) = flat.clauses.get(row)
+                                                        && let Some(property) = self.session.databases.properties_of(db_id).find(|property| property.id == clause.clause.property)
+                                                    {
+                                                        let selected = match &clause.clause.value {
+                                                            quire_core::core::database_view::FilterValue::Text(id) => vec![id.clone()],
+                                                            quire_core::core::database_view::FilterValue::Any(ids) => ids.clone(),
+                                                            _ => Vec::new(),
+                                                        };
+                                                        let options = quire_core::core::database_property::PropertyOptions::from_config(&property.config);
+                                                        popup = popup.children(options.iter().map(|option| {
+                                                            let id = option.id.to_string();
+                                                            let label = option.name.clone();
+                                                            let checked = selected.contains(&id);
+                                                            div().id(SharedString::from(format!("db-filter-option-{}-{}-{}", db_id.0, row, id))).w_full().px(px(8.)).py(px(5.)).rounded(px(4.)).text_size(px(11.)).text_color(if checked { accent } else { text }).cursor_pointer().hover(|item| item.bg(db_hover)).on_click(cx.listener(move |this, _, window, cx| this.toggle_database_filter_option(block_id, db_id, active_view_id, row, id.clone(), window, cx))).child(format!("{}{}", if checked { "☑ " } else { "□ " }, label))
+                                                        }));
+                                                    }
+                                                }
+                                                _ => {}
+                                            }
+                                        } else {
+                                            popup = popup.child(div().text_size(px(11.)).text_color(muted).child("当前筛选包含嵌套规则，GPUI 保留筛选结果但暂不允许编辑。"));
+                                        }
+                                        popup
                                     });
                                     let column_picker = columns_open.then(|| {
                                         let mut picker = div()
@@ -6943,6 +7440,11 @@ impl Render for Workspace {
                                                                         this.database_filter_open = key.filter(|key| {
                                                                             this.database_filter_open != Some(*key)
                                                                         });
+                                                                        if this.database_filter_open.is_some() {
+                                                                            this.database_filter_panel = 0;
+                                                                            this.database_filter_edit_row = None;
+                                                                            this.database_filter_value_active = None;
+                                                                        }
                                                                         this.database_columns_open = None;
                                                                         cx.notify();
                                                                     },
