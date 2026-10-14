@@ -7,6 +7,7 @@ use quire_core::core::{
     types::{Block, BlockId, BlockKind, ColorKind, Lang},
 };
 use quire_gpui::session::Session;
+use quire_gpui::ui_scale::px;
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
     ops::Range,
@@ -16,7 +17,18 @@ use std::{
 
 actions!(
     workspace,
-    [Save, Undo, Redo, Find, FindNext, FindPrevious, SearchPages]
+    [
+        Save,
+        Undo,
+        Redo,
+        Find,
+        FindNext,
+        FindPrevious,
+        SearchPages,
+        ZoomIn,
+        ZoomOut,
+        ZoomReset
+    ]
 );
 
 fn find_matches_in(text: &str, query: &str) -> Vec<Range<usize>> {
@@ -282,6 +294,11 @@ impl Palette {
     fn load(id: &str) -> Self {
         let palettes: Vec<Self> = serde_json::from_str(include_str!("palettes.json"))
             .expect("checked-in design palettes");
+        let id = if id == "system" {
+            system_palette_id()
+        } else {
+            id
+        };
         palettes
             .iter()
             .find(|p| p.id == id)
@@ -342,6 +359,33 @@ impl Palette {
     }
 }
 
+fn system_palette_id() -> &'static str {
+    #[cfg(target_os = "windows")]
+    {
+        let output = std::process::Command::new("reg")
+            .args([
+                "query",
+                r"HKCU\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize",
+                "/v",
+                "AppsUseLightTheme",
+            ])
+            .output();
+        if output.is_ok_and(|output| {
+            String::from_utf8_lossy(&output.stdout)
+                .split_whitespace()
+                .last()
+                .is_some_and(|value| value == "0x1")
+        }) {
+            return "light";
+        }
+        "midnight"
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        "midnight"
+    }
+}
+
 pub struct Workspace {
     session: Session,
     title_input: Entity<TextInput>,
@@ -380,6 +424,8 @@ pub struct Workspace {
     selected_database_views: HashMap<u64, ViewId>,
     subscriptions: Vec<Subscription>,
     palette: Palette,
+    theme_choice: String,
+    ui_zoom: f32,
     theme_picker_open: bool,
     settings_tab: usize,
     icon_picker_open: bool,
@@ -431,6 +477,13 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
+        let theme_choice = session.setting("gpui.theme").unwrap_or(theme).to_owned();
+        let ui_zoom = session
+            .setting("gpui.ui-scale")
+            .and_then(|value| value.parse::<f32>().ok())
+            .filter(|value| (0.5..=3.0).contains(value))
+            .unwrap_or(1.0);
+        quire_gpui::ui_scale::set(ui_zoom);
         let title_input =
             cx.new(|cx| TextInput::new(session.page.title.clone(), Vec::new(), 38., window, cx));
         title_input.update(cx, |input, _| input.font_weight = FontWeight::BOLD);
@@ -523,7 +576,9 @@ impl Workspace {
             inputs: BTreeMap::new(),
             selected_database_views: HashMap::new(),
             subscriptions: Vec::new(),
-            palette: Palette::load(theme),
+            palette: Palette::load(&theme_choice),
+            theme_choice,
+            ui_zoom,
             theme_picker_open: false,
             settings_tab: 0,
             icon_picker_open: false,
@@ -1817,6 +1872,7 @@ impl Workspace {
     }
     fn select_theme(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
         self.palette = Palette::load(id);
+        self.theme_choice = id.to_owned();
         let fg = Palette::color(&self.palette.fg);
         for input in [
             self.title_input.clone(),
@@ -1840,8 +1896,45 @@ impl Workspace {
             input.reset(String::new(), Vec::new(), 0, cx);
         });
         self.session
-            .set_setting("gpui.theme", self.palette.id.clone());
+            .set_setting("gpui.theme", self.theme_choice.clone());
         self.schedule_save(true, window, cx);
+    }
+    fn set_ui_zoom(&mut self, zoom: f32, window: &mut Window, cx: &mut Context<Self>) {
+        let zoom = zoom.clamp(0.5, 3.0);
+        if (zoom - self.ui_zoom).abs() < f32::EPSILON {
+            return;
+        }
+        self.ui_zoom = zoom;
+        quire_gpui::ui_scale::set(zoom);
+        self.session
+            .set_setting("gpui.ui-scale", format!("{zoom:.2}"));
+        let mut inputs = vec![
+            self.title_input.clone(),
+            self.search_input.clone(),
+            self.find_input.clone(),
+            self.link_target_input.clone(),
+            self.note_title_input.clone(),
+            self.note_body_input.clone(),
+            self.task_title_input.clone(),
+            self.task_due_input.clone(),
+            self.organizer_tags_input.clone(),
+            self.subtask_title_input.clone(),
+        ];
+        inputs.extend(self.inputs.values().cloned());
+        for input in inputs {
+            input.update(cx, |_, cx| cx.notify());
+        }
+        self.schedule_save(true, window, cx);
+        cx.notify();
+    }
+    fn zoom_in(&mut self, _: &ZoomIn, window: &mut Window, cx: &mut Context<Self>) {
+        self.set_ui_zoom(quire_gpui::ui_scale::step(self.ui_zoom, 1), window, cx);
+    }
+    fn zoom_out(&mut self, _: &ZoomOut, window: &mut Window, cx: &mut Context<Self>) {
+        self.set_ui_zoom(quire_gpui::ui_scale::step(self.ui_zoom, -1), window, cx);
+    }
+    fn zoom_reset(&mut self, _: &ZoomReset, window: &mut Window, cx: &mut Context<Self>) {
+        self.set_ui_zoom(1., window, cx);
     }
     fn commit_note_draft(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let tags = parse_organizer_tags(&self.organizer_tags_draft);
@@ -3178,6 +3271,11 @@ impl Render for Workspace {
         let theme_options = if self.theme_picker_open {
             let palettes: Vec<Palette> =
                 serde_json::from_str(include_str!("palettes.json")).expect("checked-in palettes");
+            let mut system_palette = Palette::load("system");
+            system_palette.id = "system".into();
+            let palettes = std::iter::once(system_palette)
+                .chain(palettes)
+                .collect::<Vec<_>>();
             palettes
                 .into_iter()
                 .filter(|palette| {
@@ -3185,6 +3283,7 @@ impl Render for Workspace {
                     query.is_empty()
                         || palette.id.to_lowercase().contains(&query)
                         || match palette.id.as_str() {
+                            "system" => "跟随系统".contains(&query),
                             "midnight" => "暗夜蓝".contains(&query),
                             "graphite" => "石墨灰".contains(&query),
                             "violet" => "紫罗兰".contains(&query),
@@ -3195,39 +3294,42 @@ impl Render for Workspace {
                             "light" => "明亮".contains(&query),
                             "jade" => "翡翠绿".contains(&query),
                             "deepblue" => "深空蓝".contains(&query),
-                            "twilight" => "曙光紫".contains(&query),
-                            "crimson" => "荣焰红".contains(&query),
+                            "twilight" => "暮光紫".contains(&query),
+                            "crimson" => "荣艳红".contains(&query),
                             _ => false,
                         }
                 })
                 .map(|palette| {
                     let id = palette.id.clone();
                     let label = match id.as_str() {
-                        "midnight" => "暗夜蓝",
-                        "graphite" => "石墨灰",
-                        "violet" => "紫罗兰",
-                        "emerald" => "森林绿",
-                        "amber" => "琥珀暖",
-                        "ocean" => "海洋青",
-                        "rose" => "珊瑚红",
-                        "light" => "明亮",
-                        "jade" => "翡翠绿",
-                        "deepblue" => "深空蓝",
-                        "twilight" => "曙光紫",
-                        "crimson" => "荣焰红",
+                        "system" => "跟随系统",
+                        "midnight" => "🌙 暗夜蓝",
+                        "graphite" => "🪨 石墨灰",
+                        "violet" => "💜 紫罗兰",
+                        "emerald" => "🌲 森林绿",
+                        "amber" => "🔥 琥珀暖",
+                        "ocean" => "🌊 海洋青",
+                        "rose" => "🌹 珊瑚红",
+                        "light" => "☀️ 明亮",
+                        "jade" => "💎 翡翠绿",
+                        "deepblue" => "🌌 深空蓝",
+                        "twilight" => "🌆 暮光紫",
+                        "crimson" => "🌺 荣艳红",
                         _ => id.as_str(),
                     }
                     .to_owned();
-                    let selected = id == self.palette.id;
+                    let selected = id == self.theme_choice;
                     div()
                         .id(SharedString::from(format!("theme-option-{id}")))
                         .w(px(110.))
                         .h(px(62.))
                         .p(px(7.))
                         .flex()
-                        .items_end()
+                        .items_center()
+                        .justify_center()
                         .rounded(px(6.))
                         .border_1()
+                        .when(selected, |card| card.border_2())
                         .border_color(if selected {
                             accent
                         } else {
@@ -3272,7 +3374,10 @@ impl Render for Workspace {
                     div()
                         .id("settings-dialog")
                         .w(px(560.))
+                        .max_w(window.bounds().size.width - px(24.))
                         .h(px(612.))
+                        .max_h(window.bounds().size.height - px(24.))
+                        .overflow_y_scroll()
                         .p(px(16.))
                         .rounded(px(12.))
                         .border_1()
@@ -3280,7 +3385,7 @@ impl Render for Workspace {
                         .bg(Palette::color(&p.elevated))
                         .flex()
                         .flex_col()
-                        .gap(px(12.))
+                        .gap(px(10.))
                         .child(
                             div()
                                 .text_size(px(18.))
@@ -3352,6 +3457,77 @@ impl Render for Workspace {
                                 .flex_wrap()
                                 .gap(px(8.))
                                 .children(theme_options),
+                        ).child(
+                            div()
+                                .w_full()
+                                .flex()
+                                .items_center()
+                                .justify_between()
+                                .child("界面缩放")
+                                .child(
+                                    div()
+                                        .flex()
+                                        .items_center()
+                                        .gap(px(12.))
+                                        .child(
+                                            div()
+                                                .id("settings-zoom-out")
+                                                .w(px(22.))
+                                                .h(px(24.))
+                                                .flex()
+                                                .items_center()
+                                                .justify_center()
+                                                .cursor_pointer()
+                                                .text_color(muted)
+                                                .hover(|button| button.text_color(text))
+                                                .when(self.ui_zoom > 0.5, |button| {
+                                                    button.on_click(cx.listener(|this, _, window, cx| {
+                                                        this.set_ui_zoom(quire_gpui::ui_scale::step(this.ui_zoom, -1), window, cx)
+                                                    }))
+                                                })
+                                                .child("−"),
+                                        )
+                                        .child(format!("{:.0}%", self.ui_zoom * 100.))
+                                        .child(
+                                            div()
+                                                .id("settings-zoom-in")
+                                                .w(px(22.))
+                                                .h(px(24.))
+                                                .flex()
+                                                .items_center()
+                                                .justify_center()
+                                                .cursor_pointer()
+                                                .text_color(muted)
+                                                .hover(|button| button.text_color(text))
+                                                .when(self.ui_zoom < 3.0, |button| {
+                                                    button.on_click(cx.listener(|this, _, window, cx| {
+                                                        this.set_ui_zoom(quire_gpui::ui_scale::step(this.ui_zoom, 1), window, cx)
+                                                    }))
+                                                })
+                                                .child("＋"),
+                                        )
+                                        .child(
+                                            div()
+                                                .id("settings-zoom-reset")
+                                                .px(px(10.))
+                                                .py(px(5.))
+                                                .rounded(px(4.))
+                                                .border_1()
+                                                .border_color(Palette::color(&p.border))
+                                                .cursor_pointer()
+                                                .text_color(muted)
+                                                .hover(|button| button.text_color(text))
+                                                .on_click(cx.listener(|this, _, window, cx| {
+                                                    this.set_ui_zoom(1., window, cx)
+                                                }))
+                                                .child("复位"),
+                                        ),
+                                ),
+                        ).child(
+                            div()
+                                .text_size(px(10.))
+                                .text_color(muted)
+                                .child("整个界面一起放大或缩小 · Ctrl+= / Ctrl+- 步进，Ctrl+0 复位"),
                         ))
                         .when(self.settings_tab == 1, |dialog| dialog.child(
                             div().flex().flex_col().gap(px(14.)).child(
@@ -3404,6 +3580,7 @@ impl Render for Workspace {
                                 ("撤销 / 重做", "Ctrl+Z / Ctrl+Shift+Z"),
                                 ("查找页面", "Ctrl+P"),
                                 ("页面内查找", "Ctrl+F"),
+                                ("界面缩放 / 复位", "Ctrl+= / Ctrl+- / Ctrl+0"),
                                 ("命令面板", "Ctrl+K"),
                                 ("新建块", "Enter"),
                             ].into_iter().map(|(label, key)| div().flex().justify_between().items_center().border_b_1().border_color(Palette::color(&p.border)).py(px(7.)).child(label).child(div().px(px(7.)).py(px(3.)).rounded(px(4.)).bg(Palette::color(&p.bg).opacity(0.3)).text_size(px(11.)).child(key)))),
@@ -6968,6 +7145,9 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::find_next_action))
             .on_action(cx.listener(Self::find_previous_action))
             .on_action(cx.listener(Self::open_search))
+            .on_action(cx.listener(Self::zoom_in))
+            .on_action(cx.listener(Self::zoom_out))
+            .on_action(cx.listener(Self::zoom_reset))
             .child(
                 div()
                     .h(px(40.))
@@ -7620,5 +7800,8 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("ctrl-g", FindNext, Some("Quire")),
         KeyBinding::new("ctrl-shift-g", FindPrevious, Some("Quire")),
         KeyBinding::new("ctrl-p", SearchPages, Some("Quire")),
+        KeyBinding::new("ctrl-=", ZoomIn, Some("Quire")),
+        KeyBinding::new("ctrl--", ZoomOut, Some("Quire")),
+        KeyBinding::new("ctrl-0", ZoomReset, Some("Quire")),
     ]);
 }

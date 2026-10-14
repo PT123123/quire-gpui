@@ -14,7 +14,7 @@ indent-list,已实现,未验证,Tab 只缩进 core 允许的列表项，目前�
 outdent-list,已实现,未验证,Shift+Tab 只对 core 允许的嵌套列表项生效,将列表项提升到父列表之后；提升后保持可编辑
 todo-toggled,已实现,未验证,待办标记由行首复选框点击；视觉仍待与旧版对照,调用 core ToggleTodoChecked 切换当前块完成状态并保存
 page-create-requested,已实现,未验证,支持侧栏根页面和子页面加号；暂无跨层级移动和模板创建,新建页面写入 core PageCreated，创建首个段落并切换到该页
-set-theme,已实现,未验证,主题面板展示 12 套渐变预览；主题卡片仍待与旧版尺寸、排序和状态对照,选择主题更新背景渐变和 palette，并写入 GPUI 独立设置
+set-theme,已实现,未验证,外观页包含系统跟随与 12 套渐变主题，按 4 列卡片排列；选择后立即切换并写入独立 GPUI 设置。系统模式读取 Windows AppsUseLightTheme，其他平台回退到 midnight。,主题选择状态与实际 palette 分离保存；“跟随系统”启动/选择时按系统浅色设置选择 light 或 midnight。系统主题变化后需重启应用才会刷新。
 table-row-added,已实现,未验证,普通表格工具区支持追加行；用户操作尚未逐项回归,调用 core TableAddRow，新增单元格并同步输入控件后保存
 table-row-removed,已实现,未验证,普通表格工具区支持删除末行；至少保留一行,调用 core TableDeleteRow，重建输入控件并保存，沿用 core 撤销
 table-column-added,已实现,未验证,普通表格工具区支持追加列；用户操作尚未逐项回归,调用 core TableAddColumn，新增单元格并同步输入控件后保存
@@ -48,3 +48,6 @@ db-row-added,已实现,未验证,数据库块支持新建记录并即时刷新�
 db-viewport,已实现,未验证,GPUI uniform_list 按可见 range 查询记录，未复刻旧版 pixel viewport 回调,窗口化查询使用 SqliteRepository::window_rows，单帧仅读取 uniform_list 传入的 range；需要大表 UI/性能验收
 db-view-picked,已实现,未验证,数据库块显示已有视图页签，支持点击切换；当前支持新建的布局均为表格，切换不改变记录数据。选择态仅保存在当前窗口会话。,页签来自 core DatabaseCatalog::views_of；点击更新当前窗口的 db_id→ViewId 选择映射，关闭重开默认选择首视图。
 db-view-added,已实现,未验证,加号创建“表格 N”视图并立即选中；视图布局目前固定为 Table，其他布局切换/配置未实现。,分配 ViewId 与 ord 后调用 core AddDatabaseView，写入 SQLite change stream，并纳入页面 undo/redo；隔离测试覆盖新增视图撤销/重做。
+zoom-in,已实现,未验证,外观设置提供 50%–300% 的整体缩放、加减和复位；不是只放大正文文字。,GPUI 根尺度以原子系数统一换算 view/input 的 px token，旧版阶梯 50/67/75/80/90/100/110/125/150/175/200/250/300%；gpui.ui-scale 持久化，开窗时读取。
+zoom-out,已实现,未验证,整体界面缩小，范围下限 75%，边界时禁用。,同一全局 px 换算路径，值持久化到独立 GPUI 设置。
+zoom-reset,已实现,未验证,一键恢复 100% 界面缩放。,将全局 px 系数和 gpui.ui-scale 同时重置为 1.00。

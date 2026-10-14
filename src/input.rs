@@ -6,6 +6,7 @@ use quire_core::core::{
     types::{Lang, Mark, MarkKind},
 };
 use quire_gpui::buffer::{Buffer, to_utf16};
+use quire_gpui::ui_scale::px;
 use std::{cell::RefCell, ops::Range, rc::Rc};
 use unicode_segmentation::UnicodeSegmentation;
 
