@@ -365,6 +365,7 @@ pub struct Workspace {
     theme_picker_open: bool,
     icon_picker_open: bool,
     format_bar_open: bool,
+    page_options_open: bool,
     link_editor_open: bool,
     color_picker: Option<(BlockId, bool)>,
     confirm_delete_page: Option<quire_core::core::types::PageId>,
@@ -487,6 +488,7 @@ impl Workspace {
             theme_picker_open: false,
             icon_picker_open: false,
             format_bar_open: false,
+            page_options_open: false,
             link_editor_open: false,
             color_picker: None,
             confirm_delete_page: None,
@@ -5609,179 +5611,234 @@ impl Render for Workspace {
                             )
                             .child(
                                 div()
-                                    .id("page-icon-picker")
+                                    .id("sidebar-search-toggle")
                                     .px(px(7.))
                                     .py(px(4.))
                                     .rounded(px(5.))
                                     .cursor_pointer()
-                                    .text_color(Palette::color(&p.accent))
-                                    .hover(|s| s.bg(Palette::color(&p.elevated)))
-                                    .on_click(
-                                        cx.listener(|this, _, _, cx| this.toggle_icon_picker(cx)),
-                                    )
-                                    .child(format!(
-                                        "图标 · {}",
-                                        if self.session.page.icon.is_empty() {
-                                            "选择"
-                                        } else {
-                                            &self.session.page.icon
-                                        }
-                                    ))
-                                    .when(self.icon_picker_open, |button| {
-                                        button.child(
-                                            anchored()
-                                                .anchor(Corner::BottomLeft)
-                                                .offset(point(px(0.), px(5.)))
-                                                .snap_to_window()
-                                                .child(icon_options),
-                                        )
-                                    }),
+                                    .text_color(muted)
+                                    .hover(|button| button.bg(Palette::color(&p.elevated)))
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        window.focus(&this.search_input.read(cx).focus);
+                                    }))
+                                    .child("⌕"),
                             )
                             .child(
                                 div()
-                                    .id("page-cover-picker")
+                                    .id("page-options-toggle")
                                     .px(px(7.))
                                     .py(px(4.))
                                     .rounded(px(5.))
                                     .cursor_pointer()
-                                    .text_color(Palette::color(&p.accent))
-                                    .hover(|s| s.bg(Palette::color(&p.elevated)))
-                                    .when(!self.session.page.locked, |button| {
-                                        button.on_click(cx.listener(|this, _, window, cx| {
-                                            this.pick_page_cover(window, cx)
-                                        }))
-                                    })
-                                    .child(if self.session.page.cover.is_some() {
-                                        "更换封面"
+                                    .text_color(if self.page_options_open {
+                                        accent
                                     } else {
-                                        "设置封面"
-                                    }),
-                            )
-                            .when(self.session.page.cover.is_some(), |bar| {
-                                bar.child(
+                                        muted
+                                    })
+                                    .when(self.page_options_open, |button| {
+                                        button.bg(Palette::color(&p.elevated))
+                                    })
+                                    .hover(|button| button.bg(Palette::color(&p.elevated)))
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.page_options_open = !this.page_options_open;
+                                        cx.notify();
+                                    }))
+                                    .child("···"),
+                            ),
+                    )
+                    .when(self.page_options_open, |header| {
+                        header.child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap(px(6.))
+                                .child(
                                     div()
-                                        .id("page-cover-clear")
-                                        .px(px(6.))
+                                        .id("page-icon-picker")
+                                        .px(px(7.))
                                         .py(px(4.))
                                         .rounded(px(5.))
                                         .cursor_pointer()
-                                        .text_color(muted)
+                                        .text_color(Palette::color(&p.accent))
+                                        .hover(|s| s.bg(Palette::color(&p.elevated)))
+                                        .on_click(
+                                            cx.listener(|this, _, _, cx| {
+                                                this.toggle_icon_picker(cx)
+                                            }),
+                                        )
+                                        .child(format!(
+                                            "图标 · {}",
+                                            if self.session.page.icon.is_empty() {
+                                                "选择"
+                                            } else {
+                                                &self.session.page.icon
+                                            }
+                                        ))
+                                        .when(self.icon_picker_open, |button| {
+                                            button.child(
+                                                anchored()
+                                                    .anchor(Corner::BottomLeft)
+                                                    .offset(point(px(0.), px(5.)))
+                                                    .snap_to_window()
+                                                    .child(icon_options),
+                                            )
+                                        }),
+                                )
+                                .child(
+                                    div()
+                                        .id("page-cover-picker")
+                                        .px(px(7.))
+                                        .py(px(4.))
+                                        .rounded(px(5.))
+                                        .cursor_pointer()
+                                        .text_color(Palette::color(&p.accent))
                                         .hover(|s| s.bg(Palette::color(&p.elevated)))
                                         .when(!self.session.page.locked, |button| {
                                             button.on_click(cx.listener(|this, _, window, cx| {
-                                                this.clear_page_cover(window, cx)
+                                                this.pick_page_cover(window, cx)
                                             }))
                                         })
-                                        .child("清除"),
+                                        .child(if self.session.page.cover.is_some() {
+                                            "更换封面"
+                                        } else {
+                                            "设置封面"
+                                        }),
                                 )
-                            })
-                            .child(
-                                div()
-                                    .id("page-lock")
-                                    .px(px(7.))
-                                    .py(px(4.))
-                                    .rounded(px(5.))
-                                    .cursor_pointer()
-                                    .hover(|s| s.bg(Palette::color(&p.elevated)))
-                                    .on_click(cx.listener(|this, _, window, cx| {
-                                        this.toggle_page_lock(window, cx)
-                                    }))
-                                    .child(if self.session.page.locked {
-                                        "解锁"
-                                    } else {
-                                        "锁定"
-                                    }),
-                            )
-                            .child(
-                                div()
-                                    .id("page-backlinks-toggle")
-                                    .px(px(7.))
-                                    .py(px(4.))
-                                    .rounded(px(5.))
-                                    .cursor_pointer()
-                                    .text_color(if self.backlinks_open { accent } else { muted })
-                                    .hover(|s| s.bg(Palette::color(&p.elevated)))
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        this.backlinks_open = !this.backlinks_open;
-                                        cx.notify();
-                                    }))
-                                    .child(format!("反向链接 · {backlinks_count}")),
-                            )
-                            .child(
-                                div()
-                                    .id("page-width")
-                                    .px(px(7.))
-                                    .py(px(4.))
-                                    .rounded(px(5.))
-                                    .cursor_pointer()
-                                    .hover(|s| s.bg(Palette::color(&p.elevated)))
-                                    .on_click(cx.listener(|this, _, window, cx| {
-                                        this.toggle_full_width(window, cx)
-                                    }))
-                                    .child(if self.session.page.full_width {
-                                        "居中"
-                                    } else {
-                                        "全宽"
-                                    }),
-                            )
-                            .child(
-                                div()
-                                    .id("page-small-text")
-                                    .px(px(7.))
-                                    .py(px(4.))
-                                    .rounded(px(5.))
-                                    .cursor_pointer()
-                                    .hover(|s| s.bg(Palette::color(&p.elevated)))
-                                    .on_click(cx.listener(|this, _, window, cx| {
-                                        this.toggle_small_text(window, cx)
-                                    }))
-                                    .child(if self.session.page.small_text {
-                                        "标准字"
-                                    } else {
-                                        "小字号"
-                                    }),
-                            )
-                            .child(
-                                div()
-                                    .id("page-font")
-                                    .px(px(7.))
-                                    .py(px(4.))
-                                    .rounded(px(5.))
-                                    .cursor_pointer()
-                                    .hover(|s| s.bg(Palette::color(&p.elevated)))
-                                    .on_click(cx.listener(|this, _, window, cx| {
-                                        this.cycle_page_font(window, cx)
-                                    }))
-                                    .child(format!("字体 · {}", self.session.page.font.label())),
-                            )
-                            .child(
-                                div()
-                                    .id("theme-picker-toggle")
-                                    .px(px(9.))
-                                    .py(px(4.))
-                                    .rounded(px(5.))
-                                    .cursor_pointer()
-                                    .text_color(Palette::color(&p.accent))
-                                    .hover(|s| s.bg(Palette::color(&p.elevated)))
-                                    .on_click(
-                                        cx.listener(|this, _, _, cx| this.toggle_theme_picker(cx)),
+                                .when(self.session.page.cover.is_some(), |bar| {
+                                    bar.child(
+                                        div()
+                                            .id("page-cover-clear")
+                                            .px(px(6.))
+                                            .py(px(4.))
+                                            .rounded(px(5.))
+                                            .cursor_pointer()
+                                            .text_color(muted)
+                                            .hover(|s| s.bg(Palette::color(&p.elevated)))
+                                            .when(!self.session.page.locked, |button| {
+                                                button.on_click(cx.listener(
+                                                    |this, _, window, cx| {
+                                                        this.clear_page_cover(window, cx)
+                                                    },
+                                                ))
+                                            })
+                                            .child("清除"),
                                     )
-                                    .child(format!("主题 · {}  ▾", p.id)),
-                            )
-                            .child(
-                                div()
-                                    .id("save")
-                                    .px(px(12.))
-                                    .py(px(4.))
-                                    .rounded(px(5.))
-                                    .cursor_pointer()
-                                    .hover(|s| s.bg(Palette::color(&p.elevated)))
-                                    .on_click(cx.listener(|this, _, window, cx| {
-                                        this.save(&Save, window, cx)
-                                    }))
-                                    .child("保存  Ctrl+S"),
-                            ),
-                    ),
+                                })
+                                .child(
+                                    div()
+                                        .id("page-lock")
+                                        .px(px(7.))
+                                        .py(px(4.))
+                                        .rounded(px(5.))
+                                        .cursor_pointer()
+                                        .hover(|s| s.bg(Palette::color(&p.elevated)))
+                                        .on_click(cx.listener(|this, _, window, cx| {
+                                            this.toggle_page_lock(window, cx)
+                                        }))
+                                        .child(if self.session.page.locked {
+                                            "解锁"
+                                        } else {
+                                            "锁定"
+                                        }),
+                                )
+                                .child(
+                                    div()
+                                        .id("page-backlinks-toggle")
+                                        .px(px(7.))
+                                        .py(px(4.))
+                                        .rounded(px(5.))
+                                        .cursor_pointer()
+                                        .text_color(if self.backlinks_open {
+                                            accent
+                                        } else {
+                                            muted
+                                        })
+                                        .hover(|s| s.bg(Palette::color(&p.elevated)))
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.backlinks_open = !this.backlinks_open;
+                                            cx.notify();
+                                        }))
+                                        .child(format!("反向链接 · {backlinks_count}")),
+                                )
+                                .child(
+                                    div()
+                                        .id("page-width")
+                                        .px(px(7.))
+                                        .py(px(4.))
+                                        .rounded(px(5.))
+                                        .cursor_pointer()
+                                        .hover(|s| s.bg(Palette::color(&p.elevated)))
+                                        .on_click(cx.listener(|this, _, window, cx| {
+                                            this.toggle_full_width(window, cx)
+                                        }))
+                                        .child(if self.session.page.full_width {
+                                            "居中"
+                                        } else {
+                                            "全宽"
+                                        }),
+                                )
+                                .child(
+                                    div()
+                                        .id("page-small-text")
+                                        .px(px(7.))
+                                        .py(px(4.))
+                                        .rounded(px(5.))
+                                        .cursor_pointer()
+                                        .hover(|s| s.bg(Palette::color(&p.elevated)))
+                                        .on_click(cx.listener(|this, _, window, cx| {
+                                            this.toggle_small_text(window, cx)
+                                        }))
+                                        .child(if self.session.page.small_text {
+                                            "标准字"
+                                        } else {
+                                            "小字号"
+                                        }),
+                                )
+                                .child(
+                                    div()
+                                        .id("page-font")
+                                        .px(px(7.))
+                                        .py(px(4.))
+                                        .rounded(px(5.))
+                                        .cursor_pointer()
+                                        .hover(|s| s.bg(Palette::color(&p.elevated)))
+                                        .on_click(cx.listener(|this, _, window, cx| {
+                                            this.cycle_page_font(window, cx)
+                                        }))
+                                        .child(format!(
+                                            "字体 · {}",
+                                            self.session.page.font.label()
+                                        )),
+                                )
+                                .child(
+                                    div()
+                                        .id("theme-picker-toggle")
+                                        .px(px(9.))
+                                        .py(px(4.))
+                                        .rounded(px(5.))
+                                        .cursor_pointer()
+                                        .text_color(Palette::color(&p.accent))
+                                        .hover(|s| s.bg(Palette::color(&p.elevated)))
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.toggle_theme_picker(cx)
+                                        }))
+                                        .child(format!("主题 · {}  ▾", p.id)),
+                                )
+                                .child(
+                                    div()
+                                        .id("save")
+                                        .px(px(12.))
+                                        .py(px(4.))
+                                        .rounded(px(5.))
+                                        .cursor_pointer()
+                                        .hover(|s| s.bg(Palette::color(&p.elevated)))
+                                        .on_click(cx.listener(|this, _, window, cx| {
+                                            this.save(&Save, window, cx)
+                                        }))
+                                        .child("保存  Ctrl+S"),
+                                ),
+                        )
+                    }),
             )
             .when(!self.organizer_open && self.format_bar_open, |root| {
                 root.child(
