@@ -9,7 +9,7 @@ use quire_core::core::{
 use quire_gpui::session::Session;
 use quire_gpui::ui_scale::px;
 use std::{
-    collections::{BTreeMap, HashMap, HashSet},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     ops::Range,
     path::PathBuf,
     sync::{Arc, Mutex},
@@ -440,6 +440,16 @@ fn parse_organizer_tags(input: &str) -> Vec<String> {
         })
 }
 
+fn organizer_tag_matches_path(candidate: &str, path: &str) -> bool {
+    path.is_empty() || candidate == path || candidate.starts_with(&format!("{path}/"))
+}
+
+fn organizer_tags_exclude(tags: &[String], excluded: &BTreeSet<String>) -> bool {
+    excluded
+        .iter()
+        .any(|path| tags.iter().any(|tag| organizer_tag_matches_path(tag, path)))
+}
+
 fn task_matches_smart_view(
     catalog: &OrganizerCatalog,
     task: &OrganizerTask,
@@ -506,7 +516,8 @@ mod view_tests {
         capture_tag_replacement, capture_tags, database_filter_value_from_text,
         database_group_identity, database_group_label, database_property_kind_choices,
         evaluate_database_formula, evaluate_database_rollup, find_matches_in, link_target_range,
-        order_database_groups, parse_mcp_port, parse_organizer_tags, toc_headings,
+        order_database_groups, organizer_tag_matches_path, organizer_tags_exclude, parse_mcp_port,
+        parse_organizer_tags, toc_headings,
     };
     use quire_core::core::database::PropertyKind;
     use quire_core::core::database_view::FilterValue;
@@ -520,6 +531,21 @@ mod view_tests {
             parse_organizer_tags(" 设计,复刻， 设计 ,,桌面端 "),
             ["设计", "复刻", "桌面端"]
         );
+    }
+
+    #[test]
+    fn organizer_tag_filters_follow_hierarchy_and_keep_sibling_names_distinct() {
+        assert!(organizer_tag_matches_path("项目/工作", "项目"));
+        assert!(organizer_tag_matches_path("项目", "项目"));
+        assert!(!organizer_tag_matches_path("项目2/工作", "项目"));
+        assert!(organizer_tags_exclude(
+            &["项目/工作".into(), "读书".into()],
+            &["项目".into()].into()
+        ));
+        assert!(!organizer_tags_exclude(
+            &["项目2/工作".into()],
+            &["项目".into()].into()
+        ));
     }
 
     #[test]
@@ -1147,6 +1173,7 @@ pub struct Workspace {
     organizer_tasks: bool,
     organizer_trash: bool,
     organizer_tag: Option<String>,
+    organizer_excluded_tags: BTreeSet<String>,
     selected_task_list: quire_core::core::organizer::ListId,
     selected_task_smart_view: Option<i32>,
     show_task_done: bool,
@@ -1467,6 +1494,7 @@ impl Workspace {
             organizer_tasks: false,
             organizer_trash: false,
             organizer_tag: None,
+            organizer_excluded_tags: BTreeSet::new(),
             selected_task_list: quire_core::core::organizer::ListId::INBOX,
             selected_task_smart_view: Some(0),
             show_task_done: false,
@@ -5220,11 +5248,43 @@ impl Workspace {
     }
     fn toggle_organizer_tag(&mut self, tag: String, window: &mut Window, cx: &mut Context<Self>) {
         self.commit_note_draft(window, cx);
+        // A path cannot be both included and excluded. Selecting it removes
+        // the exclusion, matching the reference organizer's filter rule.
+        self.organizer_excluded_tags.remove(&tag);
         self.organizer_tag = if tag.is_empty() {
             None
         } else {
             (self.organizer_tag.as_deref() != Some(tag.as_str())).then_some(tag)
         };
+        if self.organizer_tag.is_some() {
+            self.organizer_trash = false;
+        }
+        self.selected_task_ids.clear();
+        self.selected_note = None;
+        self.selected_task = None;
+        self.reset_organizer_item_inputs(cx);
+    }
+    fn toggle_organizer_tag_exclusion(
+        &mut self,
+        tag: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.commit_note_draft(window, cx);
+        if !self.organizer_excluded_tags.insert(tag.clone()) {
+            self.organizer_excluded_tags.remove(&tag);
+        } else if self.organizer_tag.as_deref() == Some(tag.as_str()) {
+            self.organizer_tag = None;
+        }
+        self.selected_task_ids.clear();
+        self.selected_note = None;
+        self.selected_task = None;
+        self.reset_organizer_item_inputs(cx);
+    }
+    fn clear_organizer_filters(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.commit_note_draft(window, cx);
+        self.organizer_tag = None;
+        self.organizer_excluded_tags.clear();
         self.selected_task_ids.clear();
         self.selected_note = None;
         self.selected_task = None;
@@ -10919,10 +10979,12 @@ impl Render for Workspace {
         .cloned()
         .filter(|note| {
             (self.organizer_trash || !self.session.note_delete_is_pending(note.id))
-                && self
-                    .organizer_tag
-                    .as_ref()
-                    .is_none_or(|tag| note.tags.contains(tag))
+                && self.organizer_tag.as_ref().is_none_or(|path| {
+                    note.tags
+                        .iter()
+                        .any(|tag| organizer_tag_matches_path(tag, path))
+                })
+                && !organizer_tags_exclude(&note.tags, &self.organizer_excluded_tags)
                 && (self.search_query.trim().is_empty()
                     || note
                         .title
@@ -11110,10 +11172,11 @@ impl Render for Workspace {
                 return false;
             }
             if self.organizer_trash {
-                return self
-                    .organizer_tag
-                    .as_ref()
-                    .is_none_or(|tag| task.tags.contains(tag))
+                return self.organizer_tag.as_ref().is_none_or(|path| {
+                    task.tags
+                        .iter()
+                        .any(|tag| organizer_tag_matches_path(tag, path))
+                }) && !organizer_tags_exclude(&task.tags, &self.organizer_excluded_tags)
                     && (self.search_query.trim().is_empty()
                         || task
                             .title
@@ -11130,10 +11193,12 @@ impl Render for Workspace {
                     self.task_matches_smart_view(task, view)
                 });
             in_scope
-                && self
-                    .organizer_tag
-                    .as_ref()
-                    .is_none_or(|tag| task.tags.contains(tag))
+                && self.organizer_tag.as_ref().is_none_or(|path| {
+                    task.tags
+                        .iter()
+                        .any(|tag| organizer_tag_matches_path(tag, path))
+                })
+                && !organizer_tags_exclude(&task.tags, &self.organizer_excluded_tags)
                 && (self.search_query.trim().is_empty()
                     || task
                         .title
@@ -11172,7 +11237,16 @@ impl Render for Workspace {
             .session
             .organizer
             .live_tasks()
-            .filter(|task| !self.session.task_delete_is_pending(task.id) && task.done)
+            .filter(|task| {
+                !self.session.task_delete_is_pending(task.id)
+                    && task.done
+                    && self.organizer_tag.as_ref().is_none_or(|path| {
+                        task.tags
+                            .iter()
+                            .any(|tag| organizer_tag_matches_path(tag, path))
+                    })
+                    && !organizer_tags_exclude(&task.tags, &self.organizer_excluded_tags)
+            })
             .count();
         match self.task_sort {
             1 => tasks.sort_by(|a, b| {
@@ -11407,6 +11481,12 @@ impl Render for Workspace {
                 .filter(|task| !self.session.task_delete_is_pending(task.id))
                 .filter(|task| {
                     task_matches_smart_view(&self.session.organizer, task, view, &today, &week)
+                        && self.organizer_tag.as_ref().is_none_or(|path| {
+                            task.tags
+                                .iter()
+                                .any(|tag| organizer_tag_matches_path(tag, path))
+                        })
+                        && !organizer_tags_exclude(&task.tags, &self.organizer_excluded_tags)
                         && (view == 4 && task.done
                             || view != 4 && (!task.done || self.show_task_done))
                 })
@@ -11439,7 +11519,16 @@ impl Render for Workspace {
                     .session
                     .organizer
                     .live_tasks()
-                    .filter(|task| !self.session.task_delete_is_pending(task.id) && task.list == id)
+                    .filter(|task| {
+                        !self.session.task_delete_is_pending(task.id)
+                            && task.list == id
+                            && self.organizer_tag.as_ref().is_none_or(|path| {
+                                task.tags
+                                    .iter()
+                                    .any(|tag| organizer_tag_matches_path(tag, path))
+                            })
+                            && !organizer_tags_exclude(&task.tags, &self.organizer_excluded_tags)
+                    })
                     .count();
                 div()
                     .id(SharedString::from(format!("organizer-list-row-{id:?}")))
@@ -11527,23 +11616,90 @@ impl Render for Workspace {
             }
         }
         organizer_tags.sort();
+        let organizer_excluded_label = (!self.organizer_excluded_tags.is_empty()).then(|| {
+            format!(
+                "排除 {}",
+                self.organizer_excluded_tags
+                    .iter()
+                    .map(|tag| format!("⊘#{tag}"))
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            )
+        });
         let organizer_tag_buttons = organizer_tags
             .into_iter()
             .map(|tag| {
                 let selected = self.organizer_tag.as_deref() == Some(tag.as_str());
+                let excluded = self.organizer_excluded_tags.contains(&tag);
                 let label = tag.clone();
+                let exclude_label = tag.clone();
                 div()
                     .id(SharedString::from(format!("organizer-tag-{tag}")))
-                    .px(px(8.))
-                    .py(px(4.))
-                    .rounded(px(10.))
-                    .cursor_pointer()
-                    .text_color(if selected { accent } else { muted })
-                    .when(selected, |chip| chip.bg(Palette::color(&p.elevated)))
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        this.toggle_organizer_tag(label.clone(), window, cx)
-                    }))
-                    .child(tag)
+                    .w_full()
+                    .h(px(25.))
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .rounded(px(5.))
+                    .when(selected, |row| row.bg(Palette::color(&p.elevated)))
+                    .child(
+                        div()
+                            .id(SharedString::from(format!("organizer-tag-pick-{tag}")))
+                            .flex_1()
+                            .min_w_0()
+                            .h_full()
+                            .px(px(8.))
+                            .flex()
+                            .items_center()
+                            .cursor_pointer()
+                            .text_color(if excluded {
+                                Hsla::from(rgb(0xe5534b))
+                            } else if selected {
+                                accent
+                            } else {
+                                muted
+                            })
+                            .hover(|row| row.text_color(text))
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.toggle_organizer_tag(label.clone(), window, cx)
+                            }))
+                            .child(tag),
+                    )
+                    .child(
+                        div()
+                            .id(SharedString::from(format!(
+                                "organizer-tag-exclude-{exclude_label}"
+                            )))
+                            .w(px(21.))
+                            .h(px(21.))
+                            .mr(px(2.))
+                            .rounded(px(11.))
+                            .border_1()
+                            .border_color(if excluded {
+                                Hsla::from(rgb(0xe5534b))
+                            } else {
+                                Palette::color(&p.border)
+                            })
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .cursor_pointer()
+                            .text_size(px(13.))
+                            .text_color(if excluded {
+                                Hsla::from(rgb(0xe5534b))
+                            } else {
+                                muted
+                            })
+                            .hover(|button| button.border_color(Hsla::from(rgb(0xe5534b))))
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.toggle_organizer_tag_exclusion(
+                                    exclude_label.clone(),
+                                    window,
+                                    cx,
+                                )
+                            }))
+                            .child("⊖"),
+                    )
             })
             .collect::<Vec<_>>();
         let organizer_view = div()
@@ -12211,8 +12367,8 @@ impl Render for Workspace {
                                     .py(px(6.))
                                     .rounded(px(5.))
                                     .cursor_pointer()
-                                    .text_color(if self.organizer_tag.is_none() { accent } else { muted })
-                                    .when(self.organizer_tag.is_none(), |row| row.bg(Palette::color(&p.elevated)))
+                                    .text_color(if self.organizer_tag.is_none() && self.organizer_excluded_tags.is_empty() { accent } else { muted })
+                                    .when(self.organizer_tag.is_none() && self.organizer_excluded_tags.is_empty(), |row| row.bg(Palette::color(&p.elevated)))
                                     .on_click(cx.listener(|this, _, window, cx| this.toggle_organizer_tag(String::new(), window, cx)))
                                     .child(format!("全部笔记 · {note_count}"))
                             ))
@@ -12224,6 +12380,37 @@ impl Render for Workspace {
                                     .child(div().id("organizer-task-list-selector").flex().flex_col().gap(px(3.)).overflow_y_scroll().children(task_list_buttons))
                             ))
                             .child(div().text_size(px(11.)).text_color(muted).mt(px(6.)).child("标签"))
+                            .when_some(organizer_excluded_label, |nav, label| {
+                                nav.child(
+                                    div()
+                                        .id("organizer-excluded-tags")
+                                        .px(px(8.))
+                                        .py(px(4.))
+                                        .text_size(px(10.))
+                                        .text_color(Hsla::from(rgb(0xe5534b)))
+                                        .child(label),
+                                )
+                            })
+                            .when(
+                                self.organizer_tag.is_some()
+                                    || !self.organizer_excluded_tags.is_empty(),
+                                |nav| {
+                                    nav.child(
+                                        div()
+                                            .id("organizer-clear-filters")
+                                            .px(px(8.))
+                                            .py(px(6.))
+                                            .rounded(px(5.))
+                                            .cursor_pointer()
+                                            .text_color(accent)
+                                            .hover(|row| row.bg(Palette::color(&p.bg).opacity(0.3)))
+                                            .on_click(cx.listener(|this, _, window, cx| {
+                                                this.clear_organizer_filters(window, cx)
+                                            }))
+                                            .child("清除筛选"),
+                                    )
+                                },
+                            )
                             .when(!organizer_tag_buttons.is_empty(), |nav| nav.child(
                                 div().id("organizer-tag-filter-list").flex().flex_col().gap(px(3.)).children(organizer_tag_buttons)
                             ))
