@@ -905,7 +905,13 @@ impl Workspace {
                     }
                 }
                 InputEvent::Split(_) => this.open_selected_search_result(window, cx),
-                InputEvent::DismissSlash => this.close_search(window, cx),
+                InputEvent::DismissSlash => {
+                    if this.theme_picker_open {
+                        this.close_settings(window, cx);
+                    } else {
+                        this.close_search(window, cx);
+                    }
+                }
                 _ => {}
             },
         ));
@@ -2807,9 +2813,41 @@ impl Workspace {
         }
         cx.notify();
     }
-    fn toggle_theme_picker(&mut self, cx: &mut Context<Self>) {
-        self.theme_picker_open = !self.theme_picker_open;
+    fn toggle_theme_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.theme_picker_open {
+            self.close_settings(window, cx);
+            return;
+        }
+        self.theme_picker_open = true;
+        self.settings_tab = 0;
+        self.search_query.clear();
+        self.search_input.update(cx, |input, cx| {
+            input.placeholder = Some("搜索设置…".into());
+            input.reset(String::new(), Vec::new(), 0, cx);
+        });
         self.icon_picker_open = false;
+        window.focus(&self.search_input.read(cx).focus);
+        cx.notify();
+    }
+
+    fn close_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.theme_picker_open = false;
+        self.search_query.clear();
+        self.search_selected = 0;
+        let placeholder = if self.organizer_open {
+            if self.organizer_tasks {
+                "搜索任务…"
+            } else {
+                "搜索笔记…"
+            }
+        } else {
+            "搜索页面…"
+        };
+        self.search_input.update(cx, |input, cx| {
+            input.placeholder = Some(placeholder.into());
+            input.reset(String::new(), Vec::new(), 0, cx);
+        });
+        self.restore_focus(window, cx);
         cx.notify();
     }
     fn toggle_sidebar(&mut self, cx: &mut Context<Self>) {
@@ -3599,6 +3637,9 @@ impl Render for Workspace {
                 .items_center()
                 .justify_center()
                 .bg(Hsla::from(rgb(0x000000)).opacity(0x59 as f32 / 255.))
+                .on_click(cx.listener(|this, _, window, cx| {
+                    this.close_settings(window, cx)
+                }))
                 .child(
                     div()
                         .id("settings-dialog")
@@ -3612,6 +3653,7 @@ impl Render for Workspace {
                         .border_1()
                         .border_color(Palette::color(&p.border))
                         .bg(Palette::color(&p.elevated2))
+                        .on_click(cx.listener(|_, _, _, cx| cx.stop_propagation()))
                         .shadow(vec![BoxShadow {
                             color: Hsla::from(rgb(0x000000)).opacity(0xa0 as f32 / 255.),
                             offset: point(px(2.), px(3.)),
@@ -3847,14 +3889,8 @@ impl Render for Workspace {
                                     .border_color(Palette::color(&p.border))
                                     .cursor_pointer()
                                     .hover(|button| button.bg(Palette::color(&p.bg).opacity(0.35)))
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        this.theme_picker_open = false;
-                                        this.search_query.clear();
-                                        this.search_input.update(cx, |input, cx| {
-                                            input.placeholder = Some("搜索页面…".into());
-                                            input.reset(String::new(), Vec::new(), 0, cx);
-                                        });
-                                        cx.notify();
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.close_settings(window, cx);
                                     }))
                                     .child("完成"),
                             ),
@@ -7829,8 +7865,8 @@ impl Render for Workspace {
                                         .cursor_pointer()
                                         .text_color(Palette::color(&p.accent))
                                         .hover(|s| s.bg(Palette::color(&p.elevated)))
-                                        .on_click(cx.listener(|this, _, _, cx| {
-                                            this.toggle_theme_picker(cx)
+                                        .on_click(cx.listener(|this, _, window, cx| {
+                                            this.toggle_theme_picker(window, cx)
                                         }))
                                         .child(format!("主题 · {}  ▾", p.id)),
                                 )
@@ -8086,15 +8122,8 @@ impl Render for Workspace {
                                     .cursor_pointer()
                                     .text_color(muted)
                                     .hover(|row| row.bg(Palette::color(&p.bg).opacity(0.3)))
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        this.theme_picker_open = true;
-                                        this.settings_tab = 0;
-                                        this.search_query.clear();
-                                        this.search_input.update(cx, |input, cx| {
-                                            input.placeholder = Some("搜索设置…".into());
-                                            input.reset(String::new(), Vec::new(), 0, cx);
-                                        });
-                                        cx.notify();
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.toggle_theme_picker(window, cx);
                                     }))
                                     .child(
                                         div()
