@@ -70,10 +70,10 @@ fn run() -> Result<()> {
     Application::new().run(move |cx: &mut App| {
         input::bind_keys(cx);
         view::bind_keys(cx);
-        // The Slint reference's window is 1280×800 including the thin resize
-        // frame. GPUI's custom frame keeps an ~8px resize border on each side,
-        // so size the client area to preserve that same outer footprint.
-        let bounds = Bounds::centered(None, size(px(1264.), px(791.)), cx);
+        // The Slint reference's window is 1280×800. GPUI's custom frame paints
+        // through the invisible resize edge, so the client surface uses that
+        // same full window footprint.
+        let bounds = Bounds::centered(None, size(px(1280.), px(800.)), cx);
         let window = cx.open_window(
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),

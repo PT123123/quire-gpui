@@ -484,3 +484,9 @@ GPUI 应用已超出第一竖切，但离完整复刻仍有较大差距。用户
 - 设置搜索框加入与旧版相同的 14px 搜索路径图标，图标与输入文字按 8px 间距排列；真窗口确认搜索框内容仍处于 32px 高度内，对话框 560×612 几何和主题卡网格位置不变。
 - 对照 `t-jade__settings.png` 时，GPUI Windows 将主题卡 emoji 显示为彩色 emoji，而冻结基线的 Slint 软件 renderer 显示为单色轮廓。强制 Unicode text presentation 的实验没有改变 Windows 输出，已撤销；该表现需真实 Slint 窗口作最终判定，暂不视作修复。
 - 验证：`cargo check --target-dir target-check`、`cargo test --target-dir target-check`（16 项库测试 + 3 项视图测试）、release 构建通过；真窗口截图 `target-check/settings-text-emoji.png` 来自隔离临时库 `%TEMP%\quire-gpui-sidebar-visual-20261014\fixture.db`。
+
+## 第六十四轮：Windows 全铺边窗口框架
+
+- 将公开版 GPUI 0.2.2 源码 vendored 到 `vendor/gpui-0.2.2`，仅补 Windows 隐藏标题栏窗口：非最大化时客户区 inset 设为 0；最大化安全 inset 保持 GPUI 原逻辑。由于 inset=0 后 `DefWindowProc` 不再识别客户区内的 resize 边缘，在 GPUI Windows hit-test 中显式补回四边和四角原生 resize hit code，并让 resize 边缘优先于顶栏拖动区域。
+- 默认窗口目标从旧补偿尺寸 1264×791 改成基线外框 1280×800。真窗口抓图确认渐变与侧栏表面填满全部 1280×800 像素，没有桌面缝隙。
+- 验证：16 项库测试 + 3 项视图测试、`cargo check --target-dir target-check`、release 构建、`git diff --check` 通过。运行中窗口外框/客户区同为 1280×800；`WM_NCHITTEST` 四边/四角返回码依次为 11/10/12/15/13/14/16/17；使用 `SendInput` 从右边缘拖动 36px 后外框从 1280px 增至 1316px。测试仅使用 `%TEMP%\quire-gpui-sidebar-visual-20261014\fixture.db`。
