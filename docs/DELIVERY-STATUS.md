@@ -441,3 +441,9 @@ GPUI 应用已超出第一竖切，但离完整复刻仍有较大差距。用户
 - 数据库块可从块类型菜单或 slash 创建，借 core `MakeDatabase` 同步创建数据库、标题属性、首个 table view 并建立 block 引用。数据库 schema 从 `SqliteRepository::load_databases` 载入会话；表格展示标题与文本属性、新增文本列和记录。行使用 GPUI `uniform_list` 提供的可见区间调用 core `window_rows`，不会把整库记录加载进内存。
 - 新增记录/属性走 core command、当前页面撤销栈与 SQLite change stream；数据库结构命令 flush 后即时读取，撤销/重做同步更新 schema 和记录数。`db-row-added` 与 `db-viewport` 的人工追踪已更新到 sidecar，生成器合并 44 项语义。
 - 验证：隔离 SQLite 测试覆盖数据库创建、默认标题列/视图、追加文本属性、创建记录、可见窗口查询、撤销/重做、重启读回；15 项库测试 + 3 项视图测试、`cargo check`、release 构建和 `cargo fmt --check` 通过。用隔离临时库的 release 真窗口截图验证 jade 渐变、正文列宽、表头和 5 行记录；首轮发现列表初始高度只显示一行，已改为随数据量增长、最多 8 行的内滚动视口，截图复核确认全部 5 行显示且表格宽度与 760px 正文对齐。单元格编辑、删除记录、排序/过滤/分组、其他视图和数据属性配置仍未完成。所有数据在 `%TEMP%`，未打开或修改正式用户库。
+
+## 第五十六轮：数据库视图切换条对齐
+
+- 数据库表格顶部改为旧版的当前视图胶囊与加号布局；视图列表从 core catalog 读取，点击切换当前会话视图，加号创建并选中新表格视图。新建视图使用 core `AddDatabaseView`，同步持久化并纳入撤销/重做。
+- 更新 `db-view-picked` 与 `db-view-added` 的语义追踪。其他视图布局仍未实现；当前创建入口只添加 Table，视图选择态关闭重开后回到首视图。
+- 验证：隔离 SQLite 测试覆盖第二视图新增、撤销、重做；15 项库测试 + 3 项视图测试、`cargo check`、release 构建通过。1280×800 jade release 截图确认视图胶囊、行数/新建行操作、760px 表格和 5 行数据对齐；未访问正式用户库。

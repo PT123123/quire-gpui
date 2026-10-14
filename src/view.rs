@@ -2,12 +2,13 @@ use crate::input::{InputEvent, TextInput};
 use gpui::{prelude::*, *};
 use quire_core::core::{
     command::Command,
+    database::ViewId,
     organizer::{OrganizerCatalog, Priority, Repeat, Task as OrganizerTask},
     types::{Block, BlockId, BlockKind, ColorKind, Lang},
 };
 use quire_gpui::session::Session;
 use std::{
-    collections::{BTreeMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet},
     ops::Range,
     sync::{Arc, Mutex},
     time::Duration,
@@ -376,6 +377,7 @@ pub struct Workspace {
     hovered_note: Option<quire_core::core::organizer::NoteId>,
     hovered_task: Option<quire_core::core::organizer::TaskId>,
     inputs: BTreeMap<u64, Entity<TextInput>>,
+    selected_database_views: HashMap<u64, ViewId>,
     subscriptions: Vec<Subscription>,
     palette: Palette,
     theme_picker_open: bool,
@@ -519,6 +521,7 @@ impl Workspace {
             hovered_note: None,
             hovered_task: None,
             inputs: BTreeMap::new(),
+            selected_database_views: HashMap::new(),
             subscriptions: Vec::new(),
             palette: Palette::load(theme),
             theme_picker_open: false,
@@ -4161,7 +4164,7 @@ impl Render for Workspace {
                 let kind = block.kind;
                 let database_table = if kind == BlockKind::Database {
                     block.db_ref.and_then(|db_id| {
-                        let database = self.session.databases.database(db_id)?;
+                        self.session.databases.database(db_id)?;
                         let title = self.session.databases.title_property(db_id)?.id;
                         let columns = self
                             .session
@@ -4170,12 +4173,25 @@ impl Render for Workspace {
                             .filter(|property| !property.kind.is_title())
                             .cloned()
                             .collect::<Vec<_>>();
+                        let views = self
+                            .session
+                            .databases
+                            .views_of(db_id)
+                            .cloned()
+                            .collect::<Vec<_>>();
+                        let selected_view = self
+                            .selected_database_views
+                            .get(&db_id.0)
+                            .copied()
+                            .filter(|view_id| views.iter().any(|view| view.id == *view_id))
+                            .or_else(|| views.first().map(|view| view.id));
                         let total = self.session.repo.record_count(db_id).ok()?;
                         Some((
                             db_id,
-                            database.name.clone(),
                             title,
                             columns,
+                            views,
+                            selected_view,
                             total,
                             self.session.repo.clone(),
                         ))
@@ -4752,7 +4768,7 @@ impl Render for Workspace {
                                     .child(div().flex().gap(px(6.)).children(table_actions))
                             })
                             .when(kind == BlockKind::Database, |view| {
-                                if let Some((db_id, name, title, columns, total, repo)) =
+                                if let Some((db_id, title, columns, views, selected_view, total, repo)) =
                                     database_table
                                 {
                                     let db_border = Palette::color(&p.border);
@@ -4881,8 +4897,45 @@ impl Render for Workspace {
                                                 .border_color(Palette::color(&p.border))
                                                 .child(
                                                     div()
-                                                        .font_weight(FontWeight::SEMIBOLD)
-                                                        .child(name),
+                                                .flex()
+                                                .items_center()
+                                                .gap(px(5.))
+                                                .children(views.iter().map(|view| {
+                                                    let view_id = view.id;
+                                                    let selected = Some(view_id) == selected_view;
+                                                    div()
+                                                        .id(SharedString::from(format!("db-view-{}-{}", db_id.0, view_id.0)))
+                                                        .px(px(7.))
+                                                        .py(px(3.))
+                                                        .rounded(px(4.))
+                                                        .cursor_pointer()
+                                                        .text_size(px(11.))
+                                                        .text_color(if selected { Palette::color(&p.fg) } else { muted })
+                                                        .when(selected, |tab| tab.bg(Palette::color(&p.accent).opacity(0.82)))
+                                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                                            this.selected_database_views.insert(db_id.0, view_id);
+                                                            cx.notify();
+                                                        }))
+                                                        .child(view.name.clone())
+                                                }))
+                                                .child(
+                                                    div()
+                                                        .id(SharedString::from(format!("db-add-view-{}", db_id.0)))
+                                                        .px(px(5.))
+                                                        .py(px(3.))
+                                                        .rounded(px(4.))
+                                                        .cursor_pointer()
+                                                        .text_color(muted)
+                                                        .hover(|button| button.bg(Palette::color(&p.border)))
+                                                        .on_click(cx.listener(move |this, _, window, cx| {
+                                                            if let Some(view) = this.session.add_database_view(block_id) {
+                                                                this.selected_database_views.insert(db_id.0, view);
+                                                                this.schedule_save(false, window, cx);
+                                                                cx.notify();
+                                                            }
+                                                        }))
+                                                        .child("＋"),
+                                                ),
                                                 )
                                                 .child(
                                                     div()
@@ -4891,7 +4944,7 @@ impl Render for Workspace {
                                                         .gap(px(8.))
                                                         .text_size(px(11.))
                                                         .text_color(muted)
-                                                        .child(format!("表格 · {total} 条"))
+                                                        .child(format!("{total} 行"))
                                                         .child(div().flex().gap(px(4.)).child(
                                                             div()
                                                                 .id(SharedString::from(format!(
@@ -4923,7 +4976,7 @@ impl Render for Workspace {
                                                                         }
                                                                     },
                                                                 ))
-                                                                .child("＋ 新建记录"),
+                                                                .child("＋ 新建行"),
                                                         ).child(
                                                             div()
                                                                 .id(SharedString::from(format!("db-add-property-{}", block_id.0)))
@@ -4939,7 +4992,7 @@ impl Render for Workspace {
                                                                         cx.notify();
                                                                     }
                                                                 }))
-                                                                .child("＋ 属性"),
+                                                                .child("＋ 列"),
                                                         )),
                                                 ),
                                         )

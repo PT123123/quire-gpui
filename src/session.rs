@@ -3,7 +3,9 @@ use anyhow::{Context, Result, bail};
 use quire_core::{
     core::{
         command::{self, Command},
-        database::{DatabaseCatalog, DatabaseDraft, DatabaseId, PropertyId, ViewId},
+        database::{
+            DatabaseCatalog, DatabaseDraft, DatabaseId, PropertyId, View, ViewId, ViewLayout,
+        },
         document::{Document, Entry},
         history::History,
         organizer::{
@@ -351,6 +353,41 @@ impl Session {
         )?;
         self.apply_entry(entry);
         self.databases.properties.push(property);
+        let _ = self.persistence.force_flush();
+        Some(id)
+    }
+    pub fn add_database_view(&mut self, block: BlockId) -> Option<ViewId> {
+        if self.page.locked {
+            return None;
+        }
+        let db = self.document.block(block)?.db_ref?;
+        let id = ViewId(
+            self.repo
+                .max_id(quire_core::storage::database_store::DbTable::Views)
+                .ok()?
+                .saturating_add(1),
+        );
+        let last = self.databases.views_of(db).map(|view| view.ord).max()?;
+        let ord = OrderKey::between(Some(last), None)?;
+        let number = self.databases.views_of(db).count() + 1;
+        let view = View {
+            id,
+            db,
+            name: format!("表格 {number}"),
+            layout: ViewLayout::Table,
+            definition: String::new(),
+            ord,
+        };
+        let entry = command::plan(
+            &mut self.document,
+            self.page.id,
+            Command::AddDatabaseView {
+                block,
+                view: view.clone(),
+            },
+        )?;
+        self.apply_entry(entry);
+        self.databases.views.push(view);
         let _ = self.persistence.force_flush();
         Some(id)
     }
@@ -2106,6 +2143,12 @@ mod tests {
                     quire_core::core::database::PropertyKind::Text,
                 )
                 .expect("property created");
+            session.add_database_view(block).expect("view created");
+            assert_eq!(session.databases.views_of(db).count(), 2);
+            session.undo();
+            assert_eq!(session.databases.views_of(db).count(), 1);
+            session.redo();
+            assert_eq!(session.databases.views_of(db).count(), 2);
             let record = session.add_database_record(block).expect("record created");
             session.persistence.force_flush()?;
             assert_eq!(session.repo.record_count(db)?, 1);
@@ -2143,6 +2186,7 @@ mod tests {
                 .properties_of(db)
                 .any(|property| property.name == "状态")
         );
+        assert_eq!(reopened.databases.views_of(db).count(), 2);
         assert_eq!(reopened.repo.record_count(db)?, 1);
         Ok(())
     }

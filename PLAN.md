@@ -57,7 +57,7 @@
 ## P4 — 数据库视图与属性
 
 - [ ] 对齐旧版实际支持的全部属性类型与配置。
-- [~] 普通表格块支持单元格编辑、追加/删除行列和 Tab/Shift+Tab/Enter/方向键网格导航。数据库现支持通过块类型/slash 创建、显示 schema、虚拟化 table rows、添加文本属性和记录，并走 core undo/persistence；数据库单元格编辑、看板/画廊/日历/表单、多视图切换尚未完成。
+- [~] 普通表格块支持单元格编辑、追加/删除行列和 Tab/Shift+Tab/Enter/方向键网格导航。数据库现支持通过块类型/slash 创建、显示 schema、虚拟化 table rows、添加文本属性和记录；表格视图页签可切换/新建，新增操作走 core undo/persistence；数据库单元格编辑、看板/画廊/日历/表单布局尚未完成。
 - [ ] 单元格编辑、排序、过滤、分组、列管理及宽度（数据库属性视图）。
 - [ ] formula、relation、rollup 的配置与计算显示。
 - [~] 数据库行使用 GPUI uniform_list 的可见 range 通过 core window_rows 读取，未全量加载；大表滚动/内存验收、行选择和单元格编辑提交/取消/撤销待完成。
