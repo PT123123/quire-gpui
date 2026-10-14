@@ -341,7 +341,7 @@ fn evaluate_database_formula(
     })
 }
 
-fn database_property_kind_choices() -> [quire_core::core::database::PropertyKind; 13] {
+fn database_property_kind_choices() -> [quire_core::core::database::PropertyKind; 14] {
     use quire_core::core::database::PropertyKind as Kind;
     [
         Kind::Text,
@@ -357,6 +357,7 @@ fn database_property_kind_choices() -> [quire_core::core::database::PropertyKind
         Kind::LastEditedTime,
         Kind::Formula,
         Kind::MultiSelect,
+        Kind::Relation,
     ]
 }
 
@@ -929,6 +930,7 @@ pub struct Workspace {
     active_database_formula: Option<(u64, u64, u64)>,
     active_database_option: Option<(u64, u64, u64)>,
     active_database_choice: Option<(u64, u64, u64, u64)>,
+    active_database_relation: Option<(u64, u64, u64, u64)>,
     active_database_property_edit: Option<(u64, u64, u64)>,
     active_database_view_edit: Option<(u64, u64, u64)>,
     database_property_name_draft: String,
@@ -1156,6 +1158,7 @@ impl Workspace {
             active_database_formula: None,
             active_database_option: None,
             active_database_choice: None,
+            active_database_relation: None,
             active_database_property_edit: None,
             active_database_view_edit: None,
             database_property_name_draft: String::new(),
@@ -2739,6 +2742,7 @@ impl Workspace {
                 quire_core::core::database::PropertyKind::Select
                     | quire_core::core::database::PropertyKind::Status
                     | quire_core::core::database::PropertyKind::MultiSelect
+                    | quire_core::core::database::PropertyKind::Relation
             )
         }) {
             if let Ok(stored) = self.session.repo.cell(
@@ -2769,6 +2773,14 @@ impl Workspace {
                     })
                     .collect::<Vec<_>>()
                     .join(", ");
+            } else if definition.kind == quire_core::core::database::PropertyKind::Relation
+                && let Ok(quire_core::core::database::CellValue::Items(ids)) =
+                    self.session.repo.cell(
+                        quire_core::core::database::RecordId(record),
+                        quire_core::core::database::PropertyId(property),
+                    )
+            {
+                value = ids.join(", ");
             }
         }
         self.active_database_cell = Some((block, db, record, property));
@@ -3626,6 +3638,7 @@ impl Workspace {
                         | quire_core::core::database::PropertyKind::Select
                         | quire_core::core::database::PropertyKind::Status
                         | quire_core::core::database::PropertyKind::MultiSelect
+                        | quire_core::core::database::PropertyKind::Relation
                 ) {
                     if let Some(db) = self
                         .session
@@ -3638,7 +3651,7 @@ impl Workspace {
                         self.database_property_kind_open = Some((db.0, property.0));
                         if kind == quire_core::core::database::PropertyKind::Formula {
                             self.begin_database_formula_edit(block.0, db.0, property.0, window, cx);
-                        } else {
+                        } else if kind != quire_core::core::database::PropertyKind::Relation {
                             self.begin_database_option_edit(block.0, db.0, property.0, window, cx);
                         }
                     }
@@ -3653,6 +3666,7 @@ impl Workspace {
                         | quire_core::core::database::PropertyKind::Select
                         | quire_core::core::database::PropertyKind::Status
                         | quire_core::core::database::PropertyKind::MultiSelect
+                        | quire_core::core::database::PropertyKind::Relation
                 ) {
                     if let Some(db) = self
                         .session
@@ -3665,7 +3679,7 @@ impl Workspace {
                         self.database_property_kind_open = Some((db.0, property.0));
                         if kind == quire_core::core::database::PropertyKind::Formula {
                             self.begin_database_formula_edit(block.0, db.0, property.0, window, cx);
-                        } else {
+                        } else if kind != quire_core::core::database::PropertyKind::Relation {
                             self.begin_database_option_edit(block.0, db.0, property.0, window, cx);
                         }
                     }
@@ -3819,6 +3833,22 @@ impl Workspace {
                 property_id,
                 &items,
             )
+        } else if self.session.databases.properties.iter().any(|definition| {
+            definition.id == property_id
+                && definition.kind == quire_core::core::database::PropertyKind::Relation
+        }) {
+            let targets = value
+                .split([',', '，'])
+                .map(str::trim)
+                .filter_map(|value| value.parse::<u64>().ok())
+                .map(quire_core::core::database::RecordId)
+                .collect::<Vec<_>>();
+            self.session.set_database_relation_cell(
+                BlockId(block),
+                quire_core::core::database::RecordId(record),
+                property_id,
+                &targets,
+            )
         } else {
             self.session.set_database_cell(
                 BlockId(block),
@@ -3868,6 +3898,73 @@ impl Workspace {
                         .map_or(0, |db| db.0),
                     record,
                 ));
+                self.schedule_save(true, window, cx);
+                cx.notify();
+            }
+            Err(error) => {
+                self.status = error.to_string();
+                self.error = true;
+                cx.notify();
+            }
+        }
+    }
+    fn toggle_database_relation_target(
+        &mut self,
+        block: u64,
+        record: u64,
+        property: u64,
+        target: u64,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let record = quire_core::core::database::RecordId(record);
+        let property = quire_core::core::database::PropertyId(property);
+        let mut ids = match self.session.repo.cell(record, property) {
+            Ok(quire_core::core::database::CellValue::Items(ids)) => ids
+                .into_iter()
+                .filter_map(|id| id.parse::<u64>().ok())
+                .collect::<Vec<_>>(),
+            _ => Vec::new(),
+        };
+        if let Some(index) = ids.iter().position(|id| *id == target) {
+            ids.remove(index);
+        } else {
+            ids.push(target);
+        }
+        let ids = ids
+            .into_iter()
+            .map(quire_core::core::database::RecordId)
+            .collect::<Vec<_>>();
+        match self
+            .session
+            .set_database_relation_cell(BlockId(block), record, property, &ids)
+        {
+            Ok(_) => {
+                self.schedule_save(true, window, cx);
+                cx.notify();
+            }
+            Err(error) => {
+                self.status = error.to_string();
+                self.error = true;
+                cx.notify();
+            }
+        }
+    }
+    fn clear_database_relation(
+        &mut self,
+        block: u64,
+        record: u64,
+        property: u64,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match self.session.set_database_relation_cell(
+            BlockId(block),
+            quire_core::core::database::RecordId(record),
+            quire_core::core::database::PropertyId(property),
+            &[],
+        ) {
+            Ok(_) => {
                 self.schedule_save(true, window, cx);
                 cx.notify();
             }
@@ -7419,12 +7516,12 @@ impl Render for Workspace {
                                                                 && !matches!(
                                                                     kind,
                                                                     quire_core::core::database::PropertyKind::Files
-                                                                        | quire_core::core::database::PropertyKind::Relation
                                                                 );
                                                             let cell_key =
                                                                 (cell_block, db_id.0, row.record, property_id.0);
                                                             let editing = _this.active_database_cell == Some(cell_key);
                                                             let choice_open = _this.active_database_choice == Some(cell_key);
+                                                            let relation_open = _this.active_database_relation == Some(cell_key);
                                                             let input = _this.database_cell_input.clone();
                                                             let display_value = if kind
                                                                 == quire_core::core::database::PropertyKind::Formula
@@ -7445,6 +7542,18 @@ impl Render for Workspace {
                                                             } else {
                                                                 value.clone()
                                                             };
+                                                            let display_value = if kind == quire_core::core::database::PropertyKind::Relation {
+                                                                let relation = formula_properties.iter().find(|property| property.id == property_id).map(|property| quire_core::core::database_relation::config_relation(&property.config));
+                                                                if let (Some(_relation), Ok(quire_core::core::database::CellValue::Items(ids))) = (relation, _this.session.repo.cell(quire_core::core::database::RecordId(row.record), property_id)) {
+                                                                    let record_ids = ids.iter().filter_map(|id| id.parse::<u64>().ok()).map(quire_core::core::database::RecordId).collect::<Vec<_>>();
+                                                                    let titles = _this.session.repo.record_titles(&record_ids).unwrap_or_default();
+                                                                    quire_core::core::database_relation::paint_targets(&ids, |id| id.parse::<u64>().ok().and_then(|id| titles.get(&id).cloned()))
+                                                                } else if relation.is_some_and(|relation| relation.target.is_none()) {
+                                                                    "未配置目标数据库".into()
+                                                                } else {
+                                                                    display_value
+                                                                }
+                                                            } else { display_value };
                                                             let displayed = if display_value.is_empty() {
                                                                 "—".to_owned()
                                                             } else {
@@ -7564,6 +7673,10 @@ impl Render for Workspace {
                                                                                 this.active_database_cell = None;
                                                                                 this.selected_database_record = Some((cell_block, db_id.0, row.record));
                                                                                 cx.notify();
+                                                                            } else if kind == quire_core::core::database::PropertyKind::Relation {
+                                                                                this.active_database_relation = if this.active_database_relation == Some((cell_block, db_id.0, row.record, property_id.0)) { None } else { Some((cell_block, db_id.0, row.record, property_id.0)) };
+                                                                                this.active_database_cell = None;
+                                                                                cx.notify();
                                                                             } else {
                                                                             this.begin_database_cell_edit(
                                                                                 cell_block,
@@ -7591,6 +7704,24 @@ impl Render for Workspace {
                                                                         div().id(SharedString::from(format!("db-choice-{}-{}-{}", row.record, property_id.0, option.id.0))).px(px(7.)).py(px(5.)).rounded(px(4.)).text_size(px(11.)).text_color(text).when(selected_here, |item| item.bg(accent.opacity(0.28))).hover(|item| item.bg(db_hover)).cursor_pointer().on_click(_cx.listener(move |this, _, window, cx| this.set_database_choice(cell_block, row.record, property_id.0, Some(option_id.clone()), window, cx))).child(option.name.clone())
                                                                     }));
                                                                     cell = cell.child(menu);
+                                                                }
+                                                            }
+                                                            if relation_open {
+                                                                if let Some(property) = _this.session.databases.properties.iter().find(|property| property.id == quire_core::core::database::PropertyId(property_id.0)) {
+                                                                    let relation = quire_core::core::database_relation::config_relation(&property.config);
+                                                                    if let Some(target_db) = relation.target {
+                                                                        let selected_ids = match _this.session.repo.cell(quire_core::core::database::RecordId(row.record), property.id) { Ok(quire_core::core::database::CellValue::Items(ids)) => ids, _ => Vec::new() };
+                                                                        let candidates = _this.session.repo.records_named(target_db, "", 40).unwrap_or_default();
+                                                                        let mut menu = div().id(SharedString::from(format!("db-relation-menu-{}-{}", row.record, property_id.0))).absolute().top(px(33.)).left(px(0.)).min_w(px(170.)).max_h(px(240.)).overflow_y_scroll().flex_col().gap(px(2.)).p(px(5.)).rounded(px(6.)).border_1().border_color(db_border).bg(elevated).shadow_lg();
+                                                                        menu = menu.child(div().text_size(px(10.)).text_color(muted).px(px(6.)).py(px(3.)).child(format!("{} · 显示前 40 条", _this.session.databases.database(target_db).map(|db| db.name.as_str()).unwrap_or("目标数据库"))));
+                                                                        menu = menu.child(div().id(SharedString::from(format!("db-relation-clear-{}-{property_id}", row.record))).px(px(7.)).py(px(5.)).rounded(px(4.)).text_size(px(11.)).text_color(muted).hover(|item| item.bg(db_hover)).cursor_pointer().on_click(_cx.listener(move |this, _, window, cx| this.clear_database_relation(cell_block, row.record, property_id.0, window, cx))).child("清除全部关联"));
+                                                                        if candidates.is_empty() { menu = menu.child(div().px(px(7.)).py(px(5.)).text_size(px(11.)).text_color(muted).child("目标数据库没有记录")); }
+                                                                        menu = menu.children(candidates.into_iter().map(|(target, title)| {
+                                                                            let selected = selected_ids.iter().any(|id| id == &target.to_string());
+                                                                            div().id(SharedString::from(format!("db-relation-choice-{}-{target}", property_id.0))).px(px(7.)).py(px(5.)).rounded(px(4.)).text_size(px(11.)).text_color(text).when(selected, |item| item.bg(accent.opacity(0.28))).hover(|item| item.bg(db_hover)).cursor_pointer().on_click(_cx.listener(move |this, _, window, cx| this.toggle_database_relation_target(cell_block, row.record, property_id.0, target, window, cx))).child(format!("{} {}", if selected { "☑" } else { "□" }, if title.is_empty() { "（无标题）".to_owned() } else { title }))
+                                                                        }));
+                                                                        cell = cell.child(menu);
+                                                                    }
                                                                 }
                                                             }
                                                             cell
@@ -8055,6 +8186,8 @@ impl Render for Workspace {
                                                                         this.active_database_formula = None;
                                                                     } else if this.active_database_option == Some((block_id.0, db_id.0, property_id.0)) {
                                                                         this.active_database_option = None;
+                                                                    } else if this.active_database_relation.is_some_and(|(active_block, active_db, _, active_property)| active_block == block_id.0 && active_db == db_id.0 && active_property == property_id.0) {
+                                                                        this.active_database_relation = None;
                                                                     }
                                                                     cx.notify();
                                                                 },
@@ -8197,6 +8330,20 @@ impl Render for Workspace {
                                                                 Err(error) => { this.status = error.to_string(); this.error = true; cx.notify(); }
                                                             }
                                                         })).child(*label)
+                                                    })));
+                                                }
+                                                if property_kind == quire_core::core::database::PropertyKind::Relation {
+                                                    let relation = quire_core::core::database_relation::config_relation(&property.config);
+                                                    let databases = self.session.databases.databases.clone();
+                                                    picker = picker.child(div().id(SharedString::from(format!("db-relation-config-{}-{property_id}", db_id.0))).w_full().flex().items_center().flex_wrap().gap(px(5.)).border_t_1().border_color(db_border).px(px(5.)).py(px(5.)).child(div().text_size(px(11.)).text_color(muted).child("关联到：")).children(databases.into_iter().map(|database| {
+                                                        let selected = relation.target == Some(database.id);
+                                                        let target = database.id;
+                                                        div().id(SharedString::from(format!("db-relation-target-{}-{}", property_id, target.0))).px(px(7.)).py(px(4.)).rounded(px(4.)).text_size(px(11.)).text_color(if selected { text } else { muted }).when(selected, |item| item.bg(accent.opacity(0.32))).when(!selected && !self.session.page.locked, |item| item.cursor_pointer().hover(|item| item.bg(db_hover))).on_click(cx.listener(move |this, _, window, cx| {
+                                                            match this.session.set_database_relation_target(block_id, quire_core::core::database::PropertyId(property_id), Some(target)) {
+                                                                Ok(_) => { this.schedule_save(true, window, cx); cx.notify(); }
+                                                                Err(error) => { this.status = error.to_string(); this.error = true; cx.notify(); }
+                                                            }
+                                                        })).child(database.name)
                                                     })));
                                                 }
                                                 if matches!(property_kind, quire_core::core::database::PropertyKind::Select | quire_core::core::database::PropertyKind::Status | quire_core::core::database::PropertyKind::MultiSelect) {

@@ -963,6 +963,132 @@ impl Session {
         self.refresh_databases();
         Ok(true)
     }
+    pub fn set_database_relation_target(
+        &mut self,
+        block: BlockId,
+        property: PropertyId,
+        target: Option<DatabaseId>,
+    ) -> Result<bool> {
+        if self.page.locked {
+            return Ok(false);
+        }
+        let Some(current) = self.session_database_property(block, property).cloned() else {
+            return Ok(false);
+        };
+        if current.kind != quire_core::core::database::PropertyKind::Relation {
+            bail!("此列不是关联类型");
+        }
+        if let Some(target) = target.filter(|target| {
+            !self
+                .databases
+                .databases
+                .iter()
+                .any(|database| database.id == *target)
+        }) {
+            bail!("目标数据库不存在：{target}");
+        }
+        let old = quire_core::core::database_relation::config_relation(&current.config);
+        if old.mirror.is_some() {
+            bail!("该关联含双向配置，不能从单向设置器修改");
+        }
+        if old.target.is_some() && old.target != target {
+            bail!("关联目标配置后不可直接更换；请新建关联列");
+        }
+        let to =
+            quire_core::core::database_relation::config_set_relation(&current.config, target, None);
+        if current.config == to {
+            return Ok(false);
+        }
+        let Some(entry) = command::plan(
+            &mut self.document,
+            self.page.id,
+            Command::SetRelationConfig {
+                block,
+                property,
+                from: current.config.clone(),
+                to: to.clone(),
+                mirrors: Vec::new(),
+            },
+        ) else {
+            return Ok(false);
+        };
+        self.apply_entry(entry);
+        if let Some(definition) = self
+            .databases
+            .properties
+            .iter_mut()
+            .find(|definition| definition.id == property)
+        {
+            definition.config = to;
+        }
+        self.persistence.force_flush()?;
+        Ok(true)
+    }
+    pub fn set_database_relation_cell(
+        &mut self,
+        block: BlockId,
+        record: RecordId,
+        property: PropertyId,
+        targets: &[RecordId],
+    ) -> Result<bool> {
+        use quire_core::core::database::CellValue;
+        if self.page.locked {
+            return Ok(false);
+        }
+        let Some(definition) = self.session_database_property(block, property).cloned() else {
+            return Ok(false);
+        };
+        if definition.kind != quire_core::core::database::PropertyKind::Relation {
+            bail!("此列不是关联类型");
+        }
+        let config = quire_core::core::database_relation::config_relation(&definition.config);
+        let target_db = config
+            .target
+            .ok_or_else(|| anyhow::anyhow!("请先配置目标数据库"))?;
+        if config.mirror.is_some() {
+            bail!("此列已配置双向关联，暂不支持单向编辑");
+        }
+        let mut ids = Vec::with_capacity(targets.len());
+        for target in targets {
+            let row = self
+                .repo
+                .record(*target)?
+                .ok_or_else(|| anyhow::anyhow!("目标记录不存在"))?;
+            if row.db != target_db {
+                bail!("目标记录不属于所选数据库");
+            }
+            ids.push(target.0.to_string());
+        }
+        ids.sort();
+        ids.dedup();
+        let from = self.repo.cell(record, property)?;
+        let to = if ids.is_empty() {
+            CellValue::Empty
+        } else {
+            CellValue::Items(ids)
+        };
+        if from == to {
+            return Ok(false);
+        }
+        let Some(entry) = command::plan(
+            &mut self.document,
+            self.page.id,
+            Command::SetRelation {
+                block,
+                record,
+                property,
+                from,
+                to,
+                mirrors: Vec::new(),
+            },
+        ) else {
+            return Ok(false);
+        };
+        self.apply_entry(entry);
+        self.persistence.force_flush()?;
+        self.refresh_databases();
+        Ok(true)
+    }
     pub fn set_database_cell_many(
         &mut self,
         block: BlockId,
@@ -3034,6 +3160,55 @@ mod tests {
             reopened
                 .set_database_property_format(block, property, "date")
                 .is_err()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn one_way_relation_config_and_cells_are_undoable_and_persist() -> Result<()> {
+        use quire_core::core::database::{CellValue, PropertyKind};
+
+        let scratch = quire_core::testing::ScratchDir::new("gpui-database-relation");
+        let path = scratch.path().join("test.db");
+        let (block, db, property, source, target);
+        {
+            let mut session = Session::open(&path)?;
+            block = session.blocks()[0].id;
+            db = session
+                .make_database(block, "关系测试".into())
+                .expect("database created");
+            property = session
+                .add_database_property(block, "相关记录".into(), PropertyKind::Relation)
+                .expect("property created");
+            assert!(session.set_database_relation_target(block, property, Some(db))?);
+            source = session.add_database_record(block).expect("source created");
+            target = session.add_database_record(block).expect("target created");
+            assert!(session.set_database_relation_cell(block, source, property, &[target])?);
+            assert_eq!(
+                session.repo.cell(source, property)?,
+                CellValue::Items(vec![target.0.to_string()])
+            );
+            session.undo();
+            assert_eq!(session.repo.cell(source, property)?, CellValue::Empty);
+            session.redo();
+            assert!(session.set_database_relation_cell(block, source, property, &[])?);
+            assert_eq!(session.repo.cell(source, property)?, CellValue::Empty);
+            session.undo();
+        }
+        let reopened = Session::open(&path)?;
+        let definition = reopened
+            .databases
+            .properties
+            .iter()
+            .find(|definition| definition.id == property)
+            .unwrap();
+        assert_eq!(
+            quire_core::core::database_relation::config_relation(&definition.config).target,
+            Some(db)
+        );
+        assert_eq!(
+            reopened.repo.cell(source, property)?,
+            CellValue::Items(vec![target.0.to_string()])
         );
         Ok(())
     }
