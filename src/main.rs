@@ -42,7 +42,7 @@ fn run() -> Result<()> {
             "--stdio" | "mcp" => stdio = true,
             "--help" | "-h" => {
                 println!(
-                    "quire-gpui [--db PATH] [--theme ID] [--dump-state]\nquire-gpui --stdio [--db PATH]: bridge MCP stdio to the running Quire HTTP service. The database path locates its adjacent mcp.json pointer.\n--smoke-test: requires a NEW --db path; exercises application input callbacks, NOT real OS IME.\n--smoke-blocks N: with --smoke-test, add N synthetic paragraph blocks (max 10000) to the isolated test page."
+                    "quire-gpui [--db PATH] [--theme ID] [--dump-state]\nquire-gpui --stdio [--db PATH]: bridge MCP stdio to the running Quire HTTP service. The database path locates its adjacent mcp.json pointer.\n--smoke-test: requires a NEW --db path and refuses an existing adjacent mcp.json; exercises isolated UI/MCP paths, NOT real OS IME.\n--smoke-blocks N: with --smoke-test, add N synthetic paragraph blocks (max 10000) to the isolated test page."
                 );
                 return Ok(());
             }
@@ -70,6 +70,13 @@ fn run() -> Result<()> {
             .join("quire.db")
     });
     let path = std::path::absolute(path)?;
+    if smoke
+        && path
+            .parent()
+            .is_some_and(|parent| crate::mcp::pointer_path(parent).exists())
+    {
+        bail!("--smoke-test 拒绝覆盖数据库目录中已有的 MCP mcp.json 指针");
+    }
     if stdio {
         return mcp::run_stdio_bridge(&path).map_err(anyhow::Error::msg);
     }
@@ -90,6 +97,20 @@ fn run() -> Result<()> {
         return Ok(());
     }
     let mut session = Session::open(&path)?;
+    if smoke {
+        // Exercise the persisted startup preference in the same isolated
+        // database as the rest of the window smoke. This also makes the later
+        // platform quick-note event verify that repeated activation reuses the
+        // startup-created popup instead of opening a second draft.
+        session.set_setting("gpui.quick-note-on-start", "true");
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0))?;
+        let mcp_port = listener.local_addr()?.port();
+        drop(listener);
+        session.set_setting("gpui.mcp.enabled", "true");
+        session.set_setting("gpui.mcp.port", mcp_port.to_string());
+        session.set_setting("gpui.mcp.token", "quire-gpui-isolated-smoke-token");
+        session.persistence.force_flush()?;
+    }
     if smoke_blocks > 0 {
         let anchor = session
             .blocks()

@@ -1252,7 +1252,6 @@ pub struct Workspace {
     save_task: Option<gpui::Task<()>>,
     flush_lock: Arc<Mutex<()>>,
     closing: bool,
-    smoke: bool,
     normal_window_bounds: Bounds<Pixels>,
     mcp_event_tx: std::sync::mpsc::Sender<crate::platform::ShellEvent>,
     mcp_server: Option<crate::mcp::McpServerHandle>,
@@ -1580,7 +1579,6 @@ impl Workspace {
             save_task: None,
             flush_lock: Arc::new(Mutex::new(())),
             closing: false,
-            smoke,
             normal_window_bounds: window.bounds(),
             mcp_event_tx,
             mcp_server: None,
@@ -1998,10 +1996,43 @@ impl Workspace {
         })
         .detach();
         if smoke {
+            let mcp_port = this.mcp_port;
+            let mcp_token = this.mcp_token.clone();
+            let (mcp_result_tx, mcp_result_rx) = std::sync::mpsc::channel();
+            std::thread::spawn(move || {
+                let _ = mcp_result_tx.send(smoke_mcp_create_note(mcp_port, &mcp_token));
+            });
             cx.spawn_in(window, async move |weak, cx| {
                 cx.background_executor()
                     .timer(Duration::from_millis(400))
                     .await;
+                let mut mcp_response = None;
+                for _ in 0..125 {
+                    if let Ok(response) = mcp_result_rx.try_recv() {
+                        mcp_response = Some(response);
+                        break;
+                    }
+                    cx.background_executor()
+                        .timer(Duration::from_millis(40))
+                        .await;
+                }
+                let mcp_response = mcp_response
+                    .expect("MCP smoke request should finish within five seconds")
+                    .expect("MCP smoke request should receive an HTTP response");
+                assert!(
+                    mcp_response.starts_with("HTTP/1.1 200"),
+                    "MCP smoke should receive success: {mcp_response}"
+                );
+                let _ = weak.update_in(cx, |this, _, _| {
+                    let note = this
+                        .session
+                        .organizer
+                        .live_notes()
+                        .find(|note| note.body == "由 MCP 桌面窗口回归创建")
+                        .expect("MCP request should reach the live Session");
+                    assert_eq!(note.tags, ["mcp-smoke", "桌面回归"]);
+                    eprintln!("SMOKE: persisted MCP startup, HTTP auth, UI dispatch and note write passed");
+                });
                 let _ = weak.update_in(cx, |this, window, cx| {
                     this.open_command_palette(window, cx);
                     this.search_input.update(cx, |input, cx| {
@@ -2091,6 +2122,11 @@ impl Workspace {
                             eprintln!(
                                 "SMOKE: virtual scroll-to-last passed; dispatching the platform quick-note event"
                             );
+                            assert!(
+                                this.quick_note_window.is_some(),
+                                "the persisted quick-note-on-start preference must open the popup"
+                            );
+                            let windows_before = cx.windows().len();
                             this.mcp_event_tx
                                 .send(crate::platform::ShellEvent::QuickNote)
                                 .expect("quick-note event pump should still be available");
@@ -2104,6 +2140,11 @@ impl Workspace {
                                     let handle = this
                                         .quick_note_window
                                         .expect("quick-note window should open in smoke mode");
+                                    assert_eq!(
+                                        cx.windows().len(),
+                                        windows_before,
+                                        "repeated quick-note activation must reuse the startup popup"
+                                    );
                                     handle
                                         .update(cx, |note, popup, cx| {
                                             note.input.update(cx, |input, cx| {
@@ -7134,6 +7175,41 @@ impl Workspace {
         })
         .detach();
     }
+}
+
+fn smoke_mcp_create_note(port: u16, token: &str) -> Result<String, String> {
+    use std::io::{Read, Write};
+
+    let mut stream = std::net::TcpStream::connect(("127.0.0.1", port))
+        .map_err(|error| format!("connect to MCP smoke server: {error}"))?;
+    stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .map_err(|error| format!("set MCP smoke timeout: {error}"))?;
+    let body = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "tools/call",
+        "params": {
+            "name": "create_note",
+            "arguments": {
+                "title": "MCP 窗口 smoke",
+                "body": "由 MCP 桌面窗口回归创建",
+                "tags": "mcp-smoke,桌面回归"
+            }
+        }
+    })
+    .to_string();
+    write!(
+        stream,
+        "POST /mcp HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nAuthorization: Bearer {token}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    )
+    .map_err(|error| format!("send MCP smoke request: {error}"))?;
+    let mut response = String::new();
+    stream
+        .read_to_string(&mut response)
+        .map_err(|error| format!("read MCP smoke response: {error}"))?;
+    Ok(response)
 }
 
 fn capture_tags(text: &str) -> Vec<String> {

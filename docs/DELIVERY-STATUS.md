@@ -785,3 +785,10 @@ GPUI 已覆盖主编辑器、整理区、独立速记与标签建议、Windows �
 - 接入与 Slint 对齐的 Ctrl+K 快捷入口、键盘过滤/上下选择/Enter 执行、点击执行及 Escape/遮罩关闭；面板列出可执行命令和非模板页面，页面项可直接切换。
 - 连接已有的新建页、页面搜索、侧栏、主题、设置、笔记/任务入口、重命名、复制、删除确认、Markdown 导入/导出/复制操作；仍缺页面历史前进/后退和浏览器打开 HTML 命令，页面内查找也未完成。
 - 中英文过滤规则回归通过；Release smoke 实际打开 Ctrl+K 面板、输入“设置”、确认过滤仅剩该命令、运行后打开设置再关闭。全量 `cargo test`（58 项）、`cargo check -j 8`、Release 构建、`cargo fmt --all`、`git diff --check` 和隔离 Release smoke 通过。
+
+## 第一百一十九轮：速记、托盘与 MCP 桌面路径回归
+
+- 隔离 `--smoke-test` 启动前将 `gpui.quick-note-on-start=true` 写入临时数据库并强制 flush，确认 Workspace 初始化时自动创建速记窗；随后再发送托盘/全局快捷键共用的 `ShellEvent::QuickNote`，断言仍只有同一主窗与速记窗，避免重复激活产生多个草稿窗口。
+- 同一 release 窗口流程继续验证速记输入事件、标签解析、提交落库以及主窗口托盘隐藏/唤回。另在隔离库里持久化启用 MCP、随机选取空闲 loopback 端口并启动桌面内服务；实际 HTTP 客户端带 Bearer token 调用 `create_note`，请求经 shell/UI 事件泵进入唯一 Session，响应成功后确认笔记与两个标签均在内存态和重开数据库中存在。真实单库 1000 合成块场景通过，退出后 `--dump-state` 读回 MCP 创建的笔记和两条速记。没有读取真实用户库。
+- 因 MCP 启动会在数据库旁写入 `mcp.json`，`--smoke-test` 现会在启动前拒绝覆盖已有同目录指针；回归确认拒绝时不创建数据库。测试应使用独立临时目录。
+- 验证：`cargo fmt --all -- --check`、`cargo check -j 8`、全量 `cargo test -j 8`（58 项）、`cargo build --release -j 8` 与隔离 release smoke 通过。GPUI vendor 现存两个 float fallback 警告与业务变更无关。
