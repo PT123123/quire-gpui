@@ -5995,21 +5995,65 @@ impl Workspace {
             }
         };
         let was_enabled = self.mcp_server.is_some();
-        if was_enabled {
-            self.stop_mcp();
+        if port == self.mcp_port {
+            self.mcp_port_draft = port.to_string();
+            self.mcp_status = if was_enabled {
+                "端口未更改；MCP 服务继续运行".into()
+            } else {
+                format!("端口仍为 {port}；服务尚未启用")
+            };
+            cx.notify();
+            return;
         }
-        self.mcp_port = port;
-        self.session.set_setting("gpui.mcp.port", port.to_string());
-        self.mcp_port_draft = port.to_string();
+        if was_enabled {
+            let call = crate::mcp_tools::call_sender(self.mcp_event_tx.clone());
+            let candidate = crate::mcp::McpServer::new(
+                port,
+                self.mcp_token.clone(),
+                crate::mcp_tools::tool_defs(),
+                call,
+            )
+            .spawn();
+            match candidate {
+                Ok(server) => {
+                    let old_server = self.mcp_server.replace(server);
+                    self.mcp_port = port;
+                    self.mcp_port_draft = port.to_string();
+                    self.session.set_setting("gpui.mcp.enabled", "true");
+                    self.session.set_setting("gpui.mcp.port", port.to_string());
+                    self.session
+                        .set_setting("gpui.mcp.token", self.mcp_token.clone());
+                    self.mcp_status = if let Some(dir) = self.session.path.parent() {
+                        match crate::mcp::write_pointer(dir, port, &self.mcp_token) {
+                            Ok(()) => format!("已启用 · http://127.0.0.1:{port}/mcp"),
+                            Err(error) => {
+                                let _ = std::fs::remove_file(crate::mcp::pointer_path(dir));
+                                format!("服务已切换，但写入连接配置失败：{error}")
+                            }
+                        }
+                    } else {
+                        format!("已启用 · http://127.0.0.1:{port}/mcp")
+                    };
+                    drop(old_server);
+                }
+                Err(error) => {
+                    self.mcp_status = format!(
+                        "新端口 {port} 启动失败；原服务仍运行在 {}：{error}",
+                        self.mcp_port
+                    );
+                    cx.notify();
+                    return;
+                }
+            }
+        } else {
+            self.mcp_port = port;
+            self.mcp_port_draft = port.to_string();
+            self.session.set_setting("gpui.mcp.port", port.to_string());
+            self.mcp_status = format!("端口已设为 {port}；服务尚未启用");
+        }
         self.mcp_port_input.update(cx, |input, cx| {
             input.reset(port.to_string(), Vec::new(), port.to_string().len(), cx);
         });
-        if was_enabled {
-            self.start_mcp();
-        }
-        if self.mcp_server.is_none() && !was_enabled {
-            self.mcp_status = format!("端口已设为 {port}；服务尚未启用");
-        }
         self.schedule_save(true, window, cx);
         cx.notify();
     }
