@@ -297,7 +297,51 @@ fn database_group_identity(key: &quire_core::core::database_view::GroupKey) -> S
     }
 }
 
-fn database_property_kind_choices() -> [quire_core::core::database::PropertyKind; 11] {
+fn evaluate_database_formula(
+    property: quire_core::core::database::PropertyId,
+    properties: &[quire_core::core::database::Property],
+    repo: &quire_core::storage::SqliteRepository,
+    record: quire_core::core::database::RecordId,
+    depth: u32,
+) -> Result<quire_core::core::database_formula::Val, quire_core::core::database_formula::FormulaError>
+{
+    use quire_core::core::database::PropertyKind;
+    use quire_core::core::database_formula::{FormulaError, Program, Val};
+    let definition = properties
+        .iter()
+        .find(|candidate| candidate.id == property)
+        .ok_or_else(|| FormulaError::Eval("formula property no longer exists".into()))?;
+    let source =
+        quire_core::core::database_formula::config_formula(&definition.config).unwrap_or_default();
+    if source.is_empty() {
+        return Ok(Val::Empty);
+    }
+    let program = Program::parse(&source, |name| {
+        properties
+            .iter()
+            .find(|candidate| candidate.name == name)
+            .map(|candidate| candidate.id)
+    })?;
+    program.eval_at(depth, &mut |dependency, next_depth| {
+        let definition = properties
+            .iter()
+            .find(|candidate| candidate.id == dependency)
+            .ok_or_else(|| FormulaError::Eval("formula dependency no longer exists".into()))?;
+        if definition.kind == PropertyKind::Formula {
+            evaluate_database_formula(dependency, properties, repo, record, next_depth)
+        } else {
+            let value = repo
+                .cell(record, dependency)
+                .map_err(|error| FormulaError::Eval(error.to_string()))?;
+            Ok(quire_core::core::database_formula::val_of(
+                definition.kind,
+                &value,
+            ))
+        }
+    })
+}
+
+fn database_property_kind_choices() -> [quire_core::core::database::PropertyKind; 12] {
     use quire_core::core::database::PropertyKind as Kind;
     [
         Kind::Text,
@@ -311,6 +355,7 @@ fn database_property_kind_choices() -> [quire_core::core::database::PropertyKind
         Kind::Phone,
         Kind::CreatedTime,
         Kind::LastEditedTime,
+        Kind::Formula,
     ]
 }
 
@@ -387,8 +432,8 @@ fn toc_headings(blocks: &[Block]) -> Vec<(BlockId, u8, String)> {
 mod view_tests {
     use super::{
         database_filter_value_from_text, database_group_identity, database_group_label,
-        database_property_kind_choices, find_matches_in, link_target_range, order_database_groups,
-        parse_organizer_tags, toc_headings,
+        database_property_kind_choices, evaluate_database_formula, find_matches_in,
+        link_target_range, order_database_groups, parse_organizer_tags, toc_headings,
     };
     use quire_core::core::database::PropertyKind;
     use quire_core::core::database_view::FilterValue;
@@ -449,6 +494,68 @@ mod view_tests {
         assert!(kinds.contains(&Kind::CreatedTime));
         assert!(kinds.contains(&Kind::LastEditedTime));
         assert!(!kinds.contains(&Kind::Title));
+    }
+
+    #[test]
+    fn database_formula_evaluates_visible_rows_and_reports_nested_values() {
+        let scratch = quire_core::testing::ScratchDir::new("gpui-formula-cell");
+        let path = scratch.path().join("test.db");
+        let mut session = quire_gpui::session::Session::open(&path).expect("session opens");
+        let block = session.blocks()[0].id;
+        let db = session
+            .make_database(block, "公式测试".into())
+            .expect("database created");
+        let amount = session
+            .add_database_property(
+                block,
+                "数量".into(),
+                quire_core::core::database::PropertyKind::Text,
+            )
+            .expect("amount property created");
+        assert!(
+            session
+                .set_database_property_kind(
+                    block,
+                    amount,
+                    quire_core::core::database::PropertyKind::Number,
+                )
+                .expect("number type set")
+        );
+        let total = session
+            .add_database_property(
+                block,
+                "总计".into(),
+                quire_core::core::database::PropertyKind::Text,
+            )
+            .expect("formula property created");
+        assert!(
+            session
+                .set_database_property_kind(
+                    block,
+                    total,
+                    quire_core::core::database::PropertyKind::Formula,
+                )
+                .expect("formula type set")
+        );
+        let record = session.add_database_record(block).expect("record created");
+        assert!(
+            session
+                .set_database_cell(block, record, amount, "6")
+                .expect("number stored")
+        );
+        assert!(
+            session
+                .set_database_formula(block, total, "[数量] * 2")
+                .expect("formula stored")
+        );
+        let properties = session
+            .databases
+            .properties_of(db)
+            .cloned()
+            .collect::<Vec<_>>();
+        let value = evaluate_database_formula(total, &properties, &session.repo, record, 0)
+            .expect("formula evaluates");
+        assert_eq!(quire_core::core::database_formula::display(&value), "12");
     }
 
     fn block(id: u64, kind: BlockKind, text: &str, parent: Option<BlockId>, folded: bool) -> Block {
@@ -772,6 +879,7 @@ pub struct Workspace {
     organizer_tags_input: Entity<TextInput>,
     subtask_title_input: Entity<TextInput>,
     database_cell_input: Entity<TextInput>,
+    database_formula_input: Entity<TextInput>,
     database_search_input: Entity<TextInput>,
     database_property_name_input: Entity<TextInput>,
     search_subscription: Option<Subscription>,
@@ -785,6 +893,7 @@ pub struct Workspace {
     organizer_tags_subscription: Option<Subscription>,
     subtask_title_subscription: Option<Subscription>,
     database_cell_subscription: Option<Subscription>,
+    database_formula_subscription: Option<Subscription>,
     search_query: String,
     find_query: String,
     find_matches: Vec<(BlockId, Range<usize>)>,
@@ -814,6 +923,7 @@ pub struct Workspace {
     database_search_text: String,
     selected_database_record: Option<(u64, u64, u64)>,
     active_database_cell: Option<(u64, u64, u64, u64)>,
+    active_database_formula: Option<(u64, u64, u64)>,
     active_database_property_edit: Option<(u64, u64, u64)>,
     active_database_view_edit: Option<(u64, u64, u64)>,
     database_property_name_draft: String,
@@ -935,6 +1045,11 @@ impl Workspace {
         });
         let database_cell_input =
             cx.new(|cx| TextInput::new(String::new(), Vec::new(), 12., window, cx));
+        let database_formula_input =
+            cx.new(|cx| TextInput::new(String::new(), Vec::new(), 12., window, cx));
+        database_formula_input.update(cx, |input, _| {
+            input.placeholder = Some("例如：[数量] * [单价]".into())
+        });
         let database_search_input =
             cx.new(|cx| TextInput::new(String::new(), Vec::new(), 12., window, cx));
         let database_filter_value_input =
@@ -960,6 +1075,7 @@ impl Workspace {
             organizer_tags_input.clone(),
             subtask_title_input.clone(),
             database_cell_input.clone(),
+            database_formula_input.clone(),
             database_search_input.clone(),
             database_property_name_input.clone(),
         ] {
@@ -980,6 +1096,7 @@ impl Workspace {
             organizer_tags_input,
             subtask_title_input,
             database_cell_input,
+            database_formula_input,
             database_search_input,
             database_property_name_input,
             search_subscription: None,
@@ -993,6 +1110,7 @@ impl Workspace {
             organizer_tags_subscription: None,
             subtask_title_subscription: None,
             database_cell_subscription: None,
+            database_formula_subscription: None,
             search_query: String::new(),
             find_query: String::new(),
             find_matches: Vec::new(),
@@ -1022,6 +1140,7 @@ impl Workspace {
             database_filter_value_active: None,
             selected_database_record: None,
             active_database_cell: None,
+            active_database_formula: None,
             active_database_property_edit: None,
             active_database_view_edit: None,
             database_property_name_draft: String::new(),
@@ -1216,6 +1335,21 @@ impl Workspace {
                 InputEvent::Blurred => this.commit_database_cell(false, window, cx),
                 InputEvent::DismissSlash => {
                     this.active_database_cell = None;
+                    this.focus_first(window, cx);
+                    cx.notify();
+                }
+                _ => {}
+            },
+        ));
+        let database_formula_input = this.database_formula_input.clone();
+        this.database_formula_subscription = Some(cx.subscribe_in(
+            &database_formula_input,
+            window,
+            |this, _, event, window, cx| match event {
+                InputEvent::Edited { .. } => cx.notify(),
+                InputEvent::Split(_) => this.commit_database_formula(true, window, cx),
+                InputEvent::DismissSlash => {
+                    this.active_database_formula = None;
                     this.focus_first(window, cx);
                     cx.notify();
                 }
@@ -2503,6 +2637,7 @@ impl Workspace {
             self.organizer_tags_input.clone(),
             self.subtask_title_input.clone(),
             self.database_cell_input.clone(),
+            self.database_formula_input.clone(),
         ] {
             input.update(cx, |input, _| input.text_color = Some(fg));
         }
@@ -2538,6 +2673,7 @@ impl Workspace {
             self.organizer_tags_input.clone(),
             self.subtask_title_input.clone(),
             self.database_cell_input.clone(),
+            self.database_formula_input.clone(),
         ];
         inputs.extend(self.inputs.values().cloned());
         for input in inputs {
@@ -2586,6 +2722,72 @@ impl Workspace {
         let input = self.database_cell_input.read(cx);
         window.focus(&input.focus);
         cx.notify();
+    }
+    fn begin_database_formula_edit(
+        &mut self,
+        block: u64,
+        db: u64,
+        property: u64,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.session.page.locked {
+            return;
+        }
+        let expression = self
+            .session
+            .databases
+            .properties_of(quire_core::core::database::DatabaseId(db))
+            .find(|candidate| candidate.id.0 == property)
+            .filter(|candidate| candidate.kind == quire_core::core::database::PropertyKind::Formula)
+            .and_then(|candidate| {
+                quire_core::core::database_formula::config_formula(&candidate.config)
+            })
+            .unwrap_or_default();
+        self.active_database_formula = Some((block, db, property));
+        self.database_formula_input.update(cx, |input, cx| {
+            let caret = expression.len();
+            input.reset(expression, Vec::new(), caret, cx);
+        });
+        window.focus(&self.database_formula_input.read(cx).focus);
+        cx.notify();
+    }
+    fn commit_database_formula(
+        &mut self,
+        restore_focus_after_commit: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some((block, _db, property)) = self.active_database_formula else {
+            return;
+        };
+        let expression = self
+            .database_formula_input
+            .read(cx)
+            .buffer
+            .committed()
+            .to_owned();
+        match self.session.set_database_formula(
+            BlockId(block),
+            quire_core::core::database::PropertyId(property),
+            &expression,
+        ) {
+            Ok(_) => {
+                self.active_database_formula = None;
+                self.error = false;
+                self.status = "公式已保存".into();
+                self.schedule_save(true, window, cx);
+                if restore_focus_after_commit {
+                    self.focus_first(window, cx);
+                }
+                cx.notify();
+            }
+            Err(error) => {
+                self.status = format!("公式未保存：{error}");
+                self.error = true;
+                cx.notify();
+            }
+        }
     }
     fn begin_database_property_name_edit(
         &mut self,
@@ -3299,11 +3501,39 @@ impl Workspace {
             Ok(true) => {
                 self.status = "列类型已更改；已有值不会自动转换".into();
                 self.error = false;
-                self.database_property_kind_open = None;
                 self.schedule_save(true, window, cx);
+                if kind == quire_core::core::database::PropertyKind::Formula {
+                    if let Some(db) = self
+                        .session
+                        .databases
+                        .properties
+                        .iter()
+                        .find(|candidate| candidate.id == property)
+                        .map(|candidate| candidate.db)
+                    {
+                        self.database_property_kind_open = Some((db.0, property.0));
+                        self.begin_database_formula_edit(block.0, db.0, property.0, window, cx);
+                    }
+                } else {
+                    self.database_property_kind_open = None;
+                }
             }
             Ok(false) => {
-                self.database_property_kind_open = None;
+                if kind == quire_core::core::database::PropertyKind::Formula {
+                    if let Some(db) = self
+                        .session
+                        .databases
+                        .properties
+                        .iter()
+                        .find(|candidate| candidate.id == property)
+                        .map(|candidate| candidate.db)
+                    {
+                        self.database_property_kind_open = Some((db.0, property.0));
+                        self.begin_database_formula_edit(block.0, db.0, property.0, window, cx);
+                    }
+                } else {
+                    self.database_property_kind_open = None;
+                }
             }
             Err(error) => {
                 self.status = error.to_string();
@@ -6949,6 +7179,7 @@ impl Render for Workspace {
                                     let row_filter = view_filter.clone();
                                     let row_group_data = group_data.clone();
                                     let collapsed_groups = self.database_collapsed_groups.clone();
+                                    let formula_properties = all_columns.clone();
                                     let rows = uniform_list(
                                         SharedString::from(format!("database-rows-{}", db_id.0)),
                                         list_total,
@@ -6991,10 +7222,29 @@ impl Render for Workspace {
                                                                 (cell_block, db_id.0, row.record, property_id.0);
                                                             let editing = _this.active_database_cell == Some(cell_key);
                                                             let input = _this.database_cell_input.clone();
-                                                            let displayed = if value.is_empty() {
-                                                                "—".to_owned()
+                                                            let display_value = if kind
+                                                                == quire_core::core::database::PropertyKind::Formula
+                                                            {
+                                                                evaluate_database_formula(
+                                                                    property_id,
+                                                                    &formula_properties,
+                                                                    &repo,
+                                                                    quire_core::core::database::RecordId(row.record),
+                                                                    0,
+                                                                )
+                                                                .map(|value| {
+                                                                    quire_core::core::database_formula::display(&value)
+                                                                })
+                                                                .unwrap_or_else(|_| {
+                                                                    quire_core::core::database_formula::FORMULA_ERROR_PAINT.into()
+                                                                })
                                                             } else {
                                                                 value.clone()
+                                                            };
+                                                            let displayed = if display_value.is_empty() {
+                                                                "—".to_owned()
+                                                            } else {
+                                                                display_value
                                                             };
                                                             let checked = matches!(
                                                                 value.as_str(),
@@ -7546,12 +7796,27 @@ impl Render for Workspace {
                                                             .cursor_pointer()
                                                             .hover(|button| button.bg(db_hover))
                                                             .on_click(cx.listener(
-                                                                move |this, _, _, cx| {
+                                                                move |this, _, window, cx| {
                                                                     cx.stop_propagation();
                                                                     let key = (db_id.0, property_id.0);
                                                                     this.database_property_kind_open =
                                                                         (this.database_property_kind_open != Some(key))
                                                                             .then_some(key);
+                                                                    if this.database_property_kind_open == Some(key)
+                                                                        && property_kind == quire_core::core::database::PropertyKind::Formula
+                                                                    {
+                                                                        this.begin_database_formula_edit(
+                                                                            block_id.0,
+                                                                            db_id.0,
+                                                                            property_id.0,
+                                                                            window,
+                                                                            cx,
+                                                                        );
+                                                                    } else if this.active_database_formula
+                                                                        == Some((block_id.0, db_id.0, property_id.0))
+                                                                    {
+                                                                        this.active_database_formula = None;
+                                                                    }
                                                                     cx.notify();
                                                                 },
                                                             )),
@@ -7633,6 +7898,51 @@ impl Render for Workspace {
                                                                 .child(database_kind_label(kind))
                                                         })),
                                                 );
+                                                if property_kind
+                                                    == quire_core::core::database::PropertyKind::Formula
+                                                {
+                                                    let editing = self.active_database_formula
+                                                        == Some((block_id.0, db_id.0, property_id));
+                                                    let mut formula_editor = div()
+                                                        .id(SharedString::from(format!(
+                                                            "db-formula-editor-{}-{property_id}",
+                                                            db_id.0
+                                                        )))
+                                                        .w_full()
+                                                        .flex()
+                                                        .items_center()
+                                                        .gap(px(6.))
+                                                        .border_t_1()
+                                                        .border_color(db_border);
+                                                    if editing {
+                                                        formula_editor = formula_editor
+                                                            .child(div().flex_1().child(self.database_formula_input.clone()))
+                                                            .child(
+                                                                div()
+                                                                    .id(SharedString::from(format!(
+                                                                        "db-formula-save-{}-{property_id}",
+                                                                        db_id.0
+                                                                    )))
+                                                                    .px(px(8.))
+                                                                    .py(px(5.))
+                                                                    .rounded(px(4.))
+                                                                    .text_size(px(11.))
+                                                                    .text_color(accent)
+                                                                    .cursor_pointer()
+                                                                    .hover(|button| button.bg(db_hover))
+                                                                    .on_click(cx.listener(|this, _, window, cx| {
+                                                                        this.commit_database_formula(true, window, cx)
+                                                                    }))
+                                                                    .child("保存公式"),
+                                                            );
+                                                    } else {
+                                                        formula_editor = formula_editor
+                                                            .text_size(px(11.))
+                                                            .text_color(muted)
+                                                            .child("点击公式类型可编辑表达式");
+                                                    }
+                                                    picker = picker.child(formula_editor);
+                                                }
                                             }
                                         }
                                         picker

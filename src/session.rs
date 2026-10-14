@@ -515,6 +515,95 @@ impl Session {
         self.persistence.force_flush()?;
         Ok(true)
     }
+    pub fn set_database_formula(
+        &mut self,
+        block: BlockId,
+        property: PropertyId,
+        expression: &str,
+    ) -> Result<bool> {
+        if self.page.locked {
+            return Ok(false);
+        }
+        let Some(db) = self.document.block(block).and_then(|block| block.db_ref) else {
+            return Ok(false);
+        };
+        let properties = self
+            .databases
+            .properties_of(db)
+            .cloned()
+            .collect::<Vec<_>>();
+        let Some(current) = properties.iter().find(|candidate| candidate.id == property) else {
+            bail!("该列不属于此数据库");
+        };
+        if current.kind != quire_core::core::database::PropertyKind::Formula {
+            bail!("公式只能配置在公式列上");
+        }
+        let resolve = |name: &str| {
+            properties
+                .iter()
+                .find(|candidate| candidate.name == name)
+                .map(|candidate| candidate.id)
+        };
+        let program = if expression.trim().is_empty() {
+            None
+        } else {
+            Some(
+                quire_core::core::database_formula::Program::parse(expression, resolve)
+                    .map_err(|error| anyhow::anyhow!(error.to_string()))?,
+            )
+        };
+        if let Some(program) = &program {
+            let would_cycle = quire_core::core::database_formula::would_cycle(
+                property,
+                program.deps(),
+                |dependency| {
+                    let dependency = properties
+                        .iter()
+                        .find(|candidate| candidate.id == dependency)?;
+                    if dependency.kind != quire_core::core::database::PropertyKind::Formula {
+                        return None;
+                    }
+                    let source =
+                        quire_core::core::database_formula::config_formula(&dependency.config)?;
+                    quire_core::core::database_formula::Program::parse(&source, resolve)
+                        .ok()
+                        .map(|program| program.deps().clone())
+                },
+            );
+            if would_cycle {
+                bail!("公式引用会形成循环");
+            }
+        }
+        let from = current.config.clone();
+        let to = quire_core::core::database_formula::config_set_formula(&from, expression);
+        if from == to {
+            return Ok(false);
+        }
+        let Some(entry) = command::plan(
+            &mut self.document,
+            self.page.id,
+            Command::SetDatabaseFormula {
+                block,
+                property,
+                from,
+                to: to.clone(),
+            },
+        ) else {
+            return Ok(false);
+        };
+        self.apply_entry(entry);
+        if let Some(property) = self
+            .databases
+            .properties
+            .iter_mut()
+            .find(|candidate| candidate.id == property)
+        {
+            property.config = to;
+        }
+        self.persistence.force_flush()?;
+        self.refresh_databases();
+        Ok(true)
+    }
     pub fn add_database_view(&mut self, block: BlockId) -> Option<ViewId> {
         if self.page.locked {
             return None;
@@ -2483,6 +2572,43 @@ mod tests {
                     quire_core::core::database::PropertyKind::Checkbox,
                 )
                 .expect("checkbox property created");
+            let formula_property = session
+                .add_database_property(
+                    block,
+                    "计算".into(),
+                    quire_core::core::database::PropertyKind::Text,
+                )
+                .expect("formula property created");
+            assert!(session.set_database_property_kind(
+                block,
+                formula_property,
+                quire_core::core::database::PropertyKind::Formula,
+            )?);
+            assert!(
+                session
+                    .set_database_formula(block, formula_property, "1 +")
+                    .is_err()
+            );
+            assert!(
+                session
+                    .set_database_formula(block, formula_property, "[计算]")
+                    .is_err()
+            );
+            assert!(session.set_database_formula(block, formula_property, "1 + 2")?);
+            session.undo();
+            assert!(
+                quire_core::core::database_formula::config_formula(
+                    &session
+                        .databases
+                        .properties
+                        .iter()
+                        .find(|property| property.id == formula_property)
+                        .unwrap()
+                        .config
+                )
+                .is_none()
+            );
+            session.redo();
             let view_id = session.add_database_view(block).expect("view created");
             assert_eq!(session.databases.views_of(db).count(), 2);
             session.undo();
@@ -2670,10 +2796,12 @@ mod tests {
                 quire_core::core::database::RowWindow { start: 0, end: 20 },
             )?;
             assert_eq!(rows.len(), 2);
-            assert_eq!(rows[0].cells.len(), 1);
+            assert_eq!(rows[0].cells.len(), 2);
             assert_eq!(rows[0].title, "Alpha");
             assert_eq!(rows[1].title, "进行中");
             assert_eq!(rows[1].cells[0], "");
+            assert_eq!(rows[0].cells[1], "");
+            assert_eq!(rows[1].cells[1], "");
             assert!(!columns.iter().any(|column| column.id == done_property));
             assert_eq!(
                 session
