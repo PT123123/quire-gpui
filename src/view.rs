@@ -261,6 +261,8 @@ struct Palette {
     fg: String,
     #[serde(rename = "bg-elev")]
     elevated: String,
+    #[serde(rename = "bg-elev2")]
+    elevated2: String,
     #[serde(rename = "fg-muted")]
     muted: String,
     border: String,
@@ -2019,37 +2021,7 @@ impl Workspace {
         self.selected_task_ids.clear();
         self.selected_note = None;
         self.selected_task = None;
-        if tasks {
-            let view = self.selected_task_smart_view.unwrap_or(0);
-            let first_task = (if self.organizer_trash {
-                self.session.organizer.trashed_tasks().collect::<Vec<_>>()
-            } else {
-                self.session.organizer.live_tasks().collect::<Vec<_>>()
-            })
-            .into_iter()
-            .find(|task| {
-                (self.organizer_trash || self.task_matches_smart_view(task, view))
-                    && (view == 4 && task.done
-                        || self.organizer_trash
-                        || view != 4 && (!task.done || self.show_task_done))
-            })
-            .map(|task| task.id);
-            if let Some(id) = first_task {
-                self.select_task(id, window, cx);
-            }
-        } else {
-            let first_note = (if self.organizer_trash {
-                self.session.organizer.trashed_notes().collect::<Vec<_>>()
-            } else {
-                self.session.organizer.live_notes().collect::<Vec<_>>()
-            })
-            .into_iter()
-            .next()
-            .map(|note| note.id);
-            if let Some(id) = first_note {
-                self.select_note(id, window, cx);
-            }
-        }
+        self.reset_organizer_item_inputs(cx);
         cx.notify();
     }
     fn toggle_task_done(
@@ -2081,17 +2053,7 @@ impl Workspace {
         self.selected_task_smart_view = None;
         self.selected_task_list = list;
         self.selected_task = None;
-        let first_task = self
-            .session
-            .organizer
-            .live_tasks()
-            .find(|task| task.list == list && (!task.done || self.show_task_done))
-            .map(|task| task.id);
-        if let Some(id) = first_task {
-            self.select_task(id, window, cx);
-        } else {
-            self.reset_organizer_item_inputs(cx);
-        }
+        self.reset_organizer_item_inputs(cx);
     }
     fn select_task_smart_view(&mut self, view: i32, window: &mut Window, cx: &mut Context<Self>) {
         if self.selected_task_smart_view == Some(view) {
@@ -2102,20 +2064,7 @@ impl Workspace {
         self.selected_task_smart_view = Some(view);
         self.selected_task_list = quire_core::core::organizer::ListId::INBOX;
         self.selected_task = None;
-        let first_task = self
-            .session
-            .organizer
-            .live_tasks()
-            .find(|task| {
-                self.task_matches_smart_view(task, view)
-                    && (view == 4 && task.done || view != 4 && (!task.done || self.show_task_done))
-            })
-            .map(|task| task.id);
-        if let Some(id) = first_task {
-            self.select_task(id, window, cx);
-        } else {
-            self.reset_organizer_item_inputs(cx);
-        }
+        self.reset_organizer_item_inputs(cx);
     }
     fn task_matches_smart_view(&self, task: &OrganizerTask, view: i32) -> bool {
         let now = std::time::SystemTime::now()
@@ -2149,28 +2098,9 @@ impl Workspace {
     fn toggle_show_task_done(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.commit_note_draft(window, cx);
         self.show_task_done = !self.show_task_done;
-        let first_task = self
-            .session
-            .organizer
-            .live_tasks()
-            .find(|task| {
-                let in_scope = self
-                    .selected_task_smart_view
-                    .map_or(task.list == self.selected_task_list, |view| {
-                        self.task_matches_smart_view(task, view)
-                    });
-                in_scope
-                    && (self.selected_task_smart_view == Some(4) && task.done
-                        || self.selected_task_smart_view != Some(4)
-                            && (!task.done || self.show_task_done))
-            })
-            .map(|task| task.id);
-        if let Some(id) = first_task {
-            self.select_task(id, window, cx);
-        } else {
-            self.selected_task = None;
-            self.reset_organizer_item_inputs(cx);
-        }
+        self.selected_task = None;
+        self.selected_task_ids.clear();
+        self.reset_organizer_item_inputs(cx);
     }
     fn cycle_task_sort(&mut self, cx: &mut Context<Self>) {
         self.task_sort = (self.task_sort + 1) % 3;
@@ -2310,7 +2240,11 @@ impl Workspace {
     }
     fn toggle_organizer_tag(&mut self, tag: String, window: &mut Window, cx: &mut Context<Self>) {
         self.commit_note_draft(window, cx);
-        self.organizer_tag = (self.organizer_tag.as_deref() != Some(tag.as_str())).then_some(tag);
+        self.organizer_tag = if tag.is_empty() {
+            None
+        } else {
+            (self.organizer_tag.as_deref() != Some(tag.as_str())).then_some(tag)
+        };
         self.selected_task_ids.clear();
         self.selected_note = None;
         self.selected_task = None;
@@ -2341,33 +2275,7 @@ impl Workspace {
     fn toggle_organizer(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.commit_note_draft(window, cx);
         self.organizer_open = !self.organizer_open;
-        if self.organizer_open {
-            if self.organizer_tasks {
-                let first_task = self
-                    .session
-                    .organizer
-                    .live_tasks()
-                    .next()
-                    .map(|task| task.id);
-                if self.selected_task.is_none()
-                    && let Some(task) = first_task
-                {
-                    self.select_task(task, window, cx);
-                }
-            } else {
-                let first_note = self
-                    .session
-                    .organizer
-                    .live_notes()
-                    .next()
-                    .map(|note| note.id);
-                if self.selected_note.is_none()
-                    && let Some(note) = first_note
-                {
-                    self.select_note(note, window, cx);
-                }
-            }
-        } else {
+        if !self.organizer_open {
             self.restore_focus(window, cx);
         }
         cx.notify();
@@ -4612,6 +4520,7 @@ impl Render for Workspace {
                 .is_none_or(|tag| note.tags.contains(tag))
         })
         .collect::<Vec<_>>();
+        let note_count = notes.len();
         notes.sort_by_key(|note| std::cmp::Reverse((note.pinned, note.edited)));
         let note_rows = notes
             .into_iter()
@@ -4619,6 +4528,15 @@ impl Render for Workspace {
                 let id = note.id;
                 let selected = self.selected_note == Some(id);
                 let pinned = note.pinned;
+                let preview = note
+                    .body
+                    .lines()
+                    .find(|line| !line.trim().is_empty())
+                    .unwrap_or_default()
+                    .chars()
+                    .take(150)
+                    .collect::<String>();
+                let tags = note.tags.join("  ·  ");
                 let title = if note.title.trim().is_empty() {
                     "无标题".to_owned()
                 } else {
@@ -4627,16 +4545,25 @@ impl Render for Workspace {
                 div()
                     .id(SharedString::from(format!("organizer-note-{id:?}")))
                     .w_full()
-                    .px(px(9.))
-                    .py(px(7.))
-                    .rounded(px(5.))
+                    .px(px(14.))
+                    .py(px(12.))
+                    .rounded(px(9.))
+                    .border_1()
+                    .border_color(if selected {
+                        accent
+                    } else {
+                        Palette::color(&p.border)
+                    })
+                    .bg(Palette::color(&p.elevated2))
                     .cursor_pointer()
                     .text_color(if selected { accent } else { text })
-                    .when(selected, |row| row.bg(Palette::color(&p.bg).opacity(0.34)))
-                    .hover(|row| row.bg(Palette::color(&p.bg).opacity(0.28)))
+                    .hover(|row| row.border_color(accent).bg(Palette::color(&p.elevated)))
                     .on_click(
                         cx.listener(move |this, _, window, cx| this.select_note(id, window, cx)),
                     )
+                    .flex()
+                    .flex_col()
+                    .gap(px(7.))
                     .child(
                         div()
                             .flex()
@@ -4673,6 +4600,19 @@ impl Render for Workspace {
                                     .child(if self.organizer_trash { "↩" } else { "×" }),
                             ),
                     )
+                    .when(!preview.is_empty(), |card| {
+                        card.child(
+                            div()
+                                .text_size(px(12.))
+                                .text_color(muted)
+                                .max_h(px(40.))
+                                .overflow_hidden()
+                                .child(preview),
+                        )
+                    })
+                    .when(!tags.is_empty(), |card| {
+                        card.child(div().text_size(px(11.)).text_color(muted).child(tags))
+                    })
             })
             .collect::<Vec<_>>();
         let mut tasks = (if self.organizer_trash {
@@ -4704,6 +4644,7 @@ impl Render for Workspace {
         })
         .cloned()
         .collect::<Vec<_>>();
+        let task_count = tasks.len();
         match self.task_sort {
             1 => tasks.sort_by(|a, b| {
                 a.due
@@ -5025,6 +4966,9 @@ impl Render for Workspace {
                     .flex_1()
                     .min_w_0()
                     .flex_shrink_0()
+                    .when(self.organizer_tasks, |column| {
+                        column.flex_none().w(px(400.))
+                    })
                     .h_full()
                     .border_r_1()
                     .border_color(Palette::color(&p.border))
@@ -5038,13 +4982,11 @@ impl Render for Workspace {
                             .flex()
                             .items_center()
                             .justify_between()
-                            .child(div().font_weight(FontWeight::SEMIBOLD).child(
-                                if self.organizer_tasks {
-                                    "任务"
-                                } else {
-                                    "笔记"
-                                },
-                            ))
+                            .child(div().font_weight(FontWeight::SEMIBOLD).child(if self.organizer_tasks {
+                                format!("任务 · {task_count} 项待办")
+                            } else {
+                                format!("全部笔记 · {note_count} 条")
+                            }))
                             .child(
                                 div()
                                     .id("organizer-create-note")
@@ -5178,6 +5120,9 @@ impl Render for Workspace {
                     .flex_1()
                     .min_w_0()
                     .h_full()
+                    .when(!self.organizer_tasks && self.selected_note.is_none(), |pane| {
+                        pane.flex_none().w(px(0.)).px(px(0.)).py(px(0.))
+                    })
                     .px(px(20.))
                     .py(px(20.))
                     .when(
@@ -5456,9 +5401,7 @@ impl Render for Workspace {
                         self.selected_note.is_none() && self.selected_task.is_none(),
                         |empty| {
                             empty
-                                .flex()
-                                .items_center()
-                                .justify_center()
+                                .w_full()
                                 .text_color(muted)
                                 .child(div().text_size(px(14.)).child(if self.organizer_tasks {
                                     "选择一项任务，或新建任务开始安排。"
@@ -5488,6 +5431,18 @@ impl Render for Workspace {
                                     div().id("organizer-tab-tasks").flex_1().px(px(9.)).py(px(6.)).rounded(px(5.)).cursor_pointer().text_color(if self.organizer_tasks { accent } else { muted }).when(self.organizer_tasks, |tab| tab.bg(Palette::color(&p.elevated))).on_click(cx.listener(|this, _, window, cx| this.toggle_organizer_tab(true, window, cx))).child("任务")
                                 ),
                             )
+                            .when(!self.organizer_tasks, |nav| nav.child(
+                                div()
+                                    .id("organizer-all-notes")
+                                    .px(px(8.))
+                                    .py(px(6.))
+                                    .rounded(px(5.))
+                                    .cursor_pointer()
+                                    .text_color(if self.organizer_tag.is_none() { accent } else { muted })
+                                    .when(self.organizer_tag.is_none(), |row| row.bg(Palette::color(&p.elevated)))
+                                    .on_click(cx.listener(|this, _, window, cx| this.toggle_organizer_tag(String::new(), window, cx)))
+                                    .child(format!("全部笔记 · {note_count}"))
+                            ))
                             .when(self.organizer_tasks && !self.organizer_trash, |nav| nav.child(
                                 div().flex().flex_col().gap(px(3.))
                                     .child(div().text_size(px(11.)).text_color(muted).mb(px(2.)).child("视图"))
