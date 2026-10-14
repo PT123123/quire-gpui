@@ -104,6 +104,7 @@ actions!(
     workspace,
     [
         Save,
+        NewPage,
         Undo,
         Redo,
         Find,
@@ -2990,6 +2991,9 @@ impl Workspace {
         cx.notify();
         window.focus(&self.search_input.read(cx).focus);
     }
+    fn new_page_action(&mut self, _: &NewPage, window: &mut Window, cx: &mut Context<Self>) {
+        self.add_page(window, cx);
+    }
     fn close_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.search_open = false;
         self.search_query.clear();
@@ -3879,11 +3883,11 @@ impl Render for Workspace {
                                 div().text_size(px(12.)).text_color(muted).child("快捷键 · 编辑器"),
                             ).children([
                                 ("保存页面", "Ctrl+S"),
+                                ("新建页面", "Ctrl+N"),
                                 ("撤销 / 重做", "Ctrl+Z / Ctrl+Shift+Z"),
                                 ("查找页面", "Ctrl+P"),
                                 ("页面内查找", "Ctrl+F"),
                                 ("界面缩放 / 复位", "Ctrl+= / Ctrl+- / Ctrl+0"),
-                                ("命令面板", "Ctrl+K"),
                                 ("新建块", "Enter"),
                             ].into_iter().map(|(label, key)| div().flex().justify_between().items_center().border_b_1().border_color(Palette::color(&p.border)).py(px(7.)).child(label).child(div().px(px(7.)).py(px(3.)).rounded(px(4.)).bg(Palette::color(&p.bg).opacity(0.3)).text_size(px(11.)).child(key)))),
                         ))
@@ -7540,6 +7544,7 @@ impl Render for Workspace {
             )
             .color_space(ColorSpace::Srgb))
             .on_action(cx.listener(Self::save))
+            .on_action(cx.listener(Self::new_page_action))
             .on_action(cx.listener(Self::undo))
             .on_action(cx.listener(Self::redo))
             .on_action(cx.listener(Self::open_find))
@@ -8395,6 +8400,7 @@ impl Render for Workspace {
 pub fn bind_keys(cx: &mut App) {
     cx.bind_keys([
         KeyBinding::new("ctrl-s", Save, Some("Quire")),
+        KeyBinding::new("ctrl-n", NewPage, Some("Quire")),
         KeyBinding::new("ctrl-z", Undo, Some("Quire")),
         KeyBinding::new("ctrl-shift-z", Redo, Some("Quire")),
         KeyBinding::new("ctrl-y", Redo, Some("Quire")),
