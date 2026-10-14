@@ -47,7 +47,7 @@ CSV 里的 `处理说明` 大多为空——旧版 handler 上方普遍没有注
 3. `持久化` / `undo`：对照 `docs/11-CORE-API.md` 的 Command/Change 清单逐行标；`exec_all` 的批量合并成一条历史，凡批量动作都要标。
 4. `测试/人工步骤`：能用 `--scene`/`--click`/`--key` 表达的写成命令，其余写清手动步骤。
 
-另有两个来源不在本矩阵里、必须交叉进来：`app/mcp_tools.rs` 的 10 个 MCP 工具（agent 入口，UI 上没有 callback），以及 `core` 侧 50 个 `Command` 变体里 UI 未触达的部分（例如 `InsertForest` 的粘贴树）。
+另有两个来源不在本矩阵里、必须交叉进来：GPUI `src/mcp_tools.rs` 的 14 个 MCP 工具（agent 入口，UI 上没有 callback；旧版基线为整理区 10 个工具），以及 `core` 侧 50 个 `Command` 变体里 UI 未触达的部分（例如 `InsertForest` 的粘贴树）。
 
 ## 状态取值
 

@@ -1,5 +1,8 @@
 use crate::mcp::ToolDef;
-use quire_core::core::organizer::{ListId, NoteId, Priority, TaskId};
+use quire_core::core::{
+    organizer::{ListId, NoteId, Priority, TaskId},
+    types::PageId,
+};
 use quire_gpui::session::Session;
 use serde_json::{Value, json};
 
@@ -40,6 +43,87 @@ fn split_tags(value: &str) -> Vec<String> {
 /// The caller runs this only on GPUI's UI thread, then flushes persistence.
 pub fn execute(session: &mut Session, name: &str, args: &Value) -> Result<Value, String> {
     match name {
+        "list_pages" => {
+            let pages = session
+                .pages
+                .iter()
+                .filter(|page| !page.template)
+                .map(|page| {
+                    json!({
+                        "page_id": page.id.0,
+                        "title": page.title,
+                        "parent_id": page.parent.map(|parent| parent.0),
+                        "locked": page.locked,
+                        "favorite": page.favorite
+                    })
+                })
+                .collect::<Vec<_>>();
+            Ok(json!({"pages": pages}))
+        }
+        "read_page" => {
+            let id = PageId(integer(args, "page_id")?);
+            let page = session
+                .pages
+                .iter()
+                .find(|page| page.id == id && !page.template)
+                .ok_or_else(|| format!("找不到页面 {}", id.0))?;
+            let blocks = session
+                .document
+                .page_blocks(id)
+                .iter()
+                .map(|block| {
+                    json!({
+                        "block_id": block.id.0,
+                        "parent_id": block.parent.map(|parent| parent.0),
+                        "kind": block.kind.as_str(),
+                        "text": block.text,
+                        "checked": block.checked,
+                        "page_ref": block.page_ref.map(|page| page.0),
+                        "folded": block.folded
+                    })
+                })
+                .collect::<Vec<_>>();
+            Ok(json!({
+                "page_id": page.id.0,
+                "title": page.title,
+                "parent_id": page.parent.map(|parent| parent.0),
+                "locked": page.locked,
+                "blocks": blocks
+            }))
+        }
+        "create_page" => {
+            let title = required_string(args, "title")?.trim();
+            if title.is_empty() {
+                return Err("页面标题不能为空".into());
+            }
+            let body = args.get("body").and_then(Value::as_str).unwrap_or("");
+            let current = session.page.id;
+            let id = session.import_markdown(title.to_owned(), body);
+            let _ = session.select_page(current);
+            Ok(json!({"ok": true, "page_id": id.0}))
+        }
+        "update_page" => {
+            let id = PageId(integer(args, "page_id")?);
+            let title = required_string(args, "title")?.trim();
+            if title.is_empty() {
+                return Err("页面标题不能为空".into());
+            }
+            let page = session
+                .pages
+                .iter()
+                .find(|page| page.id == id && !page.template)
+                .ok_or_else(|| format!("找不到页面 {}", id.0))?;
+            if page.locked {
+                return Err(format!("页面 {} 已锁定", id.0));
+            }
+            let current = session.page.id;
+            if !session.select_page(id) {
+                return Err(format!("无法打开页面 {}", id.0));
+            }
+            session.set_page_title(title.to_owned());
+            let _ = session.select_page(current);
+            Ok(json!({"ok": true, "page_id": id.0, "title": title}))
+        }
         "list_notes" => {
             let include_trashed = args
                 .get("include_trashed")
@@ -261,6 +345,32 @@ fn schema(props: Value, required: &[&str]) -> Value {
 pub fn tool_defs() -> Vec<ToolDef> {
     vec![
         ToolDef {
+            name: "list_pages",
+            description: "列出工作区中的普通页面及标题、父页面、锁定和收藏状态；模板不包含在内。",
+            input_schema: schema(json!({}), &[]),
+        },
+        ToolDef {
+            name: "read_page",
+            description: "读取页面标题和有序内容块。页面/块引用以 id 返回，页面模板不会列出。",
+            input_schema: schema(json!({ "page_id": { "type": "integer" } }), &["page_id"]),
+        },
+        ToolDef {
+            name: "create_page",
+            description: "新建顶层页面，可用 Markdown 正文初始化内容。",
+            input_schema: schema(
+                json!({ "title": { "type": "string" }, "body": { "type": "string" } }),
+                &["title"],
+            ),
+        },
+        ToolDef {
+            name: "update_page",
+            description: "修改普通页面标题；锁定页面拒绝编辑。",
+            input_schema: schema(
+                json!({ "page_id": { "type": "integer" }, "title": { "type": "string" } }),
+                &["page_id", "title"],
+            ),
+        },
+        ToolDef {
             name: "list_notes",
             description: "列出整理器的笔记（含在回收站里的，用 include_trashed 控制）。",
             input_schema: schema(
@@ -359,7 +469,7 @@ pub fn tool_defs() -> Vec<ToolDef> {
 pub fn agent_prompt(port: u16) -> String {
     let mut s = String::from(
         "Quire 是运行在这台电脑上的笔记与任务应用，通过 MCP 接口开放下面这些工具。\n\
-         需要记录、整理或修改笔记与任务时，请直接调用这些工具，不要改动 Quire 的数据文件。\n\n\
+         需要读取或修改页面、记录笔记或整理任务时，请直接调用这些工具，不要改动 Quire 的数据文件。\n\n\
          可用工具：\n",
     );
     for t in tool_defs() {
@@ -466,6 +576,87 @@ mod tests {
         );
         execute(&mut session, "restore_note", &json!({"note_id": id})).unwrap();
         assert!(!session.organizer.note(NoteId(id)).unwrap().is_trashed());
+    }
+
+    #[test]
+    fn page_tools_list_read_create_rename_and_reopen_without_changing_selection() {
+        let (scratch, mut session) = session();
+        let current = session.page.id;
+        let created = execute(
+            &mut session,
+            "create_page",
+            &json!({"title":"MCP page", "body":"# Heading\n\nPage body"}),
+        )
+        .unwrap();
+        let id = created["page_id"].as_u64().unwrap();
+        assert_eq!(session.page.id, current);
+        let listed = execute(&mut session, "list_pages", &json!({})).unwrap();
+        assert!(
+            listed["pages"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|page| { page["page_id"] == id && page["title"] == "MCP page" })
+        );
+        let read = execute(&mut session, "read_page", &json!({"page_id": id})).unwrap();
+        assert_eq!(read["blocks"][0]["text"], "Heading");
+        assert!(
+            read["blocks"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|block| { block["text"] == "Page body" })
+        );
+        execute(
+            &mut session,
+            "update_page",
+            &json!({"page_id": id, "title":"Renamed page"}),
+        )
+        .unwrap();
+        assert_eq!(session.page.id, current);
+        assert_eq!(
+            session
+                .pages
+                .iter()
+                .find(|page| page.id.0 == id)
+                .unwrap()
+                .title,
+            "Renamed page"
+        );
+        session.persistence.force_flush().unwrap();
+        drop(session);
+        let reopened = Session::open(&scratch.path().join("test.db")).unwrap();
+        assert_eq!(
+            reopened
+                .pages
+                .iter()
+                .find(|page| page.id.0 == id)
+                .unwrap()
+                .title,
+            "Renamed page"
+        );
+        assert!(
+            reopened
+                .document
+                .page_blocks(PageId(id))
+                .iter()
+                .any(|block| block.text == "Page body")
+        );
+    }
+
+    #[test]
+    fn page_update_rejects_locked_pages_without_partial_changes() {
+        let (_scratch, mut session) = session();
+        let page = session.page.id;
+        let original_title = session.page.title.clone();
+        session.set_page_locked(true);
+        let result = execute(
+            &mut session,
+            "update_page",
+            &json!({"page_id": page.0, "title":"Should not apply"}),
+        );
+        assert!(result.unwrap_err().contains("已锁定"));
+        assert_eq!(session.page.title, original_title);
     }
 
     #[test]

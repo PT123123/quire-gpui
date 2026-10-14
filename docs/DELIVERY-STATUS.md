@@ -104,7 +104,7 @@
 
 ## 仍然没有做的事（不要误认已完成）
 
-GPUI 应用已超出第一竖切，但离完整复刻仍有较大差距。用户真人输入测试反馈无问题；之后新增的主题选择与页面排序尚未逐项回归，视觉、数据重启往返、性能和 DPI 仍未验收。复杂数据库视图、附件、设置/同步/MCP/速记、托盘、多窗口等功能尚未落地。功能矩阵语义仍不完整，且没有与 core 的 50 个 Command 和 MCP 的 10 个工具全量交叉。参考图缺：MCP 页运行态（只有"未开启/无令牌"空态）、其余 10 套主题的逐 tab 图、独立速记窗口、hover/pressed/focus/disabled 态、窄窗口、真窗口 GPU 对照、动效中间帧。
+GPUI 已覆盖主编辑器、整理区、独立速记与标签建议、Windows 托盘/全局热键、局域网同步、MCP HTTP/stdio 和页面/笔记/任务工具；49 项自动测试通过，但多数交互仍待真人桌面回归。尚未完成的重点包括完整的页面正文 MCP 编辑、设置搜索与全部入口细节、附件 UX、多窗口、DPI/性能基准、双机同步互通、托盘唤回和外部 MCP 客户端连接验收。功能矩阵语义仍不完整，core 的 50 个 Command 尚未与所有入口全量交叉。参考图仍缺 hover/pressed/focus/disabled 态、窄窗口、真窗口 GPU 对照和动效中间帧。
 
 旧版源码中的截图工具与场景已保存，可由后续 AI 在独立测试环境生成参考图。源码和 token 是可追溯的参考，不等于新程序已有同样行为。
 
@@ -662,3 +662,9 @@ GPUI 应用已超出第一竖切，但离完整复刻仍有较大差距。用户
 - MCP 设置新增“复制 stdio 配置”，提供包含当前可执行文件与当前数据库路径的 `mcpServers.quire` 配置；HTTP 配置和 Agent 提示词原有入口保留。隔离 loopback 测试覆盖中文工具请求转发和 notification 无响应。
 - 修复同步自动/手动/单设备队列发送失败时仍遗留“进行中”状态的问题；命令通道关闭后立即清除对应 pending 标记并展示需要重启应用的可见错误。
 - 验证：`cargo fmt --all`、`cargo check -j 8`、`cargo test -j 8`（47 项）、`cargo build --release -j 8 --target-dir target-release`、release `--help`、parity 生成及 `git diff --check` 均通过；未访问真实库。双机局域网互通、Shell 托盘唤回及外部 MCP 客户端连接仍需桌面实测。
+
+## 第九十七轮：MCP 页面读取与基础写入
+
+- MCP 新增 `list_pages`、`read_page`、`create_page`、`update_page`：Agent 可列出非模板页面、读取页面有序块、用 Markdown 新建顶层页面及修改页面标题。重命名锁定页面会拒绝；创建/改名完成后恢复原当前页；不提供页面永久删除或全文覆盖。
+- 工具仍通过唯一 UI Session 执行并由 MCP event pump flush。隔离库测试覆盖 Markdown 页面创建、页块读取、标题重命名、重开持久化、当前页面选择保持及锁定页拒绝。
+- 旧版基线与 GPUI 扩展的差异已记入决策文档和计划。验证：`cargo fmt --all`、`cargo check -j 8`、`cargo test -j 8`（49 项）、`cargo build --release -j 8 --target-dir target-release` 与 `git diff --check` 通过；未访问真实库。真实 MCP 客户端仍需桌面连接验收。
