@@ -1019,6 +1019,10 @@ pub struct Workspace {
     title_input: Entity<TextInput>,
     title_subscription: Option<Subscription>,
     title_edit_original: Option<String>,
+    sync_name_input: Entity<TextInput>,
+    sync_name_subscription: Option<Subscription>,
+    sync_name_draft: String,
+    sync_name_original: String,
     search_input: Entity<TextInput>,
     find_input: Entity<TextInput>,
     link_target_input: Entity<TextInput>,
@@ -1147,6 +1151,7 @@ pub struct Workspace {
     sync_status: String,
     sync_last_auto: std::time::Instant,
     sync_pending: HashSet<String>,
+    restart_on_quit: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl Workspace {
@@ -1235,6 +1240,14 @@ impl Workspace {
         });
         let database_property_name_input =
             cx.new(|cx| TextInput::new(String::new(), Vec::new(), 11., window, cx));
+        let sync_self = session.sync_self_info();
+        let sync_name_input =
+            cx.new(|cx| TextInput::new(sync_self.name.clone(), Vec::new(), 11., window, cx));
+        sync_name_input.update(cx, |input, _| {
+            input.placeholder = Some("此设备在局域网中的名称".into());
+        });
+        let sync_name_draft = sync_self.name.clone();
+        let sync_name_original = sync_name_draft.clone();
         database_search_input.update(cx, |input, _| {
             input.placeholder = Some("搜索此数据库…".into())
         });
@@ -1247,6 +1260,7 @@ impl Workspace {
             search_input.clone(),
             find_input.clone(),
             link_target_input.clone(),
+            sync_name_input.clone(),
             note_title_input.clone(),
             note_body_input.clone(),
             task_title_input.clone(),
@@ -1277,7 +1291,6 @@ impl Workspace {
             }
         };
         let mcp_enabled = session.setting("gpui.mcp.enabled") == Some("true");
-        let sync_self = session.sync_self_info();
         let (sync_job_tx, sync_job_rx) = std::sync::mpsc::channel();
         let sync_cmd_tx = quire_core::services::sync::engine::Engine::start(sync_self, sync_job_tx);
         let mut this = Self {
@@ -1285,6 +1298,10 @@ impl Workspace {
             title_input,
             title_subscription: None,
             title_edit_original: None,
+            sync_name_input,
+            sync_name_subscription: None,
+            sync_name_draft,
+            sync_name_original,
             search_input,
             find_input,
             link_target_input,
@@ -1418,6 +1435,7 @@ impl Workspace {
             sync_status: "正在搜索局域网设备".into(),
             sync_last_auto: std::time::Instant::now(),
             sync_pending: HashSet::new(),
+            restart_on_quit: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         };
         if mcp_enabled {
             this.start_mcp();
@@ -1452,6 +1470,19 @@ impl Workspace {
                     this.restore_focus(window, cx);
                     cx.notify();
                 }
+                _ => {}
+            },
+        ));
+        let sync_name_input = this.sync_name_input.clone();
+        this.sync_name_subscription = Some(cx.subscribe_in(
+            &sync_name_input,
+            window,
+            |this, _, event, window, cx| match event {
+                InputEvent::Edited { text, .. } => {
+                    this.sync_name_draft = text.clone();
+                    cx.notify();
+                }
+                InputEvent::Split(_) => this.apply_sync_name(window, cx),
                 _ => {}
             },
         ));
@@ -1783,8 +1814,14 @@ impl Workspace {
         }
         let platform_handles = Arc::new(Mutex::new(Some(platform_services.handles)));
         let shutdown_handles = platform_handles.clone();
+        let restart_on_quit = this.restart_on_quit.clone();
+        let restart_executable = std::env::current_exe().ok();
+        let restart_arguments: Vec<_> = std::env::args_os().skip(1).collect();
         cx.on_app_quit(move |_, _| {
             let handles = shutdown_handles.clone();
+            let restart_on_quit = restart_on_quit.clone();
+            let restart_executable = restart_executable.clone();
+            let restart_arguments = restart_arguments.clone();
             async move {
                 drop(
                     handles
@@ -1792,6 +1829,21 @@ impl Workspace {
                         .unwrap_or_else(|error| error.into_inner())
                         .take(),
                 );
+                if restart_on_quit.load(std::sync::atomic::Ordering::Acquire) {
+                    if let Some(executable) = restart_executable {
+                        std::thread::spawn(move || {
+                            std::thread::sleep(Duration::from_millis(700));
+                            if let Err(error) = std::process::Command::new(executable)
+                                .args(restart_arguments)
+                                .spawn()
+                            {
+                                eprintln!("Quire GPUI restart failed: {error}");
+                            }
+                        });
+                    } else {
+                        eprintln!("Quire GPUI restart failed: executable path unavailable");
+                    }
+                }
             }
         })
         .detach();
@@ -5722,6 +5774,28 @@ impl Workspace {
         self.schedule_save(false, window, cx);
         cx.notify();
     }
+    fn apply_sync_name(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let name = self.sync_name_draft.trim().to_owned();
+        if name.is_empty() {
+            self.sync_status = "设备名称不能为空".into();
+            cx.notify();
+            return;
+        }
+        if self.session.setting("sync.device-name") == Some(name.as_str()) {
+            self.sync_status = "设备名称未更改".into();
+            cx.notify();
+            return;
+        }
+        if !self.session.sync_set_device_name(&name) {
+            self.sync_status = "设备名称未更改".into();
+            cx.notify();
+            return;
+        }
+        self.restart_on_quit
+            .store(true, std::sync::atomic::Ordering::Release);
+        self.sync_status = format!("设备名称已设为「{name}」；保存后将重启以更新局域网广播");
+        self.request_close(window, cx);
+    }
     fn sync_auto_tick(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
         let (automatic, interval) = self.session.sync_config();
         if !automatic || self.sync_last_auto.elapsed().as_secs() < interval {
@@ -5935,6 +6009,18 @@ impl Workspace {
                         this.status = format!("保存失败：{error}；请 Ctrl+S 重试");
                         this.error = true;
                         this.closing = false;
+                        if this
+                            .restart_on_quit
+                            .swap(false, std::sync::atomic::Ordering::AcqRel)
+                        {
+                            let previous = this.sync_name_original.clone();
+                            this.session
+                                .set_setting("sync.device-name", previous.clone());
+                            this.sync_name_draft = previous.clone();
+                            this.sync_name_input.update(cx, |input, cx| {
+                                input.reset(previous.clone(), Vec::new(), previous.len(), cx);
+                            });
+                        }
                     }
                 }
                 cx.notify();
@@ -6445,6 +6531,15 @@ impl Render for Workspace {
                                         .on_click(cx.listener(|this, _, window, cx| this.sync_now_all(window, cx)))
                                         .child("立即同步")))
                                 .child(div().text_size(px(10.)).text_color(muted).child(sync_status.clone()))
+                                .child(div().flex().items_center().gap(px(6.))
+                                    .child(div().h(px(27.)).flex_1().min_w_0().px(px(7.)).rounded(px(4.))
+                                        .border_1().border_color(Palette::color(&p.border))
+                                        .child(self.sync_name_input.clone()))
+                                    .child(div().id("sync-name-apply").px(px(8.)).py(px(5.)).rounded(px(4.))
+                                        .bg(Palette::color(&p.accent)).text_color(Palette::color(&p.fg)).cursor_pointer().text_size(px(9.))
+                                        .on_click(cx.listener(|this, _, window, cx| this.apply_sync_name(window, cx)))
+                                        .child("保存并重启")))
+                                .child(div().text_size(px(9.)).text_color(muted).child("设备名称应用后重启 Quire，新的名称才会广播到局域网。"))
                                 .child(div().flex().items_center().gap(px(5.))
                                     .child(div().text_size(px(10.)).child(if sync_auto { "自动同步" } else { "手动同步" }))
                                     .child(div().id("sync-auto-toggle").px(px(7.)).py(px(4.)).rounded(px(4.))

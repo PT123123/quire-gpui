@@ -72,7 +72,7 @@ sync-forget-offline,已实现,未验证,按 15 秒在线状态阈值批量移除
 sync-auto-toggled,已实现,未验证,可开启或关闭自动同步；变更立即持久化,自动轮询只向 60 秒内有广播的 peer 派发，同设备在途不重复排队
 sync-interval-set,已实现,未验证,提供 10、30、60 秒自动同步周期,Session 将周期下限钳制为 10 秒并持久化；隔离 SQLite 测试覆盖重开
 sync-log-cleared,已实现,未验证,清空当前同步日志,清除历史记录但不影响进行中的同步任务；隔离 SQLite 测试覆盖
-sync-name-set,未实现,未验证,尚未提供设置本机同步名称的编辑入口,core Engine 在启动时固定 DeviceInfo；动态改名需有安全重启或可变广播身份方案
+sync-name-set,已实现,未验证,编辑本机局域网名称后保存并安全重启 Quire，让 core Engine 以新身份广播,复用当前库路径与启动参数；先完成主线程唯一 Session 的 flush 后才启动新进程，保存失败则恢复旧名称并取消重启；需桌面验证重启交接
 sync-refresh-requested,已实现,未验证,同步页“刷新列表”会重新显示当前 peer 表并清理 30 天没有广播的设备,自动发现仍由 core UDP 广播负责；只移除 peer 行并保留 merge shadow；隔离 SQLite 覆盖 stale/online peer 区分
 toggle-mcp,已实现,未验证,设置页启停仅监听回环地址的 MCP HTTP 服务并持久化端口/令牌/启用态,启用时写库目录 mcp.json，关闭时清除指针；协议与工具逻辑有隔离测试，真实客户端尚未连接验收
 mcp-copy,已实现,未验证,复制 MCP 客户端 JSON 配置或 Agent 提示词到剪贴板,不复制笔记/任务数据

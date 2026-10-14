@@ -2438,6 +2438,15 @@ impl Session {
         self.set_setting("sync.interval", seconds.max(10).to_string());
     }
 
+    pub fn sync_set_device_name(&mut self, name: &str) -> bool {
+        let name = name.trim();
+        if name.is_empty() || self.setting("sync.device-name") == Some(name) {
+            return false;
+        }
+        self.set_setting("sync.device-name", name);
+        true
+    }
+
     pub fn sync_retire_offline_peers(
         &mut self,
         online_window_secs: u64,
@@ -4230,6 +4239,10 @@ mod tests {
         let path = scratch.path().join("sync.db");
         let mut session = Session::open(&path)?;
         assert_eq!(session.sync_config(), (true, 10));
+        let default_name = session.sync_self_info().name;
+        assert!(!session.sync_set_device_name("  "));
+        assert!(session.sync_set_device_name("  Study PC  "));
+        assert!(!session.sync_set_device_name("Study PC"));
         session.sync_set_auto(false);
         session.sync_set_interval(5);
         assert_eq!(session.sync_config(), (false, 10));
@@ -4299,8 +4312,10 @@ mod tests {
         session.persistence.force_flush()?;
         drop(session);
 
-        let reopened = Session::open(&path)?;
+        let mut reopened = Session::open(&path)?;
         assert_eq!(reopened.sync_config(), (false, 10));
+        assert_eq!(reopened.sync_self_info().name, "Study PC");
+        assert_ne!(reopened.sync_self_info().name, default_name);
         assert_eq!(reopened.sync_peers().len(), 1);
         assert!(reopened.sync_log().is_empty());
         Ok(())
