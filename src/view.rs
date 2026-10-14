@@ -1937,7 +1937,9 @@ impl Workspace {
                         .iter()
                         .map(|b| b.text.as_str())
                         .collect::<Vec<_>>();
-                    if texts != ["剥离心智模型 🦀", "重启后仍然存在"] {
+                    if texts.get(0).copied() != Some("剥离心智模型 🦀")
+                        || texts.get(1).copied() != Some("重启后仍然存在")
+                    {
                         panic!("UI input/core smoke mismatch: {texts:?}");
                     }
                     eprintln!(

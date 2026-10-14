@@ -6,6 +6,8 @@ mod view;
 
 use anyhow::{Context, Result, bail};
 use gpui::{prelude::*, *};
+use quire_core::core::command::Command;
+use quire_core::core::types::BlockId;
 use quire_gpui::session::Session;
 use std::path::PathBuf;
 
@@ -21,6 +23,7 @@ fn run() -> Result<()> {
     let mut theme: Option<String> = None;
     let mut dump = false;
     let mut smoke = false;
+    let mut smoke_blocks = 0usize;
     let mut stdio = false;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -29,10 +32,17 @@ fn run() -> Result<()> {
             "--theme" => theme = Some(args.next().context("--theme 需要 ID")?),
             "--dump-state" => dump = true,
             "--smoke-test" => smoke = true,
+            "--smoke-blocks" => {
+                smoke_blocks = args
+                    .next()
+                    .context("--smoke-blocks 需要数量")?
+                    .parse()
+                    .context("--smoke-blocks 需要正整数")?;
+            }
             "--stdio" | "mcp" => stdio = true,
             "--help" | "-h" => {
                 println!(
-                    "quire-gpui [--db PATH] [--theme ID] [--dump-state]\nquire-gpui --stdio [--db PATH]: bridge MCP stdio to the running Quire HTTP service. The database path locates its adjacent mcp.json pointer.\n--smoke-test: requires a NEW --db path; exercises application input callbacks, NOT real OS IME."
+                    "quire-gpui [--db PATH] [--theme ID] [--dump-state]\nquire-gpui --stdio [--db PATH]: bridge MCP stdio to the running Quire HTTP service. The database path locates its adjacent mcp.json pointer.\n--smoke-test: requires a NEW --db path; exercises application input callbacks, NOT real OS IME.\n--smoke-blocks N: with --smoke-test, add N synthetic paragraph blocks (max 10000) to the isolated test page."
                 );
                 return Ok(());
             }
@@ -42,6 +52,12 @@ fn run() -> Result<()> {
     }
     if smoke && (path.is_none() || path.as_ref().is_some_and(|p| p.exists())) {
         bail!("--smoke-test 只允许显式指定尚不存在的 --db 测试库");
+    }
+    if smoke_blocks > 10_000 {
+        bail!("--smoke-blocks 最多支持 10000 块");
+    }
+    if smoke_blocks > 0 && !smoke {
+        bail!("--smoke-blocks 只能与 --smoke-test 同用");
     }
     if dump && path.as_ref().is_none_or(|p| !p.exists()) {
         bail!("--dump-state 需要已存在的 --db 库");
@@ -71,7 +87,30 @@ fn run() -> Result<()> {
         );
         return Ok(());
     }
-    let session = Session::open(&path)?;
+    let mut session = Session::open(&path)?;
+    if smoke_blocks > 0 {
+        let anchor = session
+            .blocks()
+            .first()
+            .map(|block| block.id)
+            .context("测试页没有可用的插入位置")?;
+        let mut template = session.blocks()[0].clone();
+        template.parent = None;
+        template.marks.clear();
+        let blocks = (0..smoke_blocks)
+            .map(|index| {
+                let mut block = template.clone();
+                block.id = BlockId(u64::MAX - index as u64);
+                block.text = format!("Synthetic virtualized paragraph {}", index + 1);
+                block
+            })
+            .collect();
+        session.execute(Command::InsertForest {
+            anchor: Some(anchor),
+            blocks,
+        });
+        eprintln!("Seeded {smoke_blocks} synthetic blocks in the isolated test database");
+    }
     let sync_listener_warning = sync_listener_preflight(quire_core::services::sync::SYNC_PORT);
     let theme = theme
         .or_else(|| session.setting("gpui.theme").map(str::to_owned))
