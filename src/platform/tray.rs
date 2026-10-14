@@ -112,6 +112,7 @@ mod imp {
 
     const IMAGE_ICON: u32 = 1;
     const LR_DEFAULTSIZE: u32 = 0x40;
+    const LR_SHARED: u32 = 0x8000;
 
     const WS_OVERLAPPED: u32 = 0;
     const WS_EX_TOOLWINDOW: u32 = 0x80;
@@ -584,7 +585,7 @@ mod imp {
                     IMAGE_ICON,
                     0,
                     0,
-                    LR_DEFAULTSIZE,
+                    LR_DEFAULTSIZE | LR_SHARED,
                 );
                 let data = NotifyIconDataW::new(hwnd, icon);
                 Shell_NotifyIconW(NIM_ADD, &data);
@@ -657,7 +658,7 @@ mod imp {
                         IMAGE_ICON,
                         0,
                         0,
-                        LR_DEFAULTSIZE,
+                        LR_DEFAULTSIZE | LR_SHARED,
                     );
                     if icon == 0 {
                         let _ = tx.send(Err("the icon resource did not load".into()));
