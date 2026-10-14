@@ -2119,6 +2119,65 @@ impl Workspace {
         window.focus(&input.focus);
         cx.notify();
     }
+    fn toggle_database_sort(
+        &mut self,
+        block: BlockId,
+        db: quire_core::core::database::DatabaseId,
+        view_id: ViewId,
+        property: quire_core::core::database::PropertyId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.session.page.locked {
+            return;
+        }
+        let Some(view) = self
+            .session
+            .databases
+            .views
+            .iter()
+            .find(|view| view.id == view_id && view.db == db)
+        else {
+            return;
+        };
+        let mut definition =
+            quire_core::core::database_view::ViewDefinition::parse(&view.definition);
+        let mut sorts = definition.rules(db, &self.session.databases).sorts;
+        match sorts.iter().position(|sort| sort.property == property) {
+            Some(index) if !sorts[index].descending => sorts[index].descending = true,
+            Some(index) => {
+                sorts.remove(index);
+            }
+            None => {
+                let Some(column) = self
+                    .session
+                    .databases
+                    .properties_of(db)
+                    .find(|column| column.id == property)
+                else {
+                    return;
+                };
+                if let Some(sort) = quire_core::core::database::SortSpec::of(column, false) {
+                    sorts.push(sort);
+                } else {
+                    return;
+                }
+            }
+        }
+        definition.set_sorts(&sorts);
+        match self
+            .session
+            .set_database_view_definition(block, view_id, definition.to_text())
+        {
+            Ok(true) => self.schedule_save(true, window, cx),
+            Ok(false) => {}
+            Err(error) => {
+                self.status = format!("数据库排序保存失败：{error}");
+                self.error = true;
+                cx.notify();
+            }
+        }
+    }
     fn commit_database_cell(
         &mut self,
         keep_editing_on_error: bool,
@@ -4656,21 +4715,49 @@ impl Render for Workspace {
                             .views_of(db_id)
                             .cloned()
                             .collect::<Vec<_>>();
+                        let selected_view_key = format!("gpui.database-view.{}", db_id.0);
+                        let remembered_view = self
+                            .session
+                            .setting(&selected_view_key)
+                            .and_then(|value| value.parse::<u64>().ok())
+                            .map(ViewId);
                         let selected_view = self
                             .selected_database_views
                             .get(&db_id.0)
                             .copied()
                             .filter(|view_id| views.iter().any(|view| view.id == *view_id))
+                            .or_else(|| {
+                                remembered_view.filter(|view_id| {
+                                    views.iter().any(|view| view.id == *view_id)
+                                })
+                            })
                             .or_else(|| views.first().map(|view| view.id));
-                        let total = self.session.repo.record_count(db_id).ok()?;
+                        let active_view = views.iter().find(|view| Some(view.id) == selected_view)?;
+                        let definition = quire_core::core::database_view::ViewDefinition::parse(
+                            &active_view.definition,
+                        );
+                        let rules = definition.rules(db_id, &self.session.databases);
+                        let repo = self.session.repo.clone();
+                        let total = repo
+                            .filtered_count(&quire_core::core::database::RowRequest {
+                                db: db_id,
+                                title,
+                                columns: &columns,
+                                sorts: &rules.sorts,
+                                filter: rules.filter.as_ref(),
+                                search: None,
+                            })
+                            .ok()?;
                         Some((
                             db_id,
                             title,
                             columns,
                             views,
                             selected_view,
+                            rules.sorts,
+                            rules.filter,
                             total,
-                            self.session.repo.clone(),
+                            repo,
                         ))
                     })
                 } else {
@@ -5245,7 +5332,7 @@ impl Render for Workspace {
                                     .child(div().flex().gap(px(6.)).children(table_actions))
                             })
                             .when(kind == BlockKind::Database, |view| {
-                                if let Some((db_id, title, columns, views, selected_view, total, repo)) =
+                                if let Some((db_id, title, columns, views, selected_view, view_sorts, view_filter, total, repo)) =
                                     database_table
                                 {
                                     let db_border = Palette::color(&p.border);
@@ -5253,48 +5340,88 @@ impl Render for Workspace {
                                     let db_checkbox_fg = Palette::color(&p.bg);
                                     let query_columns = columns.clone();
                                     let cell_title_property = title;
-                                                            let cell_block = block_id.0;
+                                    let cell_block = block_id.0;
+                                    let mut header_columns = vec![(title, "名称".to_owned(), true)];
+                                    header_columns.extend(
+                                        columns
+                                            .iter()
+                                            .map(|property| (property.id, property.name.clone(), false)),
+                                    );
                                     let header = div()
                                         .w(database_width)
                                         .flex()
                                         .h(px(34.))
                                         .border_b_1()
                                         .border_color(Palette::color(&p.border))
-                                        .child(
-                                            div()
-                                                .w(px(220.))
-                                                .flex_1()
-                                                .min_w(px(220.))
-                                                .px(px(10.))
-                                                .flex()
-                                                .items_center()
-                                                .text_color(muted)
-                                                .text_size(px(11.))
-                                                .child("名称"),
-                                        )
-                                        .children(columns.iter().map(|property| {
-                                            div()
-                                                .w(px(160.))
-                                                .flex_1()
-                                                .min_w(px(160.))
-                                                .px(px(10.))
-                                                .flex()
-                                                .items_center()
-                                                .text_color(muted)
-                                                .text_size(px(11.))
-                                                .child(property.name.clone())
-                                        }));
+                                        .children(header_columns.into_iter().map(
+                                            |(property, name, is_title)| {
+                                                let width = if is_title { 220. } else { 160. };
+                                                let indicator = view_sorts
+                                                    .iter()
+                                                    .position(|sort| sort.property == property)
+                                                    .map(|index| {
+                                                        if view_sorts[index].descending {
+                                                            format!(" ↓{}", index + 1)
+                                                        } else {
+                                                            format!(" ↑{}", index + 1)
+                                                        }
+                                                    })
+                                                    .unwrap_or_default();
+                                                let mut cell = div()
+                                                    .id(SharedString::from(format!(
+                                                        "db-header-{}-{}",
+                                                        db_id.0, property.0
+                                                    )))
+                                                    .w(px(width))
+                                                    .flex_1()
+                                                    .min_w(px(width))
+                                                    .h_full()
+                                                    .px(px(10.))
+                                                    .flex()
+                                                    .items_center()
+                                                    .text_color(muted)
+                                                    .text_size(px(11.))
+                                                    .child(div().flex_1().min_w_0().child(name))
+                                                    .child(indicator);
+                                                if let Some(view_id) = selected_view
+                                                    .filter(|_| !self.session.page.locked)
+                                                {
+                                                    cell = cell
+                                                        .cursor_pointer()
+                                                        .hover(|cell| {
+                                                            cell.bg(db_hover).text_color(text)
+                                                        })
+                                                        .on_click(cx.listener(
+                                                            move |this, _, window, cx| {
+                                                                this.toggle_database_sort(
+                                                                    block_id,
+                                                                    db_id,
+                                                                    view_id,
+                                                                    property,
+                                                                    window,
+                                                                    cx,
+                                                                );
+                                                            },
+                                                        ));
+                                                }
+                                                cell
+                                            },
+                                        ));
+                                    let row_sorts = view_sorts.clone();
+                                    let row_filter = view_filter.clone();
                                     let rows = uniform_list(
                                         SharedString::from(format!("database-rows-{}", db_id.0)),
                                         total,
                                         cx.processor(
                                         move |_this, range: Range<usize>, _window, _cx| {
-                                                let request =
-                                                    quire_core::core::database::RowRequest::new(
-                                                        db_id,
-                                                        title,
-                                                        &query_columns,
-                                                    );
+                                                let request = quire_core::core::database::RowRequest {
+                                                    db: db_id,
+                                                    title,
+                                                    columns: &query_columns,
+                                                    sorts: &row_sorts,
+                                                    filter: row_filter.as_ref(),
+                                                    search: None,
+                                                };
                                                 let slice = quire_core::core::database::RowWindow {
                                                     start: range.start,
                                                     end: range.end,
@@ -5494,9 +5621,13 @@ impl Render for Workspace {
                                                         .text_size(px(11.))
                                                         .text_color(if selected { Palette::color(&p.fg) } else { muted })
                                                         .when(selected, |tab| tab.bg(Palette::color(&p.accent).opacity(0.82)))
-                                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                                        .on_click(cx.listener(move |this, _, window, cx| {
                                                             this.selected_database_views.insert(db_id.0, view_id);
-                                                            cx.notify();
+                                                            this.session.set_setting(
+                                                                format!("gpui.database-view.{}", db_id.0),
+                                                                view_id.0.to_string(),
+                                                            );
+                                                            this.schedule_save(false, window, cx);
                                                         }))
                                                         .child(view.name.clone())
                                                 }))

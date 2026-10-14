@@ -392,6 +392,50 @@ impl Session {
         let _ = self.persistence.force_flush();
         Some(id)
     }
+    pub fn set_database_view_definition(
+        &mut self,
+        block: BlockId,
+        view_id: ViewId,
+        definition: String,
+    ) -> Result<bool> {
+        if self.page.locked {
+            return Ok(false);
+        }
+        let Some(view) = self
+            .databases
+            .views
+            .iter()
+            .find(|view| view.id == view_id)
+            .cloned()
+        else {
+            return Ok(false);
+        };
+        if view.definition == definition {
+            return Ok(false);
+        }
+        let Some(entry) = command::plan(
+            &mut self.document,
+            self.page.id,
+            Command::SetDatabaseViewDefinition {
+                block,
+                view: view_id,
+                from: view.definition,
+                to: definition.clone(),
+            },
+        ) else {
+            return Ok(false);
+        };
+        self.apply_entry(entry);
+        if let Some(view) = self
+            .databases
+            .views
+            .iter_mut()
+            .find(|view| view.id == view_id)
+        {
+            view.definition = definition;
+        }
+        Ok(true)
+    }
     pub fn set_database_cell(
         &mut self,
         block: BlockId,
@@ -2203,12 +2247,50 @@ mod tests {
                     quire_core::core::database::PropertyKind::Checkbox,
                 )
                 .expect("checkbox property created");
-            session.add_database_view(block).expect("view created");
+            let view_id = session.add_database_view(block).expect("view created");
             assert_eq!(session.databases.views_of(db).count(), 2);
             session.undo();
             assert_eq!(session.databases.views_of(db).count(), 1);
             session.redo();
             assert_eq!(session.databases.views_of(db).count(), 2);
+            let mut definition = quire_core::core::database_view::ViewDefinition::new();
+            definition.set_sorts(&[quire_core::core::database::SortSpec::of(
+                session.databases.title_property(db).unwrap(),
+                false,
+            )
+            .unwrap()]);
+            let sorted_definition = definition.to_text();
+            assert!(session.set_database_view_definition(
+                block,
+                view_id,
+                sorted_definition.clone()
+            )?);
+            session.set_setting(
+                format!("gpui.database-view.{}", db.0),
+                view_id.0.to_string(),
+            );
+            session.undo();
+            assert!(
+                session
+                    .databases
+                    .views
+                    .iter()
+                    .find(|view| view.id == view_id)
+                    .unwrap()
+                    .definition
+                    .is_empty()
+            );
+            session.redo();
+            assert_eq!(
+                session
+                    .databases
+                    .views
+                    .iter()
+                    .find(|view| view.id == view_id)
+                    .unwrap()
+                    .definition,
+                sorted_definition
+            );
             let record = session.add_database_record(block).expect("record created");
             assert!(session.set_database_cell(block, record, title, "进行中")?);
             assert!(session.set_database_cell(block, record, status_property, "待核准")?);
@@ -2225,8 +2307,15 @@ mod tests {
                 session.repo.cell(record, done_property)?,
                 CellValue::Flag(true)
             );
+            session.undo();
+            assert_eq!(session.repo.cell(record, done_property)?, CellValue::Empty);
+            session.redo();
+            let second_record = session
+                .add_database_record(block)
+                .expect("second record created");
+            assert!(session.set_database_cell(block, second_record, title, "Alpha")?);
             session.persistence.force_flush()?;
-            assert_eq!(session.repo.record_count(db)?, 1);
+            assert_eq!(session.repo.record_count(db)?, 2);
             assert_eq!(session.repo.record(record)?.unwrap().db, db);
             let columns = session
                 .databases
@@ -2234,20 +2323,34 @@ mod tests {
                 .filter(|property| !property.kind.is_title())
                 .cloned()
                 .collect::<Vec<_>>();
+            let active_view = session
+                .databases
+                .views
+                .iter()
+                .find(|view| view.id == view_id)
+                .unwrap();
+            let rules =
+                quire_core::core::database_view::ViewDefinition::parse(&active_view.definition)
+                    .rules(db, &session.databases);
             let rows = session.repo.window_rows(
-                &quire_core::core::database::RowRequest::new(db, title, &columns),
+                &quire_core::core::database::RowRequest {
+                    db,
+                    title,
+                    columns: &columns,
+                    sorts: &rules.sorts,
+                    filter: rules.filter.as_ref(),
+                    search: None,
+                },
                 quire_core::core::database::RowWindow { start: 0, end: 20 },
             )?;
-            assert_eq!(rows.len(), 1);
+            assert_eq!(rows.len(), 2);
             assert_eq!(rows[0].cells.len(), 2);
-            assert_eq!(rows[0].title, "进行中");
-            assert_eq!(rows[0].cells[0], "待核准");
-            assert_eq!(rows[0].cells[1], "Yes");
-            session.undo();
-            assert_eq!(session.repo.cell(record, done_property)?, CellValue::Empty);
-            session.redo();
+            assert_eq!(rows[0].title, "Alpha");
+            assert_eq!(rows[1].title, "进行中");
+            assert_eq!(rows[1].cells[0], "待核准");
+            assert_eq!(rows[1].cells[1], "Yes");
             session.persistence.force_flush()?;
-            assert_eq!(session.repo.record_count(db)?, 1);
+            assert_eq!(session.repo.record_count(db)?, 2);
         }
         let reopened = Session::open(&path)?;
         let block = reopened
@@ -2257,6 +2360,10 @@ mod tests {
             .unwrap();
         let db = block.db_ref.unwrap();
         assert_eq!(reopened.databases.database(db).unwrap().name, "项目库");
+        assert_eq!(
+            reopened.setting(&format!("gpui.database-view.{}", db.0)),
+            Some("2")
+        );
         assert!(
             reopened
                 .databases
@@ -2264,7 +2371,13 @@ mod tests {
                 .any(|property| property.name == "状态")
         );
         assert_eq!(reopened.databases.views_of(db).count(), 2);
-        assert_eq!(reopened.repo.record_count(db)?, 1);
+        assert_eq!(reopened.repo.record_count(db)?, 2);
+        assert!(
+            reopened
+                .databases
+                .views_of(db)
+                .any(|view| view.definition.contains("sorts"))
+        );
         let record = reopened.repo.records_of(db)?[0].id;
         let title = reopened.databases.title_property(db).unwrap().id;
         let status = reopened

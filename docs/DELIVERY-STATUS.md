@@ -516,3 +516,10 @@ GPUI 应用已超出第一竖切，但离完整复刻仍有较大差距。用户
 
 - `Ctrl+N` 复用侧栏“新建页面”同一条创建/访问/聚焦/自动保存路径；设置页快捷键清单加入该项。删除尚未实现的“命令面板 Ctrl+K”虚假条目，避免快捷键帮助向用户承诺不可用操作。
 - 验证：`cargo check`、16 项库测试 + 5 项二进制测试、release 构建、`cargo fmt` 和 `git diff --check` 通过；未在原生应用窗口中实际按键回归，需在后续真窗口操作验证 Ctrl+N 创建后可立即输入并切页持久化。
+
+## 第七十轮：数据库表格排序和活动视图恢复
+
+- 数据库列头现在按无序→升序→降序→无序循环，多个排序列保留先后优先级并显示方向/序号；查询和过滤计数由 SQLite 按 core `RowRequest` 下推，仍只读取虚拟列表要求的行窗口。视图规则通过 `ViewDefinition` read-edit-write 和 `SetDatabaseViewDefinition` 更新，沿用页面撤销/重做。
+- 切换数据库视图时将当前 ViewId 保存到 GPUI session settings，重启后恢复；若对应视图已删除则回退首视图。
+- 更新 `db-sort-cycled` / `db-view-picked` 人工语义并重生成 `PARITY.csv`。隔离 SQLite 测试覆盖标题升序的查询次序、视图规则撤销/重做、规则及活动 ViewId 重开读回。
+- 验证：16 项库测试 + 5 项二进制测试、`cargo check`、release 构建、`cargo fmt` 与 `git diff --check` 通过。尚未用真窗口点击列头验收箭头显示、排序循环及真实虚拟列表刷新；排序 callback 当前标记实现完成但验证未完成。
