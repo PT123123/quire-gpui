@@ -885,6 +885,18 @@ impl Workspace {
             }
         });
         this.subscriptions.push(bounds_subscription);
+        let link_target_input = this.link_target_input.clone();
+        this.subscriptions.push(cx.subscribe_in(
+            &link_target_input,
+            window,
+            |this, _, event, window, cx| {
+                if matches!(event, InputEvent::DismissSlash) && this.link_editor_open {
+                    this.link_editor_open = false;
+                    this.restore_focus(window, cx);
+                    cx.notify();
+                }
+            },
+        ));
         let note_title_input = this.note_title_input.clone();
         this.note_title_subscription = Some(cx.subscribe_in(
             &note_title_input,
