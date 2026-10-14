@@ -735,6 +735,51 @@ impl Session {
         }
         Ok(true)
     }
+    pub fn set_database_view_layout(
+        &mut self,
+        block: BlockId,
+        view_id: ViewId,
+        layout: ViewLayout,
+    ) -> Result<bool> {
+        if self.page.locked {
+            return Ok(false);
+        }
+        let Some(db) = self.document.block(block).and_then(|block| block.db_ref) else {
+            return Ok(false);
+        };
+        let Some(current) = self
+            .databases
+            .views
+            .iter()
+            .find(|view| view.id == view_id && view.db == db)
+            .cloned()
+        else {
+            bail!("该视图不属于此数据库");
+        };
+        if current.layout == layout {
+            return Ok(false);
+        }
+        self.apply_entry(Entry {
+            apply: vec![Change::ViewLayoutSet {
+                id: view_id,
+                layout,
+            }],
+            revert: vec![Change::ViewLayoutSet {
+                id: view_id,
+                layout: current.layout,
+            }],
+        });
+        if let Some(view) = self
+            .databases
+            .views
+            .iter_mut()
+            .find(|view| view.id == view_id)
+        {
+            view.layout = layout;
+        }
+        self.persistence.force_flush()?;
+        Ok(true)
+    }
     pub fn set_database_cell(
         &mut self,
         block: BlockId,
@@ -2541,6 +2586,38 @@ mod tests {
             .find(|property| property.id == formula_id)
             .unwrap();
         assert!(quire_core::core::database_formula::config_formula(&property.config).is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn database_view_layout_is_undoable_and_persists() -> Result<()> {
+        let scratch = quire_core::testing::ScratchDir::new("gpui-database-view-layout");
+        let path = scratch.path().join("test.db");
+        let (block, db, view_id);
+        {
+            let mut session = Session::open(&path)?;
+            block = session.blocks()[0].id;
+            db = session
+                .make_database(block, "布局测试".into())
+                .expect("database created");
+            view_id = session.databases.views_of(db).next().unwrap().id;
+            assert!(session.set_database_view_layout(block, view_id, ViewLayout::List,)?);
+            assert_eq!(
+                session.databases.views_of(db).next().unwrap().layout,
+                ViewLayout::List
+            );
+            session.undo();
+            assert_eq!(
+                session.databases.views_of(db).next().unwrap().layout,
+                ViewLayout::Table
+            );
+            session.redo();
+        }
+        let reopened = Session::open(&path)?;
+        assert_eq!(
+            reopened.databases.views_of(db).next().unwrap().layout,
+            ViewLayout::List
+        );
         Ok(())
     }
 

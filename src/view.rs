@@ -7175,6 +7175,15 @@ impl Render for Workspace {
                                         ));
                                     let active_view_id = selected_view
                                         .expect("database table has selected view");
+                                    let active_layout = views
+                                        .iter()
+                                        .find(|view| view.id == active_view_id)
+                                        .map_or(
+                                            quire_core::core::database::ViewLayout::Table,
+                                            |view| view.layout,
+                                        );
+                                    let list_layout =
+                                        active_layout == quire_core::core::database::ViewLayout::List;
                                     let row_sorts = view_sorts.clone();
                                     let row_filter = view_filter.clone();
                                     let row_group_data = group_data.clone();
@@ -7246,6 +7255,14 @@ impl Render for Workspace {
                                                             } else {
                                                                 display_value
                                                             };
+                                                            let displayed = if list_layout && index > 0 {
+                                                                format!(
+                                                                    "{}: {displayed}",
+                                                                    query_columns[index - 1].name
+                                                                )
+                                                            } else {
+                                                                displayed
+                                                            };
                                                             let checked = matches!(
                                                                 value.as_str(),
                                                                 "Yes" | "true" | "True"
@@ -7269,7 +7286,11 @@ impl Render for Workspace {
                                                                     )
                                                                 });
                                                             let raw_value = value.clone();
-                                                            let width = row_column_widths[index];
+                                                            let width = if list_layout {
+                                                                if index == 0 { 240. } else { 190. }
+                                                            } else {
+                                                                row_column_widths[index]
+                                                            };
                                                             let mut cell = div()
                                                                     .id(SharedString::from(
                                                                         format!(
@@ -7284,7 +7305,10 @@ impl Render for Workspace {
                                                                     .px(px(10.))
                                                                     .flex()
                                                                     .items_center()
-                                                                    .border_r_1()
+                                                                    .when(
+                                                                        !list_layout,
+                                                                        |cell| cell.border_r_1(),
+                                                                    )
                                                                     .border_color(db_border)
                                                                     .text_size(px(12.))
                                                                     .text_color(text)
@@ -8142,6 +8166,47 @@ impl Render for Workspace {
                                                             }
                                                             button
                                                         }).child({
+                                                            let is_table = !list_layout;
+                                                            let mut button = div()
+                                                                .id(SharedString::from(format!(
+                                                                    "db-layout-toggle-{}",
+                                                                    block_id.0
+                                                                )))
+                                                                .px(px(8.))
+                                                                .py(px(4.))
+                                                                .rounded(px(4.))
+                                                                .text_color(muted)
+                                                                .hover(|button| button.bg(db_hover))
+                                                                .child(if is_table { "表格" } else { "列表" });
+                                                            if !self.session.page.locked {
+                                                                button = button.cursor_pointer().on_click(cx.listener(
+                                                                    move |this, _, window, cx| {
+                                                                        let layout = if is_table {
+                                                                            quire_core::core::database::ViewLayout::List
+                                                                        } else {
+                                                                            quire_core::core::database::ViewLayout::Table
+                                                                        };
+                                                                        match this.session.set_database_view_layout(
+                                                                            block_id,
+                                                                            active_view_id,
+                                                                            layout,
+                                                                        ) {
+                                                                            Ok(true) => {
+                                                                                this.schedule_save(true, window, cx);
+                                                                                cx.notify();
+                                                                            }
+                                                                            Ok(false) => {}
+                                                                            Err(error) => {
+                                                                                this.status = format!("视图布局保存失败：{error}");
+                                                                                this.error = true;
+                                                                                cx.notify();
+                                                                            }
+                                                                        }
+                                                                    },
+                                                                ));
+                                                            }
+                                                            button
+                                                        }).child({
                                                             let group_name = grouped_property
                                                                 .and_then(|property_id| {
                                                                     self.session.databases.properties_of(db_id)
@@ -8337,7 +8402,7 @@ impl Render for Workspace {
                                         .when_some(filter_picker, |view, picker| {
                                             view.child(picker)
                                         })
-                                        .child(header)
+                                        .when(!list_layout, |view| view.child(header))
                                         .child(rows)
                                 } else {
                                     view.rounded(px(7.))
