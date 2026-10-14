@@ -75,10 +75,16 @@ sync-log-cleared,已实现,未验证,清空当前同步日志,清除历史记录
 sync-name-set,已实现,未验证,编辑本机局域网名称后保存并安全重启 Quire，让 core Engine 以新身份广播,复用当前库路径与启动参数；先完成主线程唯一 Session 的 flush 后才启动新进程，保存失败则恢复旧名称并取消重启；需桌面验证重启交接
 sync-refresh-requested,已实现,未验证,同步页“刷新列表”会重新显示当前 peer 表并清理 30 天没有广播的设备,自动发现仍由 core UDP 广播负责；只移除 peer 行并保留 merge shadow；隔离 SQLite 覆盖 stale/online peer 区分
 toggle-mcp,已实现,未验证,设置页启停仅监听回环地址的 MCP HTTP 服务并持久化端口/令牌/启用态,启用时写库目录 mcp.json，关闭时清除指针；协议与工具逻辑有隔离测试，真实客户端尚未连接验收
-mcp-copy,已实现,未验证,复制 MCP 客户端 JSON 配置或 Agent 提示词到剪贴板,不复制笔记/任务数据
+mcp-copy,已实现,未验证,可分别复制 HTTP Bearer 连接配置、可直接粘贴的 stdio 客户端配置或 Agent 提示词,stdio 命令只定位同目录 mcp.json 并转发到唯一活动服务；不复制笔记/任务数据
 mcp-restart,已实现,未验证,启用时可以重启本机 MCP HTTP 服务,先关闭旧 listener 并清除配置指针，再按当前设置重新启动；实际客户端重连尚未验收
 mcp-log-cleared,已实现,未验证,清空最多保留 50 条的 MCP 工具调用日志,只清除记录，不影响服务或进行中的请求
 db-row-removed,已实现,未验证,选择一条普通数据库行后可点击“删除选中行”；记录关联页面时拒绝并提示从侧栏删除页面；删除进入页面撤销历史,删除前读取记录与 typed cell 快照；core 修复恢复顺序为记录后单元格以满足外键；隔离 SQLite 测试覆盖删除/撤销/重做
 db-search-opened,已实现,未验证,数据库工具栏的搜索按钮打开内嵌搜索框并聚焦,搜索是临时视图状态不写入文档或数据库配置
 db-search-text-set,已实现,未验证,搜索词下推给 SQLite；行数和虚拟列表同步显示匹配记录,使用 RowRequest.search 与 filtered_count；只请求 uniform_list 当前窗口中的匹配行
 db-search-closed,已实现,未验证,点击 × 或按 Escape 关闭数据库搜索并清除本次查询,关闭后恢复当前页面编辑焦点
+org-capture-opened,已实现,未验证,速记小窗打开时从当前整理区标签筛选预填 #标签 并聚焦输入；无筛选时空白；每次打开使用独立草稿,使用唯一 Session 的当前 organizer 过滤器种子草稿；不创建第二个数据库写者
+org-capture-sent,已实现,未验证,Ctrl+Enter Alt+S 或保存按钮将普通笔记写入当前库并提取 #标签；成功关闭，失败保留草稿,创建笔记后立即 flush；保存失败返回 false 并留在速记窗；沿用主窗口唯一 Session
+org-capture-closed,已实现,未验证,Escape 先收起标签建议再关闭速记；取消不写入笔记,隐藏建议只改变窗口 UI 状态；取消仅丢弃本次草稿，不产生 undo 项
+org-quick-note-requested,已实现,未验证,全局 Alt+N 打开独立无边框速记窗口，不要求主窗口先显示；应用内 Alt+N 同样可用,复用现有速记窗口和 UI job pump；不会重置已存在的草稿
+org-capture-draft-changed,已实现,未验证,编辑时从当前 live 笔记与任务标签重算最多五个候选；支持完整层级标签和末级标签不区分大小写匹配,候选针对光标前未结束的 #token；有空白分隔时不显示；标签池按唯一值排序
+org-tag-suggest-picked,已实现,未验证,上下方向键移动候选；Enter Tab 或点击应用候选并将光标移到完整标签之后,按 UTF-8 字符边界替换当前 #token；后续文本和标点保留，避免重复空格

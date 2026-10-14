@@ -21,6 +21,7 @@ fn run() -> Result<()> {
     let mut theme: Option<String> = None;
     let mut dump = false;
     let mut smoke = false;
+    let mut stdio = false;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -28,9 +29,10 @@ fn run() -> Result<()> {
             "--theme" => theme = Some(args.next().context("--theme 需要 ID")?),
             "--dump-state" => dump = true,
             "--smoke-test" => smoke = true,
+            "--stdio" | "mcp" => stdio = true,
             "--help" | "-h" => {
                 println!(
-                    "quire-gpui [--db PATH] [--theme ID] [--dump-state]\n--smoke-test: requires a NEW --db path; exercises application input callbacks, NOT real OS IME."
+                    "quire-gpui [--db PATH] [--theme ID] [--dump-state]\nquire-gpui --stdio [--db PATH]: bridge MCP stdio to the running Quire HTTP service. The database path locates its adjacent mcp.json pointer.\n--smoke-test: requires a NEW --db path; exercises application input callbacks, NOT real OS IME."
                 );
                 return Ok(());
             }
@@ -52,6 +54,9 @@ fn run() -> Result<()> {
             .join("quire.db")
     });
     let path = std::path::absolute(path)?;
+    if stdio {
+        return mcp::run_stdio_bridge(&path).map_err(anyhow::Error::msg);
+    }
     eprintln!("Quire GPUI database: {}", path.display());
     if dump {
         use quire_core::core::persistence::Repository;

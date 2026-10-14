@@ -11,6 +11,7 @@ use quire_gpui::ui_scale::px;
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
     ops::Range,
+    path::PathBuf,
     sync::{Arc, Mutex},
     time::Duration,
 };
@@ -502,10 +503,10 @@ fn parse_mcp_port(value: &str) -> Option<u16> {
 #[cfg(test)]
 mod view_tests {
     use super::{
-        capture_tags, database_filter_value_from_text, database_group_identity,
-        database_group_label, database_property_kind_choices, evaluate_database_formula,
-        evaluate_database_rollup, find_matches_in, link_target_range, order_database_groups,
-        parse_mcp_port, parse_organizer_tags, toc_headings,
+        capture_tag_replacement, capture_tags, database_filter_value_from_text,
+        database_group_identity, database_group_label, database_property_kind_choices,
+        evaluate_database_formula, evaluate_database_rollup, find_matches_in, link_target_range,
+        order_database_groups, parse_mcp_port, parse_organizer_tags, toc_headings,
     };
     use quire_core::core::database::PropertyKind;
     use quire_core::core::database_view::FilterValue;
@@ -528,6 +529,17 @@ mod view_tests {
             ["工作/项目", "计划"]
         );
         assert!(capture_tags("普通文字 # 不是标签").is_empty());
+    }
+
+    #[test]
+    fn quick_capture_suggestion_replaces_the_current_utf8_tag_token() {
+        let draft = "记下 #工后 继续";
+        let caret = "记下 #工".len();
+        assert_eq!(
+            capture_tag_replacement(draft, caret, "项目/工作"),
+            Some(("记下 #项目/工作 继续".into(), "记下 #项目/工作 ".len()))
+        );
+        assert_eq!(capture_tag_replacement("没有标签", 4, "项目"), None);
     }
 
     #[test]
@@ -5635,6 +5647,11 @@ impl Workspace {
     fn open_quick_note(&mut self, cx: &mut Context<Self>) {
         let owner = cx.entity();
         let theme = self.palette.clone();
+        let draft = self
+            .organizer_tag
+            .as_ref()
+            .map(|tag| format!("#{tag} "))
+            .unwrap_or_default();
         let options = WindowOptions {
             window_bounds: Some(WindowBounds::centered(size(px(440.), px(270.)), cx)),
             titlebar: None,
@@ -5643,7 +5660,7 @@ impl Workspace {
             ..Default::default()
         };
         let opened = cx.open_window(options, move |window, cx| {
-            cx.new(|cx| QuickNoteWindow::new(owner, theme, window, cx))
+            cx.new(|cx| QuickNoteWindow::new(owner, theme, draft, window, cx))
         });
         if let Err(error) = opened {
             self.status = format!("无法打开速记窗口：{error}");
@@ -5829,9 +5846,16 @@ impl Workspace {
             self.sync_status = format!("正在同步 {} 台设备…", peers.len());
             for peer in peers {
                 self.sync_pending.insert(peer.id.clone());
-                let _ = self
+                if self
                     .sync_cmd_tx
-                    .send(quire_core::services::sync::engine::Cmd::SyncWith(peer));
+                    .send(quire_core::services::sync::engine::Cmd::SyncWith(
+                        peer.clone(),
+                    ))
+                    .is_err()
+                {
+                    self.sync_pending.remove(&peer.id);
+                    self.sync_status = "同步引擎已停止，请重启 Quire 后重试".into();
+                }
             }
         }
         self.schedule_save(false, window, cx);
@@ -5919,10 +5943,18 @@ impl Workspace {
         let mut queued = false;
         for peer in peers {
             self.sync_pending.insert(peer.id.clone());
-            let _ = self
+            if self
                 .sync_cmd_tx
-                .send(quire_core::services::sync::engine::Cmd::SyncWith(peer));
-            queued = true;
+                .send(quire_core::services::sync::engine::Cmd::SyncWith(
+                    peer.clone(),
+                ))
+                .is_ok()
+            {
+                queued = true;
+            } else {
+                self.sync_pending.remove(&peer.id);
+                self.sync_status = "同步引擎已停止，请重启 Quire 后重试".into();
+            }
         }
         if queued {
             cx.notify();
@@ -6277,6 +6309,37 @@ fn capture_tags(text: &str) -> Vec<String> {
         }
     }
     tags
+}
+
+fn capture_tag_replacement(draft: &str, caret: usize, tag: &str) -> Option<(String, usize)> {
+    let caret = caret.min(draft.len());
+    if !draft.is_char_boundary(caret) {
+        return None;
+    }
+    let hash = draft[..caret].rfind('#')?;
+    let typed = &draft[hash + 1..caret];
+    if typed.contains([' ', '\n', '\t', ',', '，', '、']) {
+        return None;
+    }
+    let tail = &draft[caret..];
+    let token_end = caret
+        + tail
+            .find([' ', '\n', '\t', ',', '，', '、'])
+            .unwrap_or(tail.len());
+    let mut next = String::with_capacity(draft.len() + tag.len());
+    next.push_str(&draft[..hash]);
+    next.push('#');
+    next.push_str(tag);
+    let mut suffix_start = token_end;
+    if let Some(separator @ (' ' | '\n' | '\t')) = draft[token_end..].chars().next() {
+        next.push(separator);
+        suffix_start += separator.len_utf8();
+    } else {
+        next.push(' ');
+    }
+    let new_caret = next.len();
+    next.push_str(&draft[suffix_start..]);
+    Some((next, new_caret))
 }
 
 impl Render for Workspace {
@@ -6828,8 +6891,12 @@ impl Render for Workspace {
                                                         cx.notify();
                                                         return;
                                                     }
-                                                    let _ = this.sync_cmd_tx.send(quire_core::services::sync::engine::Cmd::SyncWith(peer_for_sync.clone()));
-                                                    this.sync_status = format!("正在与 {peer_name} 同步…");
+                                                    if this.sync_cmd_tx.send(quire_core::services::sync::engine::Cmd::SyncWith(peer_for_sync.clone())).is_ok() {
+                                                        this.sync_status = format!("正在与 {peer_name} 同步…");
+                                                    } else {
+                                                        this.sync_pending.remove(&peer_key);
+                                                        this.sync_status = "同步引擎已停止，请重启 Quire 后重试".into();
+                                                    }
                                                     cx.notify();
                                                 }))
                                                 .child("同步"))
@@ -6898,6 +6965,23 @@ impl Render for Workspace {
                                             cx.notify();
                                         }))
                                         .child("复制连接配置"))
+                                    .child(div().id("mcp-copy-stdio-config").px(px(9.)).py(px(5.)).rounded(px(4.))
+                                        .border_1().border_color(Palette::color(&p.border)).cursor_pointer().text_size(px(10.))
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            let executable = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("quire-gpui"));
+                                            let config = serde_json::json!({
+                                                "mcpServers": {
+                                                    "quire": {
+                                                        "command": executable,
+                                                        "args": ["--stdio", "--db", this.session.path]
+                                                    }
+                                                }
+                                            }).to_string();
+                                            cx.write_to_clipboard(ClipboardItem::new_string(config));
+                                            this.status = "MCP stdio 客户端配置已复制".into();
+                                            cx.notify();
+                                        }))
+                                        .child("复制 stdio 配置"))
                                     .child(div().id("mcp-copy-prompt").px(px(9.)).py(px(5.)).rounded(px(4.))
                                         .border_1().border_color(Palette::color(&p.border)).cursor_pointer().text_size(px(10.))
                                         .on_click(cx.listener(|this, _, _, cx| {
@@ -12968,6 +13052,9 @@ struct QuickNoteWindow {
     owner: Entity<Workspace>,
     input: Entity<TextInput>,
     draft: String,
+    suggestions: Vec<String>,
+    selected_suggestion: usize,
+    suggestions_hidden: bool,
     palette: Palette,
     subscription: Option<Subscription>,
 }
@@ -12976,30 +13063,119 @@ impl QuickNoteWindow {
     fn new(
         owner: Entity<Workspace>,
         palette: Palette,
+        draft: String,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let input = cx.new(|cx| TextInput::new(String::new(), Vec::new(), 15., window, cx));
+        let suggestions = owner.read(cx).session.organizer_tag_suggestions(&draft);
+        let input = cx.new(|cx| TextInput::new(draft.clone(), Vec::new(), 15., window, cx));
         input.update(cx, |input, _| {
             input.placeholder = Some("写下速记…（#标签会加入笔记标签）".into())
         });
+        input.update(cx, |input, _| input.buffer.move_to(draft.len()));
         let mut this = Self {
             owner,
             input: input.clone(),
-            draft: String::new(),
+            draft,
+            suggestions,
+            selected_suggestion: 0,
+            suggestions_hidden: false,
             palette,
             subscription: None,
         };
         this.subscription = Some(cx.subscribe(&input, |this, entity, event, cx| match event {
             InputEvent::Edited { text, .. } => {
                 this.draft = text.clone();
-                cx.notify();
+                let caret = entity.read(cx).buffer.caret();
+                this.refresh_suggestions(caret, cx);
             }
-            InputEvent::Split(_) => entity.update(cx, |input, cx| input.insert_newline(cx)),
+            InputEvent::Split(_) => {
+                if let Some(tag) = this.current_suggestion() {
+                    this.pick_suggestion(tag, cx);
+                } else {
+                    entity.update(cx, |input, cx| input.insert_newline(cx));
+                }
+            }
+            InputEvent::Indent => {
+                if let Some(tag) = this.current_suggestion() {
+                    this.pick_suggestion(tag, cx);
+                }
+            }
             _ => {}
         }));
         window.focus(&input.read(cx).focus);
         this
+    }
+    fn suggestions_visible(&self) -> bool {
+        !self.suggestions_hidden && !self.suggestions.is_empty()
+    }
+    fn current_suggestion(&self) -> Option<String> {
+        self.suggestions_visible()
+            .then(|| self.suggestions.get(self.selected_suggestion).cloned())
+            .flatten()
+    }
+    fn refresh_suggestions(&mut self, caret: usize, cx: &mut Context<Self>) {
+        let prefix = self.draft.get(..caret).unwrap_or(&self.draft).to_owned();
+        self.suggestions = self
+            .owner
+            .read(cx)
+            .session
+            .organizer_tag_suggestions(&prefix);
+        self.selected_suggestion = 0;
+        self.suggestions_hidden = false;
+        cx.notify();
+    }
+    fn pick_suggestion(&mut self, tag: String, cx: &mut Context<Self>) {
+        let caret = self.input.read(cx).buffer.caret();
+        let Some((draft, caret)) = capture_tag_replacement(&self.draft, caret, &tag) else {
+            return;
+        };
+        self.draft = draft.clone();
+        self.input.update(cx, |input, cx| {
+            input.reset(draft.clone(), Vec::new(), caret, cx);
+        });
+        self.refresh_suggestions(caret, cx);
+    }
+    fn key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        if self.input.read(cx).buffer.composing() {
+            return;
+        }
+        let key = event.keystroke.key.as_str();
+        let modifiers = event.keystroke.modifiers;
+        if self.suggestions_visible() && !modifiers.modified() {
+            match key {
+                "up" | "down" => {
+                    let count = self.suggestions.len();
+                    if key == "up" {
+                        self.selected_suggestion = (self.selected_suggestion + count - 1) % count;
+                    } else {
+                        self.selected_suggestion = (self.selected_suggestion + 1) % count;
+                    }
+                    cx.stop_propagation();
+                    cx.notify();
+                    return;
+                }
+                "enter" | "tab" => {
+                    if let Some(tag) = self.current_suggestion() {
+                        self.pick_suggestion(tag, cx);
+                        window.focus(&self.input.read(cx).focus);
+                    }
+                    cx.stop_propagation();
+                    return;
+                }
+                "escape" => {
+                    self.suggestions_hidden = true;
+                    cx.stop_propagation();
+                    cx.notify();
+                    return;
+                }
+                _ => {}
+            }
+        }
+        if key == "escape" && !modifiers.modified() {
+            cx.stop_propagation();
+            self.cancel(window, cx);
+        }
     }
     fn submit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.draft.trim().is_empty() {
@@ -13027,8 +13203,14 @@ impl Render for QuickNoteWindow {
         let foreground = Palette::color(&palette.fg);
         let muted = Palette::color(&palette.muted);
         let accent = Palette::color(&palette.accent);
+        let suggestions = self.suggestions.clone();
+        let selected_suggestion = self.selected_suggestion;
+        let suggestions_visible = self.suggestions_visible();
         div()
             .key_context("QuireQuickNote")
+            .capture_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+                this.key_down(event, window, cx)
+            }))
             .size_full()
             .flex()
             .flex_col()
@@ -13059,6 +13241,46 @@ impl Render for QuickNoteWindow {
                     .bg(Palette::color(&palette.elevated))
                     .child(self.input.clone()),
             )
+            .when(suggestions_visible, |root| {
+                root.child(
+                    div()
+                        .id("quick-note-suggestions")
+                        .flex()
+                        .flex_col()
+                        .gap(px(2.))
+                        .max_h(px(148.))
+                        .overflow_y_scroll()
+                        .p(px(4.))
+                        .rounded(px(7.))
+                        .border_1()
+                        .border_color(Palette::color(&palette.border))
+                        .bg(Palette::color(&palette.bg))
+                        .children(suggestions.into_iter().enumerate().map(|(index, tag)| {
+                            let selected = index == selected_suggestion;
+                            let selected_tag = tag.clone();
+                            div()
+                                .id(SharedString::from(format!("quick-note-suggestion-{index}")))
+                                .h(px(26.))
+                                .px(px(8.))
+                                .flex()
+                                .items_center()
+                                .rounded(px(4.))
+                                .cursor_pointer()
+                                .when(selected, |row| {
+                                    row.bg(accent).text_color(Palette::color(&palette.bg))
+                                })
+                                .when(!selected, |row| {
+                                    row.text_color(foreground)
+                                        .hover(|row| row.bg(Palette::color(&palette.elevated)))
+                                })
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    this.pick_suggestion(selected_tag.clone(), cx);
+                                    window.focus(&this.input.read(cx).focus);
+                                }))
+                                .child(format!("#{tag}"))
+                        })),
+                )
+            })
             .child(
                 div()
                     .flex()
@@ -13068,7 +13290,7 @@ impl Render for QuickNoteWindow {
                         div()
                             .text_size(px(11.))
                             .text_color(muted)
-                            .child("Enter 换行 · Ctrl+Enter 保存到笔记收集箱"),
+                            .child("↑↓ 选择标签 · Enter/Tab 采用建议 · Ctrl+Enter 或 Alt+S 保存 · Esc 收起建议/取消"),
                     )
                     .child(
                         div()
@@ -13111,6 +13333,7 @@ pub fn bind_keys(cx: &mut App) {
     cx.bind_keys([
         KeyBinding::new("ctrl-s", Save, Some("Quire")),
         KeyBinding::new("ctrl-enter", Save, Some("QuireQuickNote")),
+        KeyBinding::new("alt-s", Save, Some("QuireQuickNote")),
         KeyBinding::new("alt-n", QuickNote, Some("Quire")),
         KeyBinding::new("ctrl-n", NewPage, Some("Quire")),
         KeyBinding::new("ctrl-z", Undo, Some("Quire")),

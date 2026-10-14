@@ -648,3 +648,17 @@ GPUI 应用已超出第一竖切，但离完整复刻仍有较大差距。用户
 - MCP 设置现在允许编辑 1–65535 的本机端口。启用中应用端口会先绑定新 listener，成功后才切换并停止旧 listener；新端口占用时旧服务继续可用。未启用时只保存选择的端口，后续开启/程序重启使用该值。Endpoint、复制配置和 Agent 提示词均使用当前端口。
 - 端口占用时直接展示 listener bind 错误且不伪报切换成功；输入非数字或 0 时拒绝应用并保留原端口。服务只监听 127.0.0.1。
 - `cargo fmt --all`、`cargo check -j 8`、`cargo test -j 8`（45 项）和 `cargo build --release -j 8 --target-dir target-release` 通过；release `--help` 正常。新增端口解析边界测试。尚未真人用第二个进程占端口验证设置页错误呈现。
+
+## 第九十五轮：速记标签建议与键盘交互
+
+- 速记窗口从当前整理区标签筛选器预填 `#标签 `；输入 `#` 时从活动笔记和任务标签构建候选，匹配完整层级路径或末级名称，最多显示五条。上下键移动、Enter/Tab/点击应用，按 UTF-8 字符边界替换当前 token 并恢复正确光标；Escape 先收起候选，再次 Escape 关闭窗口。
+- 增加 Alt+S 保存入口；Ctrl+Enter 保持提交，普通 Enter 继续插入多行。候选刷新来自唯一 Session 的当前标签目录，保存仍在当前库创建普通笔记并立即 flush；失败保留草稿。候选 UI 与整理区撰写浮层仍为不同控件。
+- PARITY-SEMANTICS 增补速记打开、保存、关闭、全局触发、草稿变化和候选选择语义；PARITY 生成器合并后覆盖 246 callback / 261 property / 188 场景。
+- 验证：`cargo fmt --all -- --check`、`git diff --check`、`cargo test -j 8`（47 项）与 `cargo build --release -j 8 --target-dir target-release` 通过。尚未做真人窗口交互验收；托盘系统交互、双设备同步往返及真实 MCP 客户端连接仍待桌面验收。
+
+## 第九十六轮：MCP stdio 客户端桥接与同步队列错误恢复
+
+- 实现 `--stdio`（并兼容 `mcp`）桥接入口：从 `--db` 所指库目录读取应用生成的 `mcp.json`，将逐行 JSON-RPC 转发到 127.0.0.1 上的活动 MCP listener；notification 不向 stdout 写响应，错误写入 stderr 并退出。桥接进程不打开 SQLite，也不产生第二写者。
+- MCP 设置新增“复制 stdio 配置”，提供包含当前可执行文件与当前数据库路径的 `mcpServers.quire` 配置；HTTP 配置和 Agent 提示词原有入口保留。隔离 loopback 测试覆盖中文工具请求转发和 notification 无响应。
+- 修复同步自动/手动/单设备队列发送失败时仍遗留“进行中”状态的问题；命令通道关闭后立即清除对应 pending 标记并展示需要重启应用的可见错误。
+- 验证：`cargo fmt --all`、`cargo check -j 8`、`cargo test -j 8`（47 项）、`cargo build --release -j 8 --target-dir target-release`、release `--help`、parity 生成及 `git diff --check` 均通过；未访问真实库。双机局域网互通、Shell 托盘唤回及外部 MCP 客户端连接仍需桌面实测。

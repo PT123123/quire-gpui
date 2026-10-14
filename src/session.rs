@@ -24,7 +24,7 @@ use quire_core::{
     storage::SqliteRepository,
 };
 use std::{
-    collections::{BTreeMap, HashSet},
+    collections::{BTreeMap, BTreeSet, HashSet},
     path::{Path, PathBuf},
     sync::Arc,
     time::{Duration, Instant},
@@ -3110,6 +3110,37 @@ impl Session {
     pub fn set_note_tags(&mut self, id: NoteId, tags: Vec<String>) -> bool {
         self.update_note_metadata(id, |note| note.tags = tags)
     }
+
+    pub fn organizer_tag_suggestions(&self, draft: &str) -> Vec<String> {
+        let Some(hash) = draft.rfind('#') else {
+            return Vec::new();
+        };
+        let typed = &draft[hash + 1..];
+        if typed.contains([' ', '\n', '\t']) {
+            return Vec::new();
+        }
+        let prefix = typed.to_lowercase();
+        let tags: BTreeSet<String> = self
+            .organizer
+            .live_notes()
+            .map(|note| &note.tags)
+            .chain(self.organizer.live_tasks().map(|task| &task.tags))
+            .flat_map(|tags| tags.iter().cloned())
+            .collect();
+        let mut suggestions = tags
+            .into_iter()
+            .filter(|tag| {
+                if prefix.is_empty() {
+                    return true;
+                }
+                let last = tag.rsplit('/').next().unwrap_or_default();
+                tag.to_lowercase().starts_with(&prefix) || last.to_lowercase().starts_with(&prefix)
+            })
+            .collect::<Vec<_>>();
+        suggestions.sort_by(|a, b| a.len().cmp(&b.len()).then(a.cmp(b)));
+        suggestions.truncate(5);
+        suggestions
+    }
     pub fn set_note_trashed(&mut self, id: NoteId, trashed: bool) -> bool {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -5515,6 +5546,46 @@ mod tests {
         let mention = &reopened.document.block(block_id).unwrap().marks[0];
         assert_eq!(mention.kind, quire_core::core::types::MarkKind::Mention);
         assert_eq!(mention.url, quire_core::core::page_uri(target_page));
+        Ok(())
+    }
+
+    #[test]
+    fn organizer_capture_suggestions_match_full_or_leaf_tags_and_cap_results() -> Result<()> {
+        let scratch = quire_core::testing::ScratchDir::new("gpui-capture-tags");
+        let mut session = Session::open(&scratch.path().join("capture.db"))?;
+        let note = session.create_note();
+        session.update_note_editor(
+            note,
+            "tag source".into(),
+            String::new(),
+            vec![
+                "设计/复刻".into(),
+                "工程/复刻".into(),
+                "复刻".into(),
+                "项目".into(),
+                "计划".into(),
+                "窗口".into(),
+                "主题".into(),
+            ],
+        );
+        let task = session.create_task("task source".into());
+        session.set_task_tags(task, vec!["设计".into()]);
+
+        assert_eq!(
+            session.organizer_tag_suggestions("记录 #复"),
+            ["复刻", "工程/复刻", "设计/复刻"]
+        );
+        assert_eq!(
+            session.organizer_tag_suggestions("记录 #设计"),
+            ["设计", "设计/复刻"]
+        );
+        assert_eq!(session.organizer_tag_suggestions("记录 #").len(), 5);
+        assert!(
+            session
+                .organizer_tag_suggestions("记录 #复 别的")
+                .is_empty()
+        );
+        assert!(session.organizer_tag_suggestions("没有标签").is_empty());
         Ok(())
     }
 

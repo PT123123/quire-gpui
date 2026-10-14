@@ -409,6 +409,69 @@ pub fn read_pointer(dir: &Path) -> Option<(u16, String)> {
     Some((port, token))
 }
 
+/// Forward MCP's line-delimited stdio transport to the one live HTTP server.
+/// The bridge intentionally never opens the database; `--db` only locates the
+/// adjacent pointer written by the desktop process.
+pub fn run_stdio_bridge(db_path: &Path) -> Result<(), String> {
+    let directory = db_path.parent().unwrap_or_else(|| Path::new("."));
+    let (port, token) = read_pointer(directory).ok_or_else(|| {
+        format!(
+            "MCP pointer not found: {}",
+            pointer_path(directory).display()
+        )
+    })?;
+    let stdin = std::io::stdin();
+    let stdout = std::io::stdout();
+    let mut output = stdout.lock();
+    for line in stdin.lock().lines() {
+        let line = line.map_err(|error| format!("read MCP stdin: {error}"))?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        if let Some(response) = forward_stdio_message(port, &token, &line)? {
+            writeln!(output, "{response}").map_err(|error| format!("write MCP stdout: {error}"))?;
+            output
+                .flush()
+                .map_err(|error| format!("flush MCP stdout: {error}"))?;
+        }
+    }
+    Ok(())
+}
+
+fn forward_stdio_message(port: u16, token: &str, body: &str) -> Result<Option<String>, String> {
+    let mut stream = TcpStream::connect(("127.0.0.1", port))
+        .map_err(|error| format!("connect to Quire MCP at 127.0.0.1:{port}: {error}"))?;
+    stream
+        .set_read_timeout(Some(std::time::Duration::from_secs(30)))
+        .map_err(|error| error.to_string())?;
+    write!(
+        stream,
+        "POST /mcp HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nAuthorization: Bearer {token}\r\nContent-Type: application/json\r\nAccept: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    )
+    .map_err(|error| format!("send MCP request: {error}"))?;
+    stream
+        .shutdown(std::net::Shutdown::Write)
+        .map_err(|error| format!("finish MCP request: {error}"))?;
+    let mut response = Vec::new();
+    stream
+        .read_to_end(&mut response)
+        .map_err(|error| format!("read MCP response: {error}"))?;
+    let response =
+        String::from_utf8(response).map_err(|error| format!("invalid HTTP response: {error}"))?;
+    let (headers, payload) = response
+        .split_once("\r\n\r\n")
+        .ok_or_else(|| "invalid HTTP response from Quire MCP".to_owned())?;
+    let status = headers.lines().next().unwrap_or_default();
+    if status.starts_with("HTTP/1.1 202 ") {
+        return Ok(None);
+    }
+    if !status.starts_with("HTTP/1.1 200 ") {
+        return Err(format!("Quire MCP returned {status}: {payload}"));
+    }
+    Ok(Some(payload.to_owned()))
+}
+
 /// 没有依赖可用的随机源：拿 `RandomState` 的种子哈希两次进程状态。
 /// 127.0.0.1 上的本地 token，够用。
 pub fn mint_token() -> String {
@@ -531,6 +594,22 @@ mod tests {
         let value: Value = serde_json::from_str(payload).unwrap();
         assert_eq!(value["result"]["isError"], false);
         assert_eq!(value["result"]["content"][0]["text"], "{\"echo\":\"ok\"}");
+        let bridged = forward_stdio_message(
+            port,
+            "secret",
+            r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"echo","arguments":{"value":"中文"}}}"#,
+        )
+        .unwrap()
+        .unwrap();
+        let value: Value = serde_json::from_str(&bridged).unwrap();
+        assert_eq!(value["result"]["content"][0]["text"], "{\"echo\":\"中文\"}");
+        let notification = forward_stdio_message(
+            port,
+            "secret",
+            r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#,
+        )
+        .unwrap();
+        assert!(notification.is_none());
         server.stop();
     }
 }
