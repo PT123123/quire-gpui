@@ -2099,14 +2099,36 @@ impl Workspace {
         self.schedule_save(false, window, cx);
     }
     fn toggle_link_editor(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.link_editor_open = !self.link_editor_open;
         if self.link_editor_open {
-            self.link_target_input.update(cx, |input, input_cx| {
-                input.reset(String::new(), Vec::new(), 0, input_cx)
-            });
-            let input = self.link_target_input.clone();
-            input.update(cx, |input, _| window.focus(&input.focus));
+            self.link_editor_open = false;
+            self.restore_focus(window, cx);
+            cx.notify();
+            return;
         }
+        let selection = self.active.and_then(|id| {
+            let input = self.inputs.get(&id.0)?.read(cx);
+            (!input.buffer.selection.is_empty()).then(|| {
+                let range = input.buffer.selection.clone();
+                let existing = input.marks.iter().find(|mark| {
+                    mark.kind == quire_core::core::types::MarkKind::Link
+                        && mark.start <= range.start
+                        && mark.end >= range.end
+                });
+                existing.map(|mark| mark.url.clone()).unwrap_or_default()
+            })
+        });
+        if selection.is_none() {
+            self.status = "先选中要添加或修改链接的文字".into();
+            cx.notify();
+            return;
+        }
+        let url = selection.expect("checked above");
+        self.link_target_input.update(cx, |input, input_cx| {
+            let len = url.len();
+            input.reset(url, Vec::new(), len, input_cx);
+            window.focus(&input.focus);
+        });
+        self.link_editor_open = true;
         cx.notify();
     }
     fn apply_link(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -2116,15 +2138,6 @@ impl Workspace {
         let Some(id) = self.active else {
             return;
         };
-        let Some(input) = self.inputs.get(&id.0) else {
-            return;
-        };
-        let selection = input.read(cx).buffer.selection.clone();
-        if selection.is_empty() {
-            self.status = "先选中要添加链接的文字".into();
-            cx.notify();
-            return;
-        }
         let url = self
             .link_target_input
             .read(cx)
@@ -2141,11 +2154,35 @@ impl Workspace {
             cx.notify();
             return;
         }
-        self.session
-            .set_link(id, selection.start, selection.end, url);
+        let Some(input) = self.inputs.get(&id.0) else {
+            return;
+        };
+        let selection = input.read(cx).buffer.selection.clone();
+        let target = if selection.is_empty() {
+            let input = input.read(cx);
+            input
+                .marks
+                .iter()
+                .find(|mark| {
+                    mark.kind == quire_core::core::types::MarkKind::Link
+                        && mark.start < mark.end
+                        && mark.end <= input.buffer.text.len()
+                        && mark.start <= input.buffer.caret()
+                        && input.buffer.caret() <= mark.end
+                })
+                .map(|mark| (mark.start, mark.end))
+        } else {
+            Some((selection.start, selection.end))
+        };
+        let Some((start, end)) = target else {
+            self.status = "先选中要添加链接的文字，或将光标放在链接文字上".into();
+            cx.notify();
+            return;
+        };
+        self.session.set_link(id, start, end, url);
         self.link_editor_open = false;
         self.sync_inputs(window, cx);
-        self.focus(id, selection.end, window, cx);
+        self.focus(id, end, window, cx);
         self.schedule_save(false, window, cx);
     }
     fn select_theme(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
