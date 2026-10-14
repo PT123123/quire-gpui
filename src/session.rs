@@ -1055,6 +1055,13 @@ impl Session {
             task.subtasks.retain(|item| item.id != subtask_id);
         })
     }
+    pub fn set_subtask_title(&mut self, id: TaskId, subtask_id: u64, title: String) -> bool {
+        self.update_task(id, |task| {
+            if let Some(subtask) = task.subtasks.iter_mut().find(|item| item.id == subtask_id) {
+                subtask.title = title;
+            }
+        })
+    }
     pub fn set_tasks_done(&mut self, ids: &[TaskId], done: bool) -> bool {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -2132,6 +2139,13 @@ mod tests {
             assert!(session.undo_organizer());
             assert!(!session.organizer.task(task_id).unwrap().subtasks[0].done);
             assert!(session.redo_organizer());
+            assert!(session.set_subtask_title(task_id, subtask_id, "核验发布包".into()));
+            assert!(session.undo_organizer());
+            assert_eq!(
+                session.organizer.task(task_id).unwrap().subtasks[0].title,
+                "核对安装包"
+            );
+            assert!(session.redo_organizer());
             assert!(session.set_task_due(task_id, Some("2026-11-02".into())));
             assert!(!session.set_task_due(task_id, Some("下周".into())));
             assert!(session.update_task_editor(
@@ -2178,6 +2192,7 @@ mod tests {
         assert_eq!(task.tags, ["发布", "桌面端"]);
         assert_eq!(task.subtasks.len(), 1);
         assert!(task.subtasks[0].done);
+        assert_eq!(task.subtasks[0].title, "核验发布包");
         assert_eq!(task.due.as_deref(), Some("2026-11-03"));
         assert!(!task.done);
         assert!(!task.is_trashed());

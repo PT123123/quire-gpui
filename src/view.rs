@@ -380,6 +380,7 @@ pub struct Workspace {
     selected_note: Option<quire_core::core::organizer::NoteId>,
     selected_task: Option<quire_core::core::organizer::TaskId>,
     selected_task_ids: HashSet<quire_core::core::organizer::TaskId>,
+    editing_subtask: Option<(quire_core::core::organizer::TaskId, u64)>,
     note_title_draft: String,
     note_body_draft: String,
     task_due_draft: String,
@@ -437,6 +438,20 @@ impl Workspace {
         subtask_title_input.update(cx, |input, _| {
             input.placeholder = Some("添加子任务…".into())
         });
+        let input_fg = Palette::color(&Palette::load(theme).fg);
+        for input in [
+            title_input.clone(),
+            search_input.clone(),
+            find_input.clone(),
+            link_target_input.clone(),
+            note_title_input.clone(),
+            note_body_input.clone(),
+            task_due_input.clone(),
+            organizer_tags_input.clone(),
+            subtask_title_input.clone(),
+        ] {
+            input.update(cx, |input, _| input.text_color = Some(input_fg));
+        }
         let mut this = Self {
             session,
             title_input,
@@ -486,6 +501,7 @@ impl Workspace {
             selected_note: None,
             selected_task: None,
             selected_task_ids: HashSet::new(),
+            editing_subtask: None,
             note_title_draft: String::new(),
             note_body_draft: String::new(),
             task_due_draft: String::new(),
@@ -565,8 +581,14 @@ impl Workspace {
                     this.subtask_title_draft = text.clone();
                     cx.notify();
                 }
-                InputEvent::Blurred => {}
-                InputEvent::Split(_) => this.add_subtask_from_draft(window, cx),
+                InputEvent::Blurred => this.commit_subtask_draft(window, cx),
+                InputEvent::Split(_) => {
+                    if this.editing_subtask.is_some() {
+                        this.commit_subtask_draft(window, cx)
+                    } else {
+                        this.add_subtask_from_draft(window, cx)
+                    }
+                }
                 _ => {}
             },
         ));
@@ -720,7 +742,8 @@ impl Workspace {
             ];
             input.update(cx, |input, cx| {
                 input.font_size = font;
-                input.text_color = block_text_color;
+                input.text_color =
+                    Some(block_text_color.unwrap_or_else(|| Palette::color(&self.palette.fg)));
                 input.code_lang = if block.kind == BlockKind::Code {
                     block.lang
                 } else {
@@ -1691,6 +1714,21 @@ impl Workspace {
     }
     fn select_theme(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
         self.palette = Palette::load(id);
+        let fg = Palette::color(&self.palette.fg);
+        for input in [
+            self.title_input.clone(),
+            self.search_input.clone(),
+            self.find_input.clone(),
+            self.link_target_input.clone(),
+            self.note_title_input.clone(),
+            self.note_body_input.clone(),
+            self.task_due_input.clone(),
+            self.organizer_tags_input.clone(),
+            self.subtask_title_input.clone(),
+        ] {
+            input.update(cx, |input, _| input.text_color = Some(fg));
+        }
+        self.sync_inputs(window, cx);
         self.theme_picker_open = false;
         self.session
             .set_setting("gpui.theme", self.palette.id.clone());
@@ -1884,6 +1922,10 @@ impl Workspace {
         }
     }
     fn add_subtask_from_draft(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.editing_subtask.is_some() {
+            self.commit_subtask_draft(window, cx);
+            return;
+        }
         let Some(id) = self.selected_task else { return };
         let title = self.subtask_title_draft.trim().to_owned();
         if title.is_empty() || self.organizer_trash {
@@ -1897,6 +1939,39 @@ impl Workspace {
             self.schedule_save(true, window, cx);
             cx.notify();
         }
+    }
+    fn start_edit_subtask(
+        &mut self,
+        task: quire_core::core::organizer::TaskId,
+        subtask: u64,
+        title: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.organizer_trash {
+            return;
+        }
+        self.commit_note_draft(window, cx);
+        self.editing_subtask = Some((task, subtask));
+        self.subtask_title_draft = title.clone();
+        self.subtask_title_input.update(cx, |input, cx| {
+            input.reset(title.clone(), Vec::new(), title.len(), cx);
+        });
+        window.focus(&self.subtask_title_input.read(cx).focus);
+    }
+    fn commit_subtask_draft(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some((task, subtask)) = self.editing_subtask.take() else {
+            return;
+        };
+        let title = self.subtask_title_draft.trim().to_owned();
+        if !title.is_empty() && self.session.set_subtask_title(task, subtask, title) {
+            self.schedule_save(true, window, cx);
+        }
+        self.subtask_title_draft.clear();
+        self.subtask_title_input.update(cx, |input, cx| {
+            input.reset(String::new(), Vec::new(), 0, cx);
+        });
+        cx.notify();
     }
     fn toggle_subtask_done(
         &mut self,
@@ -4927,58 +5002,34 @@ impl Render for Workspace {
             .flex()
             .flex_1()
             .min_h_0()
+            .px(px(14.))
+            .py(px(14.))
             .child(
                 div()
+                    .id("organizer-card")
+                    .flex()
+                    .flex_1()
+                    .min_w_0()
+                    .min_h_0()
+                    .rounded(px(12.))
+                    .border_1()
+                    .border_color(Palette::color(&p.border))
+                    .bg(Palette::color(&p.elevated))
+                    .overflow_hidden()
+                    .child(
+                        div()
                     .id("organizer-note-list")
-                    .w(px(260.))
+                    .flex_1()
+                    .min_w_0()
                     .flex_shrink_0()
                     .h_full()
                     .border_r_1()
                     .border_color(Palette::color(&p.border))
-                    .px(px(12.))
-                    .py(px(14.))
+                    .px(px(20.))
+                    .py(px(16.))
                     .flex()
                     .flex_col()
                     .gap(px(6.))
-                    .child(
-                        div()
-                            .flex()
-                            .gap(px(6.))
-                            .child(
-                                div()
-                                    .id("organizer-tab-notes")
-                                    .flex_1()
-                                    .px(px(9.))
-                                    .py(px(6.))
-                                    .rounded(px(5.))
-                                    .cursor_pointer()
-                                    .text_color(if !self.organizer_tasks { accent } else { muted })
-                                    .when(!self.organizer_tasks, |tab| {
-                                        tab.bg(Palette::color(&p.elevated))
-                                    })
-                                    .on_click(cx.listener(|this, _, window, cx| {
-                                        this.toggle_organizer_tab(false, window, cx)
-                                    }))
-                                    .child("笔记"),
-                            )
-                            .child(
-                                div()
-                                    .id("organizer-tab-tasks")
-                                    .flex_1()
-                                    .px(px(9.))
-                                    .py(px(6.))
-                                    .rounded(px(5.))
-                                    .cursor_pointer()
-                                    .text_color(if self.organizer_tasks { accent } else { muted })
-                                    .when(self.organizer_tasks, |tab| {
-                                        tab.bg(Palette::color(&p.elevated))
-                                    })
-                                    .on_click(cx.listener(|this, _, window, cx| {
-                                        this.toggle_organizer_tab(true, window, cx)
-                                    }))
-                                    .child("任务"),
-                            ),
-                    )
                     .child(
                         div()
                             .flex()
@@ -5033,18 +5084,7 @@ impl Render for Workspace {
                             }),
                     )
                     .when(self.organizer_tasks && !self.organizer_trash, |list| {
-                        list.child(
-                            div()
-                                .id("organizer-task-list-selector")
-                                .max_h(px(120.))
-                                .flex_shrink_0()
-                                .flex()
-                                .flex_col()
-                                .gap(px(4.))
-                                .overflow_y_scroll()
-                                .children(task_list_buttons),
-                        )
-                        .when(self.selected_task_smart_view != Some(4), |list| {
+                        list.when(self.selected_task_smart_view != Some(4), |list| {
                             list.child(
                                 div()
                                     .id("organizer-show-done-toggle")
@@ -5120,42 +5160,6 @@ impl Render for Workspace {
                             )
                         })
                     })
-                    .when(!organizer_tag_buttons.is_empty(), |list| {
-                        list.child(
-                            div()
-                                .id("organizer-tag-filter-list")
-                                .flex()
-                                .flex_wrap()
-                                .gap(px(4.))
-                                .children(organizer_tag_buttons),
-                        )
-                    })
-                    .child(
-                        div()
-                            .id("organizer-trash-toggle")
-                            .px(px(8.))
-                            .py(px(5.))
-                            .rounded(px(5.))
-                            .cursor_pointer()
-                            .text_color(if self.organizer_trash { accent } else { muted })
-                            .when(self.organizer_trash, |row| {
-                                row.bg(Palette::color(&p.elevated))
-                            })
-                            .hover(|row| row.bg(Palette::color(&p.elevated)))
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.toggle_organizer_trash(window, cx)
-                            }))
-                            .child(format!(
-                                "{}回收站 · {}",
-                                if self.organizer_trash {
-                                    "当前："
-                                } else {
-                                    ""
-                                },
-                                self.session.organizer.trashed_notes().count()
-                                    + self.session.organizer.trashed_tasks().count()
-                            )),
-                    )
                     .child(
                         div()
                             .id("organizer-notes-scroll")
@@ -5171,14 +5175,12 @@ impl Render for Workspace {
                     .flex_1()
                     .min_w_0()
                     .h_full()
-                    .px(px(48.))
-                    .py(px(48.))
+                    .px(px(20.))
+                    .py(px(20.))
                     .when(
                         self.selected_note.is_some() || self.selected_task.is_some(),
                         |editor| {
                             editor
-                                .max_w(px(760.))
-                                .mx_auto()
                                 .w_full()
                                 .flex()
                                 .flex_col()
@@ -5268,6 +5270,32 @@ impl Render for Workspace {
                                             div()
                                                 .flex()
                                                 .items_center()
+                                                .gap(px(8.))
+                                                .text_color(muted)
+                                                .child("截止日期")
+                                                .child(
+                                                    div()
+                                                        .id("organizer-task-due-input")
+                                                        .w(px(150.))
+                                                        .h(px(30.))
+                                                        .rounded(px(4.))
+                                                        .border_1()
+                                                        .border_color(if self.task_due_error {
+                                                            Hsla::from(rgb(0xe5534b))
+                                                        } else {
+                                                            Palette::color(&p.border)
+                                                        })
+                                                        .px(px(6.))
+                                                        .child(self.task_due_input.clone()),
+                                                )
+                                                .when(self.task_due_error, |row| {
+                                                    row.child(div().text_color(rgb(0xe5534b)).child("请输入 YYYY-MM-DD 日期"))
+                                                }),
+                                        )
+                                        .child(
+                                            div()
+                                                .flex()
+                                                .items_center()
                                                 .gap(px(5.))
                                                 .text_color(muted)
                                                 .child("移至")
@@ -5327,6 +5355,8 @@ impl Render for Workspace {
                                                 .children(subtasks.into_iter().map(|subtask| {
                                                     let subtask_id = subtask.id;
                                                     let done = subtask.done;
+                                                    let title = subtask.title;
+                                                    let edit_title = title.clone();
                                                     div()
                                                         .flex()
                                                         .items_center()
@@ -5348,7 +5378,22 @@ impl Render for Workspace {
                                                                 })))
                                                                 .child(if done { "✓" } else { "" }),
                                                         )
-                                                        .child(div().flex_1().text_color(if done { muted } else { text }).child(subtask.title))
+                                                        .when(self.editing_subtask == Some((id, subtask_id)), |row| {
+                                                            row.child(div().flex_1().h(px(28.)).child(self.subtask_title_input.clone()))
+                                                        })
+                                                        .when(self.editing_subtask != Some((id, subtask_id)), |row| {
+                                                            row.child(
+                                                                div()
+                                                                    .id(SharedString::from(format!("organizer-subtask-title-{id:?}-{subtask_id}")))
+                                                                    .flex_1()
+                                                                    .text_color(if done { muted } else { text })
+                                                                    .cursor_pointer()
+                                                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                                                        this.start_edit_subtask(id, subtask_id, edit_title.clone(), window, cx)
+                                                                    }))
+                                                                    .child(title),
+                                                            )
+                                                        })
                                                         .when(!self.organizer_trash, |row| row.child(
                                                             div()
                                                                 .id(SharedString::from(format!("organizer-subtask-delete-{id:?}-{subtask_id}")))
@@ -5419,7 +5464,40 @@ impl Render for Workspace {
                                 }))
                         },
                     ),
-            );
+                    )
+                    .child(
+                        div()
+                            .id("organizer-navigation")
+                            .w(px(200.))
+                            .flex_shrink_0()
+                            .h_full()
+                            .border_l_1()
+                            .border_color(Palette::color(&p.border))
+                            .px(px(10.))
+                            .py(px(10.))
+                            .flex()
+                            .flex_col()
+                            .gap(px(8.))
+                            .child(
+                                div().flex().gap(px(6.)).child(
+                                    div().id("organizer-tab-notes").flex_1().px(px(9.)).py(px(6.)).rounded(px(5.)).cursor_pointer().text_color(if !self.organizer_tasks { accent } else { muted }).when(!self.organizer_tasks, |tab| tab.bg(Palette::color(&p.elevated))).on_click(cx.listener(|this, _, window, cx| this.toggle_organizer_tab(false, window, cx))).child("笔记")
+                                ).child(
+                                    div().id("organizer-tab-tasks").flex_1().px(px(9.)).py(px(6.)).rounded(px(5.)).cursor_pointer().text_color(if self.organizer_tasks { accent } else { muted }).when(self.organizer_tasks, |tab| tab.bg(Palette::color(&p.elevated))).on_click(cx.listener(|this, _, window, cx| this.toggle_organizer_tab(true, window, cx))).child("任务")
+                                ),
+                            )
+                            .when(self.organizer_tasks && !self.organizer_trash, |nav| nav.child(
+                                div().id("organizer-task-list-selector").flex().flex_col().gap(px(3.)).overflow_y_scroll().children(task_list_buttons)
+                            ))
+                            .child(div().text_size(px(11.)).text_color(muted).mt(px(6.)).child("标签"))
+                            .when(!organizer_tag_buttons.is_empty(), |nav| nav.child(
+                                div().id("organizer-tag-filter-list").flex().flex_col().gap(px(3.)).children(organizer_tag_buttons)
+                            ))
+                            .child(div().flex_1())
+                            .child(
+                                div().id("organizer-trash-toggle").px(px(8.)).py(px(7.)).rounded(px(5.)).cursor_pointer().text_color(if self.organizer_trash { accent } else { muted }).when(self.organizer_trash, |row| row.bg(Palette::color(&p.elevated))).hover(|row| row.bg(Palette::color(&p.elevated))).on_click(cx.listener(|this, _, window, cx| this.toggle_organizer_trash(window, cx))).child(format!("回收站 · {}", self.session.organizer.trashed_notes().count() + self.session.organizer.trashed_tasks().count()))
+                            ),
+                    ),
+                );
         let page_content = if self.organizer_open {
             organizer_view
         } else {
@@ -5451,37 +5529,6 @@ impl Render for Workspace {
                                     .object_fit(ObjectFit::Cover)
                                     .rounded(px(8.))
                                     .mb(px(16.)),
-                            )
-                        })
-                        .when(self.selected_task.is_some(), |pane| {
-                            pane.child(
-                                div()
-                                    .flex()
-                                    .items_center()
-                                    .gap(px(8.))
-                                    .child(div().text_color(muted).child("截止日期"))
-                                    .child(
-                                        div()
-                                            .id("organizer-task-due-input")
-                                            .w(px(140.))
-                                            .h(px(30.))
-                                            .rounded(px(4.))
-                                            .border_1()
-                                            .border_color(if self.task_due_error {
-                                                Hsla::from(rgb(0xe5534b))
-                                            } else {
-                                                Palette::color(&p.border)
-                                            })
-                                            .px(px(6.))
-                                            .child(self.task_due_input.clone()),
-                                    )
-                                    .when(self.task_due_error, |row| {
-                                        row.child(
-                                            div()
-                                                .text_color(rgb(0xe5534b))
-                                                .child("请输入 YYYY-MM-DD 日期"),
-                                        )
-                                    }),
                             )
                         })
                         .child(
@@ -5754,61 +5801,63 @@ impl Render for Workspace {
                             ),
                     ),
             )
-            .child(
-                div()
-                    .h(px(36.))
-                    .flex_shrink_0()
-                    .flex()
-                    .items_center()
-                    .gap(px(4.))
-                    .px(px(12.))
-                    .border_b_1()
-                    .border_color(Palette::color(&p.border))
-                    .children(kind_buttons)
-                    .child(div().w(px(1.)).h(px(18.)).bg(Palette::color(&p.border)))
-                    .children(mark_buttons)
-                    .child(
-                        div()
-                            .id("link-editor-toggle")
-                            .px(px(8.))
-                            .py(px(5.))
-                            .rounded(px(5.))
-                            .cursor_pointer()
-                            .text_color(Palette::color(&p.accent))
-                            .hover(|button| button.bg(Palette::color(&p.elevated)))
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.toggle_link_editor(window, cx)
-                            }))
-                            .child("链接"),
-                    )
-                    .children(attachment_buttons)
-                    .child(
-                        div()
-                            .id("page-import-markdown")
-                            .px(px(8.))
-                            .py(px(5.))
-                            .rounded(px(5.))
-                            .cursor_pointer()
-                            .text_color(Palette::color(&p.accent))
-                            .hover(|button| button.bg(Palette::color(&p.elevated)))
-                            .on_click(
-                                cx.listener(|this, _, window, cx| this.import_markdown(window, cx)),
-                            )
-                            .child("导入 Markdown"),
-                    )
-                    .child(
-                        div()
-                            .id("page-export-markdown")
-                            .px(px(8.))
-                            .py(px(5.))
-                            .rounded(px(5.))
-                            .cursor_pointer()
-                            .text_color(Palette::color(&p.accent))
-                            .hover(|button| button.bg(Palette::color(&p.elevated)))
-                            .on_click(cx.listener(|this, _, _, cx| this.export_markdown(cx)))
-                            .child("导出 Markdown"),
-                    ),
-            )
+            .when(!self.organizer_open, |root| {
+                root.child(
+                    div()
+                        .h(px(36.))
+                        .flex_shrink_0()
+                        .flex()
+                        .items_center()
+                        .gap(px(4.))
+                        .px(px(12.))
+                        .border_b_1()
+                        .border_color(Palette::color(&p.border))
+                        .children(kind_buttons)
+                        .child(div().w(px(1.)).h(px(18.)).bg(Palette::color(&p.border)))
+                        .children(mark_buttons)
+                        .child(
+                            div()
+                                .id("link-editor-toggle")
+                                .px(px(8.))
+                                .py(px(5.))
+                                .rounded(px(5.))
+                                .cursor_pointer()
+                                .text_color(Palette::color(&p.accent))
+                                .hover(|button| button.bg(Palette::color(&p.elevated)))
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.toggle_link_editor(window, cx)
+                                }))
+                                .child("链接"),
+                        )
+                        .children(attachment_buttons)
+                        .child(
+                            div()
+                                .id("page-import-markdown")
+                                .px(px(8.))
+                                .py(px(5.))
+                                .rounded(px(5.))
+                                .cursor_pointer()
+                                .text_color(Palette::color(&p.accent))
+                                .hover(|button| button.bg(Palette::color(&p.elevated)))
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.import_markdown(window, cx)
+                                }))
+                                .child("导入 Markdown"),
+                        )
+                        .child(
+                            div()
+                                .id("page-export-markdown")
+                                .px(px(8.))
+                                .py(px(5.))
+                                .rounded(px(5.))
+                                .cursor_pointer()
+                                .text_color(Palette::color(&p.accent))
+                                .hover(|button| button.bg(Palette::color(&p.elevated)))
+                                .on_click(cx.listener(|this, _, _, cx| this.export_markdown(cx)))
+                                .child("导出 Markdown"),
+                        ),
+                )
+            })
             .child(link_editor)
             .child(find_bar)
             .child(
