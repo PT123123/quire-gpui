@@ -660,7 +660,7 @@ GPUI 已覆盖主编辑器、整理区、独立速记与标签建议、Windows �
 
 - 实现 `--stdio`（并兼容 `mcp`）桥接入口：从 `--db` 所指库目录读取应用生成的 `mcp.json`，将逐行 JSON-RPC 转发到 127.0.0.1 上的活动 MCP listener；notification 不向 stdout 写响应，错误写入 stderr 并退出。桥接进程不打开 SQLite，也不产生第二写者。
 - MCP 设置新增“复制 stdio 配置”，提供包含当前可执行文件与当前数据库路径的 `mcpServers.quire` 配置；HTTP 配置和 Agent 提示词原有入口保留。隔离 loopback 测试覆盖中文工具请求转发和 notification 无响应。
-- 修复同步自动/手动/单设备队列发送失败时仍遗留“进行中”状态的问题；命令通道关闭后立即清除对应 pending 标记并展示需要重启应用的可见错误。
+- 修复同步自动/手动/单设备队列发送失败时仍遗留“进行中”状态的问题；命令通道关闭后立即清除对应 pending 标记并展示需要重启应用的可见错误。自动轮询会显示排队设备数并在发送失败时触发界面刷新。
 - 验证：`cargo fmt --all`、`cargo check -j 8`、`cargo test -j 8`（47 项）、`cargo build --release -j 8 --target-dir target-release`、release `--help`、parity 生成及 `git diff --check` 均通过；未访问真实库。双机局域网互通、Shell 托盘唤回及外部 MCP 客户端连接仍需桌面实测。
 
 ## 第九十七轮：MCP 页面读取与安全写入

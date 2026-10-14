@@ -5959,7 +5959,8 @@ impl Workspace {
                 now.saturating_sub(peer.last_seen) <= 60 && !self.sync_pending.contains(&peer.id)
             })
             .collect::<Vec<_>>();
-        let mut queued = false;
+        let mut queued = 0usize;
+        let mut changed = false;
         for peer in peers {
             self.sync_pending.insert(peer.id.clone());
             if self
@@ -5969,13 +5970,18 @@ impl Workspace {
                 ))
                 .is_ok()
             {
-                queued = true;
+                queued += 1;
+                changed = true;
             } else {
                 self.sync_pending.remove(&peer.id);
                 self.sync_status = "同步引擎已停止，请重启 Quire 后重试".into();
+                changed = true;
             }
         }
-        if queued {
+        if queued > 0 {
+            self.sync_status = format!("正在自动同步 {queued} 台设备…");
+        }
+        if changed {
             cx.notify();
         }
     }
