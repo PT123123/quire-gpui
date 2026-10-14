@@ -2230,20 +2230,21 @@ impl Workspace {
         if self.session.page.locked || self.closing {
             return;
         }
-        let Some(path) = rfd::FileDialog::new()
+        let Some(paths) = rfd::FileDialog::new()
             .set_title("添加数据库文件")
-            .pick_file()
+            .pick_files()
         else {
             return;
         };
-        match self.session.import_database_file(
+        let count = paths.len();
+        match self.session.import_database_files(
             BlockId(block),
             quire_core::core::database::RecordId(record),
             quire_core::core::database::PropertyId(property),
-            &path,
+            &paths,
         ) {
             Ok(true) => {
-                self.status = "文件已添加，正在保存…".into();
+                self.status = format!("已添加 {count} 个文件，正在保存…");
                 self.schedule_save(true, window, cx);
             }
             Ok(false) => {}

@@ -1345,9 +1345,20 @@ impl Session {
         property: PropertyId,
         path: &Path,
     ) -> Result<bool> {
+        self.import_database_files(block, record, property, &[path.to_path_buf()])
+    }
+    pub fn import_database_files(
+        &mut self,
+        block: BlockId,
+        record: RecordId,
+        property: PropertyId,
+        paths: &[PathBuf],
+    ) -> Result<bool> {
         use quire_core::core::database::{CellValue, PropertyKind};
-        use quire_core::core::persistence::Change;
         if self.page.locked {
+            return Ok(false);
+        }
+        if paths.is_empty() {
             return Ok(false);
         }
         let definition = self
@@ -1364,17 +1375,22 @@ impl Session {
         if row.db != definition.db {
             bail!("记录不属于此文件列所在数据库");
         }
-        let id = AttachmentId(self.next_attachment_id);
-        let attachment = self
-            .attachment_store
-            .import_any_file(id, path)
-            .map_err(|error| anyhow::anyhow!(error.to_string()))?;
         let from = self.repo.cell(record, property)?;
         let mut ids = match &from {
             CellValue::Items(ids) => ids.clone(),
             _ => Vec::new(),
         };
-        ids.push(id.as_u64().to_string());
+        let mut imported = Vec::with_capacity(paths.len());
+        for path in paths {
+            let id = AttachmentId(self.next_attachment_id);
+            self.next_attachment_id = self.next_attachment_id.saturating_add(1);
+            let attachment = self
+                .attachment_store
+                .import_any_file(id, path)
+                .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+            ids.push(id.as_u64().to_string());
+            imported.push(attachment);
+        }
         let to = quire_core::core::database_property::parse_many(
             PropertyKind::Files,
             &definition.config,
@@ -1394,9 +1410,11 @@ impl Session {
         ) else {
             bail!("无法写入文件列");
         };
-        self.next_attachment_id = self.next_attachment_id.saturating_add(1);
-        self.attachments.insert(id.as_u64(), attachment.clone());
-        entry.apply.insert(0, Change::AttachmentAdded(attachment));
+        for attachment in imported.into_iter().rev() {
+            self.attachments
+                .insert(attachment.id.as_u64(), attachment.clone());
+            entry.apply.insert(0, Change::AttachmentAdded(attachment));
+        }
         self.apply_entry(entry);
         self.persistence.force_flush()?;
         self.refresh_databases();
@@ -3545,8 +3563,10 @@ mod tests {
         let scratch = quire_core::testing::ScratchDir::new("gpui-database-file");
         let path = scratch.path().join("test.db");
         let source_file = scratch.path().join("readme.txt");
+        let second_file = scratch.path().join("notes.pdf");
         std::fs::write(&source_file, "file column attachment")?;
-        let (block, property, record, attachment_id);
+        std::fs::write(&second_file, "second attachment")?;
+        let (block, property, record, attachment_ids);
         {
             let mut session = Session::open(&path)?;
             block = session.blocks()[0].id;
@@ -3557,16 +3577,37 @@ mod tests {
                 .add_database_property(block, "附件".into(), PropertyKind::Files)
                 .expect("files property");
             record = session.add_database_record(block).expect("record");
-            assert!(session.import_database_file(block, record, property, &source_file)?);
+            assert!(session.import_database_files(
+                block,
+                record,
+                property,
+                &[source_file.clone(), second_file.clone()]
+            )?);
             let ids = match session.repo.cell(record, property)? {
                 CellValue::Items(ids) => ids,
                 value => panic!("unexpected value: {value:?}"),
             };
-            attachment_id = ids[0].parse::<u64>().expect("attachment id");
-            assert_eq!(session.attachments[&attachment_id].name, "readme.txt");
+            attachment_ids = ids
+                .iter()
+                .map(|id| id.parse::<u64>().expect("attachment id"))
+                .collect::<Vec<_>>();
+            assert_eq!(attachment_ids.len(), 2);
+            assert_eq!(session.attachments[&attachment_ids[0]].name, "readme.txt");
+            assert_eq!(session.attachments[&attachment_ids[1]].name, "notes.pdf");
             session.undo();
             assert_eq!(session.repo.cell(record, property)?, CellValue::Empty);
             session.redo();
+            assert!(session.set_database_cell_many(
+                block,
+                record,
+                property,
+                &[attachment_ids[1].to_string()]
+            )?);
+            assert_eq!(
+                session.repo.cell(record, property)?,
+                CellValue::Items(vec![attachment_ids[1].to_string()])
+            );
+            session.undo();
             assert!(session.set_database_cell_many(block, record, property, &[])?);
             assert_eq!(session.repo.cell(record, property)?, CellValue::Empty);
             session.undo();
@@ -3574,15 +3615,17 @@ mod tests {
         let reopened = Session::open(&path)?;
         assert_eq!(
             reopened.repo.cell(record, property)?,
-            CellValue::Items(vec![attachment_id.to_string()])
+            CellValue::Items(attachment_ids.iter().map(u64::to_string).collect())
         );
-        assert_eq!(reopened.attachments[&attachment_id].name, "readme.txt");
-        assert!(
-            reopened
-                .attachment_path(quire_core::core::types::AttachmentId(attachment_id))
-                .unwrap()
-                .exists()
-        );
+        for (id, name) in attachment_ids.iter().zip(["readme.txt", "notes.pdf"]) {
+            assert_eq!(reopened.attachments[id].name, name);
+            assert!(
+                reopened
+                    .attachment_path(quire_core::core::types::AttachmentId(*id))
+                    .unwrap()
+                    .exists()
+            );
+        }
         Ok(())
     }
 
