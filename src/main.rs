@@ -107,6 +107,7 @@ fn run() -> Result<()> {
                         session,
                         &theme,
                         smoke,
+                        tray_available,
                         sync_listener_warning.clone(),
                         shell_rx,
                         platform_services,

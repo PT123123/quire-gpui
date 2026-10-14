@@ -1180,6 +1180,7 @@ pub struct Workspace {
     mcp_port_draft: String,
     mcp_token: String,
     mcp_status: String,
+    tray_available: bool,
     sync_cmd_tx: std::sync::mpsc::Sender<quire_core::services::sync::engine::Cmd>,
     sync_status: String,
     sync_listener_warning: Option<String>,
@@ -1195,6 +1196,7 @@ impl Workspace {
         mut session: Session,
         theme: &str,
         smoke: bool,
+        tray_available: bool,
         sync_listener_warning: Option<String>,
         shell_events: std::sync::mpsc::Receiver<crate::platform::ShellEvent>,
         platform_services: crate::platform::Services,
@@ -1489,6 +1491,7 @@ impl Workspace {
                 "尚未启用"
             }
             .into(),
+            tray_available,
             sync_cmd_tx,
             sync_status: sync_listener_warning
                 .as_deref()
@@ -6423,6 +6426,7 @@ impl Render for Workspace {
             .unwrap_or("false")
             == "true";
         let hotkey_notice = self.hotkey_notice.clone();
+        let tray_available = self.tray_available;
         let mcp_logs: Vec<serde_json::Value> = self
             .session
             .setting("gpui.mcp.log")
@@ -6846,7 +6850,10 @@ impl Render for Workspace {
                                         .child(if hotkey_alt_m { "● 已开启" } else { "○ 已关闭" })),
                             ).child(
                                 div().text_size(px(11.)).text_color(muted).child(hotkey_notice),
-                            ),
+                            ).when(!tray_available, |panel| panel.child(
+                                div().text_size(px(10.)).text_color(rgb(0xd9a441))
+                                    .child("系统托盘当前不可用；关闭窗口会保存并退出 Quire。"),
+                            )),
                         ))
                         .when(self.settings_tab == 2, |dialog| dialog.child(
                             div().flex().flex_col().gap(px(8.))

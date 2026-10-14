@@ -686,3 +686,8 @@ GPUI 已覆盖主编辑器、整理区、独立速记与标签建议、Windows �
 - 启动局域网同步引擎前检查固定 TCP 端口 `5878` 能否绑定。发现端口已占用时，在设置 → 局域网同步持续显示带端口与系统错误详情的提示，说明本机可能无法接收其他设备同步，并给出关闭占用进程后重启的处理方式；core 代码保持不变。
 - 回归测试覆盖占用端口和空闲端口。该启动预检与 core 后台 listener 绑定之间存在很短的竞态窗口，因此诊断表示启动时检测结果，最终 listener 错误仍由 core 记录到 stderr。
 - 验证：`cargo fmt --all`、`cargo check -j 8`、`cargo test -j 8`（51 项）、`cargo build --release -j 8 --target-dir target-release` 和 `git diff --check` 通过；端口冲突和空闲用例均通过，未启动真实桌面窗口。
+
+## 第一百零一轮：托盘不可用时的关闭行为提示
+
+- 将 GPUI 托盘安装结果传入工作区。Windows 托盘未能初始化或当前平台没有托盘支持时，“设置 → 通用”明确提示关闭窗口会保存并退出，避免用户误以为应用仍在后台运行；托盘正常时不显示提示。
+- 验证：`cargo fmt --all`、`cargo check -j 8`、`cargo test -j 8`（51 项）、`cargo build --release -j 8 --target-dir target-release` 和 `git diff --check` 通过；未启动真实桌面窗口。
