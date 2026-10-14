@@ -41,3 +41,6 @@
 "org-note-tags-set","已实现","未验证","笔记详情支持逗号分隔标签编辑，侧栏标签可筛选笔记","更新与标题/正文作为单条 UpdateNote；标签过滤为单选精确匹配"
 "org-tag-picked","已实现","未验证","整理区侧栏可点选一个标签过滤当前页签的活动项目或回收站项目","标签只作用于列表投影，不修改标签或其他筛选状态"
 "org-task-done-toggled","已实现","未验证","单项完成切换和多选批量完成均可用；批量操作作为一个可撤销历史项","批量调用 core command::exec_all，Ctrl+Z 一次撤销整批"
+"org-subtask-added","已实现","未验证","任务详情可新增命名子任务，输入后按 Enter 或点添加提交","子任务嵌入 Task 行，新增走单条 UpdateTask，ID 由任务内最大子任务 ID 递增"
+"org-subtask-done-toggled","已实现","未验证","任务详情可独立勾选/取消子任务完成状态","更新整个 Task 的 subtasks 并作为单条 core 历史记录"
+"org-subtask-deleted","已实现","未验证","任务详情可删除子任务","从 Task 子任务数组移除；core UpdateTask 支持撤销恢复"

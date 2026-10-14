@@ -1029,6 +1029,32 @@ impl Session {
     pub fn set_task_tags(&mut self, id: TaskId, tags: Vec<String>) -> bool {
         self.update_task(id, |task| task.tags = tags)
     }
+    pub fn add_subtask(&mut self, id: TaskId, title: String) -> bool {
+        let next_id = self
+            .organizer
+            .task(id)
+            .map(|task| task.subtasks.iter().map(|item| item.id).max().unwrap_or(0) + 1);
+        let Some(next_id) = next_id else { return false };
+        self.update_task(id, |task| {
+            task.subtasks.push(Subtask {
+                id: next_id,
+                title,
+                done: false,
+            });
+        })
+    }
+    pub fn set_subtask_done(&mut self, id: TaskId, subtask_id: u64, done: bool) -> bool {
+        self.update_task(id, |task| {
+            if let Some(subtask) = task.subtasks.iter_mut().find(|item| item.id == subtask_id) {
+                subtask.done = done;
+            }
+        })
+    }
+    pub fn delete_subtask(&mut self, id: TaskId, subtask_id: u64) -> bool {
+        self.update_task(id, |task| {
+            task.subtasks.retain(|item| item.id != subtask_id);
+        })
+    }
     pub fn set_tasks_done(&mut self, ids: &[TaskId], done: bool) -> bool {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -2100,6 +2126,12 @@ mod tests {
             assert!(session.undo_organizer());
             assert!(session.organizer.task(task_id).unwrap().tags.is_empty());
             assert!(session.redo_organizer());
+            assert!(session.add_subtask(task_id, "核对安装包".into()));
+            let subtask_id = session.organizer.task(task_id).unwrap().subtasks[0].id;
+            assert!(session.set_subtask_done(task_id, subtask_id, true));
+            assert!(session.undo_organizer());
+            assert!(!session.organizer.task(task_id).unwrap().subtasks[0].done);
+            assert!(session.redo_organizer());
             assert!(session.set_task_due(task_id, Some("2026-11-02".into())));
             assert!(!session.set_task_due(task_id, Some("下周".into())));
             assert!(session.update_task_editor(
@@ -2144,6 +2176,8 @@ mod tests {
         assert_eq!(task.priority, Priority::High);
         assert_eq!(task.repeat, Repeat::Weekly);
         assert_eq!(task.tags, ["发布", "桌面端"]);
+        assert_eq!(task.subtasks.len(), 1);
+        assert!(task.subtasks[0].done);
         assert_eq!(task.due.as_deref(), Some("2026-11-03"));
         assert!(!task.done);
         assert!(!task.is_trashed());

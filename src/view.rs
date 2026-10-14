@@ -343,12 +343,14 @@ pub struct Workspace {
     note_body_input: Entity<TextInput>,
     task_due_input: Entity<TextInput>,
     organizer_tags_input: Entity<TextInput>,
+    subtask_title_input: Entity<TextInput>,
     search_subscription: Option<Subscription>,
     find_subscription: Option<Subscription>,
     note_title_subscription: Option<Subscription>,
     note_body_subscription: Option<Subscription>,
     task_due_subscription: Option<Subscription>,
     organizer_tags_subscription: Option<Subscription>,
+    subtask_title_subscription: Option<Subscription>,
     search_query: String,
     find_query: String,
     find_matches: Vec<(BlockId, Range<usize>)>,
@@ -382,6 +384,7 @@ pub struct Workspace {
     note_body_draft: String,
     task_due_draft: String,
     organizer_tags_draft: String,
+    subtask_title_draft: String,
     task_due_error: bool,
     status: String,
     error: bool,
@@ -429,6 +432,11 @@ impl Workspace {
         organizer_tags_input.update(cx, |input, _| {
             input.placeholder = Some("标签，以逗号分隔".into())
         });
+        let subtask_title_input =
+            cx.new(|cx| TextInput::new(String::new(), Vec::new(), 12., window, cx));
+        subtask_title_input.update(cx, |input, _| {
+            input.placeholder = Some("添加子任务…".into())
+        });
         let mut this = Self {
             session,
             title_input,
@@ -441,12 +449,14 @@ impl Workspace {
             note_body_input,
             task_due_input,
             organizer_tags_input,
+            subtask_title_input,
             search_subscription: None,
             find_subscription: None,
             note_title_subscription: None,
             note_body_subscription: None,
             task_due_subscription: None,
             organizer_tags_subscription: None,
+            subtask_title_subscription: None,
             search_query: String::new(),
             find_query: String::new(),
             find_matches: Vec::new(),
@@ -480,6 +490,7 @@ impl Workspace {
             note_body_draft: String::new(),
             task_due_draft: String::new(),
             organizer_tags_draft: String::new(),
+            subtask_title_draft: String::new(),
             task_due_error: false,
             status: "已保存".into(),
             error: false,
@@ -542,6 +553,20 @@ impl Workspace {
                     cx.notify();
                 }
                 InputEvent::Blurred => this.commit_note_draft(window, cx),
+                _ => {}
+            },
+        ));
+        let subtask_title_input = this.subtask_title_input.clone();
+        this.subtask_title_subscription = Some(cx.subscribe_in(
+            &subtask_title_input,
+            window,
+            |this, _, event, window, cx| match event {
+                InputEvent::Edited { text, .. } => {
+                    this.subtask_title_draft = text.clone();
+                    cx.notify();
+                }
+                InputEvent::Blurred => {}
+                InputEvent::Split(_) => this.add_subtask_from_draft(window, cx),
                 _ => {}
             },
         ));
@@ -1791,6 +1816,10 @@ impl Workspace {
         };
         self.selected_note = None;
         self.selected_task = Some(id);
+        self.subtask_title_draft.clear();
+        self.subtask_title_input.update(cx, |input, cx| {
+            input.reset(String::new(), Vec::new(), 0, cx);
+        });
         self.task_due_draft = task.due.clone().unwrap_or_default();
         self.organizer_tags_draft = task.tags.join(", ");
         let tags = self.organizer_tags_draft.clone();
@@ -1850,6 +1879,46 @@ impl Workspace {
         };
         let next = Repeat::from_slot((task.repeat.slot() + 1) % Repeat::ALL.len() as i32);
         if self.session.set_task_repeat(id, next) {
+            self.schedule_save(true, window, cx);
+            cx.notify();
+        }
+    }
+    fn add_subtask_from_draft(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(id) = self.selected_task else { return };
+        let title = self.subtask_title_draft.trim().to_owned();
+        if title.is_empty() || self.organizer_trash {
+            return;
+        }
+        if self.session.add_subtask(id, title) {
+            self.subtask_title_draft.clear();
+            self.subtask_title_input.update(cx, |input, cx| {
+                input.reset(String::new(), Vec::new(), 0, cx);
+            });
+            self.schedule_save(true, window, cx);
+            cx.notify();
+        }
+    }
+    fn toggle_subtask_done(
+        &mut self,
+        task: quire_core::core::organizer::TaskId,
+        subtask: u64,
+        done: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.organizer_trash && self.session.set_subtask_done(task, subtask, !done) {
+            self.schedule_save(true, window, cx);
+            cx.notify();
+        }
+    }
+    fn delete_subtask(
+        &mut self,
+        task: quire_core::core::organizer::TaskId,
+        subtask: u64,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.organizer_trash && self.session.delete_subtask(task, subtask) {
             self.schedule_save(true, window, cx);
             cx.notify();
         }
@@ -4697,6 +4766,7 @@ impl Render for Workspace {
                     task.due.clone(),
                     task.list,
                     list_name,
+                    task.subtasks.clone(),
                 )
             })
         });
@@ -5115,7 +5185,7 @@ impl Render for Workspace {
                                 .gap(px(18.))
                                 .when_some(
                                     task_summary,
-                                    |pane, (id, done, priority, repeat, due, list_id, list_name)| {
+                                    |pane, (id, done, priority, repeat, due, list_id, list_name, subtasks)| {
                                         pane.child(
                                             div()
                                                 .flex()
@@ -5238,6 +5308,65 @@ impl Render for Workspace {
                                                     })
                                                     .collect::<Vec<_>>(),
                                                 ),
+                                        )
+                                        .child(
+                                            div()
+                                                .flex()
+                                                .flex_col()
+                                                .gap(px(4.))
+                                                .child(
+                                                    div()
+                                                        .font_weight(FontWeight::SEMIBOLD)
+                                                        .text_color(muted)
+                                                        .child(format!(
+                                                            "子任务 · {}/{}",
+                                                            subtasks.iter().filter(|item| item.done).count(),
+                                                            subtasks.len()
+                                                        )),
+                                                )
+                                                .children(subtasks.into_iter().map(|subtask| {
+                                                    let subtask_id = subtask.id;
+                                                    let done = subtask.done;
+                                                    div()
+                                                        .flex()
+                                                        .items_center()
+                                                        .gap(px(6.))
+                                                        .child(
+                                                            div()
+                                                                .id(SharedString::from(format!("organizer-subtask-done-{id:?}-{subtask_id}")))
+                                                                .w(px(18.))
+                                                                .h(px(18.))
+                                                                .flex()
+                                                                .items_center()
+                                                                .justify_center()
+                                                                .rounded(px(9.))
+                                                                .border_1()
+                                                                .border_color(if done { accent } else { muted })
+                                                                .cursor_pointer()
+                                                                .when(!self.organizer_trash, |control| control.on_click(cx.listener(move |this, _, window, cx| {
+                                                                    this.toggle_subtask_done(id, subtask_id, done, window, cx)
+                                                                })))
+                                                                .child(if done { "✓" } else { "" }),
+                                                        )
+                                                        .child(div().flex_1().text_color(if done { muted } else { text }).child(subtask.title))
+                                                        .when(!self.organizer_trash, |row| row.child(
+                                                            div()
+                                                                .id(SharedString::from(format!("organizer-subtask-delete-{id:?}-{subtask_id}")))
+                                                                .px(px(4.))
+                                                                .cursor_pointer()
+                                                                .text_color(muted)
+                                                                .on_click(cx.listener(move |this, _, window, cx| this.delete_subtask(id, subtask_id, window, cx)))
+                                                                .child("×")
+                                                        ))
+                                                }))
+                                                .when(!self.organizer_trash, |list| list.child(
+                                                    div()
+                                                        .flex()
+                                                        .items_center()
+                                                        .gap(px(6.))
+                                                        .child(div().flex_1().h(px(30.)).rounded(px(4.)).border_1().border_color(Palette::color(&p.border)).px(px(6.)).child(self.subtask_title_input.clone()))
+                                                        .child(div().id("organizer-subtask-add").px(px(8.)).py(px(4.)).rounded(px(4.)).cursor_pointer().text_color(accent).on_click(cx.listener(|this, _, window, cx| this.add_subtask_from_draft(window, cx))).child("添加"))
+                                                )),
                                         )
                                     },
                                 )
