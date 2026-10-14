@@ -478,3 +478,9 @@ GPUI 应用已超出第一竖切，但离完整复刻仍有较大差距。用户
 - 固定入口去掉旧版不存在的笔记/任务计数与“设置 / 外观”副标题；笔记、任务、搜索、设置、工作区下拉使用从冻结 `Icons.slint` 矢量几何迁移的 GPUI 路径图标，固定入口保留 28px 行高、16px 图标槽与 13px 文字。设置行打开完整设置窗并选中外观页，底部版本号由 Cargo 包版本读取。
 - 依据旧版选中行行为修正笔记/任务文字与背景状态色；仍需真窗口对照图核验具体像素、左右留白、点击反馈和图标端帽。
 - 验证：`cargo check --target-dir target-check`、`cargo test --target-dir target-check`（16 项库测试 + 3 项视图测试）、release 构建、`git diff --check` 通过。使用隔离临时库启动 release 真窗口并在 1280×800 外框下对照 `t-jade__baseline.png`，确认固定入口内容/图标、260px 侧栏、40px 顶栏、760px 内容上限及 jade 渐变走向；GPUI 外框四周仍比参考图多露出约 8px 桌面，属于可调整大小窗口边框，不能算像素完全一致。库仅使用 `%TEMP%\quire-gpui-sidebar-visual-20261014\fixture.db`。
+
+## 第六十三轮：设置搜索框图标对齐
+
+- 设置搜索框加入与旧版相同的 14px 搜索路径图标，图标与输入文字按 8px 间距排列；真窗口确认搜索框内容仍处于 32px 高度内，对话框 560×612 几何和主题卡网格位置不变。
+- 对照 `t-jade__settings.png` 时，GPUI Windows 将主题卡 emoji 显示为彩色 emoji，而冻结基线的 Slint 软件 renderer 显示为单色轮廓。强制 Unicode text presentation 的实验没有改变 Windows 输出，已撤销；该表现需真实 Slint 窗口作最终判定，暂不视作修复。
+- 验证：`cargo check --target-dir target-check`、`cargo test --target-dir target-check`（16 项库测试 + 3 项视图测试）、release 构建通过；真窗口截图 `target-check/settings-text-emoji.png` 来自隔离临时库 `%TEMP%\quire-gpui-sidebar-visual-20261014\fixture.db`。

@@ -24,7 +24,7 @@ enum SidebarGlyph {
     ChevronDown,
 }
 
-fn sidebar_glyph(glyph: SidebarGlyph, color: Hsla) -> impl IntoElement {
+fn sidebar_glyph(glyph: SidebarGlyph, color: Hsla, size: Pixels) -> impl IntoElement {
     canvas(
         move |bounds, _, _| {
             let origin = bounds.origin;
@@ -97,7 +97,7 @@ fn sidebar_glyph(glyph: SidebarGlyph, color: Hsla) -> impl IntoElement {
             window.paint_path(path, color);
         },
     )
-    .size(px(16.))
+    .size(size)
 }
 
 actions!(
@@ -3627,11 +3627,15 @@ impl Render for Workspace {
                                 .w_full()
                                 .h(px(32.))
                                 .px(px(8.))
+                                .flex()
+                                .items_center()
+                                .gap(px(8.))
                                 .rounded(px(5.))
                                 .border_1()
                                 .border_color(Palette::color(&p.border))
                                 .bg(Palette::color(&p.bg).opacity(0.25))
-                                .child(self.search_input.clone()),
+                                .child(sidebar_glyph(SidebarGlyph::Search, muted, px(14.)))
+                                .child(div().flex_1().min_w_0().child(self.search_input.clone())),
                         )
                         .child(
                             div()
@@ -7940,7 +7944,11 @@ impl Render for Workspace {
                                     )
                                     .child(div().font_weight(FontWeight::SEMIBOLD).child("工作区"))
                                     .child(div().flex_1())
-                                    .child(sidebar_glyph(SidebarGlyph::ChevronDown, muted)),
+                                    .child(sidebar_glyph(
+                                        SidebarGlyph::ChevronDown,
+                                        muted,
+                                        px(16.),
+                                    )),
                             )
                             .child(
                                 div()
@@ -7980,6 +7988,7 @@ impl Render for Workspace {
                                                 } else {
                                                     muted
                                                 },
+                                                px(16.),
                                             )),
                                     )
                                     .child(div().text_size(px(13.)).child("笔记")),
@@ -8022,6 +8031,7 @@ impl Render for Workspace {
                                                 } else {
                                                     muted
                                                 },
+                                                px(16.),
                                             )),
                                     )
                                     .child(div().text_size(px(13.)).child("任务")),
@@ -8047,7 +8057,11 @@ impl Render for Workspace {
                                             .flex()
                                             .items_center()
                                             .justify_center()
-                                            .child(sidebar_glyph(SidebarGlyph::Search, muted)),
+                                            .child(sidebar_glyph(
+                                                SidebarGlyph::Search,
+                                                muted,
+                                                px(16.),
+                                            )),
                                     )
                                     .child(div().text_size(px(13.)).child("搜索"))
                                     .child(div().flex_1())
@@ -8083,7 +8097,11 @@ impl Render for Workspace {
                                             .flex()
                                             .items_center()
                                             .justify_center()
-                                            .child(sidebar_glyph(SidebarGlyph::Settings, muted)),
+                                            .child(sidebar_glyph(
+                                                SidebarGlyph::Settings,
+                                                muted,
+                                                px(16.),
+                                            )),
                                     )
                                     .child(div().text_size(px(13.)).child("设置")),
                             )
