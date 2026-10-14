@@ -1942,8 +1942,21 @@ impl Workspace {
                     {
                         panic!("UI input/core smoke mismatch: {texts:?}");
                     }
+                    let note_text = "速记冒烟回归 #gpui-smoke";
+                    if !this.save_quick_note(note_text.to_owned(), cx) {
+                        panic!("quick note smoke save failed");
+                    }
+                    let saved_note = this
+                        .session
+                        .organizer
+                        .live_notes()
+                        .find(|note| note.body == note_text)
+                        .expect("quick note must be in the core session");
+                    if saved_note.tags != ["gpui-smoke"] {
+                        panic!("quick note tag extraction mismatch: {:?}", saved_note.tags);
+                    }
                     eprintln!(
-                        "SMOKE: input callbacks -> core document OK; not OS IME verification"
+                        "SMOKE: block input and quick note callbacks -> core state OK; not OS IME verification"
                     );
                     this.request_close(window, cx);
                 });

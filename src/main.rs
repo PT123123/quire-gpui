@@ -78,11 +78,13 @@ fn run() -> Result<()> {
         use quire_core::core::persistence::Repository;
         let repo = quire_core::storage::SqliteRepository::open(&path)?;
         let state = repo.load()?;
+        let organizer = repo.load_organizer()?;
         println!(
             "{}",
             serde_json::to_string_pretty(&serde_json::json!({
                 "pages": state.pages.iter().map(|p| serde_json::json!({"id":p.id.0,"title":p.title})).collect::<Vec<_>>(),
-                "blocks": state.blocks.iter().map(|b| serde_json::json!({"id":b.id.0,"page":b.page.0,"kind":b.kind.as_str(),"text":b.text})).collect::<Vec<_>>()
+                "blocks": state.blocks.iter().map(|b| serde_json::json!({"id":b.id.0,"page":b.page.0,"kind":b.kind.as_str(),"text":b.text})).collect::<Vec<_>>(),
+                "notes": organizer.live_notes().map(|note| serde_json::json!({"id":note.id.0,"title":note.title,"body":note.body,"tags":note.tags})).collect::<Vec<_>>()
             }))?
         );
         return Ok(());
