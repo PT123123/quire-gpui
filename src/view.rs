@@ -2190,6 +2190,78 @@ impl Workspace {
             }
         }
     }
+    fn pick_database_file(
+        &mut self,
+        block: u64,
+        record: u64,
+        property: u64,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.session.page.locked || self.closing {
+            return;
+        }
+        let Some(path) = rfd::FileDialog::new()
+            .set_title("添加数据库文件")
+            .pick_file()
+        else {
+            return;
+        };
+        match self.session.import_database_file(
+            BlockId(block),
+            quire_core::core::database::RecordId(record),
+            quire_core::core::database::PropertyId(property),
+            &path,
+        ) {
+            Ok(true) => {
+                self.status = "文件已添加，正在保存…".into();
+                self.schedule_save(true, window, cx);
+            }
+            Ok(false) => {}
+            Err(error) => {
+                self.status = format!("添加文件失败：{error}");
+                self.error = true;
+                cx.notify();
+            }
+        }
+    }
+    fn remove_database_file(
+        &mut self,
+        block: u64,
+        record: u64,
+        property: u64,
+        attachment: u64,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let ids = match self.session.repo.cell(
+            quire_core::core::database::RecordId(record),
+            quire_core::core::database::PropertyId(property),
+        ) {
+            Ok(quire_core::core::database::CellValue::Items(ids)) => ids,
+            _ => return,
+        };
+        let remaining = ids
+            .into_iter()
+            .filter(|id| id != &attachment.to_string())
+            .collect::<Vec<_>>();
+        match self.session.set_database_cell_many(
+            BlockId(block),
+            quire_core::core::database::RecordId(record),
+            quire_core::core::database::PropertyId(property),
+            &remaining,
+        ) {
+            Ok(_) => {
+                self.schedule_save(true, window, cx);
+                cx.notify();
+            }
+            Err(error) => {
+                self.status = format!("移除附件失败：{error}");
+                self.error = true;
+                cx.notify();
+            }
+        }
+    }
     fn pick_page_cover(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.session.page.locked || self.closing {
             return;
@@ -7630,6 +7702,7 @@ impl Render for Workspace {
                                     let collapsed_groups = self.database_collapsed_groups.clone();
                                     let formula_properties = all_columns.clone();
                                     let all_database_properties = self.session.databases.properties.clone();
+                                    let database_attachments = self.session.attachments.clone();
                                     let rows = uniform_list(
                                         SharedString::from(format!("database-rows-{}", db_id.0)),
                                         list_total,
@@ -7661,11 +7734,7 @@ impl Render for Workspace {
                                                             };
                                                             let editable = !_this.session.page.locked
                                                                 && !kind.is_computed()
-                                                                && !kind.is_derived()
-                                                                && !matches!(
-                                                                    kind,
-                                                                    quire_core::core::database::PropertyKind::Files
-                                                                );
+                                                                && !kind.is_derived();
                                                             let cell_key =
                                                                 (cell_block, db_id.0, row.record, property_id.0);
                                                             let editing = _this.active_database_cell == Some(cell_key);
@@ -7690,6 +7759,11 @@ impl Render for Workspace {
                                                                 evaluate_database_rollup(property_id, &all_database_properties, &repo, quire_core::core::database::RecordId(row.record))
                                                                     .map(|value| quire_core::core::database_formula::display(&value))
                                                                     .unwrap_or_else(|_| quire_core::core::database_formula::FORMULA_ERROR_PAINT.into())
+                                                            } else if kind == quire_core::core::database::PropertyKind::Files {
+                                                                match repo.cell(quire_core::core::database::RecordId(row.record), property_id) {
+                                                                    Ok(quire_core::core::database::CellValue::Items(ids)) => ids.iter().map(|id| id.parse::<u64>().ok().and_then(|id| database_attachments.get(&id).map(|attachment| attachment.name.clone())).unwrap_or_else(|| "附件不可用".into())).collect::<Vec<_>>().join(", "),
+                                                                    _ => String::new(),
+                                                                }
                                                             } else {
                                                                 value.clone()
                                                             };
@@ -7819,7 +7893,10 @@ impl Render for Workspace {
                                                                                     db_id.0,
                                                                                     row.record,
                                                                                 ));
-                                                                            if matches!(kind, quire_core::core::database::PropertyKind::Select | quire_core::core::database::PropertyKind::Status) {
+                                                                            if kind == quire_core::core::database::PropertyKind::Files {
+                                                                                this.active_database_relation = if this.active_database_relation == Some((cell_block, db_id.0, row.record, property_id.0)) { None } else { Some((cell_block, db_id.0, row.record, property_id.0)) };
+                                                                                cx.notify();
+                                                                            } else if matches!(kind, quire_core::core::database::PropertyKind::Select | quire_core::core::database::PropertyKind::Status) {
                                                                                 this.active_database_choice = if this.active_database_choice == Some((cell_block, db_id.0, row.record, property_id.0)) { None } else { Some((cell_block, db_id.0, row.record, property_id.0)) };
                                                                                 this.active_database_cell = None;
                                                                                 this.selected_database_record = Some((cell_block, db_id.0, row.record));
@@ -7874,6 +7951,16 @@ impl Render for Workspace {
                                                                         cell = cell.child(menu);
                                                                     }
                                                                 }
+                                                            }
+                                                            if relation_open && kind == quire_core::core::database::PropertyKind::Files {
+                                                                let ids = match _this.session.repo.cell(quire_core::core::database::RecordId(row.record), quire_core::core::database::PropertyId(property_id.0)) { Ok(quire_core::core::database::CellValue::Items(ids)) => ids, _ => Vec::new() };
+                                                                let mut menu = div().id(SharedString::from(format!("db-files-menu-{}-{}", row.record, property_id.0))).absolute().top(px(33.)).left(px(0.)).min_w(px(180.)).max_h(px(240.)).overflow_y_scroll().flex_col().gap(px(2.)).p(px(5.)).rounded(px(6.)).border_1().border_color(db_border).bg(elevated).shadow_lg();
+                                                                menu = menu.child(div().id(SharedString::from(format!("db-files-add-{}-{}", row.record, property_id.0))).px(px(7.)).py(px(5.)).rounded(px(4.)).text_size(px(11.)).text_color(accent).hover(|item| item.bg(db_hover)).cursor_pointer().on_click(_cx.listener(move |this, _, window, cx| this.pick_database_file(cell_block, row.record, property_id.0, window, cx))).child("＋ 添加文件…"));
+                                                                for file_id in ids.iter().filter_map(|id| id.parse::<u64>().ok()) {
+                                                                    let name = database_attachments.get(&file_id).map(|attachment| attachment.name.clone()).unwrap_or_else(|| "附件不可用".into());
+                                                                    menu = menu.child(div().id(SharedString::from(format!("db-files-item-{property_id}-{}", file_id))).flex().items_center().justify_between().gap(px(8.)).px(px(7.)).py(px(5.)).text_size(px(11.)).text_color(text).child(name).child(div().id(SharedString::from(format!("db-files-remove-{property_id}-{}", file_id))).px(px(5.)).rounded(px(3.)).text_color(muted).hover(|item| item.bg(db_hover)).cursor_pointer().on_click(_cx.listener(move |this, _, window, cx| this.remove_database_file(cell_block, row.record, property_id.0, file_id, window, cx))).child("移除")));
+                                                                }
+                                                                cell = cell.child(menu);
                                                             }
                                                             cell
                                                             })

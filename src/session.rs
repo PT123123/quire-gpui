@@ -1338,6 +1338,66 @@ impl Session {
         self.refresh_databases();
         Ok(true)
     }
+    pub fn import_database_file(
+        &mut self,
+        block: BlockId,
+        record: RecordId,
+        property: PropertyId,
+        path: &Path,
+    ) -> Result<bool> {
+        use quire_core::core::database::{CellValue, PropertyKind};
+        use quire_core::core::persistence::Change;
+        if self.page.locked {
+            return Ok(false);
+        }
+        let definition = self
+            .session_database_property(block, property)
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("文件列不存在"))?;
+        if definition.kind != PropertyKind::Files {
+            bail!("此列不是文件类型");
+        }
+        if self.repo.record(record)?.is_none() {
+            bail!("数据库记录不存在");
+        }
+        let id = AttachmentId(self.next_attachment_id);
+        let attachment = self
+            .attachment_store
+            .import_any_file(id, path)
+            .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+        let from = self.repo.cell(record, property)?;
+        let mut ids = match &from {
+            CellValue::Items(ids) => ids.clone(),
+            _ => Vec::new(),
+        };
+        ids.push(id.as_u64().to_string());
+        let to = quire_core::core::database_property::parse_many(
+            PropertyKind::Files,
+            &definition.config,
+            &ids,
+        )
+        .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+        let Some(mut entry) = command::plan(
+            &mut self.document,
+            self.page.id,
+            Command::SetDatabaseCell {
+                block,
+                record,
+                property,
+                from,
+                to,
+            },
+        ) else {
+            bail!("无法写入文件列");
+        };
+        self.next_attachment_id = self.next_attachment_id.saturating_add(1);
+        self.attachments.insert(id.as_u64(), attachment.clone());
+        entry.apply.insert(0, Change::AttachmentAdded(attachment));
+        self.apply_entry(entry);
+        self.persistence.force_flush()?;
+        self.refresh_databases();
+        Ok(true)
+    }
     pub fn set_database_cell(
         &mut self,
         block: BlockId,
@@ -3471,6 +3531,53 @@ mod tests {
         assert_eq!(
             reopened.repo.cell(right, reverse)?,
             CellValue::Items(vec![left.0.to_string()])
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn database_file_import_is_undoable_and_survives_reopen() -> Result<()> {
+        use quire_core::core::database::{CellValue, PropertyKind};
+        let scratch = quire_core::testing::ScratchDir::new("gpui-database-file");
+        let path = scratch.path().join("test.db");
+        let source_file = scratch.path().join("readme.txt");
+        std::fs::write(&source_file, "file column attachment")?;
+        let (block, property, record, attachment_id);
+        {
+            let mut session = Session::open(&path)?;
+            block = session.blocks()[0].id;
+            session
+                .make_database(block, "文件列".into())
+                .expect("database");
+            property = session
+                .add_database_property(block, "附件".into(), PropertyKind::Files)
+                .expect("files property");
+            record = session.add_database_record(block).expect("record");
+            assert!(session.import_database_file(block, record, property, &source_file)?);
+            let ids = match session.repo.cell(record, property)? {
+                CellValue::Items(ids) => ids,
+                value => panic!("unexpected value: {value:?}"),
+            };
+            attachment_id = ids[0].parse::<u64>().expect("attachment id");
+            assert_eq!(session.attachments[&attachment_id].name, "readme.txt");
+            session.undo();
+            assert_eq!(session.repo.cell(record, property)?, CellValue::Empty);
+            session.redo();
+            assert!(session.set_database_cell_many(block, record, property, &[])?);
+            assert_eq!(session.repo.cell(record, property)?, CellValue::Empty);
+            session.undo();
+        }
+        let reopened = Session::open(&path)?;
+        assert_eq!(
+            reopened.repo.cell(record, property)?,
+            CellValue::Items(vec![attachment_id.to_string()])
+        );
+        assert_eq!(reopened.attachments[&attachment_id].name, "readme.txt");
+        assert!(
+            reopened
+                .attachment_path(quire_core::core::types::AttachmentId(attachment_id))
+                .unwrap()
+                .exists()
         );
         Ok(())
     }
