@@ -2418,6 +2418,19 @@ mod tests {
             assert_eq!(rows[1].title, "进行中");
             assert_eq!(rows[1].cells[0], "待核准");
             assert!(!columns.iter().any(|column| column.id == done_property));
+            assert_eq!(
+                session
+                    .repo
+                    .filtered_count(&quire_core::core::database::RowRequest {
+                        db,
+                        title,
+                        columns: &columns,
+                        sorts: &rules.sorts,
+                        filter: rules.filter.as_ref(),
+                        search: Some("Alpha"),
+                    })?,
+                1
+            );
             assert!(session.delete_database_record(block, second_record)?);
             assert_eq!(session.repo.record_count(db)?, 1);
             session.undo();

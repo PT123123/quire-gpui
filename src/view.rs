@@ -499,7 +499,9 @@ pub struct Workspace {
     organizer_tags_input: Entity<TextInput>,
     subtask_title_input: Entity<TextInput>,
     database_cell_input: Entity<TextInput>,
+    database_search_input: Entity<TextInput>,
     search_subscription: Option<Subscription>,
+    database_search_subscription: Option<Subscription>,
     find_subscription: Option<Subscription>,
     note_title_subscription: Option<Subscription>,
     note_body_subscription: Option<Subscription>,
@@ -524,6 +526,8 @@ pub struct Workspace {
     selected_database_views: HashMap<u64, ViewId>,
     database_columns_open: Option<(u64, u64)>,
     database_column_drag: Option<DatabaseColumnDrag>,
+    database_search_open: Option<u64>,
+    database_search_text: String,
     selected_database_record: Option<(u64, u64, u64)>,
     active_database_cell: Option<(u64, u64, u64, u64)>,
     subscriptions: Vec<Subscription>,
@@ -643,6 +647,11 @@ impl Workspace {
         });
         let database_cell_input =
             cx.new(|cx| TextInput::new(String::new(), Vec::new(), 12., window, cx));
+        let database_search_input =
+            cx.new(|cx| TextInput::new(String::new(), Vec::new(), 12., window, cx));
+        database_search_input.update(cx, |input, _| {
+            input.placeholder = Some("搜索此数据库…".into())
+        });
         let input_fg = Palette::color(&Palette::load(theme).fg);
         for input in [
             title_input.clone(),
@@ -656,6 +665,7 @@ impl Workspace {
             organizer_tags_input.clone(),
             subtask_title_input.clone(),
             database_cell_input.clone(),
+            database_search_input.clone(),
         ] {
             input.update(cx, |input, _| input.text_color = Some(input_fg));
         }
@@ -674,7 +684,9 @@ impl Workspace {
             organizer_tags_input,
             subtask_title_input,
             database_cell_input,
+            database_search_input,
             search_subscription: None,
+            database_search_subscription: None,
             find_subscription: None,
             note_title_subscription: None,
             note_body_subscription: None,
@@ -699,6 +711,8 @@ impl Workspace {
             selected_database_views: HashMap::new(),
             database_columns_open: None,
             database_column_drag: None,
+            database_search_open: None,
+            database_search_text: String::new(),
             selected_database_record: None,
             active_database_cell: None,
             subscriptions: Vec::new(),
@@ -939,6 +953,19 @@ impl Workspace {
                         this.close_search(window, cx);
                     }
                 }
+                _ => {}
+            },
+        ));
+        let database_search_input = this.database_search_input.clone();
+        this.database_search_subscription = Some(cx.subscribe_in(
+            &database_search_input,
+            window,
+            |this, _, event, window, cx| match event {
+                InputEvent::Edited { text, .. } => {
+                    this.database_search_text = text.clone();
+                    cx.notify();
+                }
+                InputEvent::DismissSlash => this.close_database_search(window, cx),
                 _ => {}
             },
         ));
@@ -2237,6 +2264,27 @@ impl Workspace {
                 cx.notify();
             }
         }
+    }
+    fn open_database_search(&mut self, db: u64, window: &mut Window, cx: &mut Context<Self>) {
+        self.database_search_open = Some(db);
+        self.database_search_text.clear();
+        self.database_search_input.update(cx, |input, cx| {
+            input.reset(String::new(), Vec::new(), 0, cx);
+            input.placeholder = Some("搜索此数据库…".into());
+        });
+        window.focus(&self.database_search_input.read(cx).focus);
+        cx.notify();
+    }
+    fn close_database_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.database_search_open.take().is_none() {
+            return;
+        }
+        self.database_search_text.clear();
+        self.database_search_input.update(cx, |input, cx| {
+            input.reset(String::new(), Vec::new(), 0, cx);
+        });
+        self.restore_focus(window, cx);
+        cx.notify();
     }
     fn begin_database_column_drag(
         &mut self,
@@ -4931,6 +4979,9 @@ impl Render for Workspace {
                             }
                         }
                         let rules = definition.rules(db_id, &self.session.databases);
+                        let row_search = (self.database_search_open == Some(db_id.0)
+                            && !self.database_search_text.trim().is_empty())
+                        .then(|| self.database_search_text.clone());
                         let repo = self.session.repo.clone();
                         let total = repo
                             .filtered_count(&quire_core::core::database::RowRequest {
@@ -4939,7 +4990,7 @@ impl Render for Workspace {
                                 columns: &columns,
                                 sorts: &rules.sorts,
                                 filter: rules.filter.as_ref(),
-                                search: None,
+                                search: row_search.as_deref(),
                             })
                             .ok()?;
                         Some((
@@ -4948,6 +4999,7 @@ impl Render for Workspace {
                             columns,
                             all_columns,
                             column_widths,
+                            row_search,
                             views,
                             selected_view,
                             rules.sorts,
@@ -5528,7 +5580,7 @@ impl Render for Workspace {
                                     .child(div().flex().gap(px(6.)).children(table_actions))
                             })
                             .when(kind == BlockKind::Database, |view| {
-                                if let Some((db_id, title, columns, all_columns, column_widths, views, selected_view, view_sorts, view_filter, total, repo)) =
+                                if let Some((db_id, title, columns, all_columns, column_widths, row_search, views, selected_view, view_sorts, view_filter, total, repo)) =
                                     database_table
                                 {
                                     let db_border = Palette::color(&p.border);
@@ -5536,6 +5588,7 @@ impl Render for Workspace {
                                     let db_checkbox_fg = Palette::color(&p.bg);
                                     let query_columns = columns.clone();
                                     let row_column_widths = column_widths.clone();
+                                    let row_search = row_search.clone();
                                     let cell_title_property = title;
                                     let cell_block = block_id.0;
                                     let mut header_columns = vec![(title, "名称".to_owned(), true)];
@@ -5663,7 +5716,7 @@ impl Render for Workspace {
                                                     columns: &query_columns,
                                                     sorts: &row_sorts,
                                                     filter: row_filter.as_ref(),
-                                                    search: None,
+                                                    search: row_search.as_deref(),
                                                 };
                                                 let slice = quire_core::core::database::RowWindow {
                                                     start: range.start,
@@ -5966,6 +6019,68 @@ impl Render for Workspace {
                                                         .text_size(px(11.))
                                                         .text_color(muted)
                                                         .child(format!("{total} 行"))
+                                                        .child({
+                                                            if self.database_search_open == Some(db_id.0) {
+                                                                div()
+                                                                    .flex()
+                                                                    .items_center()
+                                                                    .gap(px(4.))
+                                                                    .child(
+                                                                        div()
+                                                                            .w(px(148.))
+                                                                            .h(px(26.))
+                                                                            .px(px(6.))
+                                                                            .rounded(px(4.))
+                                                                            .border_1()
+                                                                            .border_color(db_border)
+                                                                            .bg(Palette::color(&p.bg).opacity(0.28))
+                                                                            .child(self.database_search_input.clone()),
+                                                                    )
+                                                                    .child(
+                                                                        div()
+                                                                            .id(SharedString::from(format!(
+                                                                                "db-search-close-{}",
+                                                                                db_id.0
+                                                                            )))
+                                                                            .px(px(5.))
+                                                                            .cursor_pointer()
+                                                                            .text_color(muted)
+                                                                            .hover(|button| {
+                                                                                button.bg(db_hover)
+                                                                            })
+                                                                            .on_click(cx.listener(
+                                                                                |this, _, window, cx| {
+                                                                                    this.close_database_search(window, cx)
+                                                                                },
+                                                                            ))
+                                                                            .child("×"),
+                                                                    )
+                                                                    .into_any_element()
+                                                            } else {
+                                                                div()
+                                                                    .id(SharedString::from(format!(
+                                                                        "db-search-open-{}",
+                                                                        db_id.0
+                                                                    )))
+                                                                    .px(px(7.))
+                                                                    .py(px(4.))
+                                                                    .rounded(px(4.))
+                                                                    .cursor_pointer()
+                                                                    .text_color(muted)
+                                                                    .hover(|button| button.bg(db_hover))
+                                                                    .on_click(cx.listener(
+                                                                        move |this, _, window, cx| {
+                                                                            this.open_database_search(
+                                                                                db_id.0,
+                                                                                window,
+                                                                                cx,
+                                                                            );
+                                                                        },
+                                                                    ))
+                                                                    .child("搜索")
+                                                                    .into_any_element()
+                                                            }
+                                                        })
                                                         .child(div().flex().gap(px(4.)).child({
                                                             let mut button = div()
                                                                 .id(SharedString::from(format!(
