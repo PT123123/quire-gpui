@@ -1145,6 +1145,9 @@ pub struct Workspace {
     mcp_event_tx: std::sync::mpsc::Sender<crate::platform::ShellEvent>,
     mcp_server: Option<crate::mcp::McpServerHandle>,
     mcp_port: u16,
+    mcp_port_input: Entity<TextInput>,
+    mcp_port_subscription: Option<Subscription>,
+    mcp_port_draft: String,
     mcp_token: String,
     mcp_status: String,
     sync_cmd_tx: std::sync::mpsc::Sender<quire_core::services::sync::engine::Cmd>,
@@ -1295,6 +1298,13 @@ impl Workspace {
             .and_then(|value| value.parse::<u16>().ok())
             .filter(|port| *port > 0)
             .unwrap_or(crate::mcp::DEFAULT_PORT);
+        let mcp_port_draft = mcp_port.to_string();
+        let mcp_port_input =
+            cx.new(|cx| TextInput::new(mcp_port_draft.clone(), Vec::new(), 12., window, cx));
+        mcp_port_input.update(cx, |input, _| {
+            input.placeholder = Some("5880".into());
+            input.text_color = Some(input_fg);
+        });
         let mcp_token = match session.setting("gpui.mcp.token") {
             Some(token) => token.to_owned(),
             None => {
@@ -1437,6 +1447,9 @@ impl Workspace {
             mcp_event_tx,
             mcp_server: None,
             mcp_port,
+            mcp_port_input,
+            mcp_port_subscription: None,
+            mcp_port_draft,
             mcp_token,
             mcp_status: if mcp_enabled {
                 "MCP 已启用"
@@ -1498,6 +1511,19 @@ impl Workspace {
                     cx.notify();
                 }
                 InputEvent::Split(_) => this.apply_sync_name(window, cx),
+                _ => {}
+            },
+        ));
+        let mcp_port_input = this.mcp_port_input.clone();
+        this.mcp_port_subscription = Some(cx.subscribe_in(
+            &mcp_port_input,
+            window,
+            |this, _, event, window, cx| match event {
+                InputEvent::Edited { text, .. } => {
+                    this.mcp_port_draft = text.clone();
+                    cx.notify();
+                }
+                InputEvent::Split(_) => this.apply_mcp_port(window, cx),
                 _ => {}
             },
         ));
@@ -5945,6 +5971,34 @@ impl Workspace {
         self.schedule_save(true, window, cx);
         cx.notify();
     }
+    fn apply_mcp_port(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let port = match self.mcp_port_draft.trim().parse::<u16>() {
+            Ok(port) if port != 0 => port,
+            _ => {
+                self.mcp_status = "端口必须是 1–65535 之间的整数".into();
+                cx.notify();
+                return;
+            }
+        };
+        let was_enabled = self.mcp_server.is_some();
+        if was_enabled {
+            self.stop_mcp();
+        }
+        self.mcp_port = port;
+        self.session.set_setting("gpui.mcp.port", port.to_string());
+        self.mcp_port_draft = port.to_string();
+        self.mcp_port_input.update(cx, |input, cx| {
+            input.reset(port.to_string(), Vec::new(), port.to_string().len(), cx);
+        });
+        if was_enabled {
+            self.start_mcp();
+        }
+        if self.mcp_server.is_none() && !was_enabled {
+            self.mcp_status = format!("端口已设为 {port}；服务尚未启用");
+        }
+        self.schedule_save(true, window, cx);
+        cx.notify();
+    }
     fn push_mcp_log(&mut self, tool: &str, ok: bool, message: String) {
         let mut log: Vec<serde_json::Value> = self
             .session
@@ -6762,6 +6816,15 @@ impl Render for Workspace {
                                             .child(if mcp_enabled { "关闭服务" } else { "启用服务" }))))
                                 .child(div().h(px(1.)).bg(Palette::color(&p.border)))
                                 .child(div().font_weight(FontWeight::SEMIBOLD).text_size(px(12.)).child("客户端连接信息"))
+                                .child(div().flex().items_center().gap(px(6.))
+                                    .child(div().text_size(px(11.)).text_color(muted).child("本机端口"))
+                                    .child(div().w(px(90.)).h(px(28.)).px(px(7.)).rounded(px(4.))
+                                        .border_1().border_color(Palette::color(&p.border))
+                                        .child(self.mcp_port_input.clone()))
+                                    .child(div().id("mcp-port-apply").px(px(8.)).py(px(5.)).rounded(px(4.))
+                                        .border_1().border_color(Palette::color(&p.border)).cursor_pointer().text_size(px(10.))
+                                        .on_click(cx.listener(|this, _, window, cx| this.apply_mcp_port(window, cx)))
+                                        .child(if mcp_enabled { "应用并重启" } else { "应用端口" })))
                                 .child(div().text_size(px(11.)).text_color(muted).child(format!("Endpoint  {mcp_endpoint}")))
                                 .child(div().text_size(px(11.)).text_color(muted).child(format!("Authorization: Bearer {mcp_token}")))
                                 .child(div().flex().gap(px(8.))
