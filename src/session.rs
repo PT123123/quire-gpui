@@ -1024,6 +1024,80 @@ impl Session {
         self.persistence.force_flush()?;
         Ok(true)
     }
+    pub fn set_database_relation_mirror(
+        &mut self,
+        block: BlockId,
+        property: PropertyId,
+        mirror: PropertyId,
+    ) -> Result<bool> {
+        if self.page.locked {
+            return Ok(false);
+        }
+        let current = self
+            .session_database_property(block, property)
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("关联列不存在"))?;
+        if current.kind != quire_core::core::database::PropertyKind::Relation {
+            bail!("此列不是关联类型");
+        }
+        let forward = quire_core::core::database_relation::config_relation(&current.config);
+        let target = forward
+            .target
+            .ok_or_else(|| anyhow::anyhow!("请先配置目标数据库"))?;
+        let candidate = self
+            .databases
+            .properties
+            .iter()
+            .find(|p| p.id == mirror)
+            .ok_or_else(|| anyhow::anyhow!("反向关联列不存在"))?;
+        let back = quire_core::core::database_relation::config_relation(&candidate.config);
+        let facts = quire_core::core::database_relation::ColumnFacts {
+            kind: candidate.kind,
+            db: candidate.db,
+            target: back.target,
+            mirror: back.mirror,
+        };
+        quire_core::core::database_relation::check_pair(
+            property, current.db, target, mirror, &facts,
+        )
+        .map_err(|reason| anyhow::anyhow!(reason.message()))?;
+        let from = current.config.clone();
+        let to = quire_core::core::database_relation::config_set_relation(
+            &from,
+            Some(target),
+            Some(mirror),
+        );
+        let mirror_to = quire_core::core::database_relation::config_set_relation(
+            &candidate.config,
+            Some(current.db),
+            Some(property),
+        );
+        let Some(entry) = command::plan(
+            &mut self.document,
+            self.page.id,
+            Command::SetRelationConfig {
+                block,
+                property,
+                from,
+                to: to.clone(),
+                mirrors: vec![(mirror, candidate.config.clone(), mirror_to.clone())],
+            },
+        ) else {
+            return Ok(false);
+        };
+        self.apply_entry(entry);
+        for definition in &mut self.databases.properties {
+            if definition.id == property {
+                definition.config = to.clone();
+            }
+            if definition.id == mirror {
+                definition.config = mirror_to.clone();
+            }
+        }
+        self.persistence.force_flush()?;
+        self.refresh_databases();
+        Ok(true)
+    }
     pub fn set_database_relation_cell(
         &mut self,
         block: BlockId,
@@ -1045,8 +1119,12 @@ impl Session {
         let target_db = config
             .target
             .ok_or_else(|| anyhow::anyhow!("请先配置目标数据库"))?;
-        if config.mirror.is_some() {
-            bail!("此列已配置双向关联，暂不支持单向编辑");
+        let source = self
+            .repo
+            .record(record)?
+            .ok_or_else(|| anyhow::anyhow!("当前记录不存在"))?;
+        if source.db != definition.db {
+            bail!("当前记录不属于关联列所在数据库");
         }
         let mut ids = Vec::with_capacity(targets.len());
         for target in targets {
@@ -1070,6 +1148,49 @@ impl Session {
         if from == to {
             return Ok(false);
         }
+        let mut mirrors = Vec::new();
+        if let Some(mirror) = config.mirror {
+            let mirror_definition = self
+                .databases
+                .properties
+                .iter()
+                .find(|candidate| candidate.id == mirror)
+                .ok_or_else(|| anyhow::anyhow!("反向关联列不存在"))?;
+            let mut changed = std::collections::BTreeSet::new();
+            if let CellValue::Items(old_ids) = &from {
+                for id in old_ids {
+                    if let Ok(id) = id.parse::<u64>() {
+                        changed.insert(RecordId(id));
+                    }
+                }
+            }
+            changed.extend(targets.iter().copied());
+            for target in changed {
+                let before = self.repo.cell(target, mirror)?;
+                let mut ids = match &before {
+                    CellValue::Items(ids) => ids.clone(),
+                    _ => Vec::new(),
+                };
+                let source_id = record.0.to_string();
+                if targets.contains(&target) {
+                    if !ids.contains(&source_id) {
+                        ids.push(source_id);
+                    }
+                } else {
+                    ids.retain(|id| id != &source_id);
+                }
+                ids.sort();
+                ids.dedup();
+                let after = if ids.is_empty() {
+                    CellValue::Empty
+                } else {
+                    CellValue::Items(ids)
+                };
+                if before != after {
+                    mirrors.push((target, mirror_definition.id, before, after));
+                }
+            }
+        }
         let Some(entry) = command::plan(
             &mut self.document,
             self.page.id,
@@ -1079,7 +1200,7 @@ impl Session {
                 property,
                 from,
                 to,
-                mirrors: Vec::new(),
+                mirrors,
             },
         ) else {
             return Ok(false);
@@ -3296,6 +3417,60 @@ mod tests {
         assert_eq!(
             reopened.repo.cell(source, property)?,
             CellValue::Items(vec![target.0.to_string()])
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn paired_relation_updates_both_cells_and_undoes_atomically() -> Result<()> {
+        use quire_core::core::database::{CellValue, PropertyKind};
+        let scratch = quire_core::testing::ScratchDir::new("gpui-paired-relation");
+        let path = scratch.path().join("test.db");
+        let (block, db, forward, reverse, left, right);
+        {
+            let mut session = Session::open(&path)?;
+            block = session.blocks()[0].id;
+            db = session
+                .make_database(block, "双向关系".into())
+                .expect("database");
+            forward = session
+                .add_database_property(block, "父项".into(), PropertyKind::Relation)
+                .expect("forward");
+            reverse = session
+                .add_database_property(block, "子项".into(), PropertyKind::Relation)
+                .expect("reverse");
+            session.set_database_relation_target(block, forward, Some(db))?;
+            session.set_database_relation_target(block, reverse, Some(db))?;
+            assert!(session.set_database_relation_mirror(block, forward, reverse)?);
+            left = session.add_database_record(block).expect("left");
+            right = session.add_database_record(block).expect("right");
+            assert!(session.set_database_relation_cell(block, left, forward, &[right])?);
+            assert_eq!(
+                session.repo.cell(right, reverse)?,
+                CellValue::Items(vec![left.0.to_string()])
+            );
+            session.undo();
+            assert_eq!(session.repo.cell(left, forward)?, CellValue::Empty);
+            assert_eq!(session.repo.cell(right, reverse)?, CellValue::Empty);
+            session.redo();
+            assert!(session.set_database_relation_cell(block, left, forward, &[])?);
+            assert_eq!(session.repo.cell(right, reverse)?, CellValue::Empty);
+            session.undo();
+        }
+        let reopened = Session::open(&path)?;
+        let config = quire_core::core::database_relation::config_relation(
+            &reopened
+                .databases
+                .properties
+                .iter()
+                .find(|p| p.id == forward)
+                .unwrap()
+                .config,
+        );
+        assert_eq!(config.mirror, Some(reverse));
+        assert_eq!(
+            reopened.repo.cell(right, reverse)?,
+            CellValue::Items(vec![left.0.to_string()])
         );
         Ok(())
     }

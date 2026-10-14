@@ -8496,6 +8496,20 @@ impl Render for Workspace {
                                                             }
                                                         })).child(database.name)
                                                     })));
+                                                    if let Some(target) = relation.target {
+                                                        let candidates = self.session.databases.properties_of(target).filter(|candidate| candidate.kind == quire_core::core::database::PropertyKind::Relation).cloned().collect::<Vec<_>>();
+                                                        let current_mirror = relation.mirror;
+                                                        picker = picker.child(div().id(SharedString::from(format!("db-relation-mirror-{}-{property_id}", db_id.0))).w_full().flex().items_center().flex_wrap().gap(px(5.)).border_t_1().border_color(db_border).px(px(5.)).py(px(5.)).child(div().text_size(px(11.)).text_color(muted).child("双向列：")).children(candidates.into_iter().map(|candidate| {
+                                                            let selected = current_mirror == Some(candidate.id);
+                                                            let mirror = candidate.id;
+                                                            div().id(SharedString::from(format!("db-relation-mirror-choice-{property_id}-{}", mirror.0))).px(px(7.)).py(px(4.)).rounded(px(4.)).text_size(px(11.)).text_color(if selected { text } else { muted }).when(selected, |item| item.bg(accent.opacity(0.32))).when(!selected && !self.session.page.locked, |item| item.cursor_pointer().hover(|item| item.bg(db_hover))).on_click(cx.listener(move |this, _, window, cx| {
+                                                                match this.session.set_database_relation_mirror(block_id, quire_core::core::database::PropertyId(property_id), mirror) {
+                                                                    Ok(_) => { this.schedule_save(true, window, cx); cx.notify(); }
+                                                                    Err(error) => { this.status = error.to_string(); this.error = true; cx.notify(); }
+                                                                }
+                                                            })).child(candidate.name)
+                                                        })));
+                                                    }
                                                 }
                                                 if property_kind == quire_core::core::database::PropertyKind::Rollup {
                                                     use quire_core::core::database_rollup::Aggregate;
