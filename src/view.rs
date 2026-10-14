@@ -297,7 +297,7 @@ fn database_group_identity(key: &quire_core::core::database_view::GroupKey) -> S
     }
 }
 
-fn editable_database_kinds() -> [quire_core::core::database::PropertyKind; 9] {
+fn database_property_kind_choices() -> [quire_core::core::database::PropertyKind; 11] {
     use quire_core::core::database::PropertyKind as Kind;
     [
         Kind::Text,
@@ -309,6 +309,8 @@ fn editable_database_kinds() -> [quire_core::core::database::PropertyKind; 9] {
         Kind::Url,
         Kind::Email,
         Kind::Phone,
+        Kind::CreatedTime,
+        Kind::LastEditedTime,
     ]
 }
 
@@ -385,8 +387,8 @@ fn toc_headings(blocks: &[Block]) -> Vec<(BlockId, u8, String)> {
 mod view_tests {
     use super::{
         database_filter_value_from_text, database_group_identity, database_group_label,
-        find_matches_in, link_target_range, order_database_groups, parse_organizer_tags,
-        toc_headings,
+        database_property_kind_choices, find_matches_in, link_target_range, order_database_groups,
+        parse_organizer_tags, toc_headings,
     };
     use quire_core::core::database::PropertyKind;
     use quire_core::core::database_view::FilterValue;
@@ -438,6 +440,15 @@ mod view_tests {
             ),
             "第二个"
         );
+    }
+
+    #[test]
+    fn database_type_picker_includes_read_only_time_properties() {
+        use quire_core::core::database::PropertyKind as Kind;
+        let kinds = database_property_kind_choices();
+        assert!(kinds.contains(&Kind::CreatedTime));
+        assert!(kinds.contains(&Kind::LastEditedTime));
+        assert!(!kinds.contains(&Kind::Title));
     }
 
     fn block(id: u64, kind: BlockKind, text: &str, parent: Option<BlockId>, folded: bool) -> Block {
@@ -7592,7 +7603,7 @@ impl Render for Workspace {
                                                         .border_t_1()
                                                         .border_color(db_border)
                                                         .child(format!("{} 类型：", name))
-                                                        .children(editable_database_kinds().into_iter().map(|kind| {
+                                                        .children(database_property_kind_choices().into_iter().map(|kind| {
                                                             let selected = kind == property_kind;
                                                             div()
                                                                 .id(SharedString::from(format!(
