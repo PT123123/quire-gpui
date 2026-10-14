@@ -374,6 +374,7 @@ pub struct Workspace {
     subscriptions: Vec<Subscription>,
     palette: Palette,
     theme_picker_open: bool,
+    settings_tab: usize,
     icon_picker_open: bool,
     format_bar_open: bool,
     page_options_open: bool,
@@ -516,6 +517,7 @@ impl Workspace {
             subscriptions: Vec::new(),
             palette: Palette::load(theme),
             theme_picker_open: false,
+            settings_tab: 0,
             icon_picker_open: false,
             format_bar_open: false,
             page_options_open: false,
@@ -3287,32 +3289,38 @@ impl Render for Workspace {
                                 .children(
                                     ["外观", "通用", "同步", "MCP", "快捷键", "关于"]
                                         .into_iter()
-                                        .map(|tab| {
+                                        .enumerate()
+                                        .map(|(index, tab)| {
                                             div()
+                                                .id(SharedString::from(format!("settings-tab-{index}")))
                                                 .flex_1()
                                                 .py(px(6.))
+                                                .cursor_pointer()
                                                 .text_size(px(12.))
                                                 .text_center()
-                                                .text_color(if tab == "外观" {
+                                                .text_color(if self.settings_tab == index {
                                                     text
                                                 } else {
                                                     muted
                                                 })
-                                                .when(tab == "外观", |item| {
+                                                .when(self.settings_tab == index, |item| {
                                                     item.bg(Palette::color(&p.bg).opacity(0.4))
                                                 })
+                                                .on_click(cx.listener(move |this, _, _, cx| {
+                                                    this.settings_tab = index;
+                                                    cx.notify();
+                                                }))
                                                 .child(tab)
                                         }),
                                 ),
                         )
                         .child(div().h(px(1.)).bg(Palette::color(&p.border)))
-                        .child(
+                        .when(self.settings_tab == 0, |dialog| dialog.child(
                             div()
                                 .text_size(px(12.))
                                 .text_color(muted)
                                 .child("外观 · 渐变主题"),
-                        )
-                        .child(
+                        ).child(
                             div()
                                 .id("settings-theme-grid")
                                 .w_full()
@@ -3320,7 +3328,73 @@ impl Render for Workspace {
                                 .flex_wrap()
                                 .gap(px(8.))
                                 .children(theme_options),
-                        )
+                        ))
+                        .when(self.settings_tab == 1, |dialog| dialog.child(
+                            div().flex().flex_col().gap(px(14.)).child(
+                                div().text_size(px(12.)).text_color(muted).child("通用 · 当前工作区"),
+                            ).child(
+                                div().flex().justify_between().items_center().child("启动时自动弹出新建笔记输入框").child("○"),
+                            ).child(
+                                div().flex().justify_between().items_center().child("全局 Alt+N 速记（不打开主界面）").child("○"),
+                            ).child(
+                                div().flex().justify_between().items_center().child("全局 Alt+M 显示主界面").child("○"),
+                            ).child(
+                                div().text_size(px(11.)).text_color(muted).child("快捷键、同步服务和数据目录选项将在对应模块接入后启用。"),
+                            ),
+                        ))
+                        .when(self.settings_tab == 2, |dialog| dialog.child(
+                            div().flex().flex_col().gap(px(12.)).child(
+                                div().flex().items_center().justify_between().child(div().text_size(px(20.)).font_weight(FontWeight::SEMIBOLD).child("局域网同步")).child(div().text_size(px(11.)).text_color(muted).child("GPUI 版本尚未连接同步服务")),
+                            ).child(
+                                div().h(px(1.)).bg(Palette::color(&p.border)),
+                            ).child(
+                                div().text_size(px(12.)).text_color(muted).child("本机设备、在线状态、同步进度与日志将在同步传输层接入后显示。"),
+                            ).child(
+                                div().flex().gap(px(8.)).children(["设备", "统计", "日志"].into_iter().map(|label| div().px(px(10.)).py(px(6.)).rounded(px(5.)).border_1().border_color(Palette::color(&p.border)).text_size(px(12.)).child(label))),
+                            ).child(
+                                div().flex_1().flex().items_center().justify_center().text_color(muted).child("尚无同步会话"),
+                            ),
+                        ))
+                        .when(self.settings_tab == 3, |dialog| dialog.child(
+                            div().flex().flex_col().gap(px(12.)).child(
+                                div().flex().items_center().gap(px(10.)).child(div().text_size(px(20.)).font_weight(FontWeight::SEMIBOLD).child("MCP")).child(div().text_size(px(11.)).text_color(muted).child("尚未启用")),
+                            ).child(
+                                div().h(px(1.)).bg(Palette::color(&p.border)),
+                            ).child(
+                                div().font_weight(FontWeight::SEMIBOLD).text_size(px(12.)).child("客户端配置"),
+                            ).child(
+                                div().text_size(px(12.)).text_color(muted).child("GPUI 版本暂未启动 MCP 服务。服务接入后可在此查看客户端配置、权限说明和调用记录。"),
+                            ).child(
+                                div().h(px(1.)).bg(Palette::color(&p.border)),
+                            ).child(
+                                div().font_weight(FontWeight::SEMIBOLD).text_size(px(12.)).child("调用日志 · 0 条记录"),
+                            ).child(
+                                div().flex_1().flex().items_center().justify_center().text_color(muted).child("尚无调用记录"),
+                            ),
+                        ))
+                        .when(self.settings_tab == 4, |dialog| dialog.child(
+                            div().flex().flex_col().gap(px(12.)).child(
+                                div().text_size(px(12.)).text_color(muted).child("快捷键 · 编辑器"),
+                            ).children([
+                                ("保存页面", "Ctrl+S"),
+                                ("撤销 / 重做", "Ctrl+Z / Ctrl+Shift+Z"),
+                                ("查找页面", "Ctrl+P"),
+                                ("页面内查找", "Ctrl+F"),
+                                ("命令面板", "Ctrl+K"),
+                                ("新建块", "Enter"),
+                            ].into_iter().map(|(label, key)| div().flex().justify_between().items_center().border_b_1().border_color(Palette::color(&p.border)).py(px(7.)).child(label).child(div().px(px(7.)).py(px(3.)).rounded(px(4.)).bg(Palette::color(&p.bg).opacity(0.3)).text_size(px(11.)).child(key)))),
+                        ))
+                        .when(self.settings_tab == 5, |dialog| dialog.child(
+                            div().flex().flex_col().gap(px(12.)).child(
+                                div().text_size(px(20.)).font_weight(FontWeight::SEMIBOLD).child("Quire GPUI"),
+                            ).child(
+                                div().text_size(px(12.)).text_color(muted).child(format!("版本 {}", env!("CARGO_PKG_VERSION"))),
+                            ).child(
+                                div().text_size(px(12.)).text_color(muted).child("界面：GPUI · 数据：本地 SQLite"),
+                            ).child(
+                                div().text_size(px(12.)).text_color(muted).child("使用独立于 Slint 版的 Quire GPUI 数据目录。"),
+                            ),
+                        ))
                         .child(div().flex_1())
                         .child(
                             div().flex().justify_end().child(
