@@ -1122,6 +1122,10 @@ pub struct Workspace {
     hovered_note: Option<quire_core::core::organizer::NoteId>,
     hovered_task: Option<quire_core::core::organizer::TaskId>,
     inputs: BTreeMap<u64, Entity<TextInput>>,
+    input_subscriptions: HashMap<u64, Subscription>,
+    document_list: ListState,
+    document_list_ids: Vec<BlockId>,
+    document_visible_range: Range<usize>,
     selected_database_views: HashMap<u64, ViewId>,
     database_columns_open: Option<(u64, u64)>,
     database_filter_open: Option<(u64, u64)>,
@@ -1443,6 +1447,10 @@ impl Workspace {
             hovered_note: None,
             hovered_task: None,
             inputs: BTreeMap::new(),
+            input_subscriptions: HashMap::new(),
+            document_list: ListState::new(2, ListAlignment::Top, px(240.)),
+            document_list_ids: Vec::new(),
+            document_visible_range: 0..2,
             selected_database_views: HashMap::new(),
             database_columns_open: None,
             database_filter_open: None,
@@ -2027,80 +2035,188 @@ impl Workspace {
         this
     }
     fn sync_inputs(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.subscriptions.clear();
-        let blocks = self.session.blocks().to_vec();
-        self.inputs.retain(|id, _| {
-            blocks
-                .iter()
-                .any(|b| b.id.0 == *id && self.session.editable(b.id))
+        let visible_blocks = self.visible_document_blocks();
+        let ids = visible_blocks.iter().map(|(_, id)| *id).collect::<Vec<_>>();
+        self.sync_document_list_ids(&ids);
+        let mut keep = self.document_visible_block_ids();
+        if let Some(active) = self.active {
+            keep.insert(active.0);
+        }
+        self.inputs.retain(|id, input| {
+            keep.contains(id)
+                || input.read(cx).buffer.composing()
+                    && self
+                        .session
+                        .blocks()
+                        .iter()
+                        .any(|block| block.id.0 == *id && self.session.editable(block.id))
         });
-        for block in blocks {
-            if !self.session.editable(block.id) {
-                continue;
+        self.input_subscriptions
+            .retain(|id, _| self.inputs.contains_key(id));
+        for (_, id) in visible_blocks {
+            if let Some(block) = self.session.document.block(id).cloned()
+                && self.inputs.contains_key(&id.0)
+            {
+                self.ensure_block_input(&block, window, cx);
             }
-            let font = match block.kind {
-                BlockKind::Heading1 => 28.,
-                BlockKind::Heading2 => 22.,
-                BlockKind::Heading3 => 18.,
-                _ if self.session.page.small_text => 13.,
-                _ => 15.5,
-            };
-            let weight = if matches!(
-                block.kind,
-                BlockKind::Heading1 | BlockKind::Heading2 | BlockKind::Heading3
-            ) {
-                FontWeight::BOLD
-            } else {
-                FontWeight::NORMAL
-            };
-            let input = if let Some(input) = self.inputs.get(&block.id.0) {
-                input.clone()
-            } else {
-                let text = block.text.clone();
-                let marks = block.marks.clone();
-                let input = cx.new(|cx| {
-                    let mut input = TextInput::new(text, marks, font, window, cx);
-                    input.font_weight = weight;
-                    input
-                });
-                self.inputs.insert(block.id.0, input.clone());
-                input
-            };
-            let block_text_color = (block.color != ColorKind::Default)
-                .then(|| self.palette.block_text(block.color.slot()));
-            let code_colors = [
-                self.palette.block_text(7),
-                self.palette.block_text(1),
-                self.palette.block_text(5),
-                self.palette.block_text(3),
-                self.palette.block_text(6),
-            ];
-            input.update(cx, |input, cx| {
-                input.font_size = font;
-                input.font_weight = weight;
-                input.text_color =
-                    Some(block_text_color.unwrap_or_else(|| Palette::color(&self.palette.fg)));
-                input.code_lang = if block.kind == BlockKind::Code {
-                    block.lang
-                } else {
-                    Lang::Plain
-                };
-                input.code_colors = code_colors;
-                if input.buffer.committed() != block.text {
-                    input.reset(block.text, block.marks.clone(), input.buffer.caret(), cx);
-                } else if input.marks != block.marks {
-                    input.marks = block.marks.clone();
-                    cx.notify();
-                }
-            });
-            let id = block.id;
-            self.subscriptions.push(cx.subscribe_in(
-                &input,
-                window,
-                move |this, _, event, window, cx| this.input_event(id, event, window, cx),
-            ));
         }
         cx.notify();
+    }
+    fn visible_document_blocks(&self) -> Vec<(usize, BlockId)> {
+        self.session
+            .blocks()
+            .iter()
+            .enumerate()
+            .filter_map(|(index, block)| {
+                if matches!(block.kind, BlockKind::TableCell | BlockKind::Column) {
+                    return None;
+                }
+                let mut parent = block.parent;
+                while let Some(parent_id) = parent {
+                    let Some(parent_block) = self.session.document.block(parent_id) else {
+                        break;
+                    };
+                    if matches!(parent_block.kind, BlockKind::Column | BlockKind::TableCell)
+                        || parent_block.folded
+                    {
+                        return None;
+                    }
+                    parent = parent_block.parent;
+                }
+                Some((index, block.id))
+            })
+            .collect()
+    }
+    fn sync_document_list_ids(&mut self, ids: &[BlockId]) {
+        let expected_count = self.document_list_ids.len() + 2;
+        if self.document_list.item_count() != expected_count {
+            self.document_list.reset(expected_count);
+        }
+        if self.document_list_ids == ids {
+            return;
+        }
+        let prefix = self
+            .document_list_ids
+            .iter()
+            .zip(ids)
+            .take_while(|(old, new)| old == new)
+            .count();
+        let suffix = self.document_list_ids[prefix..]
+            .iter()
+            .rev()
+            .zip(ids[prefix..].iter().rev())
+            .take_while(|(old, new)| old == new)
+            .count();
+        let old_end = self.document_list_ids.len() - suffix + 1;
+        let new_count = ids.len() - prefix - suffix;
+        self.document_list.splice(prefix + 1..old_end, new_count);
+        self.document_list_ids = ids.to_vec();
+        self.inputs.retain(|id, _| {
+            ids.iter().any(|block| block.0 == *id)
+                || self.active.is_some_and(|active| active.0 == *id)
+        });
+        self.input_subscriptions
+            .retain(|id, _| self.inputs.contains_key(id));
+    }
+    fn document_visible_block_ids(&self) -> HashSet<u64> {
+        let start = self.document_visible_range.start.saturating_sub(1);
+        let end = self
+            .document_visible_range
+            .end
+            .saturating_sub(1)
+            .min(self.document_list_ids.len());
+        self.document_list_ids
+            .get(start..end.max(start))
+            .unwrap_or_default()
+            .iter()
+            .map(|id| id.0)
+            .collect()
+    }
+    fn ensure_block_input(
+        &mut self,
+        block: &Block,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<Entity<TextInput>> {
+        if !self.session.editable(block.id) {
+            return None;
+        }
+        let font = match block.kind {
+            BlockKind::Heading1 => 28.,
+            BlockKind::Heading2 => 22.,
+            BlockKind::Heading3 => 18.,
+            _ if self.session.page.small_text => 13.,
+            _ => 15.5,
+        };
+        let weight = if matches!(
+            block.kind,
+            BlockKind::Heading1 | BlockKind::Heading2 | BlockKind::Heading3
+        ) {
+            FontWeight::BOLD
+        } else {
+            FontWeight::NORMAL
+        };
+        let input = if let Some(input) = self.inputs.get(&block.id.0) {
+            input.clone()
+        } else {
+            let text = block.text.clone();
+            let marks = block.marks.clone();
+            let input = cx.new(|cx| {
+                let mut input = TextInput::new(text, marks, font, window, cx);
+                input.font_weight = weight;
+                input
+            });
+            self.inputs.insert(block.id.0, input.clone());
+            let id = block.id;
+            let subscription =
+                cx.subscribe_in(&input, window, move |this, _, event, window, cx| {
+                    this.input_event(id, event, window, cx)
+                });
+            self.input_subscriptions.insert(block.id.0, subscription);
+            input
+        };
+        let block_text_color = (block.color != ColorKind::Default)
+            .then(|| self.palette.block_text(block.color.slot()));
+        let code_colors = [
+            self.palette.block_text(7),
+            self.palette.block_text(1),
+            self.palette.block_text(5),
+            self.palette.block_text(3),
+            self.palette.block_text(6),
+        ];
+        input.update(cx, |input, cx| {
+            input.font_size = font;
+            input.font_weight = weight;
+            input.text_color =
+                Some(block_text_color.unwrap_or_else(|| Palette::color(&self.palette.fg)));
+            input.code_lang = if block.kind == BlockKind::Code {
+                block.lang
+            } else {
+                Lang::Plain
+            };
+            input.code_colors = code_colors;
+            if input.buffer.committed() != block.text {
+                input.reset(
+                    block.text.clone(),
+                    block.marks.clone(),
+                    input.buffer.caret(),
+                    cx,
+                );
+            } else if input.marks != block.marks {
+                input.marks = block.marks.clone();
+                cx.notify();
+            }
+        });
+        Some(input)
+    }
+    fn invalidate_document_block(&self, id: BlockId) {
+        if let Some(index) = self
+            .document_list_ids
+            .iter()
+            .position(|candidate| *candidate == id)
+        {
+            self.document_list.splice(index + 1..index + 2, 1);
+        }
     }
     fn input_event(
         &mut self,
@@ -2128,10 +2244,12 @@ impl Workspace {
                 self.active = Some(id);
                 if let Some(kind) = shortcut {
                     self.session.convert_prefix(id, String::new(), kind);
+                    self.invalidate_document_block(id);
                     self.sync_inputs(window, cx);
                     self.restore_focus(window, cx);
                 } else {
                     self.session.replace(id, text.clone(), *boundary);
+                    self.invalidate_document_block(id);
                 }
                 self.slash_menu = (text.starts_with('/')
                     && !text[1..].chars().any(char::is_whitespace))
@@ -2217,6 +2335,7 @@ impl Workspace {
                     .unwrap_or(0);
                 self.session
                     .execute(Command::SplitBlock { id, caret: *caret });
+                self.invalidate_document_block(id);
                 let target = self.session.blocks().get(index + 1).map(|b| b.id);
                 self.sync_inputs(window, cx);
                 if let Some(target) = target {
@@ -2239,6 +2358,7 @@ impl Workspace {
                     return;
                 }
                 self.session.execute(Command::MergeBackward { id });
+                self.invalidate_document_block(id);
                 self.sync_inputs(window, cx);
                 self.focus(previous.id, previous.text.len(), window, cx);
                 self.schedule_save(false, window, cx);
@@ -2330,6 +2450,7 @@ impl Workspace {
             }
             InputEvent::Focused => {
                 self.session.end_typing();
+                self.set_active_block(id, cx);
                 if self
                     .database_filter_open
                     .is_some_and(|(filter_block, _)| filter_block != id.0)
@@ -5703,23 +5824,76 @@ impl Workspace {
         self.schedule_save(false, window, cx);
     }
     fn focus(&mut self, id: BlockId, caret: usize, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(input) = self.inputs.get(&id.0) {
+        if let Some(input) = self.inputs.get(&id.0).cloned() {
+            self.set_active_block(id, cx);
             input.update(cx, |input, cx| {
                 input.buffer.move_to(caret);
                 window.focus(&input.focus);
                 cx.notify();
             });
-            self.active = Some(id);
+        } else if let Some(index) = self
+            .document_list_ids
+            .iter()
+            .position(|candidate| *candidate == id)
+        {
+            self.set_active_block(id, cx);
+            self.document_list.scroll_to_reveal_item(index + 1);
+            cx.notify();
+            let entity = cx.entity();
+            window.on_next_frame(move |window, app| {
+                let _ = entity.update(app, |this, cx| {
+                    if let Some(input) = this.inputs.get(&id.0).cloned() {
+                        if let Some(index) = this
+                            .document_list_ids
+                            .iter()
+                            .position(|candidate| *candidate == id)
+                        {
+                            this.document_list.splice_focusable(
+                                index + 1..index + 2,
+                                [Some(input.read(cx).focus.clone())],
+                            );
+                        }
+                        input.update(cx, |input, cx| {
+                            input.buffer.move_to(caret);
+                            window.focus(&input.focus);
+                            cx.notify();
+                        });
+                    }
+                });
+            });
+        }
+    }
+    fn set_active_block(&mut self, id: BlockId, cx: &mut Context<Self>) {
+        let previous = self.active.replace(id);
+        if previous == Some(id) {
+            return;
+        }
+        if let Some(previous) = previous
+            && let Some(index) = self
+                .document_list_ids
+                .iter()
+                .position(|candidate| *candidate == previous)
+        {
+            self.document_list
+                .splice_focusable(index + 1..index + 2, [None]);
+        }
+        if let Some(index) = self
+            .document_list_ids
+            .iter()
+            .position(|candidate| *candidate == id)
+            && let Some(input) = self.inputs.get(&id.0)
+        {
+            self.document_list
+                .splice_focusable(index + 1..index + 2, [Some(input.read(cx).focus.clone())]);
         }
     }
     pub fn focus_first(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(id) = self
-            .session
-            .blocks()
-            .iter()
-            .find(|b| self.inputs.contains_key(&b.id.0))
-            .map(|b| b.id)
-        {
+        if let Some(id) = self.document_list_ids.iter().copied().find(|id| {
+            self.session
+                .document
+                .block(*id)
+                .is_some_and(|block| self.session.editable(block.id))
+        }) {
             self.focus(id, 0, window, cx);
         }
     }
@@ -5736,7 +5910,7 @@ impl Workspace {
             self.session
                 .blocks()
                 .iter()
-                .filter(|block| self.inputs.contains_key(&block.id.0))
+                .filter(|block| self.session.editable(block.id))
                 .flat_map(|block| {
                     find_matches_in(&block.text, &self.find_query)
                         .into_iter()
@@ -6499,8 +6673,11 @@ impl Workspace {
             let _ = weak.update_in(cx, |this, window, cx| {
                 let id = this.session.blocks()[0].id;
                 this.input_event(id, &InputEvent::Split("剥离心智模型 🦀".len()), window, cx);
-                let second = this.session.blocks()[1].id;
-                this.inputs[&second.0].update(cx, |input, cx| {
+                let second_block = this.session.blocks()[1].clone();
+                let second = this
+                    .ensure_block_input(&second_block, window, cx)
+                    .expect("split block must remain editable");
+                second.update(cx, |input, cx| {
                     input.replace_text_in_range(None, "重启后仍然存在", window, cx);
                 });
             });
@@ -6584,2183 +6761,705 @@ fn capture_tag_replacement(draft: &str, caret: usize, tag: &str) -> Option<(Stri
     Some((next, new_caret))
 }
 
-impl Render for Workspace {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let sidebar_transition = self.sidebar_transition;
-        let p = self.palette.clone();
-        let maximized = window.is_maximized();
-        let database_width = (window.bounds().size.width - px(356.))
-            .min(px(760.))
-            .max(px(200.));
-        let text = Palette::color(&p.fg);
-        let muted = Palette::color(&p.muted);
-        let accent = Palette::color(&p.accent);
-        let elevated = Palette::color(&p.elevated);
-        let mcp_enabled = self.mcp_server.is_some();
-        let mcp_status = self.mcp_status.clone();
-        let mcp_endpoint = format!("http://127.0.0.1:{}/mcp", self.mcp_port);
-        let mcp_token = self.mcp_token.clone();
-        let hotkey_alt_n = self.session.setting("gpui.hotkey.alt-n").unwrap_or("true") == "true";
-        let hotkey_alt_m = self.session.setting("gpui.hotkey.alt-m").unwrap_or("false") == "true";
-        let quick_note_on_start = self
-            .session
-            .setting("gpui.quick-note-on-start")
-            .unwrap_or("false")
-            == "true";
-        let hotkey_notice = self.hotkey_notice.clone();
-        let tray_available = self.tray_available;
-        let mcp_logs: Vec<serde_json::Value> = self
-            .session
-            .setting("gpui.mcp.log")
-            .and_then(|value| serde_json::from_str(value).ok())
-            .unwrap_or_default();
-        let sync_peers = self.session.sync_peers();
-        let sync_logs = self.session.sync_log();
-        let (sync_auto, sync_interval) = self.session.sync_config();
-        let sync_offline_count = sync_peers
-            .iter()
-            .filter(|peer| {
-                quire_core::services::sync::engine::now_unix().saturating_sub(peer.last_seen) > 15
-            })
-            .count();
-        let sync_status = self.sync_status.clone();
-        let sync_listener_warning = self.sync_listener_warning.clone();
-        let sync_device_name = self
-            .session
-            .setting("sync.device-name")
-            .unwrap_or("Quire")
-            .to_owned();
-        let backlinks_count = self
-            .session
-            .repo
-            .reference_count(self.session.page.id)
-            .unwrap_or(0);
-        let backlink_rows = if self.backlinks_open {
-            self.session
-                .repo
-                .references(self.session.page.id, 500)
-                .unwrap_or_default()
-                .into_iter()
-                .map(|reference| {
-                    let page_id = reference.page;
-                    let block_id = reference.block;
-                    let page_title = self
-                        .session
-                        .pages
-                        .iter()
-                        .find(|page| page.id == page_id)
-                        .map(|page| page.title.clone())
-                        .unwrap_or_else(|| "已删除页面".into());
-                    let preview = if reference.text.trim().is_empty() {
-                        "页面引用".to_owned()
-                    } else {
-                        reference.text
-                    };
-                    div()
-                        .id(SharedString::from(format!(
-                            "backlink-{page_id:?}-{block_id:?}"
-                        )))
-                        .w_full()
-                        .px(px(9.))
-                        .py(px(6.))
-                        .rounded(px(5.))
-                        .cursor_pointer()
-                        .hover(|row| row.bg(Palette::color(&p.bg).opacity(0.28)))
-                        .on_click(cx.listener(move |this, _, window, cx| {
-                            this.activate_page(page_id, window, cx);
-                            this.focus(block_id, 0, window, cx);
-                            this.backlinks_open = false;
-                            cx.notify();
-                        }))
-                        .child(div().text_size(px(11.)).text_color(muted).child(page_title))
-                        .child(div().text_color(text).child(preview))
-                })
-                .collect::<Vec<_>>()
-        } else {
-            Vec::new()
-        };
-        let backlinks_empty = backlink_rows.is_empty();
-        let sync_sources = self
-            .session
-            .pages
-            .iter()
-            .filter(|page| !page.template)
-            .flat_map(|page| {
-                let page_id = page.id;
-                let title = page.title.clone();
-                self.session
-                    .document
-                    .page_blocks(page_id)
-                    .iter()
-                    .filter(|block| {
-                        matches!(
-                            block.kind,
-                            BlockKind::Paragraph
-                                | BlockKind::Heading1
-                                | BlockKind::Heading2
-                                | BlockKind::Heading3
-                                | BlockKind::Bullet
-                                | BlockKind::Numbered
-                                | BlockKind::Todo
-                                | BlockKind::Quote
-                                | BlockKind::Code
-                                | BlockKind::Callout
-                                | BlockKind::Toggle
-                        ) && !block.text.trim().is_empty()
-                    })
-                    .map(move |block| (page_id, title.clone(), block.id, block.text.clone()))
-            })
-            .take(20)
-            .collect::<Vec<_>>();
-        let page_candidates = self
-            .session
-            .pages
-            .iter()
-            .filter(|page| page.id != self.session.page.id && !page.template)
-            .map(|page| (page.id, page.title.clone()))
-            .collect::<Vec<_>>();
-        let cover_path = self
-            .session
-            .page
-            .cover
-            .and_then(|cover| self.session.attachment_display_path(cover));
-        let theme_options = if self.theme_picker_open {
-            let palettes: Vec<Palette> =
-                serde_json::from_str(include_str!("palettes.json")).expect("checked-in palettes");
-            let mut system_palette = Palette::load("system");
-            system_palette.id = "system".into();
-            let palettes = std::iter::once(system_palette)
-                .chain(palettes)
-                .collect::<Vec<_>>();
-            palettes
-                .into_iter()
-                .filter(|palette| {
-                    let query = self.search_query.trim().to_lowercase();
-                    query.is_empty()
-                        || palette.id.to_lowercase().contains(&query)
-                        || match palette.id.as_str() {
-                            "system" => "跟随系统".contains(&query),
-                            "midnight" => "暗夜蓝".contains(&query),
-                            "graphite" => "石墨灰".contains(&query),
-                            "violet" => "紫罗兰".contains(&query),
-                            "emerald" => "森林绿".contains(&query),
-                            "amber" => "琥珀暖".contains(&query),
-                            "ocean" => "海洋青".contains(&query),
-                            "rose" => "珊瑚红".contains(&query),
-                            "light" => "明亮".contains(&query),
-                            "jade" => "翡翠绿".contains(&query),
-                            "deepblue" => "深空蓝".contains(&query),
-                            "twilight" => "暮光紫".contains(&query),
-                            "crimson" => "荣艳红".contains(&query),
-                            _ => false,
-                        }
-                })
-                .map(|palette| {
-                    let id = palette.id.clone();
-                    let label = match id.as_str() {
-                        "system" => "跟随系统",
-                        "midnight" => "🌙 暗夜蓝",
-                        "graphite" => "🪨 石墨灰",
-                        "violet" => "💜 紫罗兰",
-                        "emerald" => "🌲 森林绿",
-                        "amber" => "🔥 琥珀暖",
-                        "ocean" => "🌊 海洋青",
-                        "rose" => "🌹 珊瑚红",
-                        "light" => "☀️ 明亮",
-                        "jade" => "💎 翡翠绿",
-                        "deepblue" => "🌌 深空蓝",
-                        "twilight" => "🌆 暮光紫",
-                        "crimson" => "🌺 荣艳红",
-                        _ => id.as_str(),
-                    }
-                    .to_owned();
-                    let selected = id == self.theme_choice;
-                    div()
-                        .id(SharedString::from(format!("theme-option-{id}")))
-                        .w(px(110.))
-                        .h(px(62.))
-                        .p(px(7.))
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .rounded(px(6.))
-                        .border_1()
-                        .when(selected, |card| card.border_2())
-                        .border_color(if selected {
-                            accent
-                        } else {
-                            Palette::color(&p.border)
-                        })
-                        .cursor_pointer()
-                        .bg(linear_gradient(
-                            135.,
-                            linear_color_stop(Palette::color(&palette.bg), 0.),
-                            linear_color_stop(Palette::color(&palette.grad2), 1.),
-                        )
-                        .color_space(ColorSpace::Srgb))
-                        .hover(|row| row.border_color(accent))
-                        .on_click(cx.listener(move |this, _, window, cx| {
-                            this.select_theme(&id, window, cx)
-                        }))
-                        .child(
-                            div()
-                                .text_size(px(12.))
-                                .font_weight(FontWeight::MEDIUM)
-                                .text_color(Palette::color(&palette.fg))
-                                .child(format!("{}{}", label, if selected { "  ✓" } else { "" })),
-                        )
-                })
-                .collect::<Vec<_>>()
-        } else {
-            Vec::new()
-        };
-        let settings_overlay = self.theme_picker_open.then(|| {
-            div()
-                .id("settings-overlay")
-                .absolute()
-                .top(px(0.))
-                .right(px(0.))
-                .bottom(px(0.))
-                .left(px(0.))
-                .flex()
-                .items_center()
-                .justify_center()
-                .bg(Hsla::from(rgb(0x000000)).opacity(0x59 as f32 / 255.))
-                .on_click(cx.listener(|this, _, window, cx| {
-                    this.close_settings(window, cx)
-                }))
-                .child(
-                    div()
-                        .id("settings-dialog")
-                        .w(px(560.))
-                        .max_w(window.bounds().size.width - px(24.))
-                        .h(px(612.))
-                        .max_h(window.bounds().size.height - px(24.))
-                        .overflow_y_scroll()
-                        .p(px(16.))
-                        .rounded(px(12.))
-                        .border_1()
-                        .border_color(Palette::color(&p.border))
-                        .bg(Palette::color(&p.elevated2))
-                        .on_click(cx.listener(|_, _, _, cx| cx.stop_propagation()))
-                        .shadow(vec![BoxShadow {
-                            color: Hsla::from(rgb(0x000000)).opacity(0xa0 as f32 / 255.),
-                            offset: point(px(2.), px(3.)),
-                            blur_radius: px(0.),
-                            spread_radius: px(-2.),
-                        }])
-                        .flex()
-                        .flex_col()
-                        .gap(px(10.))
-                        .child(
-                            div()
-                                .text_size(px(18.))
-                                .font_weight(FontWeight::SEMIBOLD)
-                                .child("设置"),
-                        )
-                        .child(
-                            div()
-                                .id("settings-search")
-                                .w_full()
-                                .h(px(32.))
-                                .px(px(8.))
-                                .flex()
-                                .items_center()
-                                .gap(px(8.))
-                                .rounded(px(5.))
-                                .border_1()
-                                .border_color(Palette::color(&p.border))
-                                .bg(Palette::color(&p.bg).opacity(0.25))
-                                .child(sidebar_glyph(SidebarGlyph::Search, muted, px(14.)))
-                                .child(div().flex_1().min_w_0().child(self.search_input.clone())),
-                        )
-                        .child(
-                            div()
-                                .id("settings-tabs")
-                                .w_full()
-                                .h(px(32.))
-                                .flex()
-                                .items_center()
-                                .justify_between()
-                                .rounded(px(5.))
-                                .border_1()
-                                .border_color(Palette::color(&p.border))
-                                .children(
-                                    ["外观", "通用", "同步", "MCP", "快捷键", "关于"]
-                                        .into_iter()
-                                        .enumerate()
-                                        .map(|(index, tab)| {
-                                            div()
-                                                .id(SharedString::from(format!("settings-tab-{index}")))
-                                                .flex_1()
-                                                .py(px(6.))
-                                                .cursor_pointer()
-                                                .text_size(px(12.))
-                                                .text_center()
-                                                .text_color(if self.settings_tab == index {
-                                                    text
-                                                } else {
-                                                    muted
-                                                })
-                                                .when(self.settings_tab == index, |item| {
-                                                    item.bg(Palette::color(&p.bg).opacity(0.4))
-                                                })
-                                                .on_click(cx.listener(move |this, _, _, cx| {
-                                                    this.settings_tab = index;
-                                                    cx.notify();
-                                                }))
-                                                .child(tab)
-                                        }),
-                                ),
-                        )
-                        .child(div().h(px(1.)).bg(Palette::color(&p.border)))
-                        .when(self.settings_tab == 0, |dialog| dialog.child(
-                            div()
-                                .text_size(px(12.))
-                                .text_color(muted)
-                                .child("外观 · 渐变主题"),
-                        ).child(
-                            div()
-                                .id("settings-theme-grid")
-                                .w_full()
-                                .flex()
-                                .flex_wrap()
-                                .gap(px(8.))
-                                .children(theme_options),
-                        ).child(
-                            div()
-                                .w_full()
-                                .flex()
-                                .items_center()
-                                .justify_between()
-                                .child("界面缩放")
-                                .child(
-                                    div()
-                                        .flex()
-                                        .items_center()
-                                        .gap(px(12.))
-                                        .child(
-                                            div()
-                                                .id("settings-zoom-out")
-                                                .w(px(22.))
-                                                .h(px(24.))
-                                                .flex()
-                                                .items_center()
-                                                .justify_center()
-                                                .cursor_pointer()
-                                                .text_color(muted)
-                                                .hover(|button| button.text_color(text))
-                                                .when(self.ui_zoom > 0.5, |button| {
-                                                    button.on_click(cx.listener(|this, _, window, cx| {
-                                                        this.set_ui_zoom(quire_gpui::ui_scale::step(this.ui_zoom, -1), window, cx)
-                                                    }))
-                                                })
-                                                .child("−"),
-                                        )
-                                        .child(format!("{:.0}%", self.ui_zoom * 100.))
-                                        .child(
-                                            div()
-                                                .id("settings-zoom-in")
-                                                .w(px(22.))
-                                                .h(px(24.))
-                                                .flex()
-                                                .items_center()
-                                                .justify_center()
-                                                .cursor_pointer()
-                                                .text_color(muted)
-                                                .hover(|button| button.text_color(text))
-                                                .when(self.ui_zoom < 3.0, |button| {
-                                                    button.on_click(cx.listener(|this, _, window, cx| {
-                                                        this.set_ui_zoom(quire_gpui::ui_scale::step(this.ui_zoom, 1), window, cx)
-                                                    }))
-                                                })
-                                                .child("＋"),
-                                        )
-                                        .child(
-                                            div()
-                                                .id("settings-zoom-reset")
-                                                .px(px(10.))
-                                                .py(px(5.))
-                                                .rounded(px(4.))
-                                                .border_1()
-                                                .border_color(Palette::color(&p.border))
-                                                .cursor_pointer()
-                                                .text_color(muted)
-                                                .hover(|button| button.text_color(text))
-                                                .on_click(cx.listener(|this, _, window, cx| {
-                                                    this.set_ui_zoom(1., window, cx)
-                                                }))
-                                                .child("复位"),
-                                        ),
-                                ),
-                        ).child(
-                            div()
-                                .text_size(px(10.))
-                                .text_color(muted)
-                                .child("整个界面一起放大或缩小 · Ctrl+= / Ctrl+- 步进，Ctrl+0 复位"),
-                        ))
-                        .when(self.settings_tab == 1, |dialog| dialog.child(
-                            div().flex().flex_col().gap(px(14.)).child(
-                                div().text_size(px(12.)).text_color(muted).child("通用 · 当前工作区"),
-                            ).child(
-                                div().flex().justify_between().items_center()
-                                    .child("启动时自动弹出新建笔记输入框")
-                                    .child(div().id("quick-note-on-start").px(px(8.)).py(px(4.)).rounded(px(4.))
-                                        .border_1().border_color(Palette::color(&p.border)).cursor_pointer()
-                                        .text_color(if quick_note_on_start { accent } else { muted })
-                                        .on_click(cx.listener(|this, _, window, cx| this.toggle_quick_note_on_start(window, cx)))
-                                        .child(if quick_note_on_start { "● 已开启" } else { "○ 已关闭" })),
-                            ).child(
-                                div().flex().justify_between().items_center()
-                                    .child("全局 Alt+N 速记（不打开主界面）")
-                                    .child(div().id("hotkey-alt-n").px(px(8.)).py(px(4.)).rounded(px(4.))
-                                        .border_1().border_color(Palette::color(&p.border)).cursor_pointer()
-                                        .text_color(if hotkey_alt_n { accent } else { muted })
-                                        .on_click(cx.listener(|this, _, window, cx| this.toggle_global_hotkey(
-                                            crate::platform::HOTKEY_ALT_N, "gpui.hotkey.alt-n", true, "Alt+N", window, cx
-                                        )))
-                                        .child(if hotkey_alt_n { "● 已开启" } else { "○ 已关闭" })),
-                            ).child(
-                                div().flex().justify_between().items_center()
-                                    .child("全局 Alt+M 显示主界面")
-                                    .child(div().id("hotkey-alt-m").px(px(8.)).py(px(4.)).rounded(px(4.))
-                                        .border_1().border_color(Palette::color(&p.border)).cursor_pointer()
-                                        .text_color(if hotkey_alt_m { accent } else { muted })
-                                        .on_click(cx.listener(|this, _, window, cx| this.toggle_global_hotkey(
-                                            crate::platform::HOTKEY_ALT_M, "gpui.hotkey.alt-m", false, "Alt+M", window, cx
-                                        )))
-                                        .child(if hotkey_alt_m { "● 已开启" } else { "○ 已关闭" })),
-                            ).child(
-                                div().text_size(px(11.)).text_color(muted).child(hotkey_notice),
-                            ).when(!tray_available, |panel| panel.child(
-                                div().text_size(px(10.)).text_color(rgb(0xd9a441))
-                                    .child("系统托盘当前不可用；关闭窗口会保存并退出 Quire。"),
-                            )),
-                        ))
-                        .when(self.settings_tab == 2, |dialog| dialog.child(
-                            div().flex().flex_col().gap(px(8.))
-                                .child(div().flex().items_center().justify_between()
-                                    .child(div().flex().flex_col().gap(px(2.))
-                                        .child(div().text_size(px(20.)).font_weight(FontWeight::SEMIBOLD).child("局域网同步"))
-                                        .child(div().text_size(px(10.)).text_color(muted).child(format!("本机：{sync_device_name}"))))
-                                    .child(div().id("sync-now-all").px(px(10.)).py(px(6.)).rounded(px(5.))
-                                        .bg(Palette::color(&p.accent)).text_color(Palette::color(&p.fg)).cursor_pointer().text_size(px(11.))
-                                        .on_click(cx.listener(|this, _, window, cx| this.sync_now_all(window, cx)))
-                                        .child("立即同步")))
-                                .child(div().text_size(px(10.)).text_color(muted).child(sync_status.clone()))
-                                .when_some(sync_listener_warning, |panel, warning| panel.child(
-                                    div().text_size(px(10.)).text_color(rgb(0xd9a441)).child(warning),
-                                ))
-                                .child(div().flex().items_center().gap(px(6.))
-                                    .child(div().h(px(27.)).flex_1().min_w_0().px(px(7.)).rounded(px(4.))
-                                        .border_1().border_color(Palette::color(&p.border))
-                                        .child(self.sync_name_input.clone()))
-                                    .child(div().id("sync-name-apply").px(px(8.)).py(px(5.)).rounded(px(4.))
-                                        .bg(Palette::color(&p.accent)).text_color(Palette::color(&p.fg)).cursor_pointer().text_size(px(9.))
-                                        .on_click(cx.listener(|this, _, window, cx| this.apply_sync_name(window, cx)))
-                                        .child("保存并重启")))
-                                .child(div().text_size(px(9.)).text_color(muted).child("设备名称应用后重启 Quire，新的名称才会广播到局域网。"))
-                                .child(div().flex().items_center().gap(px(5.))
-                                    .child(div().text_size(px(10.)).child(if sync_auto { "自动同步" } else { "手动同步" }))
-                                    .child(div().id("sync-auto-toggle").px(px(7.)).py(px(4.)).rounded(px(4.))
-                                        .border_1().border_color(Palette::color(&p.border)).cursor_pointer().text_size(px(9.))
-                                        .on_click(cx.listener(|this, _, window, cx| {
-                                            let (enabled, _) = this.session.sync_config();
-                                            this.session.sync_set_auto(!enabled);
-                                            this.sync_last_auto = std::time::Instant::now();
-                                            this.sync_status = if enabled { "自动同步已关闭" } else { "自动同步已开启" }.into();
-                                            this.schedule_save(true, window, cx);
-                                            cx.notify();
-                                        }))
-                                        .child(if sync_auto { "关闭" } else { "开启" }))
-                                    .children([10u64, 30, 60].into_iter().map(|seconds|
-                                        div().id(SharedString::from(format!("sync-interval-{seconds}"))).px(px(6.)).py(px(4.)).rounded(px(4.))
-                                            .border_1().border_color(Palette::color(&p.border)).cursor_pointer().text_size(px(9.))
-                                            .when(sync_interval == seconds, |chip| chip.bg(Palette::color(&p.accent)).text_color(Palette::color(&p.fg)))
-                                            .on_click(cx.listener(move |this, _, window, cx| {
-                                                this.session.sync_set_interval(seconds);
-                                                this.schedule_save(true, window, cx);
-                                                cx.notify();
-                                            }))
-                                            .child(format!("{seconds}s")))))
-                                .child(div().h(px(1.)).bg(Palette::color(&p.border)))
-                                .child(div().flex().items_center().justify_between()
-                                    .child(div().text_size(px(12.)).font_weight(FontWeight::SEMIBOLD).child(format!("设备 · {}", sync_peers.len())))
-                                    .child(div().id("sync-refresh").px(px(6.)).py(px(3.))
-                                        .border_1().border_color(Palette::color(&p.border)).cursor_pointer().text_size(px(9.))
-                                        .on_click(cx.listener(|this, _, window, cx| {
-                                            const STALE_AFTER: u64 = 30 * 24 * 60 * 60;
-                                            let stale = this.session.sync_prune_stale_peers(STALE_AFTER);
-                                            if stale.is_empty() {
-                                                this.sync_status = "设备列表已刷新；正在监听局域网广播".into();
-                                            } else {
-                                                let names = stale.iter().map(|peer| peer.name.as_str()).collect::<Vec<_>>().join("、");
-                                                let message = format!("刷新列表并清理 {} 台长期离线设备：{}", stale.len(), names);
-                                                this.session.sync_log_push("本机", true, &message);
-                                                this.sync_status = message;
-                                                this.schedule_save(true, window, cx);
-                                            }
-                                            cx.notify();
-                                        }))
-                                        .child("刷新列表"))
-                                    .child(div().id("sync-forget-offline").px(px(6.)).py(px(3.))
-                                        .border_1().border_color(Palette::color(&p.border)).cursor_pointer().text_size(px(9.))
-                                        .on_click(cx.listener(|this, _, window, cx| {
-                                            let retired = this.session.sync_retire_offline_peers(15);
-                                            if retired.is_empty() {
-                                                this.sync_status = "没有离线设备需要清理".into();
-                                            } else {
-                                                let names = retired.iter().map(|peer| peer.name.as_str()).collect::<Vec<_>>().join("、");
-                                                let message = format!("已移除 {} 台离线设备：{}", retired.len(), names);
-                                                this.session.sync_log_push("本机", true, &message);
-                                                this.sync_status = message;
-                                                this.schedule_save(true, window, cx);
-                                            }
-                                            cx.notify();
-                                        }))
-                                        .child(format!("清理离线 · {sync_offline_count}"))))
-                                .children(sync_peers.iter().map(|peer| {
-                                    let peer_for_sync = peer.clone();
-                                    let peer_key = peer.id.clone();
-                                    let id_for_forget = peer.id.clone();
-                                    let peer_id = peer.id.clone();
-                                    let peer_name = peer.name.clone();
-                                    let last_sync = if peer.last_sync.is_empty() { "尚未同步".to_owned() } else { peer.last_sync.clone() };
-                                    let online = quire_core::services::sync::engine::now_unix().saturating_sub(peer.last_seen) <= 15;
-                                    div().flex().items_center().justify_between().gap(px(6.)).px(px(7.)).py(px(5.))
-                                        .rounded(px(5.)).border_1().border_color(Palette::color(&p.border))
-                                        .child(div().flex().flex_col().gap(px(2.))
-                                            .child(div().text_size(px(11.)).child(format!("{}  {}", if online { "●" } else { "○" }, peer.name)))
-                                            .child(div().text_size(px(9.)).text_color(muted).child(format!("{}:{} · {}", peer.ip, peer.port, last_sync))))
-                                        .child(div().flex().gap(px(5.))
-                                            .child(div().id(SharedString::from(format!("sync-peer-{peer_id}"))).px(px(7.)).py(px(4.)).rounded(px(4.))
-                                                .bg(Palette::color(&p.accent)).text_color(Palette::color(&p.fg)).cursor_pointer().text_size(px(9.))
-                                                .on_click(cx.listener(move |this, _, _, cx| {
-                                                    if !this.sync_pending.insert(peer_key.clone()) {
-                                                        this.sync_status = "该设备的同步仍在进行中".into();
-                                                        cx.notify();
-                                                        return;
-                                                    }
-                                                    if this.sync_cmd_tx.send(quire_core::services::sync::engine::Cmd::SyncWith(peer_for_sync.clone())).is_ok() {
-                                                        this.sync_status = format!("正在与 {peer_name} 同步…");
-                                                    } else {
-                                                        this.sync_pending.remove(&peer_key);
-                                                        this.sync_status = "同步引擎已停止，请重启 Quire 后重试".into();
-                                                    }
-                                                    cx.notify();
-                                                }))
-                                                .child("同步"))
-                                            .child(div().id(SharedString::from(format!("forget-peer-{peer_id}"))).px(px(7.)).py(px(4.))
-                                                .border_1().border_color(Palette::color(&p.border)).cursor_pointer().text_size(px(9.))
-                                                .on_click(cx.listener(move |this, _, window, cx| {
-                                                    this.session.sync_forget_peer(&id_for_forget);
-                                                    this.schedule_save(true, window, cx);
-                                                    cx.notify();
-                                                }))
-                                                .child("忘记")))
-                                }))
-                                .when(sync_peers.is_empty(), |panel| panel.child(div().py(px(8.)).text_size(px(10.)).text_color(muted).child("正在搜索设备；请确认设备位于同一局域网并已启动 Quire。")))
-                                .child(div().h(px(1.)).bg(Palette::color(&p.border)))
-                                .child(div().flex().items_center().justify_between()
-                                    .child(div().text_size(px(11.)).font_weight(FontWeight::SEMIBOLD).child(format!("同步日志 · {} 条", sync_logs.len())))
-                                    .child(div().id("sync-clear-log").px(px(6.)).py(px(3.))
-                                        .border_1().border_color(Palette::color(&p.border)).cursor_pointer().text_size(px(9.))
-                                        .on_click(cx.listener(|this, _, window, cx| {
-                                            this.session.sync_log_clear();
-                                            this.schedule_save(true, window, cx);
-                                            cx.notify();
-                                        }))
-                                        .child("清空")))
-                                .children(sync_logs.iter().rev().take(3).map(|line| div().text_size(px(9.)).text_color(muted).child(format!("{} · {} · {}", line.at, line.peer, line.message))))
-                        ))
-                        .when(self.settings_tab == 3, |dialog| dialog.child(
-                            div().flex().flex_col().gap(px(10.))
-                                .child(div().flex().items_center().justify_between()
-                                    .child(div().flex().items_center().gap(px(10.))
-                                        .child(div().text_size(px(20.)).font_weight(FontWeight::SEMIBOLD).child("MCP"))
-                                        .child(div().text_size(px(11.)).text_color(muted).child(mcp_status.clone())))
-                                    .child(div().flex().items_center().gap(px(5.))
-                                        .when(mcp_enabled, |row| row.child(div().id("mcp-restart").px(px(8.)).py(px(5.)).rounded(px(5.))
-                                            .border_1().border_color(Palette::color(&p.border)).cursor_pointer().text_size(px(10.))
-                                            .on_click(cx.listener(|this, _, window, cx| this.restart_mcp(window, cx)))
-                                            .child("重启")))
-                                        .child(div().id("mcp-toggle").px(px(11.)).py(px(6.)).rounded(px(5.))
-                                            .bg(Palette::color(&p.accent)).text_color(Palette::color(&p.fg))
-                                            .cursor_pointer().text_size(px(11.))
-                                            .on_click(cx.listener(|this, _, window, cx| this.toggle_mcp(window, cx)))
-                                            .child(if mcp_enabled { "关闭服务" } else { "启用服务" }))))
-                                .child(div().h(px(1.)).bg(Palette::color(&p.border)))
-                                .child(div().font_weight(FontWeight::SEMIBOLD).text_size(px(12.)).child("客户端连接信息"))
-                                .child(div().flex().items_center().gap(px(6.))
-                                    .child(div().text_size(px(11.)).text_color(muted).child("本机端口"))
-                                    .child(div().w(px(90.)).h(px(28.)).px(px(7.)).rounded(px(4.))
-                                        .border_1().border_color(Palette::color(&p.border))
-                                        .child(self.mcp_port_input.clone()))
-                                    .child(div().id("mcp-port-apply").px(px(8.)).py(px(5.)).rounded(px(4.))
-                                        .border_1().border_color(Palette::color(&p.border)).cursor_pointer().text_size(px(10.))
-                                        .on_click(cx.listener(|this, _, window, cx| this.apply_mcp_port(window, cx)))
-                                        .child(if mcp_enabled { "应用并重启" } else { "应用端口" })))
-                                .child(div().text_size(px(11.)).text_color(muted).child(format!("Endpoint  {mcp_endpoint}")))
-                                .child(div().text_size(px(11.)).text_color(muted).child(format!("Authorization: Bearer {mcp_token}")))
-                                .child(div().flex().gap(px(8.))
-                                    .child(div().id("mcp-copy-config").px(px(9.)).py(px(5.)).rounded(px(4.))
-                                        .border_1().border_color(Palette::color(&p.border)).cursor_pointer().text_size(px(10.))
-                                        .on_click(cx.listener(|this, _, _, cx| {
-                                            let config = serde_json::json!({
-                                                "url": format!("http://127.0.0.1:{}/mcp", this.mcp_port),
-                                                "headers": {"Authorization": format!("Bearer {}", this.mcp_token)}
-                                            }).to_string();
-                                            cx.write_to_clipboard(ClipboardItem::new_string(config));
-                                            this.status = "MCP 连接配置已复制".into();
-                                            cx.notify();
-                                        }))
-                                        .child("复制连接配置"))
-                                    .child(div().id("mcp-copy-stdio-config").px(px(9.)).py(px(5.)).rounded(px(4.))
-                                        .border_1().border_color(Palette::color(&p.border)).cursor_pointer().text_size(px(10.))
-                                        .on_click(cx.listener(|this, _, _, cx| {
-                                            let executable = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("quire-gpui"));
-                                            let config = serde_json::json!({
-                                                "mcpServers": {
-                                                    "quire": {
-                                                        "command": executable,
-                                                        "args": ["--stdio", "--db", this.session.path]
-                                                    }
-                                                }
-                                            }).to_string();
-                                            cx.write_to_clipboard(ClipboardItem::new_string(config));
-                                            this.status = "MCP stdio 客户端配置已复制".into();
-                                            cx.notify();
-                                        }))
-                                        .child("复制 stdio 配置"))
-                                    .child(div().id("mcp-copy-prompt").px(px(9.)).py(px(5.)).rounded(px(4.))
-                                        .border_1().border_color(Palette::color(&p.border)).cursor_pointer().text_size(px(10.))
-                                        .on_click(cx.listener(|this, _, _, cx| {
-                                            cx.write_to_clipboard(ClipboardItem::new_string(crate::mcp_tools::agent_prompt(this.mcp_port)));
-                                            this.status = "MCP Agent 提示词已复制".into();
-                                            cx.notify();
-                                        }))
-                                        .child("复制 Agent 提示词")))
-                                .child(div().text_size(px(10.)).text_color(muted).child("服务仅监听本机 127.0.0.1；工具可以读取和修改笔记/任务，删除只进入回收站。令牌保存在当前库目录的 mcp.json。"))
-                                .child(div().h(px(1.)).bg(Palette::color(&p.border)))
-                                .child(div().flex().items_center().justify_between()
-                                    .child(div().font_weight(FontWeight::SEMIBOLD).text_size(px(12.)).child(format!("调用日志 · {} 条记录", mcp_logs.len())))
-                                    .child(div().id("mcp-clear-log").px(px(6.)).py(px(3.))
-                                        .border_1().border_color(Palette::color(&p.border)).cursor_pointer().text_size(px(9.))
-                                        .on_click(cx.listener(|this, _, window, cx| {
-                                            this.session.set_setting("gpui.mcp.log", "[]");
-                                            this.schedule_save(true, window, cx);
-                                            cx.notify();
-                                        }))
-                                        .child("清空")))
-                                .children(mcp_logs.iter().rev().take(6).map(|entry| {
-                                    let ok = entry.get("ok").and_then(serde_json::Value::as_bool).unwrap_or(false);
-                                    let tool = entry.get("tool").and_then(serde_json::Value::as_str).unwrap_or("tool");
-                                    let message = entry.get("message").and_then(serde_json::Value::as_str).unwrap_or("");
-                                    div().text_size(px(10.)).text_color(muted)
-                                        .child(format!("{}  {} · {}", if ok { "✓" } else { "!" }, tool, message.chars().take(72).collect::<String>()))
-                                }))
-                                .when(mcp_logs.is_empty(), |panel| panel.child(div().text_size(px(10.)).text_color(muted).child("尚无调用记录"))),
-                        ))
-                        .when(self.settings_tab == 4, |dialog| dialog.child(
-                            div().flex().flex_col().gap(px(12.)).child(
-                                div().text_size(px(12.)).text_color(muted).child("快捷键 · 编辑器"),
-                            ).children([
-                                ("保存页面", "Ctrl+S"),
-                                ("新建页面", "Ctrl+N"),
-                                ("撤销 / 重做", "Ctrl+Z / Ctrl+Shift+Z"),
-                                ("查找页面", "Ctrl+P"),
-                                ("页面内查找", "Ctrl+F"),
-                                ("界面缩放 / 复位", "Ctrl+= / Ctrl+- / Ctrl+0"),
-                                ("新建块", "Enter"),
-                            ].into_iter().map(|(label, key)| div().flex().justify_between().items_center().border_b_1().border_color(Palette::color(&p.border)).py(px(7.)).child(label).child(div().px(px(7.)).py(px(3.)).rounded(px(4.)).bg(Palette::color(&p.bg).opacity(0.3)).text_size(px(11.)).child(key)))),
-                        ))
-                        .when(self.settings_tab == 5, |dialog| dialog.child(
-                            div().flex().flex_col().gap(px(12.)).child(
-                                div().text_size(px(20.)).font_weight(FontWeight::SEMIBOLD).child("Quire GPUI"),
-                            ).child(
-                                div().text_size(px(12.)).text_color(muted).child(format!("版本 {}", env!("CARGO_PKG_VERSION"))),
-                            ).child(
-                                div().text_size(px(12.)).text_color(muted).child("界面：GPUI · 数据：本地 SQLite"),
-                            ).child(
-                                div().text_size(px(12.)).text_color(muted).child("使用独立于 Slint 版的 Quire GPUI 数据目录。"),
-                            ),
-                        ))
-                        .child(div().flex_1())
-                        .child(
-                            div().flex().justify_end().child(
-                                div()
-                                    .id("settings-done")
-                                    .px(px(14.))
-                                    .py(px(7.))
-                                    .rounded(px(5.))
-                                    .border_1()
-                                    .border_color(Palette::color(&p.border))
-                                    .cursor_pointer()
-                                    .hover(|button| button.bg(Palette::color(&p.bg).opacity(0.35)))
-                                    .on_click(cx.listener(|this, _, window, cx| {
-                                        this.close_settings(window, cx);
-                                    }))
-                                    .child("完成"),
-                            ),
-                        ),
-                )
-        });
-        let icon_options = if self.icon_picker_open {
-            div()
-                .id("page-icon-popover")
-                .w(px(224.))
-                .p(px(7.))
-                .rounded(px(8.))
-                .border_1()
-                .border_color(Palette::color(&p.border))
-                .bg(Palette::color(&p.elevated))
-                .child(
-                    div()
-                        .id("page-icon-grid")
-                        .w_full()
-                        .max_h(px(228.))
-                        .overflow_y_scroll()
-                        .flex()
-                        .flex_wrap()
-                        .gap(px(3.))
-                        .children(
-                            std::iter::once("")
-                                .chain(quire_core::core::icon::PICKER.iter().copied())
-                                .map(|icon| {
-                                    let selected = self.session.page.icon == icon;
-                                    div()
-                                        .id(SharedString::from(format!("page-icon-{icon}")))
-                                        .size(px(25.))
-                                        .flex()
-                                        .items_center()
-                                        .justify_center()
-                                        .rounded(px(5.))
-                                        .cursor_pointer()
-                                        .when(selected, |row| {
-                                            row.bg(Palette::color(&p.bg).opacity(0.35))
-                                        })
-                                        .hover(|row| row.bg(Palette::color(&p.bg).opacity(0.5)))
-                                        .on_click(cx.listener(move |this, _, window, cx| {
-                                            this.select_page_icon(icon, window, cx)
-                                        }))
-                                        .child(if icon.is_empty() { "×" } else { icon })
-                                }),
-                        ),
-                )
-        } else {
-            div().id("page-icon-popover")
-        };
-        let query = self.search_query.trim().to_lowercase();
-        let page_rows = ordered_page_tree(&self.session.pages, false)
-            .into_iter()
-            .map(|(page, depth)| {
-                let selected = page.id == self.session.page.id;
-                let page_id = page.id;
-                let has_children = self
-                    .session
-                    .pages
-                    .iter()
-                    .any(|child| child.parent == Some(page_id));
-                let disclosure = if has_children {
-                    if page.expanded { "▾" } else { "▸" }
-                } else {
-                    " "
-                };
-                let page_actions = div()
-                    .flex()
-                    .items_center()
-                    .gap(px(2.))
-                    .child(
-                        div()
-                            .id(SharedString::from(format!(
-                                "page-actions-format-{}",
-                                page_id.0
-                            )))
-                            .px(px(3.))
-                            .cursor_pointer()
-                            .text_color(muted)
-                            .hover(|button| button.text_color(accent))
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.format_bar_open = !this.format_bar_open;
-                                cx.notify();
-                            }))
-                            .child("Aa"),
-                    )
-                    .child(
-                        div()
-                            .id(SharedString::from(format!(
-                                "page-options-toggle-{}",
-                                page_id.0
-                            )))
-                            .px(px(3.))
-                            .cursor_pointer()
-                            .text_color(if self.page_options_open {
-                                accent
-                            } else {
-                                muted
-                            })
-                            .hover(|button| button.text_color(accent))
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.page_options_open = !this.page_options_open;
-                                cx.notify();
-                            }))
-                            .child("···"),
-                    )
-                    .child(
-                        div()
-                            .id(SharedString::from(format!("add-child-page-{}", page_id.0)))
-                            .px(px(3.))
-                            .cursor_pointer()
-                            .text_color(muted)
-                            .hover(|button| button.text_color(accent))
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                this.add_child_page(page_id, window, cx)
-                            }))
-                            .child("＋"),
-                    )
-                    .child(
-                        div()
-                            .id(SharedString::from(format!("duplicate-page-{}", page_id.0)))
-                            .px(px(3.))
-                            .cursor_pointer()
-                            .text_color(muted)
-                            .hover(|button| button.text_color(accent))
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                this.duplicate_page(page_id, window, cx)
-                            }))
-                            .child("⧉"),
-                    )
-                    .child(
-                        div()
-                            .id(SharedString::from(format!("move-page-up-{}", page_id.0)))
-                            .px(px(2.))
-                            .cursor_pointer()
-                            .text_color(muted)
-                            .hover(|button| button.text_color(accent))
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                this.move_page(page_id, -1, window, cx)
-                            }))
-                            .child("↑"),
-                    )
-                    .child(
-                        div()
-                            .id(SharedString::from(format!("move-page-down-{}", page_id.0)))
-                            .px(px(2.))
-                            .cursor_pointer()
-                            .text_color(muted)
-                            .hover(|button| button.text_color(accent))
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                this.move_page(page_id, 1, window, cx)
-                            }))
-                            .child("↓"),
-                    )
-                    .child(
-                        div()
-                            .id(SharedString::from(format!("indent-page-{}", page_id.0)))
-                            .px(px(2.))
-                            .cursor_pointer()
-                            .text_color(muted)
-                            .hover(|button| button.text_color(accent))
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                this.indent_page(page_id, window, cx)
-                            }))
-                            .child("↳"),
-                    )
-                    .child(
-                        div()
-                            .id(SharedString::from(format!("outdent-page-{}", page_id.0)))
-                            .px(px(2.))
-                            .cursor_pointer()
-                            .text_color(muted)
-                            .hover(|button| button.text_color(accent))
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                this.outdent_page(page_id, window, cx)
-                            }))
-                            .child("↰"),
-                    )
-                    .child(
-                        div()
-                            .id(SharedString::from(format!("favorite-page-{}", page_id.0)))
-                            .px(px(3.))
-                            .cursor_pointer()
-                            .text_color(if page.favorite { accent } else { muted })
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                this.toggle_favorite(page_id, window, cx)
-                            }))
-                            .child(if page.favorite { "★" } else { "☆" }),
-                    )
-                    .child(
-                        div()
-                            .id(SharedString::from(format!("delete-page-{}", page_id.0)))
-                            .px(px(3.))
-                            .cursor_pointer()
-                            .text_color(muted)
-                            .hover(|button| button.text_color(rgb(0xe06c75)))
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.request_delete_page(page_id, cx)
-                            }))
-                            .child("×"),
-                    );
-                div()
-                    .id(SharedString::from(format!("page-{}", page.id.0)))
-                    .h(px(30.))
-                    .pl(px(8. + depth as f32 * 12.))
-                    .pr(px(8.))
-                    .flex()
-                    .items_center()
-                    .rounded(px(5.))
-                    .when(selected, |row| row.bg(rgba(0xffffff14)).text_color(accent))
-                    .when(!selected, |row| row.text_color(muted))
-                    .hover(|row| row.bg(Palette::color(&p.bg).opacity(0.24)))
-                    .on_hover(cx.listener(move |this, hovered, _, cx| {
-                        if *hovered {
-                            if this.hovered_page != Some(page_id) {
-                                this.hovered_page = Some(page_id);
-                                cx.notify();
-                            }
-                        } else if this.hovered_page == Some(page_id) {
-                            this.hovered_page = None;
-                            cx.notify();
-                        }
-                    }))
-                    .child(
-                        div()
-                            .id(SharedString::from(format!("expand-page-{}", page_id.0)))
-                            .w(px(14.))
-                            .flex_shrink_0()
-                            .when(has_children, |button| {
-                                button.cursor_pointer().on_click(cx.listener(
-                                    move |this, _, window, cx| {
-                                        this.toggle_page_expanded(page_id, window, cx)
-                                    },
-                                ))
-                            })
-                            .child(disclosure),
-                    )
-                    .child(
-                        div()
-                            .id(SharedString::from(format!("select-page-{}", page_id.0)))
-                            .flex_1()
-                            .min_w_0()
-                            .cursor_pointer()
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                this.activate_page(page_id, window, cx)
-                            }))
-                            .child(format!(
-                                "{}  {}",
-                                if page.icon.is_empty() {
-                                    "▤"
-                                } else {
-                                    &page.icon
-                                },
-                                page.title
-                            )),
-                    )
-                    .when(self.hovered_page == Some(page_id), |row| {
-                        row.child(page_actions)
-                    })
-            })
-            .collect::<Vec<_>>();
-        let favorite_rows = self
-            .session
-            .pages
-            .iter()
-            .filter(|page| page.favorite && !page.template)
-            .map(|page| {
-                let page_id = page.id;
-                let selected = page_id == self.session.page.id;
-                div()
-                    .id(SharedString::from(format!("favorite-nav-{}", page_id.0)))
-                    .h(px(28.))
-                    .px(px(8.))
-                    .flex()
-                    .items_center()
-                    .gap(px(7.))
-                    .rounded(px(5.))
-                    .cursor_pointer()
-                    .when(selected, |row| row.bg(rgba(0xffffff14)).text_color(accent))
-                    .when(!selected, |row| row.text_color(muted))
-                    .hover(|row| row.bg(Palette::color(&p.bg).opacity(0.24)))
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        this.activate_page(page_id, window, cx)
-                    }))
-                    .child("★")
-                    .child(page.title.clone())
-            })
-            .collect::<Vec<_>>();
-        let recent_rows = self
-            .session
-            .recent_pages()
-            .into_iter()
-            .filter(|id| *id != self.session.page.id)
-            .filter_map(|id| {
-                self.session
-                    .pages
-                    .iter()
-                    .find(|page| page.id == id)
-                    .map(|page| (id, page.title.clone()))
-            })
-            .map(|(page_id, title)| {
-                div()
-                    .id(SharedString::from(format!("recent-nav-{}", page_id.0)))
-                    .h(px(28.))
-                    .px(px(8.))
-                    .flex()
-                    .items_center()
-                    .gap(px(7.))
-                    .rounded(px(5.))
-                    .cursor_pointer()
-                    .text_color(muted)
-                    .hover(|row| row.bg(Palette::color(&p.bg).opacity(0.24)))
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        this.activate_page(page_id, window, cx)
-                    }))
-                    .child("◷")
-                    .child(title)
-            })
-            .collect::<Vec<_>>();
-        let search_result_rows = self
-            .search_result_ids()
-            .into_iter()
-            .enumerate()
-            .filter_map(|(index, page_id)| {
-                self.session
-                    .pages
-                    .iter()
-                    .find(|page| page.id == page_id)
-                    .map(|page| {
-                        let title = page.title.clone();
-                        let preview = self
-                            .session
-                            .document
-                            .page_blocks(page_id)
-                            .iter()
-                            .find(|block| block.text.to_lowercase().contains(&query))
-                            .map(|block| block.text.clone())
-                            .unwrap_or_else(|| "页面标题匹配".into());
-                        div()
-                            .id(SharedString::from(format!("search-result-{}", page_id.0)))
-                            .w_full()
-                            .min_h(px(42.))
-                            .px(px(9.))
-                            .py(px(5.))
-                            .rounded(px(5.))
-                            .flex()
-                            .flex_col()
-                            .justify_center()
-                            .cursor_pointer()
-                            .when(index == self.search_selected, |row| {
-                                row.bg(Palette::color(&p.bg).opacity(0.45))
-                            })
-                            .hover(|row| row.bg(Palette::color(&p.bg).opacity(0.45)))
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                this.activate_page(page_id, window, cx);
-                                this.close_search(window, cx);
-                            }))
-                            .child(title)
-                            .child(div().text_size(px(10.)).text_color(muted).child(preview))
-                    })
-            })
-            .collect::<Vec<_>>();
-        let search_overlay = div()
-            .id("page-search-overlay")
-            .absolute()
-            .top(px(96.))
-            .left_0()
-            .right_0()
-            .flex()
-            .justify_center()
-            .child(
-                div()
-                    .id("page-search-panel")
-                    .w(px(620.))
-                    .max_w_full()
-                    .p(px(10.))
-                    .rounded(px(10.))
-                    .border_1()
-                    .border_color(Palette::color(&p.border))
-                    .bg(Palette::color(&p.elevated))
-                    .child(
-                        div()
-                            .h(px(38.))
-                            .flex()
-                            .items_center()
-                            .gap(px(9.))
-                            .px(px(4.))
-                            .border_b_1()
-                            .border_color(Palette::color(&p.border))
-                            .text_color(muted)
-                            .child("⌕")
-                            .child(div().flex_1().min_w_0().child(self.search_input.clone())),
-                    )
-                    .when(query.is_empty(), |panel| {
-                        panel.child(
-                            div()
-                                .h(px(52.))
-                                .px(px(2.))
-                                .flex()
-                                .items_center()
-                                .text_color(muted)
-                                .child("输入以搜索标题和内容。"),
-                        )
-                    })
-                    .when(
-                        !query.is_empty() && search_result_rows.is_empty(),
-                        |panel| {
-                            panel.child(
-                                div()
-                                    .h(px(52.))
-                                    .px(px(2.))
-                                    .flex()
-                                    .items_center()
-                                    .text_color(muted)
-                                    .child("没有匹配的页面。"),
-                            )
-                        },
-                    )
-                    .when(!search_result_rows.is_empty(), |panel| {
-                        panel.child(
-                            div()
-                                .id("search-result-list")
-                                .max_h(px(300.))
-                                .overflow_y_scroll()
-                                .py(px(4.))
-                                .flex()
-                                .flex_col()
-                                .children(search_result_rows),
-                        )
-                    })
-                    .child(
-                        div()
-                            .h(px(28.))
-                            .flex()
-                            .items_end()
-                            .text_size(px(10.))
-                            .text_color(muted)
-                            .child("↑↓ 选择 · Enter 打开 · Esc 关闭"),
-                    ),
-            );
-        let delete_confirmation =
-            self.confirm_delete_page.and_then(|id| {
-                self.session
-                    .pages
-                    .iter()
-                    .find(|page| page.id == id)
-                    .map(|page| {
-                        let title = page.title.clone();
-                        div()
-                            .w_full()
-                            .px(px(8.))
-                            .py(px(8.))
-                            .rounded(px(6.))
-                            .bg(Palette::color(&p.bg).opacity(0.55))
-                            .flex()
-                            .flex_col()
-                            .gap(px(5.))
-                            .child(format!("删除「{title}」及其所有子页面？"))
-                            .child(
-                                div()
-                                    .flex()
-                                    .gap(px(8.))
-                                    .child(
-                                        div()
-                                            .id("confirm-delete-page")
-                                            .cursor_pointer()
-                                            .text_color(rgb(0xe06c75))
-                                            .on_click(cx.listener(move |this, _, window, cx| {
-                                                this.delete_page(id, window, cx)
-                                            }))
-                                            .child("删除页面树"),
-                                    )
-                                    .child(
-                                        div()
-                                            .id("cancel-delete-page")
-                                            .cursor_pointer()
-                                            .text_color(muted)
-                                            .on_click(cx.listener(|this, _, _, cx| {
-                                                this.cancel_delete_page(cx)
-                                            }))
-                                            .child("取消"),
-                                    ),
-                            )
-                    })
-            });
-        let kind_buttons =
-            [
-                ("段落", BlockKind::Paragraph),
-                ("H1", BlockKind::Heading1),
-                ("H2", BlockKind::Heading2),
-                ("H3", BlockKind::Heading3),
-                ("• 列表", BlockKind::Bullet),
-                ("1. 列表", BlockKind::Numbered),
-                ("☐ 待办", BlockKind::Todo),
-                ("折叠块", BlockKind::Toggle),
-                ("引用", BlockKind::Quote),
-                ("代码", BlockKind::Code),
-                ("数学公式", BlockKind::Math),
-                ("链接卡片", BlockKind::Embed),
-                ("同步块", BlockKind::Synced),
-                ("页面", BlockKind::Page),
-                ("页面链接", BlockKind::Link),
-                ("提示", BlockKind::Callout),
-                ("分隔线", BlockKind::Divider),
-                ("表格", BlockKind::Table),
-                ("数据库", BlockKind::Database),
-                ("分栏", BlockKind::Columns),
-                ("目录", BlockKind::Toc),
-            ]
-            .into_iter()
-            .map(|(label, kind)| {
-                div()
-                    .id(SharedString::from(format!("kind-{kind:?}")))
-                    .px(px(9.))
-                    .py(px(5.))
-                    .rounded(px(5.))
-                    .cursor_pointer()
-                    .text_color(muted)
-                    .hover(|s| s.bg(Palette::color(&p.elevated)))
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        this.change_block_kind(kind, window, cx)
-                    }))
-                    .child(label)
-            })
-            .collect::<Vec<_>>();
-        let mark_buttons = [
-            ("B", quire_core::core::types::MarkKind::Bold),
-            ("I", quire_core::core::types::MarkKind::Italic),
-            ("S", quire_core::core::types::MarkKind::Strike),
-            ("</>", quire_core::core::types::MarkKind::Code),
-        ]
-        .into_iter()
-        .map(|(label, kind)| {
-            div()
-                .id(SharedString::from(format!("mark-{kind:?}")))
-                .px(px(8.))
-                .py(px(5.))
-                .rounded(px(5.))
-                .cursor_pointer()
-                .text_color(Palette::color(&p.accent))
-                .hover(|s| s.bg(Palette::color(&p.elevated)))
-                .on_click(cx.listener(move |this, _, window, cx| {
-                    this.toggle_selected_mark(kind, window, cx)
-                }))
-                .child(label)
-        })
-        .collect::<Vec<_>>();
-        let attachment_buttons = [("图片", true), ("文件", false)]
-            .into_iter()
-            .map(|(label, image)| {
-                div()
-                    .id(if image { "insert-image" } else { "insert-file" })
-                    .px(px(8.))
-                    .py(px(5.))
-                    .rounded(px(5.))
-                    .cursor_pointer()
-                    .text_color(if self.session.page.locked {
-                        muted
-                    } else {
-                        accent
-                    })
-                    .hover(|button| button.bg(Palette::color(&p.elevated)))
-                    .when(!self.session.page.locked, |button| {
-                        button.on_click(cx.listener(move |this, _, window, cx| {
-                            this.pick_attachment(image, window, cx)
-                        }))
-                    })
-                    .child(label)
-            })
-            .collect::<Vec<_>>();
-        let link_editor = if self.link_editor_open {
-            div()
-                .id("link-editor")
-                .w_full()
-                .h(px(34.))
-                .px(px(12.))
-                .flex()
-                .items_center()
-                .gap(px(8.))
-                .border_b_1()
-                .border_color(Palette::color(&p.border))
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .child(self.link_target_input.clone()),
-                )
-                .child(
-                    div()
-                        .id("apply-link")
-                        .px(px(9.))
-                        .py(px(4.))
-                        .rounded(px(4.))
-                        .cursor_pointer()
-                        .text_color(accent)
-                        .hover(|button| button.bg(Palette::color(&p.elevated)))
-                        .on_click(cx.listener(|this, _, window, cx| this.apply_link(window, cx)))
-                        .child("应用链接"),
-                )
-        } else {
-            div().id("link-editor-closed")
-        };
-        let find_bar = if self.find_open {
-            let count = self.find_matches.len();
-            let position = self
-                .find_index
-                .map(|index| format!("{} / {count}", index + 1))
-                .unwrap_or_else(|| {
-                    if count == 0 {
-                        "无结果".into()
-                    } else {
-                        format!("{count} 个结果")
-                    }
-                });
-            div()
-                .id("find-bar")
-                .w_full()
-                .h(px(38.))
-                .px(px(12.))
-                .flex()
-                .items_center()
-                .gap(px(8.))
-                .border_b_1()
-                .border_color(Palette::color(&p.border))
-                .child(div().flex_1().min_w_0().child(self.find_input.clone()))
-                .child(div().text_size(px(11.)).text_color(muted).child(position))
-                .child(
-                    div()
-                        .id("find-previous")
-                        .px(px(6.))
-                        .cursor_pointer()
-                        .hover(|button| button.bg(Palette::color(&p.elevated)))
-                        .on_click(cx.listener(|this, _, window, cx| this.move_find(-1, window, cx)))
-                        .child("↑"),
-                )
-                .child(
-                    div()
-                        .id("find-next")
-                        .px(px(6.))
-                        .cursor_pointer()
-                        .hover(|button| button.bg(Palette::color(&p.elevated)))
-                        .on_click(cx.listener(|this, _, window, cx| this.move_find(1, window, cx)))
-                        .child("↓"),
-                )
-                .child(
-                    div()
-                        .id("find-close")
-                        .px(px(6.))
-                        .cursor_pointer()
-                        .text_color(muted)
-                        .hover(|button| button.bg(Palette::color(&p.elevated)))
-                        .on_click(cx.listener(|this, _, window, cx| this.close_find(window, cx)))
-                        .child("×"),
-                )
-        } else {
-            div().id("find-bar-closed")
-        };
-        let rows = self
+impl Workspace {
+    fn render_document_block(
+        &mut self,
+        index: usize,
+        block: &Block,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+        text: Hsla,
+        muted: Hsla,
+        accent: Hsla,
+        elevated: Hsla,
+        p: &Palette,
+        database_width: Pixels,
+        sync_sources: &[(quire_core::core::types::PageId, String, BlockId, String)],
+        page_candidates: &[(quire_core::core::types::PageId, String)],
+    ) -> AnyElement {
+        let block_index = self
             .session
             .blocks()
             .iter()
-            .filter(|block| {
-                if matches!(block.kind, BlockKind::TableCell | BlockKind::Column) {
-                    return false;
+            .position(|candidate| candidate.id == block.id)
+            .unwrap_or(index);
+        let prefix = match block.kind {
+            BlockKind::Bullet => "•".to_owned(),
+            BlockKind::Numbered => {
+                let count = self.session.blocks()[..block_index]
+                    .iter()
+                    .rev()
+                    .take_while(|previous| {
+                        previous.kind == BlockKind::Numbered && previous.parent == block.parent
+                    })
+                    .count()
+                    + 1;
+                format!("{count}.")
+            }
+            BlockKind::Todo => {
+                if block.checked {
+                    "☑".to_owned()
+                } else {
+                    "☐".to_owned()
                 }
-                let mut parent = block.parent;
-                while let Some(parent_id) = parent {
-                    let Some(parent_block) = self
-                        .session
-                        .blocks()
+            }
+            BlockKind::Toggle => if block.folded { "▸" } else { "▾" }.to_owned(),
+            _ => String::new(),
+        };
+        let input = self.ensure_block_input(block, window, cx);
+        let block_id = block.id;
+        let is_todo = block.kind == BlockKind::Todo;
+        let is_toggle = block.kind == BlockKind::Toggle;
+        let kind = block.kind;
+        let database_table = if kind == BlockKind::Database {
+            block.db_ref.and_then(|db_id| {
+                self.session.databases.database(db_id)?;
+                let title = self.session.databases.title_property(db_id)?.id;
+                let all_columns = self
+                    .session
+                    .databases
+                    .properties_of(db_id)
+                    .filter(|property| !property.kind.is_title())
+                    .cloned()
+                    .collect::<Vec<_>>();
+                let views = self
+                    .session
+                    .databases
+                    .views_of(db_id)
+                    .cloned()
+                    .collect::<Vec<_>>();
+                let selected_view_key = format!("gpui.database-view.{}", db_id.0);
+                let remembered_view = self
+                    .session
+                    .setting(&selected_view_key)
+                    .and_then(|value| value.parse::<u64>().ok())
+                    .map(ViewId);
+                let selected_view = self
+                    .selected_database_views
+                    .get(&db_id.0)
+                    .copied()
+                    .filter(|view_id| views.iter().any(|view| view.id == *view_id))
+                    .or_else(|| {
+                        remembered_view
+                            .filter(|view_id| views.iter().any(|view| view.id == *view_id))
+                    })
+                    .or_else(|| views.first().map(|view| view.id));
+                let active_view = views.iter().find(|view| Some(view.id) == selected_view)?;
+                let columns = quire_core::core::database_view::view_columns(
+                    &self.session.databases,
+                    db_id,
+                    active_view,
+                )
+                .into_iter()
+                .filter(|property| !property.kind.is_title())
+                .collect::<Vec<_>>();
+                let definition =
+                    quire_core::core::database_view::ViewDefinition::parse(&active_view.definition);
+                let grid_width = f32::from(database_width) / quire_gpui::ui_scale::get();
+                let column_ids = std::iter::once(title)
+                    .chain(columns.iter().map(|property| property.id))
+                    .collect::<Vec<_>>();
+                let fixed_width = column_ids
+                    .iter()
+                    .map(|property| definition.width(*property))
+                    .filter(|width| *width != 0)
+                    .map(|width| grid_width * f32::from(width) / 1000.0)
+                    .sum::<f32>();
+                let auto_count = column_ids
+                    .iter()
+                    .filter(|property| definition.width(**property) == 0)
+                    .count();
+                let auto_width = if auto_count == 0 {
+                    0.0
+                } else {
+                    ((grid_width - fixed_width).max(0.0) / auto_count as f32).max(grid_width * 0.06)
+                };
+                let mut column_widths = column_ids
+                    .iter()
+                    .map(|property| {
+                        let width = definition.width(*property);
+                        if width == 0 {
+                            auto_width
+                        } else {
+                            grid_width * f32::from(width) / 1000.0
+                        }
+                    })
+                    .collect::<Vec<_>>();
+                if let Some(drag) = self
+                    .database_column_drag
+                    .filter(|drag| drag.db == db_id && drag.view == active_view.id)
+                {
+                    if let Some(index) = column_ids
                         .iter()
-                        .find(|candidate| candidate.id == parent_id)
-                    else {
-                        break;
-                    };
-                    if matches!(parent_block.kind, BlockKind::Column | BlockKind::TableCell) {
-                        return false;
+                        .position(|property| *property == drag.property)
+                    {
+                        column_widths[index] = drag.preview_width;
                     }
-                    if parent_block.folded {
-                        return false;
-                    }
-                    parent = parent_block.parent;
                 }
-                true
+                let rules = definition.rules(db_id, &self.session.databases);
+                let row_search = (self.database_search_open == Some(db_id.0)
+                    && !self.database_search_text.trim().is_empty())
+                .then(|| self.database_search_text.clone());
+                let repo = self.session.repo.clone();
+                let total = repo
+                    .filtered_count(&quire_core::core::database::RowRequest {
+                        db: db_id,
+                        title,
+                        columns: &columns,
+                        sorts: &rules.sorts,
+                        filter: rules.filter.as_ref(),
+                        search: row_search.as_deref(),
+                    })
+                    .ok()?;
+                let group_data = rules.group.and_then(|spec| {
+                    let config = self
+                        .session
+                        .databases
+                        .properties_of(db_id)
+                        .find(|property| property.id == spec.property)?
+                        .config
+                        .clone();
+                    let request = quire_core::core::database::RowRequest {
+                        db: db_id,
+                        title,
+                        columns: &columns,
+                        sorts: &rules.sorts,
+                        filter: rules.filter.as_ref(),
+                        search: row_search.as_deref(),
+                    };
+                    let groups = repo.group_counts(&request, &spec).ok()?;
+                    Some((spec, order_database_groups(groups, &config), config))
+                });
+                let list_total = group_data.as_ref().map_or(total, |(_, groups, _)| {
+                    let view_id = selected_view.expect("database table has selected view");
+                    groups
+                        .iter()
+                        .map(|(key, count)| {
+                            1 + if self.database_collapsed_groups.contains(&(
+                                block_id.0,
+                                view_id.0,
+                                database_group_identity(key),
+                            )) {
+                                0
+                            } else {
+                                *count
+                            }
+                        })
+                        .sum()
+                });
+                Some((
+                    db_id,
+                    title,
+                    columns,
+                    all_columns,
+                    column_widths,
+                    row_search,
+                    views,
+                    selected_view,
+                    rules.sorts,
+                    rules.filter,
+                    group_data,
+                    total,
+                    list_total,
+                    repo,
+                ))
             })
-            .enumerate()
-            .map(|(index, block)| {
-                let block_index = self
+        } else {
+            None
+        };
+        let toc_entries = if kind == BlockKind::Toc {
+            toc_headings(self.session.blocks())
+                .into_iter()
+                .map(|(heading_id, level, label)| {
+                    div()
+                        .id(SharedString::from(format!(
+                            "toc-entry-{block_id:?}-{heading_id:?}"
+                        )))
+                        .h(px(25.))
+                        .pl(px(6. + (level.saturating_sub(1) as f32 * 14.)))
+                        .pr(px(6.))
+                        .flex()
+                        .items_center()
+                        .rounded(px(4.))
+                        .cursor_pointer()
+                        .text_color(text)
+                        .hover(|row| row.bg(Palette::color(&p.bg).opacity(0.34)))
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.focus(heading_id, 0, window, cx)
+                        }))
+                        .child(label)
+                })
+                .collect::<Vec<_>>()
+        } else {
+            Vec::new()
+        };
+        let sync_candidates = if kind == BlockKind::Synced && block.sync_ref.is_none() {
+            sync_sources
+                .iter()
+                .filter(|(_, _, source_id, _)| *source_id != block_id)
+                .map(|(_, page_title, source_id, source_text)| {
+                    let source_id = *source_id;
+                    div()
+                        .id(SharedString::from(format!(
+                            "sync-source-{block_id:?}-{source_id:?}"
+                        )))
+                        .w_full()
+                        .px(px(8.))
+                        .py(px(5.))
+                        .rounded(px(4.))
+                        .cursor_pointer()
+                        .text_color(muted)
+                        .hover(|row| row.bg(Palette::color(&p.bg).opacity(0.3)))
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            if this.session.set_sync_source(block_id, Some(source_id)) {
+                                this.sync_inputs(window, cx);
+                                this.schedule_save(false, window, cx);
+                            }
+                        }))
+                        .child(format!("{page_title} · {source_text}"))
+                })
+                .collect::<Vec<_>>()
+        } else {
+            Vec::new()
+        };
+        let page_reference_candidates =
+            if matches!(kind, BlockKind::Page | BlockKind::Link) && block.page_ref.is_none() {
+                page_candidates
+                    .iter()
+                    .map(|(target_page, title)| {
+                        let target_page = *target_page;
+                        div()
+                            .id(SharedString::from(format!(
+                                "page-reference-target-{block_id:?}-{target_page:?}"
+                            )))
+                            .w_full()
+                            .px(px(8.))
+                            .py(px(5.))
+                            .rounded(px(4.))
+                            .cursor_pointer()
+                            .text_color(muted)
+                            .hover(|row| row.bg(Palette::color(&p.bg).opacity(0.3)))
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                if this.session.set_page_reference(block_id, Some(target_page)) {
+                                    this.sync_inputs(window, cx);
+                                    this.schedule_save(false, window, cx);
+                                }
+                            }))
+                            .child(title.clone())
+                    })
+                    .collect::<Vec<_>>()
+            } else {
+                Vec::new()
+            };
+        let image_path = if kind == BlockKind::Image {
+            block
+                .attachment
+                .and_then(|attachment| self.session.attachment_display_path(attachment))
+        } else {
+            None
+        };
+        let image_missing = kind == BlockKind::Image && image_path.is_none();
+        let image_width_controls = if kind == BlockKind::Image {
+            [50u16, 75, 100]
+                .into_iter()
+                .map(|percent| {
+                    let selected = block.img_percent == percent;
+                    div()
+                        .id(SharedString::from(format!(
+                            "image-width-{block_id:?}-{percent}"
+                        )))
+                        .px(px(6.))
+                        .py(px(2.))
+                        .rounded(px(3.))
+                        .cursor_pointer()
+                        .text_size(px(10.))
+                        .text_color(if selected { accent } else { muted })
+                        .when(selected, |chip| chip.bg(Palette::color(&p.bg).opacity(0.4)))
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.set_image_width(block_id, percent, window, cx)
+                        }))
+                        .child(format!("{percent}%"))
+                })
+                .collect::<Vec<_>>()
+        } else {
+            Vec::new()
+        };
+        let file_path = if kind == BlockKind::File {
+            block
+                .attachment
+                .and_then(|attachment| self.session.attachment_path(attachment))
+        } else {
+            None
+        };
+        let file_attachment = block.attachment;
+        let code_lang_controls = if kind == BlockKind::Code {
+            Lang::ALL
+                .into_iter()
+                .map(|lang| {
+                    let selected = block.lang == lang;
+                    div()
+                        .id(SharedString::from(format!(
+                            "code-lang-{block_id:?}-{}",
+                            lang.as_str()
+                        )))
+                        .px(px(5.))
+                        .py(px(2.))
+                        .rounded(px(3.))
+                        .cursor_pointer()
+                        .text_size(px(10.))
+                        .text_color(if selected { accent } else { muted })
+                        .when(selected, |chip| chip.bg(Palette::color(&p.bg).opacity(0.4)))
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.set_code_lang(block_id, lang, window, cx)
+                        }))
+                        .child(lang.label())
+                })
+                .collect::<Vec<_>>()
+        } else {
+            Vec::new()
+        };
+        let move_allowed = !matches!(kind, BlockKind::Table | BlockKind::Columns)
+            && !self
+                .session
+                .blocks()
+                .iter()
+                .any(|child| child.parent == Some(block_id));
+        let mention_options = if let Some((_, at, _)) = self
+            .mention_menu
+            .clone()
+            .filter(|(mention_id, _, _)| *mention_id == block_id)
+        {
+            let matches = self.mention_matches();
+            if matches.is_empty() {
+                vec![
+                    div()
+                        .id(SharedString::from(format!("mention-empty-{block_id:?}")))
+                        .w_full()
+                        .h(px(28.))
+                        .px(px(9.))
+                        .flex()
+                        .items_center()
+                        .text_color(muted)
+                        .child("没有匹配页面"),
+                ]
+            } else {
+                matches
+                    .into_iter()
+                    .enumerate()
+                    .map(|(option_index, page)| {
+                        let page_id = page.id;
+                        let title = page.title.clone();
+                        div()
+                            .id(SharedString::from(format!(
+                                "mention-option-{block_id:?}-{page_id:?}"
+                            )))
+                            .w_full()
+                            .h(px(28.))
+                            .px(px(9.))
+                            .flex()
+                            .items_center()
+                            .justify_between()
+                            .rounded(px(4.))
+                            .cursor_pointer()
+                            .hover(|option| option.bg(Palette::color(&p.elevated)))
+                            .when(option_index == self.mention_selection, |option| {
+                                option.bg(Palette::color(&p.elevated))
+                            })
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.select_mention(block_id, at, page.clone(), window, cx)
+                            }))
+                            .child(title)
+                            .child(div().text_size(px(10.)).text_color(muted).child("页面"))
+                    })
+                    .collect::<Vec<_>>()
+            }
+        } else {
+            Vec::new()
+        };
+        let slash_query = block.text.strip_prefix('/').unwrap_or("").to_lowercase();
+        let slash_options = if self.slash_menu == Some(block_id) {
+            slash_items()
+                .iter()
+                .filter(|(label, keywords, _)| {
+                    slash_query.is_empty()
+                        || label.to_lowercase().contains(&slash_query)
+                        || keywords.contains(slash_query.as_str())
+                })
+                .enumerate()
+                .map(|(option_index, (label, keywords, item_kind))| {
+                    let item_kind = *item_kind;
+                    div()
+                        .id(SharedString::from(format!(
+                            "slash-option-{}-{item_kind:?}",
+                            block_id.0
+                        )))
+                        .w_full()
+                        .h(px(28.))
+                        .px(px(9.))
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .rounded(px(4.))
+                        .cursor_pointer()
+                        .hover(|option| option.bg(Palette::color(&p.elevated)))
+                        .when(option_index == self.slash_selection, |option| {
+                            option.bg(Palette::color(&p.elevated))
+                        })
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.select_slash_kind(block_id, item_kind, window, cx)
+                        }))
+                        .child(*label)
+                        .child(div().text_size(px(10.)).text_color(muted).child(*keywords))
+                })
+                .collect::<Vec<_>>()
+        } else {
+            Vec::new()
+        };
+        let table_cells = if kind == BlockKind::Table {
+            self.session
+                .blocks()
+                .iter()
+                .filter(|cell| cell.parent == Some(block_id) && cell.kind == BlockKind::TableCell)
+                .cloned()
+                .collect::<Vec<_>>()
+        } else {
+            Vec::new()
+        };
+        let table_columns = usize::from(block.columns.max(1));
+        let table_row_count = table_cells.len().div_ceil(table_columns);
+        let table_rows = table_cells
+            .chunks(table_columns)
+            .map(|cells| {
+                div().w_full().flex().children(cells.iter().map(|cell| {
+                    let cell_id = cell.id;
+                    let input = self.inputs.get(&cell_id.0).cloned();
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .min_h(px(34.))
+                        .border_1()
+                        .border_color(Palette::color(&p.border))
+                        .px(px(6.))
+                        .py(px(5.))
+                        .child(
+                            div()
+                                .w_full()
+                                .min_h(px(22.))
+                                .when_some(input.filter(|_| !self.closing), |view, input| {
+                                    view.child(input)
+                                })
+                                .when(
+                                    self.closing || !self.inputs.contains_key(&cell_id.0),
+                                    |view| view.child(cell.text.clone()),
+                                ),
+                        )
+                }))
+            })
+            .collect::<Vec<_>>();
+        let table_actions = if kind == BlockKind::Table {
+            vec![
+                div()
+                    .id(SharedString::from(format!("table-add-row-{}", block_id.0)))
+                    .px(px(7.))
+                    .py(px(3.))
+                    .cursor_pointer()
+                    .text_color(muted)
+                    .hover(|button| button.text_color(accent))
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.add_table_row(block_id, table_row_count, window, cx)
+                    }))
+                    .child("＋ 行"),
+                div()
+                    .id(SharedString::from(format!(
+                        "table-add-column-{}",
+                        block_id.0
+                    )))
+                    .px(px(7.))
+                    .py(px(3.))
+                    .cursor_pointer()
+                    .text_color(muted)
+                    .hover(|button| button.text_color(accent))
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.add_table_column(block_id, table_columns, window, cx)
+                    }))
+                    .child("＋ 列"),
+                div()
+                    .id(SharedString::from(format!(
+                        "table-delete-row-{}",
+                        block_id.0
+                    )))
+                    .px(px(7.))
+                    .py(px(3.))
+                    .cursor_pointer()
+                    .text_color(muted)
+                    .hover(|button| button.text_color(accent))
+                    .when(table_row_count > 1, |button| {
+                        button.on_click(cx.listener(move |this, _, window, cx| {
+                            this.delete_table_row(block_id, table_row_count - 1, window, cx)
+                        }))
+                    })
+                    .child("− 行"),
+                div()
+                    .id(SharedString::from(format!(
+                        "table-delete-column-{}",
+                        block_id.0
+                    )))
+                    .px(px(7.))
+                    .py(px(3.))
+                    .cursor_pointer()
+                    .text_color(muted)
+                    .hover(|button| button.text_color(accent))
+                    .when(table_columns > 1, |button| {
+                        button.on_click(cx.listener(move |this, _, window, cx| {
+                            this.delete_table_column(block_id, table_columns - 1, window, cx)
+                        }))
+                    })
+                    .child("− 列"),
+            ]
+        } else {
+            Vec::new()
+        };
+        let columns = if kind == BlockKind::Columns {
+            self.session
+                .blocks()
+                .iter()
+                .filter(|column| {
+                    column.parent == Some(block_id) && column.kind == BlockKind::Column
+                })
+                .cloned()
+                .collect::<Vec<_>>()
+        } else {
+            Vec::new()
+        };
+        let column_views = columns
+            .iter()
+            .map(|column| {
+                let column_id = column.id;
+                let lines = self
                     .session
                     .blocks()
                     .iter()
-                    .position(|candidate| candidate.id == block.id)
-                    .unwrap_or(index);
-                let prefix = match block.kind {
-                    BlockKind::Bullet => "•".to_owned(),
-                    BlockKind::Numbered => {
-                        let count = self.session.blocks()[..block_index]
-                            .iter()
-                            .rev()
-                            .take_while(|previous| {
-                                previous.kind == BlockKind::Numbered
-                                    && previous.parent == block.parent
-                            })
-                            .count()
-                            + 1;
-                        format!("{count}.")
-                    }
-                    BlockKind::Todo => {
-                        if block.checked {
-                            "☑".to_owned()
-                        } else {
-                            "☐".to_owned()
-                        }
-                    }
-                    BlockKind::Toggle => if block.folded { "▸" } else { "▾" }.to_owned(),
-                    _ => String::new(),
-                };
-                let input = self.inputs.get(&block.id.0).cloned();
-                let block_id = block.id;
-                let is_todo = block.kind == BlockKind::Todo;
-                let is_toggle = block.kind == BlockKind::Toggle;
-                let kind = block.kind;
-                let database_table = if kind == BlockKind::Database {
-                    block.db_ref.and_then(|db_id| {
-                        self.session.databases.database(db_id)?;
-                        let title = self.session.databases.title_property(db_id)?.id;
-                        let all_columns = self
-                            .session
-                            .databases
-                            .properties_of(db_id)
-                            .filter(|property| !property.kind.is_title())
-                            .cloned()
-                            .collect::<Vec<_>>();
-                        let views = self
-                            .session
-                            .databases
-                            .views_of(db_id)
-                            .cloned()
-                            .collect::<Vec<_>>();
-                        let selected_view_key = format!("gpui.database-view.{}", db_id.0);
-                        let remembered_view = self
-                            .session
-                            .setting(&selected_view_key)
-                            .and_then(|value| value.parse::<u64>().ok())
-                            .map(ViewId);
-                        let selected_view = self
-                            .selected_database_views
-                            .get(&db_id.0)
-                            .copied()
-                            .filter(|view_id| views.iter().any(|view| view.id == *view_id))
-                            .or_else(|| {
-                                remembered_view.filter(|view_id| {
-                                    views.iter().any(|view| view.id == *view_id)
-                                })
-                            })
-                            .or_else(|| views.first().map(|view| view.id));
-                        let active_view = views.iter().find(|view| Some(view.id) == selected_view)?;
-                        let columns = quire_core::core::database_view::view_columns(
-                            &self.session.databases,
-                            db_id,
-                            active_view,
-                        )
-                        .into_iter()
-                        .filter(|property| !property.kind.is_title())
-                        .collect::<Vec<_>>();
-                        let definition = quire_core::core::database_view::ViewDefinition::parse(
-                            &active_view.definition,
-                        );
-                        let grid_width = f32::from(database_width) / quire_gpui::ui_scale::get();
-                        let column_ids = std::iter::once(title)
-                            .chain(columns.iter().map(|property| property.id))
-                            .collect::<Vec<_>>();
-                        let fixed_width = column_ids
-                            .iter()
-                            .map(|property| definition.width(*property))
-                            .filter(|width| *width != 0)
-                            .map(|width| grid_width * f32::from(width) / 1000.0)
-                            .sum::<f32>();
-                        let auto_count = column_ids
-                            .iter()
-                            .filter(|property| definition.width(**property) == 0)
-                            .count();
-                        let auto_width = if auto_count == 0 {
-                            0.0
-                        } else {
-                            ((grid_width - fixed_width).max(0.0) / auto_count as f32)
-                                .max(grid_width * 0.06)
-                        };
-                        let mut column_widths = column_ids
-                            .iter()
-                            .map(|property| {
-                                let width = definition.width(*property);
-                                if width == 0 {
-                                    auto_width
-                                } else {
-                                    grid_width * f32::from(width) / 1000.0
-                                }
-                            })
-                            .collect::<Vec<_>>();
-                        if let Some(drag) = self.database_column_drag.filter(|drag| {
-                            drag.db == db_id && drag.view == active_view.id
-                        }) {
-                            if let Some(index) = column_ids
-                                .iter()
-                                .position(|property| *property == drag.property)
-                            {
-                                column_widths[index] = drag.preview_width;
-                            }
-                        }
-                        let rules = definition.rules(db_id, &self.session.databases);
-                        let row_search = (self.database_search_open == Some(db_id.0)
-                            && !self.database_search_text.trim().is_empty())
-                        .then(|| self.database_search_text.clone());
-                        let repo = self.session.repo.clone();
-                        let total = repo
-                            .filtered_count(&quire_core::core::database::RowRequest {
-                                db: db_id,
-                                title,
-                                columns: &columns,
-                                sorts: &rules.sorts,
-                                filter: rules.filter.as_ref(),
-                                search: row_search.as_deref(),
-                            })
-                            .ok()?;
-                        let group_data = rules.group.and_then(|spec| {
-                            let config = self
-                                .session
-                                .databases
-                                .properties_of(db_id)
-                                .find(|property| property.id == spec.property)?
-                                .config
-                                .clone();
-                            let request = quire_core::core::database::RowRequest {
-                                db: db_id,
-                                title,
-                                columns: &columns,
-                                sorts: &rules.sorts,
-                                filter: rules.filter.as_ref(),
-                                search: row_search.as_deref(),
-                            };
-                            let groups = repo.group_counts(&request, &spec).ok()?;
-                            Some((spec, order_database_groups(groups, &config), config))
-                        });
-                        let list_total = group_data.as_ref().map_or(total, |(_, groups, _)| {
-                            let view_id = selected_view.expect("database table has selected view");
-                            groups
-                                .iter()
-                                .map(|(key, count)| {
-                                    1 + if self.database_collapsed_groups.contains(&(
-                                        block_id.0,
-                                        view_id.0,
-                                        database_group_identity(key),
-                                    )) {
-                                        0
-                                    } else {
-                                        *count
-                                    }
-                                })
-                                .sum()
-                        });
-                        Some((
-                            db_id,
-                            title,
-                            columns,
-                            all_columns,
-                            column_widths,
-                            row_search,
-                            views,
-                            selected_view,
-                            rules.sorts,
-                            rules.filter,
-                            group_data,
-                            total,
-                            list_total,
-                            repo,
-                        ))
-                    })
-                } else {
-                    None
-                };
-                let toc_entries = if kind == BlockKind::Toc {
-                    toc_headings(self.session.blocks())
-                        .into_iter()
-                        .map(|(heading_id, level, label)| {
-                            div()
-                                .id(SharedString::from(format!(
-                                    "toc-entry-{block_id:?}-{heading_id:?}"
-                                )))
-                                .h(px(25.))
-                                .pl(px(6. + (level.saturating_sub(1) as f32 * 14.)))
-                                .pr(px(6.))
-                                .flex()
-                                .items_center()
-                                .rounded(px(4.))
-                                .cursor_pointer()
-                                .text_color(text)
-                                .hover(|row| row.bg(Palette::color(&p.bg).opacity(0.34)))
-                                .on_click(cx.listener(move |this, _, window, cx| {
-                                    this.focus(heading_id, 0, window, cx)
-                                }))
-                                .child(label)
-                        })
-                        .collect::<Vec<_>>()
-                } else {
-                    Vec::new()
-                };
-                let sync_candidates = if kind == BlockKind::Synced && block.sync_ref.is_none() {
-                    sync_sources
-                        .iter()
-                        .filter(|(_, _, source_id, _)| *source_id != block_id)
-                        .map(|(_, page_title, source_id, source_text)| {
-                            let source_id = *source_id;
-                            div()
-                                .id(SharedString::from(format!(
-                                    "sync-source-{block_id:?}-{source_id:?}"
-                                )))
-                                .w_full()
-                                .px(px(8.))
-                                .py(px(5.))
-                                .rounded(px(4.))
-                                .cursor_pointer()
-                                .text_color(muted)
-                                .hover(|row| row.bg(Palette::color(&p.bg).opacity(0.3)))
-                                .on_click(cx.listener(move |this, _, window, cx| {
-                                    if this.session.set_sync_source(block_id, Some(source_id)) {
-                                        this.sync_inputs(window, cx);
-                                        this.schedule_save(false, window, cx);
-                                    }
-                                }))
-                                .child(format!("{page_title} · {source_text}"))
-                        })
-                        .collect::<Vec<_>>()
-                } else {
-                    Vec::new()
-                };
-                let page_reference_candidates = if matches!(kind, BlockKind::Page | BlockKind::Link)
-                    && block.page_ref.is_none()
-                {
-                    page_candidates
-                        .iter()
-                        .map(|(target_page, title)| {
-                            let target_page = *target_page;
-                            div()
-                                .id(SharedString::from(format!(
-                                    "page-reference-target-{block_id:?}-{target_page:?}"
-                                )))
-                                .w_full()
-                                .px(px(8.))
-                                .py(px(5.))
-                                .rounded(px(4.))
-                                .cursor_pointer()
-                                .text_color(muted)
-                                .hover(|row| row.bg(Palette::color(&p.bg).opacity(0.3)))
-                                .on_click(cx.listener(move |this, _, window, cx| {
-                                    if this.session.set_page_reference(block_id, Some(target_page))
-                                    {
-                                        this.sync_inputs(window, cx);
-                                        this.schedule_save(false, window, cx);
-                                    }
-                                }))
-                                .child(title.clone())
-                        })
-                        .collect::<Vec<_>>()
-                } else {
-                    Vec::new()
-                };
-                let image_path = if kind == BlockKind::Image {
-                    block
-                        .attachment
-                        .and_then(|attachment| self.session.attachment_display_path(attachment))
-                } else {
-                    None
-                };
-                let image_missing = kind == BlockKind::Image && image_path.is_none();
-                let image_width_controls = if kind == BlockKind::Image {
-                    [50u16, 75, 100]
-                        .into_iter()
-                        .map(|percent| {
-                            let selected = block.img_percent == percent;
-                            div()
-                                .id(SharedString::from(format!(
-                                    "image-width-{block_id:?}-{percent}"
-                                )))
-                                .px(px(6.))
-                                .py(px(2.))
-                                .rounded(px(3.))
-                                .cursor_pointer()
-                                .text_size(px(10.))
-                                .text_color(if selected { accent } else { muted })
-                                .when(selected, |chip| chip.bg(Palette::color(&p.bg).opacity(0.4)))
-                                .on_click(cx.listener(move |this, _, window, cx| {
-                                    this.set_image_width(block_id, percent, window, cx)
-                                }))
-                                .child(format!("{percent}%"))
-                        })
-                        .collect::<Vec<_>>()
-                } else {
-                    Vec::new()
-                };
-                let file_path = if kind == BlockKind::File {
-                    block
-                        .attachment
-                        .and_then(|attachment| self.session.attachment_path(attachment))
-                } else {
-                    None
-                };
-                let file_attachment = block.attachment;
-                let code_lang_controls = if kind == BlockKind::Code {
-                    Lang::ALL
-                        .into_iter()
-                        .map(|lang| {
-                            let selected = block.lang == lang;
-                            div()
-                                .id(SharedString::from(format!(
-                                    "code-lang-{block_id:?}-{}",
-                                    lang.as_str()
-                                )))
-                                .px(px(5.))
-                                .py(px(2.))
-                                .rounded(px(3.))
-                                .cursor_pointer()
-                                .text_size(px(10.))
-                                .text_color(if selected { accent } else { muted })
-                                .when(selected, |chip| chip.bg(Palette::color(&p.bg).opacity(0.4)))
-                                .on_click(cx.listener(move |this, _, window, cx| {
-                                    this.set_code_lang(block_id, lang, window, cx)
-                                }))
-                                .child(lang.label())
-                        })
-                        .collect::<Vec<_>>()
-                } else {
-                    Vec::new()
-                };
-                let move_allowed = !matches!(kind, BlockKind::Table | BlockKind::Columns)
-                    && !self
-                        .session
-                        .blocks()
-                        .iter()
-                        .any(|child| child.parent == Some(block_id));
-                let mention_options = if let Some((_, at, _)) = self
-                    .mention_menu
-                    .clone()
-                    .filter(|(mention_id, _, _)| *mention_id == block_id)
-                {
-                    let matches = self.mention_matches();
-                    if matches.is_empty() {
-                        vec![
-                            div()
-                                .id(SharedString::from(format!("mention-empty-{block_id:?}")))
-                                .w_full()
-                                .h(px(28.))
-                                .px(px(9.))
-                                .flex()
-                                .items_center()
-                                .text_color(muted)
-                                .child("没有匹配页面"),
-                        ]
-                    } else {
-                        matches
-                            .into_iter()
-                            .enumerate()
-                            .map(|(option_index, page)| {
-                                let page_id = page.id;
-                                let title = page.title.clone();
-                                div()
-                                    .id(SharedString::from(format!(
-                                        "mention-option-{block_id:?}-{page_id:?}"
-                                    )))
-                                    .w_full()
-                                    .h(px(28.))
-                                    .px(px(9.))
-                                    .flex()
-                                    .items_center()
-                                    .justify_between()
-                                    .rounded(px(4.))
-                                    .cursor_pointer()
-                                    .hover(|option| option.bg(Palette::color(&p.elevated)))
-                                    .when(option_index == self.mention_selection, |option| {
-                                        option.bg(Palette::color(&p.elevated))
-                                    })
-                                    .on_click(cx.listener(move |this, _, window, cx| {
-                                        this.select_mention(block_id, at, page.clone(), window, cx)
-                                    }))
-                                    .child(title)
-                                    .child(div().text_size(px(10.)).text_color(muted).child("页面"))
-                            })
-                            .collect::<Vec<_>>()
-                    }
-                } else {
-                    Vec::new()
-                };
-                let slash_query = block.text.strip_prefix('/').unwrap_or("").to_lowercase();
-                let slash_options = if self.slash_menu == Some(block_id) {
-                    slash_items()
-                        .iter()
-                        .filter(|(label, keywords, _)| {
-                            slash_query.is_empty()
-                                || label.to_lowercase().contains(&slash_query)
-                                || keywords.contains(slash_query.as_str())
-                        })
-                        .enumerate()
-                        .map(|(option_index, (label, keywords, item_kind))| {
-                            let item_kind = *item_kind;
-                            div()
-                                .id(SharedString::from(format!(
-                                    "slash-option-{}-{item_kind:?}",
-                                    block_id.0
-                                )))
-                                .w_full()
-                                .h(px(28.))
-                                .px(px(9.))
-                                .flex()
-                                .items_center()
-                                .justify_between()
-                                .rounded(px(4.))
-                                .cursor_pointer()
-                                .hover(|option| option.bg(Palette::color(&p.elevated)))
-                                .when(option_index == self.slash_selection, |option| {
-                                    option.bg(Palette::color(&p.elevated))
-                                })
-                                .on_click(cx.listener(move |this, _, window, cx| {
-                                    this.select_slash_kind(block_id, item_kind, window, cx)
-                                }))
-                                .child(*label)
-                                .child(div().text_size(px(10.)).text_color(muted).child(*keywords))
-                        })
-                        .collect::<Vec<_>>()
-                } else {
-                    Vec::new()
-                };
-                let table_cells = if kind == BlockKind::Table {
-                    self.session
-                        .blocks()
-                        .iter()
-                        .filter(|cell| {
-                            cell.parent == Some(block_id) && cell.kind == BlockKind::TableCell
-                        })
-                        .cloned()
-                        .collect::<Vec<_>>()
-                } else {
-                    Vec::new()
-                };
-                let table_columns = usize::from(block.columns.max(1));
-                let table_row_count = table_cells.len().div_ceil(table_columns);
-                let table_rows = table_cells
-                    .chunks(table_columns)
-                    .map(|cells| {
-                        div().w_full().flex().children(cells.iter().map(|cell| {
-                            let cell_id = cell.id;
-                            let input = self.inputs.get(&cell_id.0).cloned();
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .min_h(px(34.))
-                                .border_1()
-                                .border_color(Palette::color(&p.border))
-                                .px(px(6.))
-                                .py(px(5.))
-                                .child(
-                                    div()
-                                        .w_full()
-                                        .min_h(px(22.))
-                                        .when_some(
-                                            input.filter(|_| !self.closing),
-                                            |view, input| view.child(input),
-                                        )
-                                        .when(
-                                            self.closing || !self.inputs.contains_key(&cell_id.0),
-                                            |view| view.child(cell.text.clone()),
-                                        ),
-                                )
-                        }))
-                    })
-                    .collect::<Vec<_>>();
-                let table_actions = if kind == BlockKind::Table {
-                    vec![
+                    .filter(|line| line.parent == Some(column_id))
+                    .map(|line| {
+                        let line_id = line.id;
+                        let input = self.inputs.get(&line_id.0).cloned();
                         div()
-                            .id(SharedString::from(format!("table-add-row-{}", block_id.0)))
-                            .px(px(7.))
-                            .py(px(3.))
-                            .cursor_pointer()
-                            .text_color(muted)
-                            .hover(|button| button.text_color(accent))
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                this.add_table_row(block_id, table_row_count, window, cx)
-                            }))
-                            .child("＋ 行"),
-                        div()
-                            .id(SharedString::from(format!(
-                                "table-add-column-{}",
-                                block_id.0
-                            )))
-                            .px(px(7.))
-                            .py(px(3.))
-                            .cursor_pointer()
-                            .text_color(muted)
-                            .hover(|button| button.text_color(accent))
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                this.add_table_column(block_id, table_columns, window, cx)
-                            }))
-                            .child("＋ 列"),
-                        div()
-                            .id(SharedString::from(format!(
-                                "table-delete-row-{}",
-                                block_id.0
-                            )))
-                            .px(px(7.))
-                            .py(px(3.))
-                            .cursor_pointer()
-                            .text_color(muted)
-                            .hover(|button| button.text_color(accent))
-                            .when(table_row_count > 1, |button| {
-                                button.on_click(cx.listener(move |this, _, window, cx| {
-                                    this.delete_table_row(block_id, table_row_count - 1, window, cx)
-                                }))
+                            .w_full()
+                            .min_h(px(30.))
+                            .py(px(4.))
+                            .when_some(input.filter(|_| !self.closing), |row, input| {
+                                row.child(input)
                             })
-                            .child("− 行"),
-                        div()
-                            .id(SharedString::from(format!(
-                                "table-delete-column-{}",
-                                block_id.0
-                            )))
-                            .px(px(7.))
-                            .py(px(3.))
-                            .cursor_pointer()
-                            .text_color(muted)
-                            .hover(|button| button.text_color(accent))
-                            .when(table_columns > 1, |button| {
-                                button.on_click(cx.listener(move |this, _, window, cx| {
-                                    this.delete_table_column(
-                                        block_id,
-                                        table_columns - 1,
-                                        window,
-                                        cx,
-                                    )
-                                }))
-                            })
-                            .child("− 列"),
-                    ]
-                } else {
-                    Vec::new()
-                };
-                let columns = if kind == BlockKind::Columns {
-                    self.session
-                        .blocks()
-                        .iter()
-                        .filter(|column| {
-                            column.parent == Some(block_id) && column.kind == BlockKind::Column
-                        })
-                        .cloned()
-                        .collect::<Vec<_>>()
-                } else {
-                    Vec::new()
-                };
-                let column_views = columns
-                    .iter()
-                    .map(|column| {
-                        let column_id = column.id;
-                        let lines = self
-                            .session
-                            .blocks()
-                            .iter()
-                            .filter(|line| line.parent == Some(column_id))
-                            .map(|line| {
-                                let line_id = line.id;
-                                let input = self.inputs.get(&line_id.0).cloned();
-                                div()
-                                    .w_full()
-                                    .min_h(px(30.))
-                                    .py(px(4.))
-                                    .when_some(input.filter(|_| !self.closing), |row, input| {
-                                        row.child(input)
-                                    })
-                                    .when(
-                                        self.closing || !self.inputs.contains_key(&line_id.0),
-                                        |row| row.child(line.text.clone()),
-                                    )
-                            })
-                            .collect::<Vec<_>>();
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .min_h(px(80.))
-                            .px(px(9.))
-                            .py(px(7.))
-                            .flex()
-                            .flex_col()
-                            .gap(px(5.))
-                            .border_1()
-                            .border_color(Palette::color(&p.border))
-                            .children(lines)
-                            .child(
-                                div()
-                                    .id(SharedString::from(format!(
-                                        "columns-add-block-{}",
-                                        column_id.0
-                                    )))
-                                    .mt(px(5.))
-                                    .cursor_pointer()
-                                    .text_color(muted)
-                                    .hover(|button| button.text_color(accent))
-                                    .on_click(cx.listener(move |this, _, window, cx| {
-                                        this.add_column_block(column_id, window, cx)
-                                    }))
-                                    .child("＋ 添加内容"),
+                            .when(
+                                self.closing || !self.inputs.contains_key(&line_id.0),
+                                |row| row.child(line.text.clone()),
                             )
                     })
                     .collect::<Vec<_>>();
-                let columns_count = columns.len();
-                let column_actions = vec![
-                    div()
-                        .id(SharedString::from(format!("columns-add-{}", block_id.0)))
-                        .px(px(7.))
-                        .py(px(3.))
-                        .cursor_pointer()
-                        .text_color(muted)
-                        .hover(|button| button.text_color(accent))
-                        .when(columns_count < 3, |button| {
-                            button.on_click(cx.listener(move |this, _, window, cx| {
-                                this.add_columns_column(block_id, window, cx)
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .min_h(px(80.))
+                    .px(px(9.))
+                    .py(px(7.))
+                    .flex()
+                    .flex_col()
+                    .gap(px(5.))
+                    .border_1()
+                    .border_color(Palette::color(&p.border))
+                    .children(lines)
+                    .child(
+                        div()
+                            .id(SharedString::from(format!(
+                                "columns-add-block-{}",
+                                column_id.0
+                            )))
+                            .mt(px(5.))
+                            .cursor_pointer()
+                            .text_color(muted)
+                            .hover(|button| button.text_color(accent))
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.add_column_block(column_id, window, cx)
                             }))
-                        })
-                        .child("＋ 分栏"),
+                            .child("＋ 添加内容"),
+                    )
+            })
+            .collect::<Vec<_>>();
+        let columns_count = columns.len();
+        let column_actions = vec![
+            div()
+                .id(SharedString::from(format!("columns-add-{}", block_id.0)))
+                .px(px(7.))
+                .py(px(3.))
+                .cursor_pointer()
+                .text_color(muted)
+                .hover(|button| button.text_color(accent))
+                .when(columns_count < 3, |button| {
+                    button.on_click(cx.listener(move |this, _, window, cx| {
+                        this.add_columns_column(block_id, window, cx)
+                    }))
+                })
+                .child("＋ 分栏"),
+            div()
+                .id(SharedString::from(format!("columns-remove-{}", block_id.0)))
+                .px(px(7.))
+                .py(px(3.))
+                .cursor_pointer()
+                .text_color(muted)
+                .hover(|button| button.text_color(accent))
+                .when(columns_count > 2, |button| {
+                    button.on_click(cx.listener(move |this, _, window, cx| {
+                        this.remove_columns_column(block_id, window, cx)
+                    }))
+                })
+                .child("− 分栏"),
+        ];
+        let color_picker_view =
+            self.color_picker
+                .filter(|(id, _)| *id == block_id)
+                .map(|(_, background)| {
                     div()
-                        .id(SharedString::from(format!("columns-remove-{}", block_id.0)))
-                        .px(px(7.))
-                        .py(px(3.))
-                        .cursor_pointer()
-                        .text_color(muted)
-                        .hover(|button| button.text_color(accent))
-                        .when(columns_count > 2, |button| {
-                            button.on_click(cx.listener(move |this, _, window, cx| {
-                                this.remove_columns_column(block_id, window, cx)
-                            }))
-                        })
-                        .child("− 分栏"),
-                ];
-                let color_picker_view =
-                    self.color_picker
-                        .filter(|(id, _)| *id == block_id)
-                        .map(|(_, background)| {
+                        .w_full()
+                        .flex()
+                        .flex_wrap()
+                        .gap(px(5.))
+                        .pt(px(5.))
+                        .children(ColorKind::ALL.into_iter().enumerate().map(|(slot, _)| {
+                            let slot = slot as i32;
+                            let swatch = if background {
+                                self.palette.block_bg(slot)
+                            } else {
+                                self.palette.block_text(slot)
+                            };
                             div()
-                                .w_full()
-                                .flex()
-                                .flex_wrap()
-                                .gap(px(5.))
-                                .pt(px(5.))
-                                .children(ColorKind::ALL.into_iter().enumerate().map(
-                                    |(slot, _)| {
-                                        let slot = slot as i32;
-                                        let swatch = if background {
-                                            self.palette.block_bg(slot)
-                                        } else {
-                                            self.palette.block_text(slot)
-                                        };
-                                        div()
-                                            .id(SharedString::from(format!(
-                                                "block-color-{block_id:?}-{background}-{slot}"
-                                            )))
-                                            .size(px(19.))
-                                            .rounded(px(4.))
-                                            .border_1()
-                                            .border_color(Palette::color(&p.border))
-                                            .bg(swatch)
-                                            .cursor_pointer()
-                                            .on_click(cx.listener(move |this, _, window, cx| {
-                                                this.set_block_color(
-                                                    block_id, background, slot, window, cx,
-                                                )
-                                            }))
-                                    },
-                                ))
-                        });
-                let block_context_popup = self
-                    .block_menu_open
-                    .filter(|(id, _)| *id == block_id)
-                    .map(|(_, turn_into)| {
-                        let rows = if turn_into {
-                            slash_items()
-                                .iter()
-                                .filter(|(_, _, target)| *target != kind)
-                                .map(|(label, _, target)| {
-                                    let target = *target;
-                                    div()
-                                        .id(SharedString::from(format!(
-                                            "block-menu-kind-{block_id:?}-{target:?}"
-                                        )))
-                                        .w_full()
-                                        .h(px(28.))
-                                        .px(px(9.))
-                                        .flex()
-                                        .items_center()
-                                        .rounded(px(4.))
-                                        .cursor_pointer()
-                                        .text_size(px(12.))
-                                        .text_color(text)
-                                        .hover(|item| item.bg(Palette::color(&p.bg).opacity(0.3)))
-                                        .on_click(cx.listener(move |this, _, window, cx| {
-                                            this.block_menu_open = None;
-                                            this.select_slash_kind(block_id, target, window, cx);
-                                        }))
-                                        .child(*label)
-                                        .into_any_element()
-                                })
-                                .collect::<Vec<_>>()
-                        } else {
-                            [("转换为…", 0), ("文字颜色", 1), ("背景颜色", 2), ("复制块", 3), ("删除", 4)]
-                                .into_iter()
-                                .map(|(label, action)| {
-                                    div()
-                                        .id(SharedString::from(format!(
-                                            "block-menu-action-{block_id:?}-{action}"
-                                        )))
-                                        .w_full()
-                                        .h(px(28.))
-                                        .px(px(9.))
-                                        .flex()
-                                        .items_center()
-                                        .rounded(px(4.))
-                                        .cursor_pointer()
-                                        .text_size(px(12.))
-                                        .text_color(if action == 4 {
-                                            Hsla::from(rgb(0xe5534b))
-                                        } else {
-                                            text
-                                        })
-                                        .hover(|item| item.bg(Palette::color(&p.bg).opacity(0.3)))
-                                        .on_click(cx.listener(move |this, _, window, cx| {
-                                            match action {
-                                                0 => this.block_menu_open = Some((block_id, true)),
-                                                1 => {
-                                                    this.block_menu_open = None;
-                                                    this.toggle_color_picker(block_id, false, cx);
-                                                }
-                                                2 => {
-                                                    this.block_menu_open = None;
-                                                    this.toggle_color_picker(block_id, true, cx);
-                                                }
-                                                3 => {
-                                                    this.block_menu_open = None;
-                                                    this.duplicate_block(block_id, window, cx);
-                                                }
-                                                4 => {
-                                                    this.block_menu_open = None;
-                                                    this.delete_block(block_id, window, cx);
-                                                }
-                                                _ => {}
-                                            }
-                                            cx.notify();
-                                        }))
-                                        .child(label.to_owned())
-                                        .into_any_element()
-                                })
-                                .collect::<Vec<_>>()
-                        };
-                        let mut rows = rows;
-                        if turn_into {
-                            rows.insert(
-                                0,
+                                .id(SharedString::from(format!(
+                                    "block-color-{block_id:?}-{background}-{slot}"
+                                )))
+                                .size(px(19.))
+                                .rounded(px(4.))
+                                .border_1()
+                                .border_color(Palette::color(&p.border))
+                                .bg(swatch)
+                                .cursor_pointer()
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    this.set_block_color(block_id, background, slot, window, cx)
+                                }))
+                        }))
+                });
+        let block_context_popup =
+            self.block_menu_open
+                .filter(|(id, _)| *id == block_id)
+                .map(|(_, turn_into)| {
+                    let rows = if turn_into {
+                        slash_items()
+                            .iter()
+                            .filter(|(_, _, target)| *target != kind)
+                            .map(|(label, _, target)| {
+                                let target = *target;
                                 div()
-                                    .id(SharedString::from(format!("block-menu-back-{block_id:?}")))
+                                    .id(SharedString::from(format!(
+                                        "block-menu-kind-{block_id:?}-{target:?}"
+                                    )))
                                     .w_full()
                                     .h(px(28.))
                                     .px(px(9.))
@@ -8769,35 +7468,115 @@ impl Render for Workspace {
                                     .rounded(px(4.))
                                     .cursor_pointer()
                                     .text_size(px(12.))
-                                    .text_color(muted)
+                                    .text_color(text)
                                     .hover(|item| item.bg(Palette::color(&p.bg).opacity(0.3)))
-                                    .on_click(cx.listener(move |this, _, _, cx| {
-                                        this.block_menu_open = Some((block_id, false));
-                                        cx.notify();
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        this.block_menu_open = None;
+                                        this.select_slash_kind(block_id, target, window, cx);
                                     }))
-                                    .child("‹  返回")
-                                    .into_any_element(),
-                            );
-                        }
-                        div()
-                            .id(SharedString::from(format!("block-menu-{block_id:?}")))
-                            .absolute()
-                            .top(px(32.))
-                            .right(px(0.))
-                            .w(px(184.))
-                            .max_h(px(320.))
-                            .overflow_y_scroll()
-                            .p(px(4.))
-                            .flex()
-                            .flex_col()
-                            .gap(px(2.))
-                            .rounded(px(7.))
-                            .border_1()
-                            .border_color(Palette::color(&p.border))
-                            .bg(Palette::color(&p.elevated))
-                            .children(rows)
-                    });
-                div()
+                                    .child(*label)
+                                    .into_any_element()
+                            })
+                            .collect::<Vec<_>>()
+                    } else {
+                        [
+                            ("转换为…", 0),
+                            ("文字颜色", 1),
+                            ("背景颜色", 2),
+                            ("复制块", 3),
+                            ("删除", 4),
+                        ]
+                        .into_iter()
+                        .map(|(label, action)| {
+                            div()
+                                .id(SharedString::from(format!(
+                                    "block-menu-action-{block_id:?}-{action}"
+                                )))
+                                .w_full()
+                                .h(px(28.))
+                                .px(px(9.))
+                                .flex()
+                                .items_center()
+                                .rounded(px(4.))
+                                .cursor_pointer()
+                                .text_size(px(12.))
+                                .text_color(if action == 4 {
+                                    Hsla::from(rgb(0xe5534b))
+                                } else {
+                                    text
+                                })
+                                .hover(|item| item.bg(Palette::color(&p.bg).opacity(0.3)))
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    match action {
+                                        0 => this.block_menu_open = Some((block_id, true)),
+                                        1 => {
+                                            this.block_menu_open = None;
+                                            this.toggle_color_picker(block_id, false, cx);
+                                        }
+                                        2 => {
+                                            this.block_menu_open = None;
+                                            this.toggle_color_picker(block_id, true, cx);
+                                        }
+                                        3 => {
+                                            this.block_menu_open = None;
+                                            this.duplicate_block(block_id, window, cx);
+                                        }
+                                        4 => {
+                                            this.block_menu_open = None;
+                                            this.delete_block(block_id, window, cx);
+                                        }
+                                        _ => {}
+                                    }
+                                    cx.notify();
+                                }))
+                                .child(label.to_owned())
+                                .into_any_element()
+                        })
+                        .collect::<Vec<_>>()
+                    };
+                    let mut rows = rows;
+                    if turn_into {
+                        rows.insert(
+                            0,
+                            div()
+                                .id(SharedString::from(format!("block-menu-back-{block_id:?}")))
+                                .w_full()
+                                .h(px(28.))
+                                .px(px(9.))
+                                .flex()
+                                .items_center()
+                                .rounded(px(4.))
+                                .cursor_pointer()
+                                .text_size(px(12.))
+                                .text_color(muted)
+                                .hover(|item| item.bg(Palette::color(&p.bg).opacity(0.3)))
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.block_menu_open = Some((block_id, false));
+                                    cx.notify();
+                                }))
+                                .child("‹  返回")
+                                .into_any_element(),
+                        );
+                    }
+                    div()
+                        .id(SharedString::from(format!("block-menu-{block_id:?}")))
+                        .absolute()
+                        .top(px(32.))
+                        .right(px(0.))
+                        .w(px(184.))
+                        .max_h(px(320.))
+                        .overflow_y_scroll()
+                        .p(px(4.))
+                        .flex()
+                        .flex_col()
+                        .gap(px(2.))
+                        .rounded(px(7.))
+                        .border_1()
+                        .border_color(Palette::color(&p.border))
+                        .bg(Palette::color(&p.elevated))
+                        .children(rows)
+                });
+        div()
                     .id(("block", block.id.0))
                     .w_full()
                     .relative()
@@ -10968,8 +9747,1384 @@ impl Render for Workspace {
                     })
                     .when_some(color_picker_view, |row, picker| row.child(picker))
                     .when_some(block_context_popup, |row, popup| row.child(popup))
+            .into_any_element()
+    }
+}
+
+impl Render for Workspace {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let sidebar_transition = self.sidebar_transition;
+        let p = self.palette.clone();
+        let maximized = window.is_maximized();
+        let database_width = (window.bounds().size.width - px(356.))
+            .min(px(760.))
+            .max(px(200.));
+        let text = Palette::color(&p.fg);
+        let muted = Palette::color(&p.muted);
+        let accent = Palette::color(&p.accent);
+        let elevated = Palette::color(&p.elevated);
+        let mcp_enabled = self.mcp_server.is_some();
+        let mcp_status = self.mcp_status.clone();
+        let mcp_endpoint = format!("http://127.0.0.1:{}/mcp", self.mcp_port);
+        let mcp_token = self.mcp_token.clone();
+        let hotkey_alt_n = self.session.setting("gpui.hotkey.alt-n").unwrap_or("true") == "true";
+        let hotkey_alt_m = self.session.setting("gpui.hotkey.alt-m").unwrap_or("false") == "true";
+        let quick_note_on_start = self
+            .session
+            .setting("gpui.quick-note-on-start")
+            .unwrap_or("false")
+            == "true";
+        let hotkey_notice = self.hotkey_notice.clone();
+        let tray_available = self.tray_available;
+        let mcp_logs: Vec<serde_json::Value> = self
+            .session
+            .setting("gpui.mcp.log")
+            .and_then(|value| serde_json::from_str(value).ok())
+            .unwrap_or_default();
+        let sync_peers = self.session.sync_peers();
+        let sync_logs = self.session.sync_log();
+        let (sync_auto, sync_interval) = self.session.sync_config();
+        let sync_offline_count = sync_peers
+            .iter()
+            .filter(|peer| {
+                quire_core::services::sync::engine::now_unix().saturating_sub(peer.last_seen) > 15
+            })
+            .count();
+        let sync_status = self.sync_status.clone();
+        let sync_listener_warning = self.sync_listener_warning.clone();
+        let sync_device_name = self
+            .session
+            .setting("sync.device-name")
+            .unwrap_or("Quire")
+            .to_owned();
+        let backlinks_count = self
+            .session
+            .repo
+            .reference_count(self.session.page.id)
+            .unwrap_or(0);
+        let backlink_rows = if self.backlinks_open {
+            self.session
+                .repo
+                .references(self.session.page.id, 500)
+                .unwrap_or_default()
+                .into_iter()
+                .map(|reference| {
+                    let page_id = reference.page;
+                    let block_id = reference.block;
+                    let page_title = self
+                        .session
+                        .pages
+                        .iter()
+                        .find(|page| page.id == page_id)
+                        .map(|page| page.title.clone())
+                        .unwrap_or_else(|| "已删除页面".into());
+                    let preview = if reference.text.trim().is_empty() {
+                        "页面引用".to_owned()
+                    } else {
+                        reference.text
+                    };
+                    div()
+                        .id(SharedString::from(format!(
+                            "backlink-{page_id:?}-{block_id:?}"
+                        )))
+                        .w_full()
+                        .px(px(9.))
+                        .py(px(6.))
+                        .rounded(px(5.))
+                        .cursor_pointer()
+                        .hover(|row| row.bg(Palette::color(&p.bg).opacity(0.28)))
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.activate_page(page_id, window, cx);
+                            this.focus(block_id, 0, window, cx);
+                            this.backlinks_open = false;
+                            cx.notify();
+                        }))
+                        .child(div().text_size(px(11.)).text_color(muted).child(page_title))
+                        .child(div().text_color(text).child(preview))
+                })
+                .collect::<Vec<_>>()
+        } else {
+            Vec::new()
+        };
+        let backlinks_empty = backlink_rows.is_empty();
+        let sync_sources = self
+            .session
+            .pages
+            .iter()
+            .filter(|page| !page.template)
+            .flat_map(|page| {
+                let page_id = page.id;
+                let title = page.title.clone();
+                self.session
+                    .document
+                    .page_blocks(page_id)
+                    .iter()
+                    .filter(|block| {
+                        matches!(
+                            block.kind,
+                            BlockKind::Paragraph
+                                | BlockKind::Heading1
+                                | BlockKind::Heading2
+                                | BlockKind::Heading3
+                                | BlockKind::Bullet
+                                | BlockKind::Numbered
+                                | BlockKind::Todo
+                                | BlockKind::Quote
+                                | BlockKind::Code
+                                | BlockKind::Callout
+                                | BlockKind::Toggle
+                        ) && !block.text.trim().is_empty()
+                    })
+                    .map(move |block| (page_id, title.clone(), block.id, block.text.clone()))
+            })
+            .take(20)
+            .collect::<Vec<_>>();
+        let page_candidates = self
+            .session
+            .pages
+            .iter()
+            .filter(|page| page.id != self.session.page.id && !page.template)
+            .map(|page| (page.id, page.title.clone()))
+            .collect::<Vec<_>>();
+        let cover_path = self
+            .session
+            .page
+            .cover
+            .and_then(|cover| self.session.attachment_display_path(cover));
+        let theme_options = if self.theme_picker_open {
+            let palettes: Vec<Palette> =
+                serde_json::from_str(include_str!("palettes.json")).expect("checked-in palettes");
+            let mut system_palette = Palette::load("system");
+            system_palette.id = "system".into();
+            let palettes = std::iter::once(system_palette)
+                .chain(palettes)
+                .collect::<Vec<_>>();
+            palettes
+                .into_iter()
+                .filter(|palette| {
+                    let query = self.search_query.trim().to_lowercase();
+                    query.is_empty()
+                        || palette.id.to_lowercase().contains(&query)
+                        || match palette.id.as_str() {
+                            "system" => "跟随系统".contains(&query),
+                            "midnight" => "暗夜蓝".contains(&query),
+                            "graphite" => "石墨灰".contains(&query),
+                            "violet" => "紫罗兰".contains(&query),
+                            "emerald" => "森林绿".contains(&query),
+                            "amber" => "琥珀暖".contains(&query),
+                            "ocean" => "海洋青".contains(&query),
+                            "rose" => "珊瑚红".contains(&query),
+                            "light" => "明亮".contains(&query),
+                            "jade" => "翡翠绿".contains(&query),
+                            "deepblue" => "深空蓝".contains(&query),
+                            "twilight" => "暮光紫".contains(&query),
+                            "crimson" => "荣艳红".contains(&query),
+                            _ => false,
+                        }
+                })
+                .map(|palette| {
+                    let id = palette.id.clone();
+                    let label = match id.as_str() {
+                        "system" => "跟随系统",
+                        "midnight" => "🌙 暗夜蓝",
+                        "graphite" => "🪨 石墨灰",
+                        "violet" => "💜 紫罗兰",
+                        "emerald" => "🌲 森林绿",
+                        "amber" => "🔥 琥珀暖",
+                        "ocean" => "🌊 海洋青",
+                        "rose" => "🌹 珊瑚红",
+                        "light" => "☀️ 明亮",
+                        "jade" => "💎 翡翠绿",
+                        "deepblue" => "🌌 深空蓝",
+                        "twilight" => "🌆 暮光紫",
+                        "crimson" => "🌺 荣艳红",
+                        _ => id.as_str(),
+                    }
+                    .to_owned();
+                    let selected = id == self.theme_choice;
+                    div()
+                        .id(SharedString::from(format!("theme-option-{id}")))
+                        .w(px(110.))
+                        .h(px(62.))
+                        .p(px(7.))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .rounded(px(6.))
+                        .border_1()
+                        .when(selected, |card| card.border_2())
+                        .border_color(if selected {
+                            accent
+                        } else {
+                            Palette::color(&p.border)
+                        })
+                        .cursor_pointer()
+                        .bg(linear_gradient(
+                            135.,
+                            linear_color_stop(Palette::color(&palette.bg), 0.),
+                            linear_color_stop(Palette::color(&palette.grad2), 1.),
+                        )
+                        .color_space(ColorSpace::Srgb))
+                        .hover(|row| row.border_color(accent))
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.select_theme(&id, window, cx)
+                        }))
+                        .child(
+                            div()
+                                .text_size(px(12.))
+                                .font_weight(FontWeight::MEDIUM)
+                                .text_color(Palette::color(&palette.fg))
+                                .child(format!("{}{}", label, if selected { "  ✓" } else { "" })),
+                        )
+                })
+                .collect::<Vec<_>>()
+        } else {
+            Vec::new()
+        };
+        let settings_overlay = self.theme_picker_open.then(|| {
+            div()
+                .id("settings-overlay")
+                .absolute()
+                .top(px(0.))
+                .right(px(0.))
+                .bottom(px(0.))
+                .left(px(0.))
+                .flex()
+                .items_center()
+                .justify_center()
+                .bg(Hsla::from(rgb(0x000000)).opacity(0x59 as f32 / 255.))
+                .on_click(cx.listener(|this, _, window, cx| {
+                    this.close_settings(window, cx)
+                }))
+                .child(
+                    div()
+                        .id("settings-dialog")
+                        .w(px(560.))
+                        .max_w(window.bounds().size.width - px(24.))
+                        .h(px(612.))
+                        .max_h(window.bounds().size.height - px(24.))
+                        .overflow_y_scroll()
+                        .p(px(16.))
+                        .rounded(px(12.))
+                        .border_1()
+                        .border_color(Palette::color(&p.border))
+                        .bg(Palette::color(&p.elevated2))
+                        .on_click(cx.listener(|_, _, _, cx| cx.stop_propagation()))
+                        .shadow(vec![BoxShadow {
+                            color: Hsla::from(rgb(0x000000)).opacity(0xa0 as f32 / 255.),
+                            offset: point(px(2.), px(3.)),
+                            blur_radius: px(0.),
+                            spread_radius: px(-2.),
+                        }])
+                        .flex()
+                        .flex_col()
+                        .gap(px(10.))
+                        .child(
+                            div()
+                                .text_size(px(18.))
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .child("设置"),
+                        )
+                        .child(
+                            div()
+                                .id("settings-search")
+                                .w_full()
+                                .h(px(32.))
+                                .px(px(8.))
+                                .flex()
+                                .items_center()
+                                .gap(px(8.))
+                                .rounded(px(5.))
+                                .border_1()
+                                .border_color(Palette::color(&p.border))
+                                .bg(Palette::color(&p.bg).opacity(0.25))
+                                .child(sidebar_glyph(SidebarGlyph::Search, muted, px(14.)))
+                                .child(div().flex_1().min_w_0().child(self.search_input.clone())),
+                        )
+                        .child(
+                            div()
+                                .id("settings-tabs")
+                                .w_full()
+                                .h(px(32.))
+                                .flex()
+                                .items_center()
+                                .justify_between()
+                                .rounded(px(5.))
+                                .border_1()
+                                .border_color(Palette::color(&p.border))
+                                .children(
+                                    ["外观", "通用", "同步", "MCP", "快捷键", "关于"]
+                                        .into_iter()
+                                        .enumerate()
+                                        .map(|(index, tab)| {
+                                            div()
+                                                .id(SharedString::from(format!("settings-tab-{index}")))
+                                                .flex_1()
+                                                .py(px(6.))
+                                                .cursor_pointer()
+                                                .text_size(px(12.))
+                                                .text_center()
+                                                .text_color(if self.settings_tab == index {
+                                                    text
+                                                } else {
+                                                    muted
+                                                })
+                                                .when(self.settings_tab == index, |item| {
+                                                    item.bg(Palette::color(&p.bg).opacity(0.4))
+                                                })
+                                                .on_click(cx.listener(move |this, _, _, cx| {
+                                                    this.settings_tab = index;
+                                                    cx.notify();
+                                                }))
+                                                .child(tab)
+                                        }),
+                                ),
+                        )
+                        .child(div().h(px(1.)).bg(Palette::color(&p.border)))
+                        .when(self.settings_tab == 0, |dialog| dialog.child(
+                            div()
+                                .text_size(px(12.))
+                                .text_color(muted)
+                                .child("外观 · 渐变主题"),
+                        ).child(
+                            div()
+                                .id("settings-theme-grid")
+                                .w_full()
+                                .flex()
+                                .flex_wrap()
+                                .gap(px(8.))
+                                .children(theme_options),
+                        ).child(
+                            div()
+                                .w_full()
+                                .flex()
+                                .items_center()
+                                .justify_between()
+                                .child("界面缩放")
+                                .child(
+                                    div()
+                                        .flex()
+                                        .items_center()
+                                        .gap(px(12.))
+                                        .child(
+                                            div()
+                                                .id("settings-zoom-out")
+                                                .w(px(22.))
+                                                .h(px(24.))
+                                                .flex()
+                                                .items_center()
+                                                .justify_center()
+                                                .cursor_pointer()
+                                                .text_color(muted)
+                                                .hover(|button| button.text_color(text))
+                                                .when(self.ui_zoom > 0.5, |button| {
+                                                    button.on_click(cx.listener(|this, _, window, cx| {
+                                                        this.set_ui_zoom(quire_gpui::ui_scale::step(this.ui_zoom, -1), window, cx)
+                                                    }))
+                                                })
+                                                .child("−"),
+                                        )
+                                        .child(format!("{:.0}%", self.ui_zoom * 100.))
+                                        .child(
+                                            div()
+                                                .id("settings-zoom-in")
+                                                .w(px(22.))
+                                                .h(px(24.))
+                                                .flex()
+                                                .items_center()
+                                                .justify_center()
+                                                .cursor_pointer()
+                                                .text_color(muted)
+                                                .hover(|button| button.text_color(text))
+                                                .when(self.ui_zoom < 3.0, |button| {
+                                                    button.on_click(cx.listener(|this, _, window, cx| {
+                                                        this.set_ui_zoom(quire_gpui::ui_scale::step(this.ui_zoom, 1), window, cx)
+                                                    }))
+                                                })
+                                                .child("＋"),
+                                        )
+                                        .child(
+                                            div()
+                                                .id("settings-zoom-reset")
+                                                .px(px(10.))
+                                                .py(px(5.))
+                                                .rounded(px(4.))
+                                                .border_1()
+                                                .border_color(Palette::color(&p.border))
+                                                .cursor_pointer()
+                                                .text_color(muted)
+                                                .hover(|button| button.text_color(text))
+                                                .on_click(cx.listener(|this, _, window, cx| {
+                                                    this.set_ui_zoom(1., window, cx)
+                                                }))
+                                                .child("复位"),
+                                        ),
+                                ),
+                        ).child(
+                            div()
+                                .text_size(px(10.))
+                                .text_color(muted)
+                                .child("整个界面一起放大或缩小 · Ctrl+= / Ctrl+- 步进，Ctrl+0 复位"),
+                        ))
+                        .when(self.settings_tab == 1, |dialog| dialog.child(
+                            div().flex().flex_col().gap(px(14.)).child(
+                                div().text_size(px(12.)).text_color(muted).child("通用 · 当前工作区"),
+                            ).child(
+                                div().flex().justify_between().items_center()
+                                    .child("启动时自动弹出新建笔记输入框")
+                                    .child(div().id("quick-note-on-start").px(px(8.)).py(px(4.)).rounded(px(4.))
+                                        .border_1().border_color(Palette::color(&p.border)).cursor_pointer()
+                                        .text_color(if quick_note_on_start { accent } else { muted })
+                                        .on_click(cx.listener(|this, _, window, cx| this.toggle_quick_note_on_start(window, cx)))
+                                        .child(if quick_note_on_start { "● 已开启" } else { "○ 已关闭" })),
+                            ).child(
+                                div().flex().justify_between().items_center()
+                                    .child("全局 Alt+N 速记（不打开主界面）")
+                                    .child(div().id("hotkey-alt-n").px(px(8.)).py(px(4.)).rounded(px(4.))
+                                        .border_1().border_color(Palette::color(&p.border)).cursor_pointer()
+                                        .text_color(if hotkey_alt_n { accent } else { muted })
+                                        .on_click(cx.listener(|this, _, window, cx| this.toggle_global_hotkey(
+                                            crate::platform::HOTKEY_ALT_N, "gpui.hotkey.alt-n", true, "Alt+N", window, cx
+                                        )))
+                                        .child(if hotkey_alt_n { "● 已开启" } else { "○ 已关闭" })),
+                            ).child(
+                                div().flex().justify_between().items_center()
+                                    .child("全局 Alt+M 显示主界面")
+                                    .child(div().id("hotkey-alt-m").px(px(8.)).py(px(4.)).rounded(px(4.))
+                                        .border_1().border_color(Palette::color(&p.border)).cursor_pointer()
+                                        .text_color(if hotkey_alt_m { accent } else { muted })
+                                        .on_click(cx.listener(|this, _, window, cx| this.toggle_global_hotkey(
+                                            crate::platform::HOTKEY_ALT_M, "gpui.hotkey.alt-m", false, "Alt+M", window, cx
+                                        )))
+                                        .child(if hotkey_alt_m { "● 已开启" } else { "○ 已关闭" })),
+                            ).child(
+                                div().text_size(px(11.)).text_color(muted).child(hotkey_notice),
+                            ).when(!tray_available, |panel| panel.child(
+                                div().text_size(px(10.)).text_color(rgb(0xd9a441))
+                                    .child("系统托盘当前不可用；关闭窗口会保存并退出 Quire。"),
+                            )),
+                        ))
+                        .when(self.settings_tab == 2, |dialog| dialog.child(
+                            div().flex().flex_col().gap(px(8.))
+                                .child(div().flex().items_center().justify_between()
+                                    .child(div().flex().flex_col().gap(px(2.))
+                                        .child(div().text_size(px(20.)).font_weight(FontWeight::SEMIBOLD).child("局域网同步"))
+                                        .child(div().text_size(px(10.)).text_color(muted).child(format!("本机：{sync_device_name}"))))
+                                    .child(div().id("sync-now-all").px(px(10.)).py(px(6.)).rounded(px(5.))
+                                        .bg(Palette::color(&p.accent)).text_color(Palette::color(&p.fg)).cursor_pointer().text_size(px(11.))
+                                        .on_click(cx.listener(|this, _, window, cx| this.sync_now_all(window, cx)))
+                                        .child("立即同步")))
+                                .child(div().text_size(px(10.)).text_color(muted).child(sync_status.clone()))
+                                .when_some(sync_listener_warning, |panel, warning| panel.child(
+                                    div().text_size(px(10.)).text_color(rgb(0xd9a441)).child(warning),
+                                ))
+                                .child(div().flex().items_center().gap(px(6.))
+                                    .child(div().h(px(27.)).flex_1().min_w_0().px(px(7.)).rounded(px(4.))
+                                        .border_1().border_color(Palette::color(&p.border))
+                                        .child(self.sync_name_input.clone()))
+                                    .child(div().id("sync-name-apply").px(px(8.)).py(px(5.)).rounded(px(4.))
+                                        .bg(Palette::color(&p.accent)).text_color(Palette::color(&p.fg)).cursor_pointer().text_size(px(9.))
+                                        .on_click(cx.listener(|this, _, window, cx| this.apply_sync_name(window, cx)))
+                                        .child("保存并重启")))
+                                .child(div().text_size(px(9.)).text_color(muted).child("设备名称应用后重启 Quire，新的名称才会广播到局域网。"))
+                                .child(div().flex().items_center().gap(px(5.))
+                                    .child(div().text_size(px(10.)).child(if sync_auto { "自动同步" } else { "手动同步" }))
+                                    .child(div().id("sync-auto-toggle").px(px(7.)).py(px(4.)).rounded(px(4.))
+                                        .border_1().border_color(Palette::color(&p.border)).cursor_pointer().text_size(px(9.))
+                                        .on_click(cx.listener(|this, _, window, cx| {
+                                            let (enabled, _) = this.session.sync_config();
+                                            this.session.sync_set_auto(!enabled);
+                                            this.sync_last_auto = std::time::Instant::now();
+                                            this.sync_status = if enabled { "自动同步已关闭" } else { "自动同步已开启" }.into();
+                                            this.schedule_save(true, window, cx);
+                                            cx.notify();
+                                        }))
+                                        .child(if sync_auto { "关闭" } else { "开启" }))
+                                    .children([10u64, 30, 60].into_iter().map(|seconds|
+                                        div().id(SharedString::from(format!("sync-interval-{seconds}"))).px(px(6.)).py(px(4.)).rounded(px(4.))
+                                            .border_1().border_color(Palette::color(&p.border)).cursor_pointer().text_size(px(9.))
+                                            .when(sync_interval == seconds, |chip| chip.bg(Palette::color(&p.accent)).text_color(Palette::color(&p.fg)))
+                                            .on_click(cx.listener(move |this, _, window, cx| {
+                                                this.session.sync_set_interval(seconds);
+                                                this.schedule_save(true, window, cx);
+                                                cx.notify();
+                                            }))
+                                            .child(format!("{seconds}s")))))
+                                .child(div().h(px(1.)).bg(Palette::color(&p.border)))
+                                .child(div().flex().items_center().justify_between()
+                                    .child(div().text_size(px(12.)).font_weight(FontWeight::SEMIBOLD).child(format!("设备 · {}", sync_peers.len())))
+                                    .child(div().id("sync-refresh").px(px(6.)).py(px(3.))
+                                        .border_1().border_color(Palette::color(&p.border)).cursor_pointer().text_size(px(9.))
+                                        .on_click(cx.listener(|this, _, window, cx| {
+                                            const STALE_AFTER: u64 = 30 * 24 * 60 * 60;
+                                            let stale = this.session.sync_prune_stale_peers(STALE_AFTER);
+                                            if stale.is_empty() {
+                                                this.sync_status = "设备列表已刷新；正在监听局域网广播".into();
+                                            } else {
+                                                let names = stale.iter().map(|peer| peer.name.as_str()).collect::<Vec<_>>().join("、");
+                                                let message = format!("刷新列表并清理 {} 台长期离线设备：{}", stale.len(), names);
+                                                this.session.sync_log_push("本机", true, &message);
+                                                this.sync_status = message;
+                                                this.schedule_save(true, window, cx);
+                                            }
+                                            cx.notify();
+                                        }))
+                                        .child("刷新列表"))
+                                    .child(div().id("sync-forget-offline").px(px(6.)).py(px(3.))
+                                        .border_1().border_color(Palette::color(&p.border)).cursor_pointer().text_size(px(9.))
+                                        .on_click(cx.listener(|this, _, window, cx| {
+                                            let retired = this.session.sync_retire_offline_peers(15);
+                                            if retired.is_empty() {
+                                                this.sync_status = "没有离线设备需要清理".into();
+                                            } else {
+                                                let names = retired.iter().map(|peer| peer.name.as_str()).collect::<Vec<_>>().join("、");
+                                                let message = format!("已移除 {} 台离线设备：{}", retired.len(), names);
+                                                this.session.sync_log_push("本机", true, &message);
+                                                this.sync_status = message;
+                                                this.schedule_save(true, window, cx);
+                                            }
+                                            cx.notify();
+                                        }))
+                                        .child(format!("清理离线 · {sync_offline_count}"))))
+                                .children(sync_peers.iter().map(|peer| {
+                                    let peer_for_sync = peer.clone();
+                                    let peer_key = peer.id.clone();
+                                    let id_for_forget = peer.id.clone();
+                                    let peer_id = peer.id.clone();
+                                    let peer_name = peer.name.clone();
+                                    let last_sync = if peer.last_sync.is_empty() { "尚未同步".to_owned() } else { peer.last_sync.clone() };
+                                    let online = quire_core::services::sync::engine::now_unix().saturating_sub(peer.last_seen) <= 15;
+                                    div().flex().items_center().justify_between().gap(px(6.)).px(px(7.)).py(px(5.))
+                                        .rounded(px(5.)).border_1().border_color(Palette::color(&p.border))
+                                        .child(div().flex().flex_col().gap(px(2.))
+                                            .child(div().text_size(px(11.)).child(format!("{}  {}", if online { "●" } else { "○" }, peer.name)))
+                                            .child(div().text_size(px(9.)).text_color(muted).child(format!("{}:{} · {}", peer.ip, peer.port, last_sync))))
+                                        .child(div().flex().gap(px(5.))
+                                            .child(div().id(SharedString::from(format!("sync-peer-{peer_id}"))).px(px(7.)).py(px(4.)).rounded(px(4.))
+                                                .bg(Palette::color(&p.accent)).text_color(Palette::color(&p.fg)).cursor_pointer().text_size(px(9.))
+                                                .on_click(cx.listener(move |this, _, _, cx| {
+                                                    if !this.sync_pending.insert(peer_key.clone()) {
+                                                        this.sync_status = "该设备的同步仍在进行中".into();
+                                                        cx.notify();
+                                                        return;
+                                                    }
+                                                    if this.sync_cmd_tx.send(quire_core::services::sync::engine::Cmd::SyncWith(peer_for_sync.clone())).is_ok() {
+                                                        this.sync_status = format!("正在与 {peer_name} 同步…");
+                                                    } else {
+                                                        this.sync_pending.remove(&peer_key);
+                                                        this.sync_status = "同步引擎已停止，请重启 Quire 后重试".into();
+                                                    }
+                                                    cx.notify();
+                                                }))
+                                                .child("同步"))
+                                            .child(div().id(SharedString::from(format!("forget-peer-{peer_id}"))).px(px(7.)).py(px(4.))
+                                                .border_1().border_color(Palette::color(&p.border)).cursor_pointer().text_size(px(9.))
+                                                .on_click(cx.listener(move |this, _, window, cx| {
+                                                    this.session.sync_forget_peer(&id_for_forget);
+                                                    this.schedule_save(true, window, cx);
+                                                    cx.notify();
+                                                }))
+                                                .child("忘记")))
+                                }))
+                                .when(sync_peers.is_empty(), |panel| panel.child(div().py(px(8.)).text_size(px(10.)).text_color(muted).child("正在搜索设备；请确认设备位于同一局域网并已启动 Quire。")))
+                                .child(div().h(px(1.)).bg(Palette::color(&p.border)))
+                                .child(div().flex().items_center().justify_between()
+                                    .child(div().text_size(px(11.)).font_weight(FontWeight::SEMIBOLD).child(format!("同步日志 · {} 条", sync_logs.len())))
+                                    .child(div().id("sync-clear-log").px(px(6.)).py(px(3.))
+                                        .border_1().border_color(Palette::color(&p.border)).cursor_pointer().text_size(px(9.))
+                                        .on_click(cx.listener(|this, _, window, cx| {
+                                            this.session.sync_log_clear();
+                                            this.schedule_save(true, window, cx);
+                                            cx.notify();
+                                        }))
+                                        .child("清空")))
+                                .children(sync_logs.iter().rev().take(3).map(|line| div().text_size(px(9.)).text_color(muted).child(format!("{} · {} · {}", line.at, line.peer, line.message))))
+                        ))
+                        .when(self.settings_tab == 3, |dialog| dialog.child(
+                            div().flex().flex_col().gap(px(10.))
+                                .child(div().flex().items_center().justify_between()
+                                    .child(div().flex().items_center().gap(px(10.))
+                                        .child(div().text_size(px(20.)).font_weight(FontWeight::SEMIBOLD).child("MCP"))
+                                        .child(div().text_size(px(11.)).text_color(muted).child(mcp_status.clone())))
+                                    .child(div().flex().items_center().gap(px(5.))
+                                        .when(mcp_enabled, |row| row.child(div().id("mcp-restart").px(px(8.)).py(px(5.)).rounded(px(5.))
+                                            .border_1().border_color(Palette::color(&p.border)).cursor_pointer().text_size(px(10.))
+                                            .on_click(cx.listener(|this, _, window, cx| this.restart_mcp(window, cx)))
+                                            .child("重启")))
+                                        .child(div().id("mcp-toggle").px(px(11.)).py(px(6.)).rounded(px(5.))
+                                            .bg(Palette::color(&p.accent)).text_color(Palette::color(&p.fg))
+                                            .cursor_pointer().text_size(px(11.))
+                                            .on_click(cx.listener(|this, _, window, cx| this.toggle_mcp(window, cx)))
+                                            .child(if mcp_enabled { "关闭服务" } else { "启用服务" }))))
+                                .child(div().h(px(1.)).bg(Palette::color(&p.border)))
+                                .child(div().font_weight(FontWeight::SEMIBOLD).text_size(px(12.)).child("客户端连接信息"))
+                                .child(div().flex().items_center().gap(px(6.))
+                                    .child(div().text_size(px(11.)).text_color(muted).child("本机端口"))
+                                    .child(div().w(px(90.)).h(px(28.)).px(px(7.)).rounded(px(4.))
+                                        .border_1().border_color(Palette::color(&p.border))
+                                        .child(self.mcp_port_input.clone()))
+                                    .child(div().id("mcp-port-apply").px(px(8.)).py(px(5.)).rounded(px(4.))
+                                        .border_1().border_color(Palette::color(&p.border)).cursor_pointer().text_size(px(10.))
+                                        .on_click(cx.listener(|this, _, window, cx| this.apply_mcp_port(window, cx)))
+                                        .child(if mcp_enabled { "应用并重启" } else { "应用端口" })))
+                                .child(div().text_size(px(11.)).text_color(muted).child(format!("Endpoint  {mcp_endpoint}")))
+                                .child(div().text_size(px(11.)).text_color(muted).child(format!("Authorization: Bearer {mcp_token}")))
+                                .child(div().flex().gap(px(8.))
+                                    .child(div().id("mcp-copy-config").px(px(9.)).py(px(5.)).rounded(px(4.))
+                                        .border_1().border_color(Palette::color(&p.border)).cursor_pointer().text_size(px(10.))
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            let config = serde_json::json!({
+                                                "url": format!("http://127.0.0.1:{}/mcp", this.mcp_port),
+                                                "headers": {"Authorization": format!("Bearer {}", this.mcp_token)}
+                                            }).to_string();
+                                            cx.write_to_clipboard(ClipboardItem::new_string(config));
+                                            this.status = "MCP 连接配置已复制".into();
+                                            cx.notify();
+                                        }))
+                                        .child("复制连接配置"))
+                                    .child(div().id("mcp-copy-stdio-config").px(px(9.)).py(px(5.)).rounded(px(4.))
+                                        .border_1().border_color(Palette::color(&p.border)).cursor_pointer().text_size(px(10.))
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            let executable = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("quire-gpui"));
+                                            let config = serde_json::json!({
+                                                "mcpServers": {
+                                                    "quire": {
+                                                        "command": executable,
+                                                        "args": ["--stdio", "--db", this.session.path]
+                                                    }
+                                                }
+                                            }).to_string();
+                                            cx.write_to_clipboard(ClipboardItem::new_string(config));
+                                            this.status = "MCP stdio 客户端配置已复制".into();
+                                            cx.notify();
+                                        }))
+                                        .child("复制 stdio 配置"))
+                                    .child(div().id("mcp-copy-prompt").px(px(9.)).py(px(5.)).rounded(px(4.))
+                                        .border_1().border_color(Palette::color(&p.border)).cursor_pointer().text_size(px(10.))
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            cx.write_to_clipboard(ClipboardItem::new_string(crate::mcp_tools::agent_prompt(this.mcp_port)));
+                                            this.status = "MCP Agent 提示词已复制".into();
+                                            cx.notify();
+                                        }))
+                                        .child("复制 Agent 提示词")))
+                                .child(div().text_size(px(10.)).text_color(muted).child("服务仅监听本机 127.0.0.1；工具可以读取和修改笔记/任务，删除只进入回收站。令牌保存在当前库目录的 mcp.json。"))
+                                .child(div().h(px(1.)).bg(Palette::color(&p.border)))
+                                .child(div().flex().items_center().justify_between()
+                                    .child(div().font_weight(FontWeight::SEMIBOLD).text_size(px(12.)).child(format!("调用日志 · {} 条记录", mcp_logs.len())))
+                                    .child(div().id("mcp-clear-log").px(px(6.)).py(px(3.))
+                                        .border_1().border_color(Palette::color(&p.border)).cursor_pointer().text_size(px(9.))
+                                        .on_click(cx.listener(|this, _, window, cx| {
+                                            this.session.set_setting("gpui.mcp.log", "[]");
+                                            this.schedule_save(true, window, cx);
+                                            cx.notify();
+                                        }))
+                                        .child("清空")))
+                                .children(mcp_logs.iter().rev().take(6).map(|entry| {
+                                    let ok = entry.get("ok").and_then(serde_json::Value::as_bool).unwrap_or(false);
+                                    let tool = entry.get("tool").and_then(serde_json::Value::as_str).unwrap_or("tool");
+                                    let message = entry.get("message").and_then(serde_json::Value::as_str).unwrap_or("");
+                                    div().text_size(px(10.)).text_color(muted)
+                                        .child(format!("{}  {} · {}", if ok { "✓" } else { "!" }, tool, message.chars().take(72).collect::<String>()))
+                                }))
+                                .when(mcp_logs.is_empty(), |panel| panel.child(div().text_size(px(10.)).text_color(muted).child("尚无调用记录"))),
+                        ))
+                        .when(self.settings_tab == 4, |dialog| dialog.child(
+                            div().flex().flex_col().gap(px(12.)).child(
+                                div().text_size(px(12.)).text_color(muted).child("快捷键 · 编辑器"),
+                            ).children([
+                                ("保存页面", "Ctrl+S"),
+                                ("新建页面", "Ctrl+N"),
+                                ("撤销 / 重做", "Ctrl+Z / Ctrl+Shift+Z"),
+                                ("查找页面", "Ctrl+P"),
+                                ("页面内查找", "Ctrl+F"),
+                                ("界面缩放 / 复位", "Ctrl+= / Ctrl+- / Ctrl+0"),
+                                ("新建块", "Enter"),
+                            ].into_iter().map(|(label, key)| div().flex().justify_between().items_center().border_b_1().border_color(Palette::color(&p.border)).py(px(7.)).child(label).child(div().px(px(7.)).py(px(3.)).rounded(px(4.)).bg(Palette::color(&p.bg).opacity(0.3)).text_size(px(11.)).child(key)))),
+                        ))
+                        .when(self.settings_tab == 5, |dialog| dialog.child(
+                            div().flex().flex_col().gap(px(12.)).child(
+                                div().text_size(px(20.)).font_weight(FontWeight::SEMIBOLD).child("Quire GPUI"),
+                            ).child(
+                                div().text_size(px(12.)).text_color(muted).child(format!("版本 {}", env!("CARGO_PKG_VERSION"))),
+                            ).child(
+                                div().text_size(px(12.)).text_color(muted).child("界面：GPUI · 数据：本地 SQLite"),
+                            ).child(
+                                div().text_size(px(12.)).text_color(muted).child("使用独立于 Slint 版的 Quire GPUI 数据目录。"),
+                            ),
+                        ))
+                        .child(div().flex_1())
+                        .child(
+                            div().flex().justify_end().child(
+                                div()
+                                    .id("settings-done")
+                                    .px(px(14.))
+                                    .py(px(7.))
+                                    .rounded(px(5.))
+                                    .border_1()
+                                    .border_color(Palette::color(&p.border))
+                                    .cursor_pointer()
+                                    .hover(|button| button.bg(Palette::color(&p.bg).opacity(0.35)))
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.close_settings(window, cx);
+                                    }))
+                                    .child("完成"),
+                            ),
+                        ),
+                )
+        });
+        let icon_options = if self.icon_picker_open {
+            div()
+                .id("page-icon-popover")
+                .w(px(224.))
+                .p(px(7.))
+                .rounded(px(8.))
+                .border_1()
+                .border_color(Palette::color(&p.border))
+                .bg(Palette::color(&p.elevated))
+                .child(
+                    div()
+                        .id("page-icon-grid")
+                        .w_full()
+                        .max_h(px(228.))
+                        .overflow_y_scroll()
+                        .flex()
+                        .flex_wrap()
+                        .gap(px(3.))
+                        .children(
+                            std::iter::once("")
+                                .chain(quire_core::core::icon::PICKER.iter().copied())
+                                .map(|icon| {
+                                    let selected = self.session.page.icon == icon;
+                                    div()
+                                        .id(SharedString::from(format!("page-icon-{icon}")))
+                                        .size(px(25.))
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .rounded(px(5.))
+                                        .cursor_pointer()
+                                        .when(selected, |row| {
+                                            row.bg(Palette::color(&p.bg).opacity(0.35))
+                                        })
+                                        .hover(|row| row.bg(Palette::color(&p.bg).opacity(0.5)))
+                                        .on_click(cx.listener(move |this, _, window, cx| {
+                                            this.select_page_icon(icon, window, cx)
+                                        }))
+                                        .child(if icon.is_empty() { "×" } else { icon })
+                                }),
+                        ),
+                )
+        } else {
+            div().id("page-icon-popover")
+        };
+        let query = self.search_query.trim().to_lowercase();
+        let page_rows = ordered_page_tree(&self.session.pages, false)
+            .into_iter()
+            .map(|(page, depth)| {
+                let selected = page.id == self.session.page.id;
+                let page_id = page.id;
+                let has_children = self
+                    .session
+                    .pages
+                    .iter()
+                    .any(|child| child.parent == Some(page_id));
+                let disclosure = if has_children {
+                    if page.expanded { "▾" } else { "▸" }
+                } else {
+                    " "
+                };
+                let page_actions = div()
+                    .flex()
+                    .items_center()
+                    .gap(px(2.))
+                    .child(
+                        div()
+                            .id(SharedString::from(format!(
+                                "page-actions-format-{}",
+                                page_id.0
+                            )))
+                            .px(px(3.))
+                            .cursor_pointer()
+                            .text_color(muted)
+                            .hover(|button| button.text_color(accent))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.format_bar_open = !this.format_bar_open;
+                                cx.notify();
+                            }))
+                            .child("Aa"),
+                    )
+                    .child(
+                        div()
+                            .id(SharedString::from(format!(
+                                "page-options-toggle-{}",
+                                page_id.0
+                            )))
+                            .px(px(3.))
+                            .cursor_pointer()
+                            .text_color(if self.page_options_open {
+                                accent
+                            } else {
+                                muted
+                            })
+                            .hover(|button| button.text_color(accent))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.page_options_open = !this.page_options_open;
+                                cx.notify();
+                            }))
+                            .child("···"),
+                    )
+                    .child(
+                        div()
+                            .id(SharedString::from(format!("add-child-page-{}", page_id.0)))
+                            .px(px(3.))
+                            .cursor_pointer()
+                            .text_color(muted)
+                            .hover(|button| button.text_color(accent))
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.add_child_page(page_id, window, cx)
+                            }))
+                            .child("＋"),
+                    )
+                    .child(
+                        div()
+                            .id(SharedString::from(format!("duplicate-page-{}", page_id.0)))
+                            .px(px(3.))
+                            .cursor_pointer()
+                            .text_color(muted)
+                            .hover(|button| button.text_color(accent))
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.duplicate_page(page_id, window, cx)
+                            }))
+                            .child("⧉"),
+                    )
+                    .child(
+                        div()
+                            .id(SharedString::from(format!("move-page-up-{}", page_id.0)))
+                            .px(px(2.))
+                            .cursor_pointer()
+                            .text_color(muted)
+                            .hover(|button| button.text_color(accent))
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.move_page(page_id, -1, window, cx)
+                            }))
+                            .child("↑"),
+                    )
+                    .child(
+                        div()
+                            .id(SharedString::from(format!("move-page-down-{}", page_id.0)))
+                            .px(px(2.))
+                            .cursor_pointer()
+                            .text_color(muted)
+                            .hover(|button| button.text_color(accent))
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.move_page(page_id, 1, window, cx)
+                            }))
+                            .child("↓"),
+                    )
+                    .child(
+                        div()
+                            .id(SharedString::from(format!("indent-page-{}", page_id.0)))
+                            .px(px(2.))
+                            .cursor_pointer()
+                            .text_color(muted)
+                            .hover(|button| button.text_color(accent))
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.indent_page(page_id, window, cx)
+                            }))
+                            .child("↳"),
+                    )
+                    .child(
+                        div()
+                            .id(SharedString::from(format!("outdent-page-{}", page_id.0)))
+                            .px(px(2.))
+                            .cursor_pointer()
+                            .text_color(muted)
+                            .hover(|button| button.text_color(accent))
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.outdent_page(page_id, window, cx)
+                            }))
+                            .child("↰"),
+                    )
+                    .child(
+                        div()
+                            .id(SharedString::from(format!("favorite-page-{}", page_id.0)))
+                            .px(px(3.))
+                            .cursor_pointer()
+                            .text_color(if page.favorite { accent } else { muted })
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.toggle_favorite(page_id, window, cx)
+                            }))
+                            .child(if page.favorite { "★" } else { "☆" }),
+                    )
+                    .child(
+                        div()
+                            .id(SharedString::from(format!("delete-page-{}", page_id.0)))
+                            .px(px(3.))
+                            .cursor_pointer()
+                            .text_color(muted)
+                            .hover(|button| button.text_color(rgb(0xe06c75)))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.request_delete_page(page_id, cx)
+                            }))
+                            .child("×"),
+                    );
+                div()
+                    .id(SharedString::from(format!("page-{}", page.id.0)))
+                    .h(px(30.))
+                    .pl(px(8. + depth as f32 * 12.))
+                    .pr(px(8.))
+                    .flex()
+                    .items_center()
+                    .rounded(px(5.))
+                    .when(selected, |row| row.bg(rgba(0xffffff14)).text_color(accent))
+                    .when(!selected, |row| row.text_color(muted))
+                    .hover(|row| row.bg(Palette::color(&p.bg).opacity(0.24)))
+                    .on_hover(cx.listener(move |this, hovered, _, cx| {
+                        if *hovered {
+                            if this.hovered_page != Some(page_id) {
+                                this.hovered_page = Some(page_id);
+                                cx.notify();
+                            }
+                        } else if this.hovered_page == Some(page_id) {
+                            this.hovered_page = None;
+                            cx.notify();
+                        }
+                    }))
+                    .child(
+                        div()
+                            .id(SharedString::from(format!("expand-page-{}", page_id.0)))
+                            .w(px(14.))
+                            .flex_shrink_0()
+                            .when(has_children, |button| {
+                                button.cursor_pointer().on_click(cx.listener(
+                                    move |this, _, window, cx| {
+                                        this.toggle_page_expanded(page_id, window, cx)
+                                    },
+                                ))
+                            })
+                            .child(disclosure),
+                    )
+                    .child(
+                        div()
+                            .id(SharedString::from(format!("select-page-{}", page_id.0)))
+                            .flex_1()
+                            .min_w_0()
+                            .cursor_pointer()
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.activate_page(page_id, window, cx)
+                            }))
+                            .child(format!(
+                                "{}  {}",
+                                if page.icon.is_empty() {
+                                    "▤"
+                                } else {
+                                    &page.icon
+                                },
+                                page.title
+                            )),
+                    )
+                    .when(self.hovered_page == Some(page_id), |row| {
+                        row.child(page_actions)
+                    })
             })
             .collect::<Vec<_>>();
+        let favorite_rows = self
+            .session
+            .pages
+            .iter()
+            .filter(|page| page.favorite && !page.template)
+            .map(|page| {
+                let page_id = page.id;
+                let selected = page_id == self.session.page.id;
+                div()
+                    .id(SharedString::from(format!("favorite-nav-{}", page_id.0)))
+                    .h(px(28.))
+                    .px(px(8.))
+                    .flex()
+                    .items_center()
+                    .gap(px(7.))
+                    .rounded(px(5.))
+                    .cursor_pointer()
+                    .when(selected, |row| row.bg(rgba(0xffffff14)).text_color(accent))
+                    .when(!selected, |row| row.text_color(muted))
+                    .hover(|row| row.bg(Palette::color(&p.bg).opacity(0.24)))
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.activate_page(page_id, window, cx)
+                    }))
+                    .child("★")
+                    .child(page.title.clone())
+            })
+            .collect::<Vec<_>>();
+        let recent_rows = self
+            .session
+            .recent_pages()
+            .into_iter()
+            .filter(|id| *id != self.session.page.id)
+            .filter_map(|id| {
+                self.session
+                    .pages
+                    .iter()
+                    .find(|page| page.id == id)
+                    .map(|page| (id, page.title.clone()))
+            })
+            .map(|(page_id, title)| {
+                div()
+                    .id(SharedString::from(format!("recent-nav-{}", page_id.0)))
+                    .h(px(28.))
+                    .px(px(8.))
+                    .flex()
+                    .items_center()
+                    .gap(px(7.))
+                    .rounded(px(5.))
+                    .cursor_pointer()
+                    .text_color(muted)
+                    .hover(|row| row.bg(Palette::color(&p.bg).opacity(0.24)))
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.activate_page(page_id, window, cx)
+                    }))
+                    .child("◷")
+                    .child(title)
+            })
+            .collect::<Vec<_>>();
+        let search_result_rows = self
+            .search_result_ids()
+            .into_iter()
+            .enumerate()
+            .filter_map(|(index, page_id)| {
+                self.session
+                    .pages
+                    .iter()
+                    .find(|page| page.id == page_id)
+                    .map(|page| {
+                        let title = page.title.clone();
+                        let preview = self
+                            .session
+                            .document
+                            .page_blocks(page_id)
+                            .iter()
+                            .find(|block| block.text.to_lowercase().contains(&query))
+                            .map(|block| block.text.clone())
+                            .unwrap_or_else(|| "页面标题匹配".into());
+                        div()
+                            .id(SharedString::from(format!("search-result-{}", page_id.0)))
+                            .w_full()
+                            .min_h(px(42.))
+                            .px(px(9.))
+                            .py(px(5.))
+                            .rounded(px(5.))
+                            .flex()
+                            .flex_col()
+                            .justify_center()
+                            .cursor_pointer()
+                            .when(index == self.search_selected, |row| {
+                                row.bg(Palette::color(&p.bg).opacity(0.45))
+                            })
+                            .hover(|row| row.bg(Palette::color(&p.bg).opacity(0.45)))
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.activate_page(page_id, window, cx);
+                                this.close_search(window, cx);
+                            }))
+                            .child(title)
+                            .child(div().text_size(px(10.)).text_color(muted).child(preview))
+                    })
+            })
+            .collect::<Vec<_>>();
+        let search_overlay = div()
+            .id("page-search-overlay")
+            .absolute()
+            .top(px(96.))
+            .left_0()
+            .right_0()
+            .flex()
+            .justify_center()
+            .child(
+                div()
+                    .id("page-search-panel")
+                    .w(px(620.))
+                    .max_w_full()
+                    .p(px(10.))
+                    .rounded(px(10.))
+                    .border_1()
+                    .border_color(Palette::color(&p.border))
+                    .bg(Palette::color(&p.elevated))
+                    .child(
+                        div()
+                            .h(px(38.))
+                            .flex()
+                            .items_center()
+                            .gap(px(9.))
+                            .px(px(4.))
+                            .border_b_1()
+                            .border_color(Palette::color(&p.border))
+                            .text_color(muted)
+                            .child("⌕")
+                            .child(div().flex_1().min_w_0().child(self.search_input.clone())),
+                    )
+                    .when(query.is_empty(), |panel| {
+                        panel.child(
+                            div()
+                                .h(px(52.))
+                                .px(px(2.))
+                                .flex()
+                                .items_center()
+                                .text_color(muted)
+                                .child("输入以搜索标题和内容。"),
+                        )
+                    })
+                    .when(
+                        !query.is_empty() && search_result_rows.is_empty(),
+                        |panel| {
+                            panel.child(
+                                div()
+                                    .h(px(52.))
+                                    .px(px(2.))
+                                    .flex()
+                                    .items_center()
+                                    .text_color(muted)
+                                    .child("没有匹配的页面。"),
+                            )
+                        },
+                    )
+                    .when(!search_result_rows.is_empty(), |panel| {
+                        panel.child(
+                            div()
+                                .id("search-result-list")
+                                .max_h(px(300.))
+                                .overflow_y_scroll()
+                                .py(px(4.))
+                                .flex()
+                                .flex_col()
+                                .children(search_result_rows),
+                        )
+                    })
+                    .child(
+                        div()
+                            .h(px(28.))
+                            .flex()
+                            .items_end()
+                            .text_size(px(10.))
+                            .text_color(muted)
+                            .child("↑↓ 选择 · Enter 打开 · Esc 关闭"),
+                    ),
+            );
+        let delete_confirmation =
+            self.confirm_delete_page.and_then(|id| {
+                self.session
+                    .pages
+                    .iter()
+                    .find(|page| page.id == id)
+                    .map(|page| {
+                        let title = page.title.clone();
+                        div()
+                            .w_full()
+                            .px(px(8.))
+                            .py(px(8.))
+                            .rounded(px(6.))
+                            .bg(Palette::color(&p.bg).opacity(0.55))
+                            .flex()
+                            .flex_col()
+                            .gap(px(5.))
+                            .child(format!("删除「{title}」及其所有子页面？"))
+                            .child(
+                                div()
+                                    .flex()
+                                    .gap(px(8.))
+                                    .child(
+                                        div()
+                                            .id("confirm-delete-page")
+                                            .cursor_pointer()
+                                            .text_color(rgb(0xe06c75))
+                                            .on_click(cx.listener(move |this, _, window, cx| {
+                                                this.delete_page(id, window, cx)
+                                            }))
+                                            .child("删除页面树"),
+                                    )
+                                    .child(
+                                        div()
+                                            .id("cancel-delete-page")
+                                            .cursor_pointer()
+                                            .text_color(muted)
+                                            .on_click(cx.listener(|this, _, _, cx| {
+                                                this.cancel_delete_page(cx)
+                                            }))
+                                            .child("取消"),
+                                    ),
+                            )
+                    })
+            });
+        let kind_buttons =
+            [
+                ("段落", BlockKind::Paragraph),
+                ("H1", BlockKind::Heading1),
+                ("H2", BlockKind::Heading2),
+                ("H3", BlockKind::Heading3),
+                ("• 列表", BlockKind::Bullet),
+                ("1. 列表", BlockKind::Numbered),
+                ("☐ 待办", BlockKind::Todo),
+                ("折叠块", BlockKind::Toggle),
+                ("引用", BlockKind::Quote),
+                ("代码", BlockKind::Code),
+                ("数学公式", BlockKind::Math),
+                ("链接卡片", BlockKind::Embed),
+                ("同步块", BlockKind::Synced),
+                ("页面", BlockKind::Page),
+                ("页面链接", BlockKind::Link),
+                ("提示", BlockKind::Callout),
+                ("分隔线", BlockKind::Divider),
+                ("表格", BlockKind::Table),
+                ("数据库", BlockKind::Database),
+                ("分栏", BlockKind::Columns),
+                ("目录", BlockKind::Toc),
+            ]
+            .into_iter()
+            .map(|(label, kind)| {
+                div()
+                    .id(SharedString::from(format!("kind-{kind:?}")))
+                    .px(px(9.))
+                    .py(px(5.))
+                    .rounded(px(5.))
+                    .cursor_pointer()
+                    .text_color(muted)
+                    .hover(|s| s.bg(Palette::color(&p.elevated)))
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.change_block_kind(kind, window, cx)
+                    }))
+                    .child(label)
+            })
+            .collect::<Vec<_>>();
+        let mark_buttons = [
+            ("B", quire_core::core::types::MarkKind::Bold),
+            ("I", quire_core::core::types::MarkKind::Italic),
+            ("S", quire_core::core::types::MarkKind::Strike),
+            ("</>", quire_core::core::types::MarkKind::Code),
+        ]
+        .into_iter()
+        .map(|(label, kind)| {
+            div()
+                .id(SharedString::from(format!("mark-{kind:?}")))
+                .px(px(8.))
+                .py(px(5.))
+                .rounded(px(5.))
+                .cursor_pointer()
+                .text_color(Palette::color(&p.accent))
+                .hover(|s| s.bg(Palette::color(&p.elevated)))
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    this.toggle_selected_mark(kind, window, cx)
+                }))
+                .child(label)
+        })
+        .collect::<Vec<_>>();
+        let attachment_buttons = [("图片", true), ("文件", false)]
+            .into_iter()
+            .map(|(label, image)| {
+                div()
+                    .id(if image { "insert-image" } else { "insert-file" })
+                    .px(px(8.))
+                    .py(px(5.))
+                    .rounded(px(5.))
+                    .cursor_pointer()
+                    .text_color(if self.session.page.locked {
+                        muted
+                    } else {
+                        accent
+                    })
+                    .hover(|button| button.bg(Palette::color(&p.elevated)))
+                    .when(!self.session.page.locked, |button| {
+                        button.on_click(cx.listener(move |this, _, window, cx| {
+                            this.pick_attachment(image, window, cx)
+                        }))
+                    })
+                    .child(label)
+            })
+            .collect::<Vec<_>>();
+        let link_editor = if self.link_editor_open {
+            div()
+                .id("link-editor")
+                .w_full()
+                .h(px(34.))
+                .px(px(12.))
+                .flex()
+                .items_center()
+                .gap(px(8.))
+                .border_b_1()
+                .border_color(Palette::color(&p.border))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .child(self.link_target_input.clone()),
+                )
+                .child(
+                    div()
+                        .id("apply-link")
+                        .px(px(9.))
+                        .py(px(4.))
+                        .rounded(px(4.))
+                        .cursor_pointer()
+                        .text_color(accent)
+                        .hover(|button| button.bg(Palette::color(&p.elevated)))
+                        .on_click(cx.listener(|this, _, window, cx| this.apply_link(window, cx)))
+                        .child("应用链接"),
+                )
+        } else {
+            div().id("link-editor-closed")
+        };
+        let find_bar = if self.find_open {
+            let count = self.find_matches.len();
+            let position = self
+                .find_index
+                .map(|index| format!("{} / {count}", index + 1))
+                .unwrap_or_else(|| {
+                    if count == 0 {
+                        "无结果".into()
+                    } else {
+                        format!("{count} 个结果")
+                    }
+                });
+            div()
+                .id("find-bar")
+                .w_full()
+                .h(px(38.))
+                .px(px(12.))
+                .flex()
+                .items_center()
+                .gap(px(8.))
+                .border_b_1()
+                .border_color(Palette::color(&p.border))
+                .child(div().flex_1().min_w_0().child(self.find_input.clone()))
+                .child(div().text_size(px(11.)).text_color(muted).child(position))
+                .child(
+                    div()
+                        .id("find-previous")
+                        .px(px(6.))
+                        .cursor_pointer()
+                        .hover(|button| button.bg(Palette::color(&p.elevated)))
+                        .on_click(cx.listener(|this, _, window, cx| this.move_find(-1, window, cx)))
+                        .child("↑"),
+                )
+                .child(
+                    div()
+                        .id("find-next")
+                        .px(px(6.))
+                        .cursor_pointer()
+                        .hover(|button| button.bg(Palette::color(&p.elevated)))
+                        .on_click(cx.listener(|this, _, window, cx| this.move_find(1, window, cx)))
+                        .child("↓"),
+                )
+                .child(
+                    div()
+                        .id("find-close")
+                        .px(px(6.))
+                        .cursor_pointer()
+                        .text_color(muted)
+                        .hover(|button| button.bg(Palette::color(&p.elevated)))
+                        .on_click(cx.listener(|this, _, window, cx| this.close_find(window, cx)))
+                        .child("×"),
+                )
+        } else {
+            div().id("find-bar-closed")
+        };
+        let rows = self.visible_document_blocks();
         let mut notes = (if self.organizer_trash {
             self.session.organizer.trashed_notes().collect::<Vec<_>>()
         } else {
@@ -12516,6 +12671,79 @@ impl Render for Workspace {
                         )
                     }),
                 );
+        let document_blocks = rows;
+        let document_ids = document_blocks
+            .iter()
+            .map(|(_, id)| *id)
+            .collect::<Vec<_>>();
+        self.sync_document_list_ids(&document_ids);
+        let scroll_weak = cx.entity().downgrade();
+        self.document_list.set_scroll_handler(move |event, _, app| {
+            let visible_range = event.visible_range.clone();
+            let _ = scroll_weak.update(app, |this, cx| {
+                this.document_visible_range = visible_range;
+                let mut keep = this.document_visible_block_ids();
+                if let Some(active) = this.active {
+                    keep.insert(active.0);
+                }
+                this.inputs
+                    .retain(|id, input| keep.contains(id) || input.read(cx).buffer.composing());
+                this.input_subscriptions
+                    .retain(|id, _| this.inputs.contains_key(id));
+            });
+        });
+        let row_weak = cx.entity().downgrade();
+        let row_palette = p.clone();
+        let row_text = text;
+        let row_muted = muted;
+        let row_accent = accent;
+        let row_elevated = elevated;
+        let row_width = if self.session.page.full_width {
+            1120.
+        } else {
+            760.
+        };
+        let document_rows = list(
+            self.document_list.clone(),
+            move |list_index, window, app| {
+                if list_index == 0 {
+                    return div().h(px(0.)).into_any_element();
+                }
+                if list_index > document_ids.len() {
+                    return div().h(px(128.)).into_any_element();
+                }
+                let (index, id) = document_blocks[list_index - 1];
+                let weak = row_weak.clone();
+                let palette = row_palette.clone();
+                let sync_sources = &sync_sources;
+                let page_candidates = &page_candidates;
+                weak.update(app, |this, cx| {
+                    let Some(block) = this.session.document.block(id).cloned() else {
+                        return div().into_any_element();
+                    };
+                    div()
+                        .w_full()
+                        .max_w(px(row_width))
+                        .mx_auto()
+                        .child(this.render_document_block(
+                            index,
+                            &block,
+                            window,
+                            cx,
+                            row_text,
+                            row_muted,
+                            row_accent,
+                            row_elevated,
+                            &palette,
+                            database_width,
+                            sync_sources,
+                            page_candidates,
+                        ))
+                        .into_any_element()
+                })
+                .unwrap_or_else(|_| div().into_any_element())
+            },
+        );
         let page_content = if self.organizer_open {
             organizer_view
         } else {
@@ -12523,9 +12751,10 @@ impl Render for Workspace {
                 .id("document-scroll")
                 .flex_1()
                 .min_w_0()
+                .min_h_0()
                 .h_full()
-                .overflow_y_scroll()
-                .px(px(48.))
+                .flex()
+                .flex_col()
                 .child(
                     div()
                         .w_full()
@@ -12536,7 +12765,7 @@ impl Render for Workspace {
                         }))
                         .mx_auto()
                         .pt(px(72.))
-                        .pb(px(128.))
+                        .pb(px(16.))
                         .flex()
                         .flex_col()
                         .when_some(cover_path, |page, path| {
@@ -12595,8 +12824,16 @@ impl Render for Workspace {
                                     })
                                     .children(backlink_rows),
                             )
-                        })
-                        .children(rows),
+                        }),
+                )
+                .child(
+                    div()
+                        .id("document-list-scroll")
+                        .flex_1()
+                        .min_h_0()
+                        .min_w_0()
+                        .px(px(48.))
+                        .child(document_rows.flex_1().min_h_0()),
                 )
         };
         div()
