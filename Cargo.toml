@@ -8,7 +8,7 @@ default-run = "quire-gpui"
 [dependencies]
 gpui = "=0.2.2"
 unicode-segmentation = "1.12"
-quire-core = { git = "https://github.com/PT123123/quire-core.git", rev = "db0e95fc7710f4fd6010617cadc2492325e79d75" }
+quire-core = { git = "https://github.com/PT123123/quire-core.git", rev = "55b13c14c0a80eaf4d64f428c3e69c87dcbe169d" }
 anyhow = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

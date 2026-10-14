@@ -314,6 +314,39 @@ impl Session {
         let _ = self.persistence.force_flush();
         Some(id)
     }
+    pub fn delete_database_record(&mut self, block: BlockId, record: RecordId) -> Result<bool> {
+        if self.page.locked {
+            return Ok(false);
+        }
+        let Some(db) = self.document.block(block).and_then(|block| block.db_ref) else {
+            return Ok(false);
+        };
+        let Some(row) = self.repo.record(record)? else {
+            return Ok(false);
+        };
+        if row.db != db {
+            return Ok(false);
+        }
+        if row.page.is_some() {
+            bail!("该记录已关联页面，请从侧栏删除页面");
+        }
+        let values = self.repo.record_values(record)?;
+        let Some(entry) = command::plan(
+            &mut self.document,
+            self.page.id,
+            Command::DeleteDatabaseRecord {
+                block,
+                record: row,
+                values,
+                page: None,
+            },
+        ) else {
+            return Ok(false);
+        };
+        self.apply_entry(entry);
+        self.persistence.force_flush()?;
+        Ok(true)
+    }
     pub fn add_database_property(
         &mut self,
         block: BlockId,
@@ -2385,6 +2418,13 @@ mod tests {
             assert_eq!(rows[1].title, "进行中");
             assert_eq!(rows[1].cells[0], "待核准");
             assert!(!columns.iter().any(|column| column.id == done_property));
+            assert!(session.delete_database_record(block, second_record)?);
+            assert_eq!(session.repo.record_count(db)?, 1);
+            session.undo();
+            assert_eq!(session.repo.record_count(db)?, 2);
+            session.redo();
+            assert_eq!(session.repo.record_count(db)?, 1);
+            session.undo();
             session.persistence.force_flush()?;
             assert_eq!(session.repo.record_count(db)?, 2);
         }

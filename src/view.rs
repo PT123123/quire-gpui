@@ -524,6 +524,7 @@ pub struct Workspace {
     selected_database_views: HashMap<u64, ViewId>,
     database_columns_open: Option<(u64, u64)>,
     database_column_drag: Option<DatabaseColumnDrag>,
+    selected_database_record: Option<(u64, u64, u64)>,
     active_database_cell: Option<(u64, u64, u64, u64)>,
     subscriptions: Vec<Subscription>,
     palette: Palette,
@@ -698,6 +699,7 @@ impl Workspace {
             selected_database_views: HashMap::new(),
             database_columns_open: None,
             database_column_drag: None,
+            selected_database_record: None,
             active_database_cell: None,
             subscriptions: Vec::new(),
             palette: Palette::load(&theme_choice),
@@ -5767,6 +5769,11 @@ impl Render for Workspace {
                                                                 {
                                                                     cell = cell.text_color(accent).on_click(_cx.listener(
                                                                         move |this, _, window, cx| {
+                                                                                this.selected_database_record = Some((
+                                                                                    cell_block,
+                                                                                    db_id.0,
+                                                                                    row.record,
+                                                                                ));
                                                                             let next = if checked { "false" } else { "true" };
                                                                             match this.session.set_database_cell(
                                                                                 BlockId(cell_block),
@@ -5786,6 +5793,11 @@ impl Render for Workspace {
                                                                 } else {
                                                                     cell = cell.on_click(_cx.listener(
                                                                         move |this, _, window, cx| {
+                                                                                this.selected_database_record = Some((
+                                                                                    cell_block,
+                                                                                    db_id.0,
+                                                                                    row.record,
+                                                                                ));
                                                                             this.begin_database_cell_edit(
                                                                                 cell_block,
                                                                                 db_id.0,
@@ -6020,7 +6032,14 @@ impl Render for Workspace {
                                                                             .add_database_record(
                                                                                 block_id,
                                                                             )
-                                                                            .is_some()
+                                                                            .is_some_and(|record| {
+                                                                                this.selected_database_record = Some((
+                                                                                    block_id.0,
+                                                                                    db_id.0,
+                                                                                    record.0,
+                                                                                ));
+                                                                                true
+                                                                            })
                                                                         {
                                                                             this.schedule_save(
                                                                                 false, window, cx,
@@ -6030,6 +6049,52 @@ impl Render for Workspace {
                                                                     },
                                                                 ))
                                                                 .child("＋ 新建行"),
+                                                        ).child(
+                                                            {
+                                                                let selected = self.selected_database_record.is_some_and(
+                                                                    |(block, db, _)| {
+                                                                        block == block_id.0 && db == db_id.0
+                                                                    },
+                                                                );
+                                                                let mut button = div()
+                                                                    .id(SharedString::from(format!(
+                                                                        "db-delete-row-{}",
+                                                                        block_id.0
+                                                                    )))
+                                                                    .px(px(8.))
+                                                                    .py(px(4.))
+                                                                    .rounded(px(4.))
+                                                                    .text_color(if selected { p.block_text(9) } else { muted })
+                                                                    .hover(|button| button.bg(Palette::color(&p.bg).opacity(0.3)))
+                                                                    .child("删除选中行");
+                                                                if selected && !self.session.page.locked {
+                                                                    button = button.cursor_pointer().on_click(cx.listener(
+                                                                        move |this, _, window, cx| {
+                                                                            let Some((_, _, record)) = this.selected_database_record.filter(
+                                                                                |(block, db, _)| *block == block_id.0 && *db == db_id.0,
+                                                                            ) else {
+                                                                                return;
+                                                                            };
+                                                                            match this.session.delete_database_record(
+                                                                                block_id,
+                                                                                quire_core::core::database::RecordId(record),
+                                                                            ) {
+                                                                                Ok(true) => {
+                                                                                    this.selected_database_record = None;
+                                                                                    this.schedule_save(true, window, cx);
+                                                                                }
+                                                                                Ok(false) => {}
+                                                                                Err(error) => {
+                                                                                    this.status = error.to_string();
+                                                                                    this.error = true;
+                                                                                }
+                                                                            }
+                                                                            cx.notify();
+                                                                        },
+                                                                    ));
+                                                                }
+                                                                button
+                                                            },
                                                         ).child(
                                                             div()
                                                                 .id(SharedString::from(format!("db-add-property-{}", block_id.0)))
