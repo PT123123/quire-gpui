@@ -70,16 +70,22 @@ fn run() -> Result<()> {
     Application::new().run(move |cx: &mut App| {
         input::bind_keys(cx);
         view::bind_keys(cx);
-        let bounds = Bounds::centered(None, size(px(1180.), px(800.)), cx);
+        // The Slint reference's window is 1280×800 including the thin resize
+        // frame. GPUI's custom frame keeps an ~8px resize border on each side,
+        // so size the client area to preserve that same outer footprint.
+        let bounds = Bounds::centered(None, size(px(1264.), px(791.)), cx);
         let window = cx.open_window(
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
                 titlebar: Some(TitlebarOptions {
-                    title: Some("Quire GPUI · 开发预览".into()),
-                    appears_transparent: false,
+                    title: Some("Quire".into()),
+                    // The reference uses its own 40px titlebar and window
+                    // controls. GPUI's transparent titlebar enables the same
+                    // client-side titlebar on Windows while preserving resize.
+                    appears_transparent: true,
                     ..Default::default()
                 }),
-                window_min_size: Some(size(px(680.), px(440.))),
+                window_min_size: Some(size(px(924.), px(591.))),
                 ..Default::default()
             },
             |window, cx| cx.new(|cx| view::Workspace::new(session, &theme, smoke, window, cx)),
