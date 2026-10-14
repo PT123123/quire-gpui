@@ -172,6 +172,44 @@ fn repeat_label(repeat: Repeat) -> &'static str {
     }
 }
 
+fn database_kind_label(kind: quire_core::core::database::PropertyKind) -> &'static str {
+    use quire_core::core::database::PropertyKind as Kind;
+    match kind {
+        Kind::Title => "标题",
+        Kind::Text => "文本",
+        Kind::Number => "数字",
+        Kind::Select => "单选",
+        Kind::MultiSelect => "多选",
+        Kind::Status => "状态",
+        Kind::Date => "日期",
+        Kind::Checkbox => "复选框",
+        Kind::Url => "网址",
+        Kind::Email => "邮箱",
+        Kind::Phone => "电话",
+        Kind::Files => "文件",
+        Kind::CreatedTime => "创建时间",
+        Kind::LastEditedTime => "最后编辑",
+        Kind::Formula => "公式",
+        Kind::Rollup => "汇总",
+        Kind::Relation => "关联",
+    }
+}
+
+fn editable_database_kinds() -> [quire_core::core::database::PropertyKind; 9] {
+    use quire_core::core::database::PropertyKind as Kind;
+    [
+        Kind::Text,
+        Kind::Number,
+        Kind::Select,
+        Kind::Status,
+        Kind::Date,
+        Kind::Checkbox,
+        Kind::Url,
+        Kind::Email,
+        Kind::Phone,
+    ]
+}
+
 fn parse_organizer_tags(input: &str) -> Vec<String> {
     input
         .split([',', '，'])
@@ -527,6 +565,7 @@ pub struct Workspace {
     inputs: BTreeMap<u64, Entity<TextInput>>,
     selected_database_views: HashMap<u64, ViewId>,
     database_columns_open: Option<(u64, u64)>,
+    database_property_kind_open: Option<(u64, u64)>,
     database_column_drag: Option<DatabaseColumnDrag>,
     database_search_open: Option<u64>,
     database_search_text: String,
@@ -720,6 +759,7 @@ impl Workspace {
             inputs: BTreeMap::new(),
             selected_database_views: HashMap::new(),
             database_columns_open: None,
+            database_property_kind_open: None,
             database_column_drag: None,
             database_search_open: None,
             database_search_text: String::new(),
@@ -2388,6 +2428,35 @@ impl Workspace {
                 cx.notify();
             }
         }
+    }
+    fn set_database_property_kind(
+        &mut self,
+        block: BlockId,
+        property: quire_core::core::database::PropertyId,
+        kind: quire_core::core::database::PropertyKind,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match self
+            .session
+            .set_database_property_kind(block, property, kind)
+        {
+            Ok(true) => {
+                self.status = "列类型已更改；已有值不会自动转换".into();
+                self.error = false;
+                self.database_property_kind_open = None;
+                self.schedule_save(true, window, cx);
+            }
+            Ok(false) => {
+                self.database_property_kind_open = None;
+            }
+            Err(error) => {
+                self.status = error.to_string();
+                self.error = true;
+                self.database_property_kind_open = None;
+            }
+        }
+        cx.notify();
     }
     fn open_database_search(&mut self, db: u64, window: &mut Window, cx: &mut Context<Self>) {
         self.database_search_open = Some(db);
@@ -6046,7 +6115,7 @@ impl Render for Workspace {
                                             == Some((block_id.0, view_id.0))
                                     });
                                     let column_picker = columns_open.then(|| {
-                                        div()
+                                        let mut picker = div()
                                             .w_full()
                                             .px(px(8.))
                                             .py(px(6.))
@@ -6057,9 +6126,12 @@ impl Render for Workspace {
                                             .border_color(db_border)
                                             .children(all_columns.iter().map(|property| {
                                                 let property_id = property.id;
+                                                let property_kind = property.kind;
                                                 let visible = columns
                                                     .iter()
                                                     .any(|column| column.id == property_id);
+                                                let kind_open = self.database_property_kind_open
+                                                    == Some((db_id.0, property_id.0));
                                                 let mut item = div()
                                                     .id(SharedString::from(format!(
                                                         "db-column-toggle-{}-{}",
@@ -6076,6 +6148,31 @@ impl Render for Workspace {
                                                     .child(if visible { "☑" } else { "□" })
                                                     .child(property.name.clone());
                                                 if !self.session.page.locked {
+                                                    let kind_label = database_kind_label(property_kind);
+                                                    item = item.child(
+                                                        div()
+                                                            .id(SharedString::from(format!(
+                                                                "db-property-kind-{}-{}",
+                                                                db_id.0, property_id.0
+                                                            )))
+                                                            .px(px(5.))
+                                                            .py(px(2.))
+                                                            .rounded(px(3.))
+                                                            .text_color(if kind_open { accent } else { muted })
+                                                            .child(kind_label)
+                                                            .cursor_pointer()
+                                                            .hover(|button| button.bg(db_hover))
+                                                            .on_click(cx.listener(
+                                                                move |this, _, _, cx| {
+                                                                    cx.stop_propagation();
+                                                                    let key = (db_id.0, property_id.0);
+                                                                    this.database_property_kind_open =
+                                                                        (this.database_property_kind_open != Some(key))
+                                                                            .then_some(key);
+                                                                    cx.notify();
+                                                                },
+                                                            )),
+                                                    );
                                                     if let Some(view_id) = selected_view {
                                                         item = item
                                                             .cursor_pointer()
@@ -6097,7 +6194,65 @@ impl Render for Workspace {
                                                     }
                                                 }
                                                 item
-                                            }))
+                                            }));
+                                        if let Some((kind_db, property_id)) =
+                                            self.database_property_kind_open
+                                                .filter(|(kind_db, _)| *kind_db == db_id.0)
+                                        {
+                                            if let Some(property) = all_columns
+                                                .iter()
+                                                .find(|property| property.id.0 == property_id)
+                                            {
+                                                let property_kind = property.kind;
+                                                let name = property.name.clone();
+                                                picker = picker.child(
+                                                    div()
+                                                        .id(SharedString::from(format!(
+                                                            "db-property-kind-options-{kind_db}-{property_id}"
+                                                        )))
+                                                        .w_full()
+                                                        .px(px(5.))
+                                                        .py(px(5.))
+                                                        .flex()
+                                                        .flex_wrap()
+                                                        .items_center()
+                                                        .gap(px(5.))
+                                                        .border_t_1()
+                                                        .border_color(db_border)
+                                                        .child(format!("{} 类型：", name))
+                                                        .children(editable_database_kinds().into_iter().map(|kind| {
+                                                            let selected = kind == property_kind;
+                                                            div()
+                                                                .id(SharedString::from(format!(
+                                                                    "db-kind-option-{}-{}-{}",
+                                                                    db_id.0,
+                                                                    property_id,
+                                                                    kind.as_str()
+                                                                )))
+                                                                .px(px(7.))
+                                                                .py(px(4.))
+                                                                .rounded(px(4.))
+                                                                .text_size(px(11.))
+                                                                .text_color(if selected { Palette::color(&p.fg) } else { muted })
+                                                                .when(selected, |button| button.bg(accent.opacity(0.45)))
+                                                                .when(!selected && !self.session.page.locked, |button| {
+                                                                    button.cursor_pointer().hover(|button| button.bg(db_hover))
+                                                                })
+                                                                .on_click(cx.listener(move |this, _, window, cx| {
+                                                                    this.set_database_property_kind(
+                                                                        block_id,
+                                                                        quire_core::core::database::PropertyId(property_id),
+                                                                        kind,
+                                                                        window,
+                                                                        cx,
+                                                                    );
+                                                                }))
+                                                                .child(database_kind_label(kind))
+                                                        })),
+                                                );
+                                            }
+                                        }
+                                        picker
                                     });
                                     view.flex_col()
                                         .w(database_width)
@@ -6273,6 +6428,7 @@ impl Render for Workspace {
                                                                                     this.database_columns_open
                                                                                         != Some(*key)
                                                                                 });
+                                                                            this.database_property_kind_open = None;
                                                                             cx.notify();
                                                                         },
                                                                     ));

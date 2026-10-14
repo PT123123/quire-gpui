@@ -442,6 +442,79 @@ impl Session {
         self.persistence.force_flush()?;
         Ok(true)
     }
+    pub fn set_database_property_kind(
+        &mut self,
+        block: BlockId,
+        property: PropertyId,
+        kind: quire_core::core::database::PropertyKind,
+    ) -> Result<bool> {
+        if self.page.locked {
+            return Ok(false);
+        }
+        let Some(db) = self.document.block(block).and_then(|block| block.db_ref) else {
+            return Ok(false);
+        };
+        let Some(current) = self
+            .databases
+            .properties
+            .iter()
+            .find(|candidate| candidate.id == property && candidate.db == db)
+            .cloned()
+        else {
+            bail!("该列不属于此数据库");
+        };
+        if current.kind.is_title() {
+            bail!("数据库的标题列决定每一行的名称");
+        }
+        if current.kind == kind {
+            return Ok(false);
+        }
+        if current.kind == quire_core::core::database::PropertyKind::Relation {
+            let relation = quire_core::core::database_relation::config_relation(&current.config);
+            if relation.mirror.is_some()
+                || self.databases.properties.iter().any(|candidate| {
+                    candidate.kind == quire_core::core::database::PropertyKind::Relation
+                        && quire_core::core::database_relation::config_relation(&candidate.config)
+                            .mirror
+                            == Some(property)
+                })
+            {
+                bail!("此列被双向关系引用，请先清除反向指针");
+            }
+        }
+        if self.databases.properties.iter().any(|candidate| {
+            if candidate.kind != quire_core::core::database::PropertyKind::Rollup {
+                return false;
+            }
+            let config = quire_core::core::database_rollup::config_rollup(&candidate.config);
+            config.relation == Some(property) || config.column == Some(property)
+        }) {
+            bail!("有汇总列通过此列计算，请先移除该引用");
+        }
+        let Some(entry) = command::plan(
+            &mut self.document,
+            self.page.id,
+            Command::SetDatabasePropertyKind {
+                block,
+                property,
+                from: current.kind,
+                to: kind,
+            },
+        ) else {
+            return Ok(false);
+        };
+        self.apply_entry(entry);
+        if let Some(property) = self
+            .databases
+            .properties
+            .iter_mut()
+            .find(|candidate| candidate.id == property)
+        {
+            property.kind = kind;
+        }
+        self.persistence.force_flush()?;
+        Ok(true)
+    }
     pub fn add_database_view(&mut self, block: BlockId) -> Option<ViewId> {
         if self.page.locked {
             return None;
@@ -2259,6 +2332,7 @@ fn is_database_change(change: &Change) -> bool {
             | Change::PropertyAdded(_)
             | Change::PropertyDeleted { .. }
             | Change::PropertyRenamed { .. }
+            | Change::PropertyKindSet { .. }
             | Change::ViewAdded(_)
             | Change::ViewDeleted { .. }
     )
@@ -2439,7 +2513,38 @@ mod tests {
             );
             let record = session.add_database_record(block).expect("record created");
             assert!(session.set_database_cell(block, record, title, "进行中")?);
-            assert!(session.set_database_cell(block, record, status_property, "待核准")?);
+            assert!(session.set_database_cell(block, record, status_property, "12")?);
+            assert_eq!(
+                session.repo.cell(record, status_property)?,
+                CellValue::Text("12".into())
+            );
+            assert!(session.set_database_property_kind(
+                block,
+                status_property,
+                quire_core::core::database::PropertyKind::Number,
+            )?);
+            assert_eq!(
+                session.repo.cell(record, status_property)?,
+                CellValue::Empty,
+                "text is not presented as a number until the user re-enters it"
+            );
+            session.undo();
+            assert_eq!(
+                session
+                    .databases
+                    .properties
+                    .iter()
+                    .find(|property| property.id == status_property)
+                    .unwrap()
+                    .kind,
+                quire_core::core::database::PropertyKind::Text
+            );
+            assert_eq!(
+                session.repo.cell(record, status_property)?,
+                CellValue::Text("12".into()),
+                "undo must reveal the untouched value"
+            );
+            session.redo();
             assert!(session.set_database_cell(block, record, done_property, "true")?);
             assert_eq!(
                 session.repo.cell(record, title)?,
@@ -2447,7 +2552,7 @@ mod tests {
             );
             assert_eq!(
                 session.repo.cell(record, status_property)?,
-                CellValue::Text("待核准".into())
+                CellValue::Empty
             );
             assert_eq!(
                 session.repo.cell(record, done_property)?,
@@ -2492,7 +2597,7 @@ mod tests {
             assert_eq!(rows[0].cells.len(), 1);
             assert_eq!(rows[0].title, "Alpha");
             assert_eq!(rows[1].title, "进行中");
-            assert_eq!(rows[1].cells[0], "待核准");
+            assert_eq!(rows[1].cells[0], "");
             assert!(!columns.iter().any(|column| column.id == done_property));
             assert_eq!(
                 session
@@ -2517,7 +2622,7 @@ mod tests {
             session.persistence.force_flush()?;
             assert_eq!(session.repo.record_count(db)?, 2);
         }
-        let reopened = Session::open(&path)?;
+        let mut reopened = Session::open(&path)?;
         let block = reopened
             .blocks()
             .iter()
@@ -2534,6 +2639,15 @@ mod tests {
                 .databases
                 .properties_of(db)
                 .any(|property| property.name == "进度")
+        );
+        assert_eq!(
+            reopened
+                .databases
+                .properties_of(db)
+                .find(|property| property.name == "进度")
+                .unwrap()
+                .kind,
+            quire_core::core::database::PropertyKind::Number
         );
         assert_eq!(reopened.databases.views_of(db).count(), 2);
         assert_eq!(reopened.repo.record_count(db)?, 2);
@@ -2571,9 +2685,16 @@ mod tests {
             reopened.repo.cell(record, title)?,
             CellValue::Text("进行中".into())
         );
+        assert_eq!(reopened.repo.cell(record, status)?, CellValue::Empty);
+        assert!(reopened.set_database_property_kind(
+            block.id,
+            status,
+            quire_core::core::database::PropertyKind::Text,
+        )?);
         assert_eq!(
             reopened.repo.cell(record, status)?,
-            CellValue::Text("待核准".into())
+            CellValue::Text("12".into()),
+            "restoring the prior type after reopening must reveal the stored value"
         );
         assert_eq!(reopened.repo.cell(record, done)?, CellValue::Flag(true));
         Ok(())
