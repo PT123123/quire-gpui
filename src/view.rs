@@ -246,6 +246,47 @@ fn database_filter_value_from_text(
     }
 }
 
+fn order_database_groups(
+    mut groups: Vec<(quire_core::core::database_view::GroupKey, usize)>,
+    config: &str,
+) -> Vec<(quire_core::core::database_view::GroupKey, usize)> {
+    use quire_core::core::database_view::GroupKey;
+    let options = quire_core::core::database_property::PropertyOptions::from_config(config);
+    let rank = |key: &GroupKey| -> (u64, String) {
+        match key {
+            GroupKey::Unchecked => (0, String::new()),
+            GroupKey::Checked => (1, String::new()),
+            GroupKey::Option(id) => match options
+                .iter()
+                .position(|option| option.id.to_string() == *id)
+            {
+                Some(index) => (2 + index as u64, String::new()),
+                None => (u64::MAX / 2, id.clone()),
+            },
+            GroupKey::Empty => (u64::MAX, String::new()),
+        }
+    };
+    groups.sort_by(|(left, _), (right, _)| rank(left).cmp(&rank(right)));
+    groups
+}
+
+fn database_group_label(key: &quire_core::core::database_view::GroupKey, config: &str) -> String {
+    use quire_core::core::database_view::GroupKey;
+    match key {
+        GroupKey::Empty => "无值".into(),
+        GroupKey::Unchecked => "未勾选".into(),
+        GroupKey::Checked => "已勾选".into(),
+        GroupKey::Option(id) => {
+            quire_core::core::database_property::PropertyOptions::from_config(config)
+                .iter()
+                .find(|option| option.id.to_string() == *id)
+                .map(|option| option.name.clone())
+                .filter(|name| !name.is_empty())
+                .unwrap_or_else(|| id.clone())
+        }
+    }
+}
+
 fn editable_database_kinds() -> [quire_core::core::database::PropertyKind; 9] {
     use quire_core::core::database::PropertyKind as Kind;
     [
@@ -333,8 +374,8 @@ fn toc_headings(blocks: &[Block]) -> Vec<(BlockId, u8, String)> {
 #[cfg(test)]
 mod view_tests {
     use super::{
-        database_filter_value_from_text, find_matches_in, link_target_range, parse_organizer_tags,
-        toc_headings,
+        database_filter_value_from_text, database_group_label, find_matches_in, link_target_range,
+        order_database_groups, parse_organizer_tags, toc_headings,
     };
     use quire_core::core::database::PropertyKind;
     use quire_core::core::database_view::FilterValue;
@@ -347,6 +388,39 @@ mod view_tests {
         assert_eq!(
             parse_organizer_tags(" 设计,复刻， 设计 ,,桌面端 "),
             ["设计", "复刻", "桌面端"]
+        );
+    }
+
+    #[test]
+    fn database_group_order_follows_schema_options_and_places_empty_last() {
+        use quire_core::core::database_view::GroupKey;
+
+        let groups = vec![
+            (GroupKey::Empty, 1),
+            (GroupKey::Option("99".into()), 2),
+            (GroupKey::Option("7".into()), 3),
+            (GroupKey::Option("3".into()), 4),
+        ];
+        let ordered = order_database_groups(
+            groups,
+            r#"{"options":[{"id":3,"name":"第一个"},{"id":7,"name":"第二个"}]}"#,
+        );
+        assert_eq!(
+            ordered.iter().map(|(key, _)| key).collect::<Vec<_>>(),
+            [
+                &GroupKey::Option("3".into()),
+                &GroupKey::Option("7".into()),
+                &GroupKey::Option("99".into()),
+                &GroupKey::Empty,
+            ]
+        );
+        assert_eq!(database_group_label(&GroupKey::Empty, ""), "无值");
+        assert_eq!(
+            database_group_label(
+                &GroupKey::Option("7".into()),
+                r#"{"options":[{"id":7,"name":"第二个"}]}"#
+            ),
+            "第二个"
         );
     }
 
@@ -701,6 +775,7 @@ pub struct Workspace {
     selected_database_views: HashMap<u64, ViewId>,
     database_columns_open: Option<(u64, u64)>,
     database_filter_open: Option<(u64, u64)>,
+    database_group_open: Option<(u64, u64)>,
     database_filter_panel: usize,
     database_filter_edit_row: Option<usize>,
     database_filter_value_input: Entity<TextInput>,
@@ -907,6 +982,7 @@ impl Workspace {
             selected_database_views: HashMap::new(),
             database_columns_open: None,
             database_filter_open: None,
+            database_group_open: None,
             database_property_kind_open: None,
             database_column_drag: None,
             database_search_open: None,
@@ -1600,6 +1676,12 @@ impl Workspace {
                     self.database_filter_value_active = None;
                 }
                 if self
+                    .database_group_open
+                    .is_some_and(|(group_block, _)| group_block != id.0)
+                {
+                    self.database_group_open = None;
+                }
+                if self
                     .block_menu_open
                     .is_some_and(|(menu_block, _)| menu_block != id)
                 {
@@ -1661,13 +1743,19 @@ impl Workspace {
             InputEvent::DismissSlash => {
                 let block_menu_closed = self.block_menu_open.take().is_some();
                 let filter_menu_closed = self.database_filter_open.take().is_some();
+                let group_menu_closed = self.database_group_open.take().is_some();
                 self.database_filter_value_active = None;
                 if self.find_open {
                     self.close_find(window, cx);
                 }
                 let slash_closed = self.slash_menu.take().is_some();
                 let mention_closed = self.mention_menu.take().is_some();
-                if block_menu_closed || filter_menu_closed || slash_closed || mention_closed {
+                if block_menu_closed
+                    || filter_menu_closed
+                    || group_menu_closed
+                    || slash_closed
+                    || mention_closed
+                {
                     cx.notify();
                 }
             }
@@ -2748,6 +2836,63 @@ impl Workspace {
             Ok(false) => cx.notify(),
             Err(error) => {
                 self.status = format!("数据库筛选保存失败：{error}");
+                self.error = true;
+                cx.notify();
+            }
+        }
+    }
+    fn set_database_group(
+        &mut self,
+        block: BlockId,
+        db: quire_core::core::database::DatabaseId,
+        view_id: ViewId,
+        property: Option<quire_core::core::database::PropertyId>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.session.page.locked {
+            return;
+        }
+        if let Some(property) = property {
+            let Some(column) = self
+                .session
+                .databases
+                .properties_of(db)
+                .find(|column| column.id == property)
+            else {
+                return;
+            };
+            if !quire_core::core::database_view::GroupSpec::admits(column.kind) {
+                return;
+            }
+        }
+        let Some(view) = self
+            .session
+            .databases
+            .views
+            .iter()
+            .find(|view| view.id == view_id && view.db == db)
+        else {
+            return;
+        };
+        let mut definition =
+            quire_core::core::database_view::ViewDefinition::parse(&view.definition);
+        definition.set_group(property);
+        match self
+            .session
+            .set_database_view_definition(block, view_id, definition.to_text())
+        {
+            Ok(true) => {
+                self.database_group_open = None;
+                self.schedule_save(true, window, cx);
+                cx.notify();
+            }
+            Ok(false) => {
+                self.database_group_open = None;
+                cx.notify();
+            }
+            Err(error) => {
+                self.status = format!("数据库分组保存失败：{error}");
                 self.error = true;
                 cx.notify();
             }
@@ -5863,6 +6008,28 @@ impl Render for Workspace {
                                 search: row_search.as_deref(),
                             })
                             .ok()?;
+                        let group_data = rules.group.and_then(|spec| {
+                            let config = self
+                                .session
+                                .databases
+                                .properties_of(db_id)
+                                .find(|property| property.id == spec.property)?
+                                .config
+                                .clone();
+                            let request = quire_core::core::database::RowRequest {
+                                db: db_id,
+                                title,
+                                columns: &columns,
+                                sorts: &rules.sorts,
+                                filter: rules.filter.as_ref(),
+                                search: row_search.as_deref(),
+                            };
+                            let groups = repo.group_counts(&request, &spec).ok()?;
+                            Some((spec, order_database_groups(groups, &config), config))
+                        });
+                        let list_total = group_data.as_ref().map_or(total, |(_, groups, _)| {
+                            groups.iter().map(|(_, count)| count + 1).sum()
+                        });
                         Some((
                             db_id,
                             title,
@@ -5874,7 +6041,9 @@ impl Render for Workspace {
                             selected_view,
                             rules.sorts,
                             rules.filter,
+                            group_data,
                             total,
+                            list_total,
                             repo,
                         ))
                     })
@@ -6575,7 +6744,7 @@ impl Render for Workspace {
                                     .child(div().flex().gap(px(6.)).children(table_actions))
                             })
                             .when(kind == BlockKind::Database, |view| {
-                                if let Some((db_id, title, columns, all_columns, column_widths, row_search, views, selected_view, view_sorts, view_filter, total, repo)) =
+                                if let Some((db_id, title, columns, all_columns, column_widths, row_search, views, selected_view, view_sorts, view_filter, group_data, total, list_total, repo)) =
                                     database_table
                                 {
                                     let db_border = Palette::color(&p.border);
@@ -6729,9 +6898,10 @@ impl Render for Workspace {
                                         ));
                                     let row_sorts = view_sorts.clone();
                                     let row_filter = view_filter.clone();
+                                    let row_group_data = group_data.clone();
                                     let rows = uniform_list(
                                         SharedString::from(format!("database-rows-{}", db_id.0)),
-                                        total,
+                                        list_total,
                                         cx.processor(
                                         move |_this, range: Range<usize>, _window, _cx| {
                                                 let request = quire_core::core::database::RowRequest {
@@ -6742,14 +6912,8 @@ impl Render for Workspace {
                                                     filter: row_filter.as_ref(),
                                                     search: row_search.as_deref(),
                                                 };
-                                                let slice = quire_core::core::database::RowWindow {
-                                                    start: range.start,
-                                                    end: range.end,
-                                                };
-                                                repo.window_rows(&request, slice)
-                                                    .unwrap_or_default()
-                                                    .into_iter()
-                                                    .map(|row| {
+                                                let mut entries: Vec<(usize, AnyElement)> = Vec::new();
+                                                let render_row = |row: quire_core::core::database::RowView| {
                                                     let cells = std::iter::once(row.title)
                                                             .chain(row.cells)
                                                             .enumerate()
@@ -6891,7 +7055,7 @@ impl Render for Workspace {
                                                             cell
                                                             })
                                                             .collect::<Vec<_>>();
-                                                        div()
+                                                        let rendered_row = div()
                                                             .id(SharedString::from(format!(
                                                                 "db-row-{}-{}",
                                                                 db_id.0, row.record
@@ -6902,12 +7066,64 @@ impl Render for Workspace {
                                                             .border_b_1()
                                                             .border_color(db_border)
                                                             .children(cells)
-                                                    })
-                                                    .collect::<Vec<_>>()
+                                                            .into_any_element();
+                                                        rendered_row
+                                                };
+                                                if let Some((spec, groups, config)) = &row_group_data {
+                                                    let counts = groups.iter().map(|(_, count)| *count).collect::<Vec<_>>();
+                                                    let window = quire_core::core::database::RowWindow {
+                                                        start: range.start,
+                                                        end: range.end,
+                                                    };
+                                                    let layout = quire_core::core::database_view::group_window(&counts, window);
+                                                    for (group_index, entry) in layout.headers {
+                                                        let (key, count) = &groups[group_index];
+                                                        let label = database_group_label(key, config);
+                                                        entries.push((entry, div()
+                                                            .id(SharedString::from(format!("db-group-{}-{group_index}", db_id.0)))
+                                                            .w_full()
+                                                            .h(px(36.))
+                                                            .px(px(10.))
+                                                            .flex()
+                                                            .items_center()
+                                                            .justify_between()
+                                                            .border_b_1()
+                                                            .border_color(db_border)
+                                                            .bg(db_hover)
+                                                            .text_size(px(11.))
+                                                            .text_color(text)
+                                                            .child(label)
+                                                            .child(format!("{count} 行"))
+                                                            .into_any_element()));
+                                                    }
+                                                    for slice in layout.rows {
+                                                        let (key, _) = &groups[slice.group];
+                                                        let rows = repo.window_rows_in_group(
+                                                            &request,
+                                                            spec,
+                                                            key,
+                                                            slice.skip,
+                                                            slice.len,
+                                                        ).unwrap_or_default();
+                                                        for (offset, row) in rows.into_iter().enumerate() {
+                                                            entries.push((slice.at + offset, render_row(row)));
+                                                        }
+                                                    }
+                                                } else {
+                                                    let slice = quire_core::core::database::RowWindow {
+                                                        start: range.start,
+                                                        end: range.end,
+                                                    };
+                                                    for (offset, row) in repo.window_rows(&request, slice).unwrap_or_default().into_iter().enumerate() {
+                                                        entries.push((range.start + offset, render_row(row)));
+                                                    }
+                                                }
+                                                entries.sort_by_key(|(entry, _)| *entry);
+                                                entries.into_iter().map(|(_, row)| row).collect::<Vec<_>>()
                                             },
                                         ),
                                     )
-                                    .h(px((total.min(8).max(1) as f32 * 36.).max(40.)))
+                                    .h(px((list_total.min(8).max(1) as f32 * 36.).max(40.)))
                                     .w(database_width)
                                     .max_h(px(288.))
                                     .flex_1()
@@ -6915,6 +7131,9 @@ impl Render for Workspace {
                                     let columns_open = selected_view.is_some_and(|view_id| {
                                         self.database_columns_open
                                             == Some((block_id.0, view_id.0))
+                                    });
+                                    let group_open = selected_view.is_some_and(|view_id| {
+                                        self.database_group_open == Some((block_id.0, view_id.0))
                                     });
                                     let filter_open = selected_view.is_some_and(|view_id| {
                                         self.database_filter_open == Some((block_id.0, view_id.0))
@@ -6926,6 +7145,84 @@ impl Render for Workspace {
                                         .properties_of(db_id)
                                         .cloned()
                                         .collect::<Vec<_>>();
+                                    let grouped_property = group_data
+                                        .as_ref()
+                                        .map(|(spec, _, _)| spec.property);
+                                    let group_picker = group_open.then(|| {
+                                        let mut popup = div()
+                                            .w_full()
+                                            .px(px(8.))
+                                            .py(px(6.))
+                                            .flex()
+                                            .flex_wrap()
+                                            .gap(px(5.))
+                                            .border_b_1()
+                                            .border_color(db_border);
+                                        let selected = grouped_property.is_none();
+                                        popup = popup.child(
+                                            div()
+                                                .id(SharedString::from(format!(
+                                                    "db-group-none-{}",
+                                                    block_id.0
+                                                )))
+                                                .px(px(8.))
+                                                .py(px(5.))
+                                                .rounded(px(4.))
+                                                .text_size(px(11.))
+                                                .text_color(if selected { accent } else { muted })
+                                                .when(!self.session.page.locked, |item| {
+                                                    item.cursor_pointer()
+                                                        .hover(|item| item.bg(db_hover))
+                                                })
+                                                .when(!self.session.page.locked, |item| {
+                                                    item.on_click(cx.listener(move |this, _, window, cx| {
+                                                        this.set_database_group(
+                                                            block_id,
+                                                            db_id,
+                                                            active_view_id,
+                                                            None,
+                                                            window,
+                                                            cx,
+                                                        );
+                                                    }))
+                                                })
+                                                .child("无分组"),
+                                        );
+                                        popup = popup.children(filter_columns.iter().filter(|property| {
+                                            quire_core::core::database_view::GroupSpec::admits(property.kind)
+                                        }).map(|property| {
+                                            let property_id = property.id;
+                                            let label = format!("{} · {}", property.name, database_kind_label(property.kind));
+                                            let selected = grouped_property == Some(property_id);
+                                            let mut item = div()
+                                                .id(SharedString::from(format!(
+                                                    "db-group-property-{}-{}",
+                                                    db_id.0, property_id.0
+                                                )))
+                                                .px(px(8.))
+                                                .py(px(5.))
+                                                .rounded(px(4.))
+                                                .text_size(px(11.))
+                                                .text_color(if selected { accent } else { text })
+                                                .child(label);
+                                            if !self.session.page.locked {
+                                                item = item.cursor_pointer()
+                                                    .hover(|item| item.bg(db_hover))
+                                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                                        this.set_database_group(
+                                                            block_id,
+                                                            db_id,
+                                                            active_view_id,
+                                                            Some(property_id),
+                                                            window,
+                                                            cx,
+                                                        );
+                                                    }));
+                                            }
+                                            item
+                                        }));
+                                        popup
+                                    });
                                     let flat_filter = quire_core::core::database_view::FlatFilter::from_tree(view_filter.as_ref());
                                     let filter_picker = filter_open.then(|| {
                                         let mut popup = div()
@@ -7446,6 +7743,42 @@ impl Render for Workspace {
                                                                             this.database_filter_value_active = None;
                                                                         }
                                                                         this.database_columns_open = None;
+                                                                        this.database_group_open = None;
+                                                                        cx.notify();
+                                                                    },
+                                                                ));
+                                                            }
+                                                            button
+                                                        }).child({
+                                                            let group_name = grouped_property
+                                                                .and_then(|property_id| {
+                                                                    self.session.databases.properties_of(db_id)
+                                                                        .find(|property| property.id == property_id)
+                                                                        .map(|property| property.name.clone())
+                                                                });
+                                                            let mut button = div()
+                                                                .id(SharedString::from(format!(
+                                                                    "db-group-toggle-{}",
+                                                                    block_id.0
+                                                                )))
+                                                                .px(px(8.))
+                                                                .py(px(4.))
+                                                                .rounded(px(4.))
+                                                                .text_color(if group_open { accent } else { muted })
+                                                                .hover(|button| button.bg(db_hover))
+                                                                .child(group_name.map_or_else(
+                                                                    || "分组".to_owned(),
+                                                                    |name| format!("分组 · {name}"),
+                                                                ));
+                                                            if !self.session.page.locked {
+                                                                button = button.cursor_pointer().on_click(cx.listener(
+                                                                    move |this, _, _, cx| {
+                                                                        let key = selected_view.map(|view| (block_id.0, view.0));
+                                                                        this.database_group_open = key.filter(|key| this.database_group_open != Some(*key));
+                                                                        if this.database_group_open.is_some() {
+                                                                            this.database_filter_open = None;
+                                                                            this.database_columns_open = None;
+                                                                        }
                                                                         cx.notify();
                                                                     },
                                                                 ));
@@ -7490,6 +7823,9 @@ impl Render for Workspace {
                                                                                     this.database_columns_open
                                                                                         != Some(*key)
                                                                                 });
+                                                                            if this.database_columns_open.is_some() {
+                                                                                this.database_group_open = None;
+                                                                            }
                                                                             this.database_property_kind_open = None;
                                                                             cx.notify();
                                                                         },
@@ -7601,6 +7937,9 @@ impl Render for Workspace {
                                                 ),
                                         )
                                         .when_some(column_picker, |view, picker| {
+                                            view.child(picker)
+                                        })
+                                        .when_some(group_picker, |view, picker| {
                                             view.child(picker)
                                         })
                                         .when_some(filter_picker, |view, picker| {
