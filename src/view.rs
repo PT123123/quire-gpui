@@ -4644,13 +4644,18 @@ impl Workspace {
             None,
             note.tags.clone(),
         );
-        self.session.set_note_trashed(id, true);
+        self.defer_organizer_delete(
+            vec![id.0],
+            false,
+            format!("笔记「{title}」已转为待办"),
+            window,
+            cx,
+        );
         self.selected_note = None;
         self.selected_task = Some(task_id);
         self.organizer_tasks = true;
         self.note_title_draft.clear();
         self.note_body_draft.clear();
-        self.schedule_save(true, window, cx);
         cx.notify();
     }
     fn select_note(
@@ -5014,13 +5019,17 @@ impl Workspace {
     }
     fn bulk_trash_tasks(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let ids = self.selected_task_ids.iter().copied().collect::<Vec<_>>();
-        if self.session.set_tasks_trashed(&ids, true) {
-            self.selected_task_ids.clear();
-            self.selected_task = None;
-            self.reset_organizer_item_inputs(cx);
-            self.status = format!("已移入回收站 {} 项任务（Ctrl+Z 可撤销）", ids.len());
-            self.schedule_save(true, window, cx);
+        if ids.is_empty() {
+            return;
         }
+        self.selected_task_ids.clear();
+        self.defer_organizer_delete(
+            ids.iter().map(|id| id.0).collect(),
+            true,
+            format!("已移入回收站：{} 项任务", ids.len()),
+            window,
+            cx,
+        );
     }
     fn create_task_list(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let number = self.session.organizer.lists.len() + 1;
@@ -5066,21 +5075,11 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.commit_note_draft(window, cx);
-        if self.session.set_task_trashed(id, true) {
-            if self.selected_task == Some(id) {
-                self.selected_task = None;
-                self.note_title_draft.clear();
-                self.note_body_draft.clear();
-                self.note_title_input.update(cx, |input, cx| {
-                    input.reset(String::new(), Vec::new(), 0, cx);
-                });
-                self.note_body_input.update(cx, |input, cx| {
-                    input.reset(String::new(), Vec::new(), 0, cx);
-                });
-            }
-            self.schedule_save(true, window, cx);
-        }
+        let Some(task) = self.session.organizer.task(id) else {
+            return;
+        };
+        let message = format!("已移入回收站：任务「{}」", task.title);
+        self.defer_organizer_delete(vec![id.0], true, message, window, cx);
     }
     fn toggle_note_pin(
         &mut self,
@@ -5101,20 +5100,90 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let Some(note) = self.session.organizer.note(id) else {
+            return;
+        };
+        let title = if note.title.trim().is_empty() {
+            "无标题"
+        } else {
+            note.title.as_str()
+        };
+        self.defer_organizer_delete(
+            vec![id.0],
+            false,
+            format!("已移入回收站：笔记「{title}」"),
+            window,
+            cx,
+        );
+    }
+    fn defer_organizer_delete(
+        &mut self,
+        ids: Vec<u64>,
+        is_task: bool,
+        message: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if ids.is_empty() {
+            return;
+        }
         self.commit_note_draft(window, cx);
-        if self.session.set_note_trashed(id, true) {
-            if self.selected_note == Some(id) {
-                self.selected_note = None;
-                self.note_title_draft.clear();
-                self.note_body_draft.clear();
-                self.note_title_input.update(cx, |input, cx| {
-                    input.reset(String::new(), Vec::new(), 0, cx);
-                });
-                self.note_body_input.update(cx, |input, cx| {
-                    input.reset(String::new(), Vec::new(), 0, cx);
-                });
-            }
+        let (token, committed_previous) = if is_task {
+            let task_ids = ids
+                .iter()
+                .copied()
+                .map(quire_core::core::organizer::TaskId)
+                .collect::<Vec<_>>();
+            self.session.defer_trash_tasks(&task_ids, message.clone())
+        } else {
+            let note_ids = ids
+                .iter()
+                .copied()
+                .map(quire_core::core::organizer::NoteId)
+                .collect::<Vec<_>>();
+            self.session.defer_trash_notes(&note_ids, message.clone())
+        };
+        if committed_previous {
             self.schedule_save(true, window, cx);
+        }
+        if is_task {
+            if self
+                .selected_task
+                .is_some_and(|selected| ids.contains(&selected.0))
+            {
+                self.selected_task = None;
+                self.reset_organizer_item_inputs(cx);
+            }
+            self.selected_task_ids
+                .retain(|selected| !ids.contains(&selected.0));
+        } else if self
+            .selected_note
+            .is_some_and(|selected| ids.contains(&selected.0))
+        {
+            self.selected_note = None;
+            self.note_title_draft.clear();
+            self.note_body_draft.clear();
+            self.organizer_tags_draft.clear();
+            self.reset_organizer_item_inputs(cx);
+        }
+        cx.spawn_in(window, async move |weak, cx| {
+            cx.background_executor()
+                .timer(Duration::from_millis(3_000))
+                .await;
+            let _ = weak.update_in(cx, |this, window, cx| {
+                if this.session.commit_pending_organizer_delete(token) {
+                    this.schedule_save(true, window, cx);
+                } else {
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+        cx.notify();
+    }
+    fn undo_organizer_delete(&mut self, cx: &mut Context<Self>) {
+        if self.session.undo_pending_organizer_delete() {
+            cx.notify();
         }
     }
     fn toggle_organizer_trash(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -10825,9 +10894,11 @@ impl Render for Workspace {
         .into_iter()
         .cloned()
         .filter(|note| {
-            self.organizer_tag
-                .as_ref()
-                .is_none_or(|tag| note.tags.contains(tag))
+            (self.organizer_trash || !self.session.note_delete_is_pending(note.id))
+                && self
+                    .organizer_tag
+                    .as_ref()
+                    .is_none_or(|tag| note.tags.contains(tag))
                 && (self.search_query.trim().is_empty()
                     || note
                         .title
@@ -11011,6 +11082,9 @@ impl Render for Workspace {
         })
         .into_iter()
         .filter(|task| {
+            if !self.organizer_trash && self.session.task_delete_is_pending(task.id) {
+                return false;
+            }
             if self.organizer_trash {
                 return self
                     .organizer_tag
@@ -11074,7 +11148,7 @@ impl Render for Workspace {
             .session
             .organizer
             .live_tasks()
-            .filter(|task| task.done)
+            .filter(|task| !self.session.task_delete_is_pending(task.id) && task.done)
             .count();
         match self.task_sort {
             1 => tasks.sort_by(|a, b| {
@@ -11306,6 +11380,7 @@ impl Render for Workspace {
                 .session
                 .organizer
                 .live_tasks()
+                .filter(|task| !self.session.task_delete_is_pending(task.id))
                 .filter(|task| {
                     task_matches_smart_view(&self.session.organizer, task, view, &today, &week)
                         && (view == 4 && task.done
@@ -11340,7 +11415,7 @@ impl Render for Workspace {
                     .session
                     .organizer
                     .live_tasks()
-                    .filter(|task| task.list == id)
+                    .filter(|task| !self.session.task_delete_is_pending(task.id) && task.list == id)
                     .count();
                 div()
                     .id(SharedString::from(format!("organizer-list-row-{id:?}")))
@@ -11396,7 +11471,11 @@ impl Render for Workspace {
             let tasks = if self.organizer_trash {
                 self.session.organizer.trashed_tasks().collect::<Vec<_>>()
             } else {
-                self.session.organizer.live_tasks().collect::<Vec<_>>()
+                self.session
+                    .organizer
+                    .live_tasks()
+                    .filter(|task| !self.session.task_delete_is_pending(task.id))
+                    .collect::<Vec<_>>()
             };
             for task in tasks {
                 for tag in &task.tags {
@@ -11409,7 +11488,11 @@ impl Render for Workspace {
             let notes = if self.organizer_trash {
                 self.session.organizer.trashed_notes().collect::<Vec<_>>()
             } else {
-                self.session.organizer.live_notes().collect::<Vec<_>>()
+                self.session
+                    .organizer
+                    .live_notes()
+                    .filter(|note| !self.session.note_delete_is_pending(note.id))
+                    .collect::<Vec<_>>()
             };
             for note in notes {
                 for tag in &note.tags {
@@ -11680,7 +11763,41 @@ impl Render for Workspace {
                             )
                         })
                     })
-                    .child(
+                                .when_some(
+                                    self.session
+                                        .pending_organizer_delete()
+                                        .map(|pending| pending.message.clone()),
+                                    |list, message| {
+                                        list.child(
+                                            div()
+                                                .id("organizer-delete-undo")
+                                                .w_full()
+                                                .px(px(10.))
+                                                .py(px(8.))
+                                                .rounded(px(6.))
+                                                .border_1()
+                                                .border_color(Palette::color(&p.border))
+                                                .bg(Palette::color(&p.elevated))
+                                                .flex()
+                                                .items_center()
+                                                .justify_between()
+                                                .child(div().flex_1().min_w_0().text_size(px(11.)).child(message))
+                                                .child(
+                                                    div()
+                                                        .id("organizer-delete-undo-button")
+                                                        .px(px(9.))
+                                                        .py(px(4.))
+                                                        .rounded(px(4.))
+                                                        .cursor_pointer()
+                                                        .text_color(accent)
+                                                        .hover(|button| button.bg(Palette::color(&p.bg).opacity(0.35)))
+                                                        .on_click(cx.listener(|this, _, _, cx| this.undo_organizer_delete(cx)))
+                                                        .child("撤销"),
+                                                ),
+                                        )
+                                    },
+                                )
+                                .child(
                         div()
                             .id("organizer-notes-scroll")
                             .flex_1()
@@ -11722,7 +11839,11 @@ impl Render for Workspace {
                                 })
                                 .child(format!(
                                     "已完成 {completed_task_count} / {}",
-                                    self.session.organizer.live_tasks().count()
+                                    self.session
+                                        .organizer
+                                        .live_tasks()
+                                        .filter(|task| !self.session.task_delete_is_pending(task.id))
+                                        .count()
                                 )),
                         )
                     }),

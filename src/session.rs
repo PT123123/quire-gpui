@@ -31,6 +31,14 @@ use std::{
 };
 use unicode_segmentation::UnicodeSegmentation;
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PendingOrganizerDelete {
+    pub token: u64,
+    pub ids: Vec<u64>,
+    pub is_task: bool,
+    pub message: String,
+}
+
 pub struct Session {
     pub path: PathBuf,
     pub pages: Vec<Page>,
@@ -46,6 +54,8 @@ pub struct Session {
     next_attachment_id: u64,
     history: History,
     typing: Option<(BlockId, Entry, Instant)>,
+    pending_organizer_delete: Option<PendingOrganizerDelete>,
+    next_organizer_delete_token: u64,
     // Prevent two GPUI instances allocating IDs against the same stale document.
     _instance_lock: std::fs::File,
 }
@@ -692,6 +702,8 @@ impl Session {
             next_attachment_id,
             history: History::default(),
             typing: None,
+            pending_organizer_delete: None,
+            next_organizer_delete_token: 0,
             _instance_lock: instance_lock,
         };
         if session.blocks().is_empty() && !session.page.locked {
@@ -3264,8 +3276,14 @@ impl Session {
         let tags: BTreeSet<String> = self
             .organizer
             .live_notes()
+            .filter(|note| !self.note_delete_is_pending(note.id))
             .map(|note| &note.tags)
-            .chain(self.organizer.live_tasks().map(|task| &task.tags))
+            .chain(
+                self.organizer
+                    .live_tasks()
+                    .filter(|task| !self.task_delete_is_pending(task.id))
+                    .map(|task| &task.tags),
+            )
             .flat_map(|tags| tags.iter().cloned())
             .collect();
         let mut suggestions = tags
@@ -3288,6 +3306,92 @@ impl Session {
             .unwrap_or_default();
         let deleted_at = trashed.then(|| now.as_secs().min(i64::MAX as u64) as i64);
         self.update_note_metadata(id, |note| note.deleted_at = deleted_at)
+    }
+    pub fn set_notes_trashed(&mut self, ids: &[NoteId], trashed: bool) -> bool {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default();
+        let millis = now.as_millis().min(i64::MAX as u128) as i64;
+        let deleted_at = trashed.then(|| now.as_secs().min(i64::MAX as u64) as i64);
+        let commands = ids
+            .iter()
+            .filter_map(|id| {
+                let before = self.organizer.note(*id)?.clone();
+                let mut after = before.clone();
+                after.deleted_at = deleted_at;
+                after.rev = organizer::rev(millis, "quire-gpui");
+                Some(Command::UpdateNote {
+                    id: *id,
+                    before,
+                    after,
+                })
+            })
+            .collect::<Vec<_>>();
+        self.apply_organizer_batch(commands)
+    }
+    pub fn pending_organizer_delete(&self) -> Option<&PendingOrganizerDelete> {
+        self.pending_organizer_delete.as_ref()
+    }
+    pub fn note_delete_is_pending(&self, id: NoteId) -> bool {
+        self.pending_organizer_delete
+            .as_ref()
+            .is_some_and(|pending| !pending.is_task && pending.ids.contains(&id.0))
+    }
+    pub fn task_delete_is_pending(&self, id: TaskId) -> bool {
+        self.pending_organizer_delete
+            .as_ref()
+            .is_some_and(|pending| pending.is_task && pending.ids.contains(&id.0))
+    }
+    pub fn defer_trash_notes(&mut self, ids: &[NoteId], message: String) -> (u64, bool) {
+        let committed_previous = self.commit_pending_organizer_delete_if_any();
+        self.next_organizer_delete_token = self.next_organizer_delete_token.saturating_add(1);
+        let token = self.next_organizer_delete_token;
+        self.pending_organizer_delete = Some(PendingOrganizerDelete {
+            token,
+            ids: ids.iter().map(|id| id.0).collect(),
+            is_task: false,
+            message,
+        });
+        (token, committed_previous)
+    }
+    pub fn defer_trash_tasks(&mut self, ids: &[TaskId], message: String) -> (u64, bool) {
+        let committed_previous = self.commit_pending_organizer_delete_if_any();
+        self.next_organizer_delete_token = self.next_organizer_delete_token.saturating_add(1);
+        let token = self.next_organizer_delete_token;
+        self.pending_organizer_delete = Some(PendingOrganizerDelete {
+            token,
+            ids: ids.iter().map(|id| id.0).collect(),
+            is_task: true,
+            message,
+        });
+        (token, committed_previous)
+    }
+    pub fn undo_pending_organizer_delete(&mut self) -> bool {
+        self.pending_organizer_delete.take().is_some()
+    }
+    pub fn commit_pending_organizer_delete(&mut self, token: u64) -> bool {
+        let Some(pending) = self
+            .pending_organizer_delete
+            .as_ref()
+            .filter(|pending| pending.token == token)
+            .cloned()
+        else {
+            return false;
+        };
+        self.pending_organizer_delete = None;
+        if pending.is_task {
+            let ids = pending.ids.into_iter().map(TaskId).collect::<Vec<_>>();
+            self.set_tasks_trashed(&ids, true)
+        } else {
+            let ids = pending.ids.into_iter().map(NoteId).collect::<Vec<_>>();
+            self.set_notes_trashed(&ids, true)
+        }
+    }
+    fn commit_pending_organizer_delete_if_any(&mut self) -> bool {
+        self.pending_organizer_delete
+            .as_ref()
+            .map(|pending| pending.token)
+            .is_some_and(|token| self.commit_pending_organizer_delete(token))
     }
     fn update_note_metadata(&mut self, id: NoteId, update: impl FnOnce(&mut Note)) -> bool {
         let Some(before) = self.organizer.note(id).cloned() else {
@@ -5727,6 +5831,47 @@ mod tests {
                 .is_empty()
         );
         assert!(session.organizer_tag_suggestions("没有标签").is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn organizer_delete_waits_for_undo_window_and_superseding_delete_commits_previous() -> Result<()>
+    {
+        let scratch = quire_core::testing::ScratchDir::new("gpui-organizer-deferred-delete");
+        let mut session = Session::open(&scratch.path().join("test.db"))?;
+        let first = session.create_note();
+        let second = session.create_note();
+        let (first_token, committed) = session.defer_trash_notes(&[first], "delete first".into());
+        assert!(!committed);
+        assert!(session.note_delete_is_pending(first));
+        assert!(!session.organizer.note(first).unwrap().is_trashed());
+
+        let (second_token, committed) =
+            session.defer_trash_notes(&[second], "delete second".into());
+        assert!(committed);
+        assert!(session.organizer.note(first).unwrap().is_trashed());
+        assert!(session.note_delete_is_pending(second));
+        assert!(!session.commit_pending_organizer_delete(first_token));
+        assert!(session.undo_pending_organizer_delete());
+        assert!(!session.organizer.note(second).unwrap().is_trashed());
+
+        let (final_token, committed) = session.defer_trash_notes(&[second], "delete second".into());
+        assert!(!committed);
+        assert!(session.commit_pending_organizer_delete(final_token));
+        assert!(!session.commit_pending_organizer_delete(second_token));
+        assert!(session.organizer.note(second).unwrap().is_trashed());
+        assert!(session.undo_organizer());
+        assert!(!session.organizer.note(second).unwrap().is_trashed());
+
+        let task = session.create_task("临时任务".into());
+        let (task_token, committed) = session.defer_trash_tasks(&[task], "delete task".into());
+        assert!(!committed);
+        assert!(session.task_delete_is_pending(task));
+        assert!(!session.organizer.task(task).unwrap().is_trashed());
+        assert!(session.commit_pending_organizer_delete(task_token));
+        assert!(session.organizer.task(task).unwrap().is_trashed());
+        assert!(session.undo_organizer());
+        assert!(!session.organizer.task(task).unwrap().is_trashed());
         Ok(())
     }
 

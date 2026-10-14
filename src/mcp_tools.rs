@@ -198,7 +198,9 @@ pub fn execute(session: &mut Session, name: &str, args: &Value) -> Result<Value,
                 .get("include_trashed")
                 .and_then(Value::as_bool)
                 .unwrap_or(false);
-            let rows = session.organizer.notes.iter().filter(|n| include_trashed || !n.is_trashed()).map(|n| json!({
+            let rows = session.organizer.notes.iter().filter(|n| {
+                (include_trashed || !n.is_trashed()) && !session.note_delete_is_pending(n.id)
+            }).map(|n| json!({
                 "note_id": n.id.0, "title": n.title, "body": n.body, "tags": n.tags,
                 "pinned": n.pinned, "trashed": n.is_trashed(), "created": n.created, "edited": n.edited
             })).collect::<Vec<_>>();
@@ -226,6 +228,9 @@ pub fn execute(session: &mut Session, name: &str, args: &Value) -> Result<Value,
         }
         "update_note" => {
             let id = NoteId(integer(args, "note_id")?);
+            if session.note_delete_is_pending(id) {
+                return Err(format!("笔记 {} 正在等待撤销删除", id.0));
+            }
             let old = session
                 .organizer
                 .note(id)
@@ -247,6 +252,9 @@ pub fn execute(session: &mut Session, name: &str, args: &Value) -> Result<Value,
         }
         "trash_note" | "restore_note" => {
             let id = NoteId(integer(args, "note_id")?);
+            if session.note_delete_is_pending(id) {
+                return Err(format!("笔记 {} 正在等待撤销删除", id.0));
+            }
             if session.organizer.note(id).is_none() {
                 return Err(format!("找不到笔记 {}", id.0));
             }
@@ -262,7 +270,9 @@ pub fn execute(session: &mut Session, name: &str, args: &Value) -> Result<Value,
                 .organizer
                 .tasks
                 .iter()
-                .filter(|t| include_trashed || !t.is_trashed())
+                .filter(|t| {
+                    (include_trashed || !t.is_trashed()) && !session.task_delete_is_pending(t.id)
+                })
                 .map(|t| {
                     json!({
                         "task_id": t.id.0, "list_id": t.list.0, "title": t.title, "notes": t.notes,
@@ -322,6 +332,9 @@ pub fn execute(session: &mut Session, name: &str, args: &Value) -> Result<Value,
         }
         "update_task" => {
             let id = TaskId(integer(args, "task_id")?);
+            if session.task_delete_is_pending(id) {
+                return Err(format!("任务 {} 正在等待撤销删除", id.0));
+            }
             let old = session
                 .organizer
                 .task(id)
@@ -368,6 +381,9 @@ pub fn execute(session: &mut Session, name: &str, args: &Value) -> Result<Value,
         }
         "trash_task" | "restore_task" => {
             let id = TaskId(integer(args, "task_id")?);
+            if session.task_delete_is_pending(id) {
+                return Err(format!("任务 {} 正在等待撤销删除", id.0));
+            }
             if session.organizer.task(id).is_none() {
                 return Err(format!("找不到任务 {}", id.0));
             }
@@ -661,6 +677,48 @@ mod tests {
         );
         execute(&mut session, "restore_note", &json!({"note_id": id})).unwrap();
         assert!(!session.organizer.note(NoteId(id)).unwrap().is_trashed());
+    }
+
+    #[test]
+    fn organizer_pending_deletes_are_hidden_and_cannot_be_mutated() {
+        let (_scratch, mut session) = session();
+        let note_id = session.create_note();
+        session.defer_trash_notes(&[note_id], "pending".into());
+        assert_eq!(
+            execute(&mut session, "list_notes", &json!({})).unwrap()["notes"]
+                .as_array()
+                .unwrap()
+                .len(),
+            0
+        );
+        assert!(
+            execute(
+                &mut session,
+                "update_note",
+                &json!({"note_id": note_id.0, "title":"race"})
+            )
+            .unwrap_err()
+            .contains("等待撤销删除")
+        );
+
+        let task_id = session.create_task("pending task".into());
+        session.defer_trash_tasks(&[task_id], "pending".into());
+        assert_eq!(
+            execute(&mut session, "list_tasks", &json!({})).unwrap()["tasks"]
+                .as_array()
+                .unwrap()
+                .len(),
+            0
+        );
+        assert!(
+            execute(
+                &mut session,
+                "update_task",
+                &json!({"task_id": task_id.0, "title":"race"})
+            )
+            .unwrap_err()
+            .contains("等待撤销删除")
+        );
     }
 
     #[test]

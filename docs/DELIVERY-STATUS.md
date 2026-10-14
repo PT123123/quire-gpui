@@ -701,3 +701,9 @@ GPUI 已覆盖主编辑器、整理区、独立速记与标签建议、Windows �
 
 - 重复触发 Alt+N 或托盘速记入口时，激活并聚焦已打开的速记窗口；窗口已关闭时才创建新窗口。这样多个入口不会同时持有彼此不同的速记草稿。
 - 验证：`cargo fmt --all`、`cargo check -j 8`、`cargo test -j 8`（51 项）、`cargo build --release -j 8 --target-dir target-release` 和 `git diff --check` 通过；复用窗口行为尚待真人桌面触发检查。
+
+## 第一百零四轮：整理区延迟删除与撤销条
+
+- 笔记、任务及任务多选删除现在先隐藏条目并显示 3 秒撤销条；窗口期内撤销只取消待办删除，不产生 organizer 历史项。超时批量写入软删除；窗口期内再次删除时先提交上一批，避免多条计时器竞争。笔记转任务后也使用该撤销窗口。
+- 延迟项目从 GPUI 列表、智能视图计数和 MCP 默认列表中隐藏；MCP 更新待删除项目时明确拒绝，避免与定时提交产生写入竞争。快速测试覆盖笔记/任务延迟提交、撤销、连续删除 token 失效与 MCP 并发访问保护。
+- 验证：`cargo fmt --all`、`cargo check -j 8`、`cargo test -j 8`（53 项）、`cargo build --release -j 8 --target-dir target-release` 与 `git diff --check` 通过。未访问真实用户库；独立撤销栈、草稿防抖、批量永久清空与桌面真人交互仍未完成/验收。
