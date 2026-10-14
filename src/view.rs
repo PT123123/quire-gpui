@@ -4,7 +4,7 @@ use quire_core::core::{
     command::Command,
     database::ViewId,
     organizer::{OrganizerCatalog, Priority, Repeat, Task as OrganizerTask},
-    types::{Block, BlockId, BlockKind, ColorKind, Lang},
+    types::{Block, BlockId, BlockKind, ColorKind, Lang, Mark, MarkKind},
 };
 use quire_gpui::session::Session;
 use quire_gpui::ui_scale::px;
@@ -281,8 +281,10 @@ fn toc_headings(blocks: &[Block]) -> Vec<(BlockId, u8, String)> {
 
 #[cfg(test)]
 mod view_tests {
-    use super::{find_matches_in, parse_organizer_tags, toc_headings};
-    use quire_core::core::types::{Block, BlockId, BlockKind, ColorKind, Lang, OrderKey, PageId};
+    use super::{find_matches_in, link_target_range, parse_organizer_tags, toc_headings};
+    use quire_core::core::types::{
+        Block, BlockId, BlockKind, ColorKind, Lang, Mark, MarkKind, OrderKey, PageId,
+    };
 
     #[test]
     fn organizer_tag_entry_trims_deduplicates_and_accepts_fullwidth_commas() {
@@ -323,6 +325,37 @@ mod view_tests {
         );
         assert_eq!(find_matches_in("标题标题", "标题"), [0..6, 6..12]);
         assert!(find_matches_in("anything", "").is_empty());
+    }
+
+    #[test]
+    fn link_target_uses_selection_or_link_at_caret_and_ignores_invalid_marks() {
+        let marks = [
+            Mark {
+                start: 0,
+                end: 4,
+                kind: MarkKind::Bold,
+                url: String::new(),
+                date: None,
+            },
+            Mark {
+                start: 5,
+                end: 10,
+                kind: MarkKind::Link,
+                url: "https://example.test".into(),
+                date: None,
+            },
+            Mark {
+                start: 10,
+                end: 14,
+                kind: MarkKind::Link,
+                url: "https://past-end.test".into(),
+                date: None,
+            },
+        ];
+        assert_eq!(link_target_range(&(1..3), 8, 14, &marks), Some((1, 3)));
+        assert_eq!(link_target_range(&(0..0), 7, 14, &marks), Some((5, 10)));
+        assert_eq!(link_target_range(&(0..0), 12, 12, &marks), None);
+        assert_eq!(link_target_range(&(0..0), 4, 14, &marks), None);
     }
 
     #[test]
@@ -378,6 +411,27 @@ fn ordered_page_tree(
     let mut out = Vec::new();
     append(pages, None, 0, expand_all, &mut HashSet::new(), &mut out);
     out
+}
+
+fn link_target_range(
+    selection: &Range<usize>,
+    caret: usize,
+    text_len: usize,
+    marks: &[Mark],
+) -> Option<(usize, usize)> {
+    if !selection.is_empty() {
+        return Some((selection.start, selection.end));
+    }
+    marks
+        .iter()
+        .find(|mark| {
+            mark.kind == MarkKind::Link
+                && mark.start < mark.end
+                && mark.end <= text_len
+                && mark.start <= caret
+                && caret <= mark.end
+        })
+        .map(|mark| (mark.start, mark.end))
 }
 
 fn slash_items() -> &'static [(&'static str, &'static str, BlockKind)] {
@@ -2158,21 +2212,14 @@ impl Workspace {
             return;
         };
         let selection = input.read(cx).buffer.selection.clone();
-        let target = if selection.is_empty() {
+        let target = {
             let input = input.read(cx);
-            input
-                .marks
-                .iter()
-                .find(|mark| {
-                    mark.kind == quire_core::core::types::MarkKind::Link
-                        && mark.start < mark.end
-                        && mark.end <= input.buffer.text.len()
-                        && mark.start <= input.buffer.caret()
-                        && input.buffer.caret() <= mark.end
-                })
-                .map(|mark| (mark.start, mark.end))
-        } else {
-            Some((selection.start, selection.end))
+            link_target_range(
+                &selection,
+                input.buffer.caret(),
+                input.buffer.text.len(),
+                &input.marks,
+            )
         };
         let Some((start, end)) = target else {
             self.status = "先选中要添加链接的文字，或将光标放在链接文字上".into();
