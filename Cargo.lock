@@ -4094,6 +4094,7 @@ dependencies = [
  "anyhow",
  "gpui",
  "quire-core",
+ "raw-window-handle",
  "rfd",
  "serde",
  "serde_json",

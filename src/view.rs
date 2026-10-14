@@ -1145,6 +1145,8 @@ impl Workspace {
         session: Session,
         theme: &str,
         smoke: bool,
+        shell_events: std::sync::mpsc::Receiver<crate::platform::ShellEvent>,
+        platform_services: crate::platform::Services,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -1735,6 +1737,45 @@ impl Workspace {
             })
             .detach();
         }
+        let platform_handles = Arc::new(Mutex::new(Some(platform_services.handles)));
+        let shutdown_handles = platform_handles.clone();
+        cx.on_app_quit(move |_, _| {
+            let handles = shutdown_handles.clone();
+            async move {
+                drop(
+                    handles
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner())
+                        .take(),
+                );
+            }
+        })
+        .detach();
+        let window_id = window.window_handle().window_id();
+        cx.spawn(async move |_, cx| {
+            loop {
+                cx.background_executor()
+                    .timer(Duration::from_millis(40))
+                    .await;
+                loop {
+                    let event = match shell_events.try_recv() {
+                        Ok(event) => event,
+                        Err(std::sync::mpsc::TryRecvError::Empty) => break,
+                        Err(std::sync::mpsc::TryRecvError::Disconnected) => return,
+                    };
+                    if event == crate::platform::ShellEvent::Quit {
+                        let _ = cx.update(|app| app.quit());
+                        return;
+                    }
+                    let _ = cx.update(|app| {
+                        WindowHandle::<Workspace>::new(window_id).update(app, |this, window, cx| {
+                            this.handle_shell_event(event, window, cx)
+                        })
+                    });
+                }
+            }
+        })
+        .detach();
         this
     }
     fn sync_inputs(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -5414,6 +5455,9 @@ impl Workspace {
         self.schedule_save(true, window, cx);
     }
     fn quick_note(&mut self, _: &QuickNote, _window: &mut Window, cx: &mut Context<Self>) {
+        self.open_quick_note(cx);
+    }
+    fn open_quick_note(&mut self, cx: &mut Context<Self>) {
         let owner = cx.entity();
         let theme = self.palette.clone();
         let options = WindowOptions {
@@ -5431,6 +5475,30 @@ impl Workspace {
             self.error = true;
             cx.notify();
         }
+    }
+    fn handle_shell_event(
+        &mut self,
+        event: crate::platform::ShellEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match event {
+            crate::platform::ShellEvent::ShowMain => {
+                crate::platform::set_main_window_visible(window, true);
+                window.activate_window();
+            }
+            crate::platform::ShellEvent::QuickNote => self.open_quick_note(cx),
+            crate::platform::ShellEvent::Quit => cx.quit(),
+        }
+    }
+    pub fn hide_to_tray(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.closing {
+            return;
+        }
+        self.commit_note_draft(window, cx);
+        self.session.end_typing();
+        self.schedule_save(true, window, cx);
+        crate::platform::set_main_window_visible(window, false);
     }
     fn save_quick_note(&mut self, text: String, cx: &mut Context<Self>) -> bool {
         let text = text.trim();

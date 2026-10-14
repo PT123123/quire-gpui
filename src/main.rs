@@ -1,4 +1,5 @@
 mod input;
+mod platform;
 mod view;
 
 use anyhow::{Context, Result, bail};
@@ -67,6 +68,10 @@ fn run() -> Result<()> {
     let theme = theme
         .or_else(|| session.setting("gpui.theme").map(str::to_owned))
         .unwrap_or_else(|| "midnight".into());
+    platform::set_theme(&theme);
+    let (shell_tx, shell_rx) = std::sync::mpsc::channel();
+    let platform_services = platform::install(shell_tx);
+    let tray_available = platform_services.tray_available;
     Application::new().run(move |cx: &mut App| {
         input::bind_keys(cx);
         view::bind_keys(cx);
@@ -88,7 +93,19 @@ fn run() -> Result<()> {
                 window_min_size: Some(size(px(924.), px(591.))),
                 ..Default::default()
             },
-            |window, cx| cx.new(|cx| view::Workspace::new(session, &theme, smoke, window, cx)),
+            |window, cx| {
+                cx.new(|cx| {
+                    view::Workspace::new(
+                        session,
+                        &theme,
+                        smoke,
+                        shell_rx,
+                        platform_services,
+                        window,
+                        cx,
+                    )
+                })
+            },
         );
         match window {
             Ok(window) => {
@@ -103,7 +120,13 @@ fn run() -> Result<()> {
                     .update(cx, |_, window, cx| {
                         window.on_window_should_close(cx, move |window, cx| {
                             if let Some(view) = weak.upgrade() {
-                                view.update(cx, |view, cx| view.request_close(window, cx));
+                                view.update(cx, |view, cx| {
+                                    if tray_available {
+                                        view.hide_to_tray(window, cx);
+                                    } else {
+                                        view.request_close(window, cx);
+                                    }
+                                });
                                 false
                             } else {
                                 true
