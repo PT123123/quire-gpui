@@ -1357,8 +1357,12 @@ impl Session {
         if definition.kind != PropertyKind::Files {
             bail!("此列不是文件类型");
         }
-        if self.repo.record(record)?.is_none() {
-            bail!("数据库记录不存在");
+        let row = self
+            .repo
+            .record(record)?
+            .ok_or_else(|| anyhow::anyhow!("数据库记录不存在"))?;
+        if row.db != definition.db {
+            bail!("记录不属于此文件列所在数据库");
         }
         let id = AttachmentId(self.next_attachment_id);
         let attachment = self
