@@ -335,6 +335,7 @@ pub struct Workspace {
     mention_selection: usize,
     organizer_open: bool,
     organizer_tasks: bool,
+    organizer_trash: bool,
     selected_task_list: quire_core::core::organizer::ListId,
     selected_task_smart_view: Option<i32>,
     show_task_done: bool,
@@ -421,6 +422,7 @@ impl Workspace {
             mention_selection: 0,
             organizer_open: false,
             organizer_tasks: false,
+            organizer_trash: false,
             selected_task_list: quire_core::core::organizer::ListId::INBOX,
             selected_task_smart_view: Some(0),
             show_task_done: false,
@@ -1777,26 +1779,31 @@ impl Workspace {
         self.selected_task = None;
         if tasks {
             let view = self.selected_task_smart_view.unwrap_or(0);
-            let first_task = self
-                .session
-                .organizer
-                .live_tasks()
-                .find(|task| {
-                    self.task_matches_smart_view(task, view)
-                        && (view == 4 && task.done
-                            || view != 4 && (!task.done || self.show_task_done))
-                })
-                .map(|task| task.id);
+            let first_task = (if self.organizer_trash {
+                self.session.organizer.trashed_tasks().collect::<Vec<_>>()
+            } else {
+                self.session.organizer.live_tasks().collect::<Vec<_>>()
+            })
+            .into_iter()
+            .find(|task| {
+                (self.organizer_trash || self.task_matches_smart_view(task, view))
+                    && (view == 4 && task.done
+                        || self.organizer_trash
+                        || view != 4 && (!task.done || self.show_task_done))
+            })
+            .map(|task| task.id);
             if let Some(id) = first_task {
                 self.select_task(id, window, cx);
             }
         } else {
-            let first_note = self
-                .session
-                .organizer
-                .live_notes()
-                .next()
-                .map(|note| note.id);
+            let first_note = (if self.organizer_trash {
+                self.session.organizer.trashed_notes().collect::<Vec<_>>()
+            } else {
+                self.session.organizer.live_notes().collect::<Vec<_>>()
+            })
+            .into_iter()
+            .next()
+            .map(|note| note.id);
             if let Some(id) = first_note {
                 self.select_note(id, window, cx);
             }
@@ -2009,6 +2016,35 @@ impl Workspace {
                     input.reset(String::new(), Vec::new(), 0, cx);
                 });
             }
+            self.schedule_save(true, window, cx);
+        }
+    }
+    fn toggle_organizer_trash(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.commit_note_draft(window, cx);
+        self.organizer_trash = !self.organizer_trash;
+        self.selected_note = None;
+        self.selected_task = None;
+        self.reset_organizer_item_inputs(cx);
+    }
+    fn restore_note(
+        &mut self,
+        id: quire_core::core::organizer::NoteId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.session.set_note_trashed(id, false) {
+            self.status = "笔记已恢复".into();
+            self.schedule_save(true, window, cx);
+        }
+    }
+    fn restore_task(
+        &mut self,
+        id: quire_core::core::organizer::TaskId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.session.set_task_trashed(id, false) {
+            self.status = "任务已恢复".into();
             self.schedule_save(true, window, cx);
         }
     }
@@ -4273,12 +4309,14 @@ impl Render for Workspace {
                     .when_some(color_picker_view, |row, picker| row.child(picker))
             })
             .collect::<Vec<_>>();
-        let mut notes = self
-            .session
-            .organizer
-            .live_notes()
-            .cloned()
-            .collect::<Vec<_>>();
+        let mut notes = (if self.organizer_trash {
+            self.session.organizer.trashed_notes().collect::<Vec<_>>()
+        } else {
+            self.session.organizer.live_notes().collect::<Vec<_>>()
+        })
+        .into_iter()
+        .cloned()
+        .collect::<Vec<_>>();
         notes.sort_by_key(|note| std::cmp::Reverse((note.pinned, note.edited)));
         let note_rows = notes
             .into_iter()
@@ -4319,7 +4357,9 @@ impl Render for Workspace {
                                     .on_click(cx.listener(move |this, _, window, cx| {
                                         this.toggle_note_pin(id, window, cx)
                                     }))
-                                    .child(if pinned { "★" } else { "☆" }),
+                                    .when(!self.organizer_trash, |button| {
+                                        button.child(if pinned { "★" } else { "☆" })
+                                    }),
                             )
                             .child(
                                 div()
@@ -4329,30 +4369,39 @@ impl Render for Workspace {
                                     .cursor_pointer()
                                     .hover(|button| button.text_color(rgb(0xe5534b)))
                                     .on_click(cx.listener(move |this, _, window, cx| {
-                                        this.trash_note(id, window, cx)
+                                        if this.organizer_trash {
+                                            this.restore_note(id, window, cx)
+                                        } else {
+                                            this.trash_note(id, window, cx)
+                                        }
                                     }))
-                                    .child("×"),
+                                    .child(if self.organizer_trash { "↩" } else { "×" }),
                             ),
                     )
             })
             .collect::<Vec<_>>();
-        let mut tasks = self
-            .session
-            .organizer
-            .live_tasks()
-            .filter(|task| {
-                let in_scope = self
-                    .selected_task_smart_view
-                    .map_or(task.list == self.selected_task_list, |view| {
-                        self.task_matches_smart_view(task, view)
-                    });
-                in_scope
-                    && (self.selected_task_smart_view == Some(4) && task.done
-                        || self.selected_task_smart_view != Some(4)
-                            && (!task.done || self.show_task_done))
-            })
-            .cloned()
-            .collect::<Vec<_>>();
+        let mut tasks = (if self.organizer_trash {
+            self.session.organizer.trashed_tasks().collect::<Vec<_>>()
+        } else {
+            self.session.organizer.live_tasks().collect::<Vec<_>>()
+        })
+        .into_iter()
+        .filter(|task| {
+            if self.organizer_trash {
+                return true;
+            }
+            let in_scope = self
+                .selected_task_smart_view
+                .map_or(task.list == self.selected_task_list, |view| {
+                    self.task_matches_smart_view(task, view)
+                });
+            in_scope
+                && (self.selected_task_smart_view == Some(4) && task.done
+                    || self.selected_task_smart_view != Some(4)
+                        && (!task.done || self.show_task_done))
+        })
+        .cloned()
+        .collect::<Vec<_>>();
         tasks.sort_by_key(|task| task.ord);
         let task_rows = tasks
             .into_iter()
@@ -4396,10 +4445,13 @@ impl Render for Workspace {
                                     .border_color(if done { accent } else { muted })
                                     .text_color(accent)
                                     .cursor_pointer()
-                                    .on_click(cx.listener(move |this, _, window, cx| {
-                                        this.toggle_task_done(id, window, cx)
-                                    }))
-                                    .child(if done { "✓" } else { "" }),
+                                    .when(!self.organizer_trash, |button| {
+                                        button
+                                            .on_click(cx.listener(move |this, _, window, cx| {
+                                                this.toggle_task_done(id, window, cx)
+                                            }))
+                                            .child(if done { "✓" } else { "" })
+                                    }),
                             )
                             .child(
                                 div()
@@ -4415,9 +4467,13 @@ impl Render for Workspace {
                                     .text_color(muted)
                                     .cursor_pointer()
                                     .on_click(cx.listener(move |this, _, window, cx| {
-                                        this.trash_task(id, window, cx)
+                                        if this.organizer_trash {
+                                            this.restore_task(id, window, cx)
+                                        } else {
+                                            this.trash_task(id, window, cx)
+                                        }
                                     }))
-                                    .child("×"),
+                                    .child(if self.organizer_trash { "↩" } else { "×" }),
                             ),
                     )
             })
@@ -4622,16 +4678,22 @@ impl Render for Workspace {
                                     .cursor_pointer()
                                     .text_color(accent)
                                     .hover(|button| button.bg(Palette::color(&p.elevated)))
-                                    .on_click(cx.listener(|this, _, window, cx| {
-                                        if this.organizer_tasks {
-                                            this.create_task(window, cx);
-                                        } else {
-                                            this.create_note(window, cx);
-                                        }
-                                    }))
-                                    .child("＋"),
+                                    .when(!self.organizer_trash, |button| {
+                                        button.on_click(cx.listener(|this, _, window, cx| {
+                                            if this.organizer_tasks {
+                                                this.create_task(window, cx);
+                                            } else {
+                                                this.create_note(window, cx);
+                                            }
+                                        }))
+                                    })
+                                    .child(if self.organizer_trash {
+                                        "回收站"
+                                    } else {
+                                        "＋"
+                                    }),
                             )
-                            .when(self.organizer_tasks, |row| {
+                            .when(self.organizer_tasks && !self.organizer_trash, |row| {
                                 row.child(
                                     div()
                                         .id("organizer-create-task-list")
@@ -4648,7 +4710,7 @@ impl Render for Workspace {
                                 )
                             }),
                     )
-                    .when(self.organizer_tasks, |list| {
+                    .when(self.organizer_tasks && !self.organizer_trash, |list| {
                         list.child(
                             div()
                                 .id("organizer-task-list-selector")
@@ -4688,6 +4750,32 @@ impl Render for Workspace {
                             },
                         )
                     })
+                    .child(
+                        div()
+                            .id("organizer-trash-toggle")
+                            .px(px(8.))
+                            .py(px(5.))
+                            .rounded(px(5.))
+                            .cursor_pointer()
+                            .text_color(if self.organizer_trash { accent } else { muted })
+                            .when(self.organizer_trash, |row| {
+                                row.bg(Palette::color(&p.elevated))
+                            })
+                            .hover(|row| row.bg(Palette::color(&p.elevated)))
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.toggle_organizer_trash(window, cx)
+                            }))
+                            .child(format!(
+                                "{}回收站 · {}",
+                                if self.organizer_trash {
+                                    "当前："
+                                } else {
+                                    ""
+                                },
+                                self.session.organizer.trashed_notes().count()
+                                    + self.session.organizer.trashed_tasks().count()
+                            )),
+                    )
                     .child(
                         div()
                             .id("organizer-notes-scroll")

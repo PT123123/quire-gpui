@@ -34,3 +34,5 @@
 "org-task-due-set","已实现","未验证","任务详情可编辑或清除 YYYY-MM-DD 截止日期，格式错误时拒绝写入并显示提示","有效日期与标题/备注共用单条 UpdateTask；core date::is_iso_date 校验固定十字节 ISO 日期格式"
 "org-view-picked","已实现","未验证","任务区域提供收集箱、今天、最近 7 天、全部、已完成智能视图，并显示实时任务计数","日期范围由 core ISO 日期排序筛选；切换视图只改变投影，不写入数据库"
 "org-show-done-toggled","已实现","未验证","任务清单提供显示/隐藏已完成开关；已完成视图固定只显示完成项","过滤仅作用于实时列表投影，不修改任务完成状态"
+"org-note-deleted","已实现","未验证","笔记列表移入回收站后可从回收站恢复","通过 core organizer deleted_at 软删除；恢复走同一 UpdateNote 历史命令，可撤销并持久化"
+"org-task-deleted","已实现","未验证","任务列表移入回收站后可从回收站恢复","通过 core organizer deleted_at 软删除；恢复走同一 UpdateTask 历史命令，可撤销并持久化"
