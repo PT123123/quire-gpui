@@ -58,3 +58,10 @@ zoom-reset,已实现,未验证,一键恢复 100% 界面缩放。,将全局 px �
 "db-cell-closed","已实现","未验证","Enter/失焦提交；Esc 放弃当前输入；非法失焦放弃错误草稿并保留旧值","撤销与重做沿用 core SetDatabaseCell 历史"
 "db-cell-toggled","已实现","未验证","checkbox 属性绘为勾选/未勾选控件，点击直接切换 typed Flag 并保存；锁定页面禁用","点击调用 core SetDatabaseCell，进入同一页面撤销栈；使用 16px 自绘圆角方框与主题强调色勾选；点击事件、命中范围仍待真人操作确认"
 db-column-resized,已实现,未验证,"拖动列头右侧 6px 把手可调整该视图的列宽；拖动中表头与可见行同步预览，松开后持久化；列宽按数据库网格千分比保存并随窗口宽度缩放","复用 core ViewDefinition::width/set_width；mousemove 只更新内存预览，mouseup 通过 SetDatabaseViewDefinition 写入单条可撤销历史并触发自动保存"
+undo-requested,已实现,未验证,Ctrl+Z 撤销当前编辑历史；整理区使用独立撤销栈；IME 组合期间不抢走输入法撤销,应用 core 历史后同步输入控件并恢复焦点；页面与整理区分别沿各自持久化历史撤销
+redo-requested,已实现,未验证,Ctrl+Shift+Z 或 Ctrl+Y 重做；整理区使用独立重做栈,应用 core 历史后同步输入控件并恢复焦点；IME 组合期间忽略快捷键
+toggle-sidebar,已实现,未验证,工具栏快捷键和顶栏入口可折叠/展开侧栏；过渡动画沿用 220ms,侧栏宽度状态保留并使用宽度动画；顶栏与侧栏共同绘制为连续表面
+sidebar-resized,已实现,未验证,可拖动侧栏右边缘调整 200–480px 宽度并在下次启动恢复,拖动期间实时更新宽度；松手后写入 GPUI session settings 并自动保存
+search-open-requested,已实现,未验证,Ctrl+P 或侧栏/顶栏搜索入口打开页面搜索浮层；输入页面标题或正文过滤并可键盘打开结果,搜索结果限制为 8 项并聚焦搜索框；关闭浮层后恢复正文焦点
+settings-open-requested,已实现,未验证,侧栏设置入口打开外观设置；默认搜索框获得焦点；Esc 或遮罩点击关闭,设置浮层主题切换沿用 GPUI 独立设置与 12 套渐变调色板
+window-resized,已实现,未验证,窗口可原生拖动边缘缩放；最大化/还原使用系统窗口状态；退出时保存普通窗口位置与尺寸,通过 GPUI Windows hit-test 提供无标题栏客户区的四边四角缩放；最大化安全 inset 保持原生逻辑；普通几何写入 GPUI session settings 并启动时做屏幕可见性校验
