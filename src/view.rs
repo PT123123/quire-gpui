@@ -1159,6 +1159,7 @@ pub struct Workspace {
     editing_subtask: Option<(quire_core::core::organizer::TaskId, u64)>,
     note_title_draft: String,
     note_body_draft: String,
+    organizer_debounce_seq: u64,
     task_title_draft: String,
     task_due_draft: String,
     organizer_tags_draft: String,
@@ -1478,6 +1479,7 @@ impl Workspace {
             editing_subtask: None,
             note_title_draft: String::new(),
             note_body_draft: String::new(),
+            organizer_debounce_seq: 0,
             task_title_draft: String::new(),
             task_due_draft: String::new(),
             organizer_tags_draft: String::new(),
@@ -1587,6 +1589,7 @@ impl Workspace {
             |this, _, event, window, cx| match event {
                 InputEvent::Edited { text, .. } => {
                     this.note_title_draft = text.clone();
+                    this.arm_organizer_draft_debounce(window, cx);
                     cx.notify();
                 }
                 InputEvent::Blurred => this.commit_note_draft(window, cx),
@@ -1601,6 +1604,7 @@ impl Workspace {
             |this, _, event, window, cx| match event {
                 InputEvent::Edited { text, .. } => {
                     this.note_body_draft = text.clone();
+                    this.arm_organizer_draft_debounce(window, cx);
                     cx.notify();
                 }
                 InputEvent::Blurred => this.commit_note_draft(window, cx),
@@ -1630,6 +1634,7 @@ impl Workspace {
             |this, _, event, window, cx| match event {
                 InputEvent::Edited { text, .. } => {
                     this.task_due_draft = text.clone();
+                    this.arm_organizer_draft_debounce(window, cx);
                     cx.notify();
                 }
                 InputEvent::Blurred => this.commit_note_draft(window, cx),
@@ -1643,6 +1648,7 @@ impl Workspace {
             |this, _, event, window, cx| match event {
                 InputEvent::Edited { text, .. } => {
                     this.organizer_tags_draft = text.clone();
+                    this.arm_organizer_draft_debounce(window, cx);
                     cx.notify();
                 }
                 InputEvent::Blurred => this.commit_note_draft(window, cx),
@@ -4520,7 +4526,25 @@ impl Workspace {
     fn zoom_reset(&mut self, _: &ZoomReset, window: &mut Window, cx: &mut Context<Self>) {
         self.set_ui_zoom(1., window, cx);
     }
+    fn arm_organizer_draft_debounce(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.organizer_debounce_seq = self.organizer_debounce_seq.saturating_add(1);
+        let token = self.organizer_debounce_seq;
+        cx.spawn_in(window, async move |weak, cx| {
+            cx.background_executor()
+                .timer(Duration::from_millis(300))
+                .await;
+            let _ = weak.update_in(cx, |this, window, cx| {
+                if this.organizer_debounce_seq == token {
+                    this.commit_note_draft(window, cx);
+                }
+            });
+        })
+        .detach();
+    }
     fn commit_note_draft(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // Explicit commits (blur, selection changes, delete, close) invalidate
+        // the pending keystroke timer so it cannot write against a new selection.
+        self.organizer_debounce_seq = self.organizer_debounce_seq.saturating_add(1);
         let tags = parse_organizer_tags(&self.organizer_tags_draft);
         let changed = if let Some(id) = self.selected_note {
             self.session.update_note_editor(
