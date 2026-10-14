@@ -4854,7 +4854,7 @@ impl Render for Workspace {
             .as_secs() as i64
             / 86_400;
         let week = quire_core::core::date::to_iso(now_days + 7);
-        let mut task_list_buttons = [
+        let task_smart_view_buttons = [
             (0, "收集箱"),
             (1, "今天"),
             (2, "最近 7 天"),
@@ -4893,62 +4893,65 @@ impl Render for Workspace {
                 .child(format!("{label} · {count}"))
         })
         .collect::<Vec<_>>();
-        task_list_buttons.extend(task_lists.into_iter().map(|list| {
-            let id = list.id;
-            let count = self
-                .session
-                .organizer
-                .live_tasks()
-                .filter(|task| task.list == id)
-                .count();
-            div()
-                .id(SharedString::from(format!("organizer-list-row-{id:?}")))
-                .flex()
-                .items_center()
-                .gap(px(3.))
-                .child(
-                    div()
-                        .id(SharedString::from(format!("organizer-list-{id:?}")))
-                        .flex_1()
-                        .min_w_0()
-                        .px(px(8.))
-                        .py(px(5.))
-                        .rounded(px(5.))
-                        .cursor_pointer()
-                        .text_color(
-                            if self.selected_task_smart_view.is_none()
-                                && self.selected_task_list == id
-                            {
-                                accent
-                            } else {
-                                muted
-                            },
-                        )
-                        .when(
-                            self.selected_task_smart_view.is_none()
-                                && self.selected_task_list == id,
-                            |chip| chip.bg(Palette::color(&p.elevated)),
-                        )
-                        .on_click(cx.listener(move |this, _, window, cx| {
-                            this.select_task_list(id, window, cx)
-                        }))
-                        .child(format!("{} · {count}", list.name)),
-                )
-                .child(
-                    div()
-                        .id(SharedString::from(format!("organizer-list-delete-{id:?}")))
-                        .px(px(5.))
-                        .py(px(4.))
-                        .rounded(px(4.))
-                        .cursor_pointer()
-                        .text_color(muted)
-                        .hover(|button| button.text_color(rgb(0xe5534b)))
-                        .on_click(cx.listener(move |this, _, window, cx| {
-                            this.delete_task_list(id, window, cx)
-                        }))
-                        .child("×"),
-                )
-        }));
+        let task_list_buttons = task_lists
+            .into_iter()
+            .map(|list| {
+                let id = list.id;
+                let count = self
+                    .session
+                    .organizer
+                    .live_tasks()
+                    .filter(|task| task.list == id)
+                    .count();
+                div()
+                    .id(SharedString::from(format!("organizer-list-row-{id:?}")))
+                    .flex()
+                    .items_center()
+                    .gap(px(3.))
+                    .child(
+                        div()
+                            .id(SharedString::from(format!("organizer-list-{id:?}")))
+                            .flex_1()
+                            .min_w_0()
+                            .px(px(8.))
+                            .py(px(5.))
+                            .rounded(px(5.))
+                            .cursor_pointer()
+                            .text_color(
+                                if self.selected_task_smart_view.is_none()
+                                    && self.selected_task_list == id
+                                {
+                                    accent
+                                } else {
+                                    muted
+                                },
+                            )
+                            .when(
+                                self.selected_task_smart_view.is_none()
+                                    && self.selected_task_list == id,
+                                |chip| chip.bg(Palette::color(&p.elevated)),
+                            )
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.select_task_list(id, window, cx)
+                            }))
+                            .child(format!("{} · {count}", list.name)),
+                    )
+                    .child(
+                        div()
+                            .id(SharedString::from(format!("organizer-list-delete-{id:?}")))
+                            .px(px(5.))
+                            .py(px(4.))
+                            .rounded(px(4.))
+                            .cursor_pointer()
+                            .text_color(muted)
+                            .hover(|button| button.text_color(rgb(0xe5534b)))
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.delete_task_list(id, window, cx)
+                            }))
+                            .child("×"),
+                    )
+            })
+            .collect::<Vec<_>>();
         let mut organizer_tags = Vec::<String>::new();
         if self.organizer_tasks {
             let tasks = if self.organizer_trash {
@@ -5486,7 +5489,11 @@ impl Render for Workspace {
                                 ),
                             )
                             .when(self.organizer_tasks && !self.organizer_trash, |nav| nav.child(
-                                div().id("organizer-task-list-selector").flex().flex_col().gap(px(3.)).overflow_y_scroll().children(task_list_buttons)
+                                div().flex().flex_col().gap(px(3.))
+                                    .child(div().text_size(px(11.)).text_color(muted).mb(px(2.)).child("视图"))
+                                    .children(task_smart_view_buttons)
+                                    .child(div().text_size(px(11.)).text_color(muted).mt(px(7.)).mb(px(2.)).child("清单"))
+                                    .child(div().id("organizer-task-list-selector").flex().flex_col().gap(px(3.)).overflow_y_scroll().children(task_list_buttons))
                             ))
                             .child(div().text_size(px(11.)).text_color(muted).mt(px(6.)).child("标签"))
                             .when(!organizer_tag_buttons.is_empty(), |nav| nav.child(
