@@ -2291,6 +2291,43 @@ mod tests {
                     .definition,
                 sorted_definition
             );
+            let all_column_ids =
+                quire_core::core::database_view::all_columns(&session.databases, db);
+            let mut definition =
+                quire_core::core::database_view::ViewDefinition::parse(&sorted_definition);
+            definition.hide(done_property, &all_column_ids);
+            let hidden_done_definition = definition.to_text();
+            assert!(session.set_database_view_definition(
+                block,
+                view_id,
+                hidden_done_definition.clone()
+            )?);
+            session.undo();
+            assert!(
+                quire_core::core::database_view::view_columns(
+                    &session.databases,
+                    db,
+                    session
+                        .databases
+                        .views
+                        .iter()
+                        .find(|view| view.id == view_id)
+                        .unwrap()
+                )
+                .iter()
+                .any(|column| column.id == done_property)
+            );
+            session.redo();
+            assert_eq!(
+                session
+                    .databases
+                    .views
+                    .iter()
+                    .find(|view| view.id == view_id)
+                    .unwrap()
+                    .definition,
+                hidden_done_definition
+            );
             let record = session.add_database_record(block).expect("record created");
             assert!(session.set_database_cell(block, record, title, "进行中")?);
             assert!(session.set_database_cell(block, record, status_property, "待核准")?);
@@ -2317,18 +2354,17 @@ mod tests {
             session.persistence.force_flush()?;
             assert_eq!(session.repo.record_count(db)?, 2);
             assert_eq!(session.repo.record(record)?.unwrap().db, db);
-            let columns = session
-                .databases
-                .properties_of(db)
-                .filter(|property| !property.kind.is_title())
-                .cloned()
-                .collect::<Vec<_>>();
             let active_view = session
                 .databases
                 .views
                 .iter()
                 .find(|view| view.id == view_id)
                 .unwrap();
+            let columns =
+                quire_core::core::database_view::view_columns(&session.databases, db, active_view)
+                    .into_iter()
+                    .filter(|property| !property.kind.is_title())
+                    .collect::<Vec<_>>();
             let rules =
                 quire_core::core::database_view::ViewDefinition::parse(&active_view.definition)
                     .rules(db, &session.databases);
@@ -2344,11 +2380,11 @@ mod tests {
                 quire_core::core::database::RowWindow { start: 0, end: 20 },
             )?;
             assert_eq!(rows.len(), 2);
-            assert_eq!(rows[0].cells.len(), 2);
+            assert_eq!(rows[0].cells.len(), 1);
             assert_eq!(rows[0].title, "Alpha");
             assert_eq!(rows[1].title, "进行中");
             assert_eq!(rows[1].cells[0], "待核准");
-            assert_eq!(rows[1].cells[1], "Yes");
+            assert!(!columns.iter().any(|column| column.id == done_property));
             session.persistence.force_flush()?;
             assert_eq!(session.repo.record_count(db)?, 2);
         }
@@ -2377,6 +2413,16 @@ mod tests {
                 .databases
                 .views_of(db)
                 .any(|view| view.definition.contains("sorts"))
+        );
+        let active_view = reopened
+            .databases
+            .views_of(db)
+            .find(|view| view.definition.contains("sorts"))
+            .unwrap();
+        assert!(
+            !quire_core::core::database_view::view_columns(&reopened.databases, db, active_view)
+                .iter()
+                .any(|column| column.name == "完成")
         );
         let record = reopened.repo.records_of(db)?[0].id;
         let title = reopened.databases.title_property(db).unwrap().id;

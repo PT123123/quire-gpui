@@ -47,6 +47,7 @@ org-subtask-deleted,已实现,未验证,任务详情可删除子任务,从 Task 
 db-row-added,已实现,未验证,数据库块支持新建记录并即时刷新表格行数；删除记录、行标题/单元格编辑及页面化打开尚未实现,Command::AddDatabaseRecord 创建无页面的记录，命令走当前页面 history；core 数据库窗口查询由 uniform_list 按可见 range 执行，避免全量加载；隔离 SQLite 测试覆盖写入、撤销/重做和重启读回
 db-viewport,已实现,未验证,GPUI uniform_list 按可见 range 查询记录，未复刻旧版 pixel viewport 回调,窗口化查询使用 SqliteRepository::window_rows，单帧仅读取 uniform_list 传入的 range；需要大表 UI/性能验收
 db-view-picked,已实现,未验证,数据库块显示已有视图页签，支持点击切换；选择的 ViewId 写入 GPUI session settings 并跨重启恢复；当前视图布局仍限于 Table。,页签来自 core DatabaseCatalog::views_of；非法/已删除 ViewId 会回退首视图；切换只改用户偏好、不进入文档 undo 历史。
+db-columns-opened,已实现,未验证,数据库工具栏“列 N/M”展开字段选择器；标题列保持固定显示，其他字段可隐藏/恢复，所选列顺序和字段状态由视图独立保存。,列集合用 core view_columns/all_columns 和 ViewDefinition hide/show 读写；SetDatabaseViewDefinition 纳入 undo/redo；SQLite 只查询当前可见列，排序或筛选引用隐藏列时由 core 生成 hidden join。
 db-sort-cycled,已实现,未验证,数据库列头点击按无序→升序→降序→无序循环；多列排序保留优先级并在列头显示箭头/序号，按过滤后的记录数和排序结果绘制虚拟行。,使用 core ViewDefinition read-edit-write 保留视图规则并通过 SetDatabaseViewDefinition 保存/撤销；SQLite RowRequest 下推 sort/filter，UI 不做全表加载或本地排序；隔离测试覆盖定义撤销重做、重开读回与标题排序顺序。
 db-view-added,已实现,未验证,加号创建“表格 N”视图并立即选中；视图布局目前固定为 Table，其他布局切换/配置未实现。,分配 ViewId 与 ord 后调用 core AddDatabaseView，写入 SQLite change stream，并纳入页面 undo/redo；隔离测试覆盖新增视图撤销/重做。
 zoom-in,已实现,未验证,外观设置提供 50%–300% 的整体缩放、加减和复位；不是只放大正文文字。,GPUI 根尺度以原子系数统一换算 view/input 的 px token，旧版阶梯 50/67/75/80/90/100/110/125/150/175/200/250/300%；gpui.ui-scale 持久化，开窗时读取。

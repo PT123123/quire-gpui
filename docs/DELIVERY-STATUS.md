@@ -523,3 +523,10 @@ GPUI 应用已超出第一竖切，但离完整复刻仍有较大差距。用户
 - 切换数据库视图时将当前 ViewId 保存到 GPUI session settings，重启后恢复；若对应视图已删除则回退首视图。
 - 更新 `db-sort-cycled` / `db-view-picked` 人工语义并重生成 `PARITY.csv`。隔离 SQLite 测试覆盖标题升序的查询次序、视图规则撤销/重做、规则及活动 ViewId 重开读回。
 - 验证：16 项库测试 + 5 项二进制测试、`cargo check`、release 构建、`cargo fmt` 与 `git diff --check` 通过。尚未用真窗口点击列头验收箭头显示、排序循环及真实虚拟列表刷新；排序 callback 当前标记实现完成但验证未完成。
+
+## 第七十一轮：数据库列显示控制
+
+- 数据库工具栏加入“列 N/M”字段选择器，每个视图可单独隐藏/恢复非标题列，标题列始终保留；活动视图表格按配置列顺序渲染，SQLite 行投影只选择可见列。过滤/排序需要引用隐藏列时继续由 core 查询层添加隐藏 join。
+- 列显隐通过 core `ViewDefinition::hide/show` 更新数据库视图定义，写入当前页面历史、支持撤销/重做并持久化；隔离 SQLite 回归覆盖隐藏完成列、撤销/重做恢复、可见投影排序与重启读回。
+- 更新 `db-columns-opened` 人工语义，并把新建视图的选中 ViewId 一并写入 GPUI settings。
+- 验证：16 项库测试 + 5 项二进制测试、`cargo check`、release 构建、`cargo fmt` 和 `git diff --check` 通过；当前环境无法打开原生窗口，字段选择器布局、点击反馈和动态列宽尚未真窗口验收。

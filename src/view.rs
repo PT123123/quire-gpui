@@ -510,6 +510,7 @@ pub struct Workspace {
     hovered_task: Option<quire_core::core::organizer::TaskId>,
     inputs: BTreeMap<u64, Entity<TextInput>>,
     selected_database_views: HashMap<u64, ViewId>,
+    database_columns_open: Option<(u64, u64)>,
     active_database_cell: Option<(u64, u64, u64, u64)>,
     subscriptions: Vec<Subscription>,
     palette: Palette,
@@ -682,6 +683,7 @@ impl Workspace {
             hovered_task: None,
             inputs: BTreeMap::new(),
             selected_database_views: HashMap::new(),
+            database_columns_open: None,
             active_database_cell: None,
             subscriptions: Vec::new(),
             palette: Palette::load(&theme_choice),
@@ -2173,6 +2175,48 @@ impl Workspace {
             Ok(false) => {}
             Err(error) => {
                 self.status = format!("数据库排序保存失败：{error}");
+                self.error = true;
+                cx.notify();
+            }
+        }
+    }
+    fn toggle_database_column(
+        &mut self,
+        block: BlockId,
+        db: quire_core::core::database::DatabaseId,
+        view_id: ViewId,
+        property: quire_core::core::database::PropertyId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.session.page.locked {
+            return;
+        }
+        let Some(view) = self
+            .session
+            .databases
+            .views
+            .iter()
+            .find(|view| view.id == view_id && view.db == db)
+        else {
+            return;
+        };
+        let all = quire_core::core::database_view::all_columns(&self.session.databases, db);
+        let mut definition =
+            quire_core::core::database_view::ViewDefinition::parse(&view.definition);
+        if definition.shows(property, &all) {
+            definition.hide(property, &all);
+        } else {
+            definition.show(property, &all);
+        }
+        match self
+            .session
+            .set_database_view_definition(block, view_id, definition.to_text())
+        {
+            Ok(true) => self.schedule_save(true, window, cx),
+            Ok(false) => {}
+            Err(error) => {
+                self.status = format!("数据库列设置保存失败：{error}");
                 self.error = true;
                 cx.notify();
             }
@@ -4702,7 +4746,7 @@ impl Render for Workspace {
                     block.db_ref.and_then(|db_id| {
                         self.session.databases.database(db_id)?;
                         let title = self.session.databases.title_property(db_id)?.id;
-                        let columns = self
+                        let all_columns = self
                             .session
                             .databases
                             .properties_of(db_id)
@@ -4733,6 +4777,14 @@ impl Render for Workspace {
                             })
                             .or_else(|| views.first().map(|view| view.id));
                         let active_view = views.iter().find(|view| Some(view.id) == selected_view)?;
+                        let columns = quire_core::core::database_view::view_columns(
+                            &self.session.databases,
+                            db_id,
+                            active_view,
+                        )
+                        .into_iter()
+                        .filter(|property| !property.kind.is_title())
+                        .collect::<Vec<_>>();
                         let definition = quire_core::core::database_view::ViewDefinition::parse(
                             &active_view.definition,
                         );
@@ -4752,6 +4804,7 @@ impl Render for Workspace {
                             db_id,
                             title,
                             columns,
+                            all_columns,
                             views,
                             selected_view,
                             rules.sorts,
@@ -5332,7 +5385,7 @@ impl Render for Workspace {
                                     .child(div().flex().gap(px(6.)).children(table_actions))
                             })
                             .when(kind == BlockKind::Database, |view| {
-                                if let Some((db_id, title, columns, views, selected_view, view_sorts, view_filter, total, repo)) =
+                                if let Some((db_id, title, columns, all_columns, views, selected_view, view_sorts, view_filter, total, repo)) =
                                     database_table
                                 {
                                     let db_border = Palette::color(&p.border);
@@ -5589,6 +5642,64 @@ impl Render for Workspace {
                                     .max_h(px(288.))
                                     .flex_1()
                                     .min_h(px(40.));
+                                    let columns_open = selected_view.is_some_and(|view_id| {
+                                        self.database_columns_open
+                                            == Some((block_id.0, view_id.0))
+                                    });
+                                    let column_picker = columns_open.then(|| {
+                                        div()
+                                            .w_full()
+                                            .px(px(8.))
+                                            .py(px(6.))
+                                            .flex()
+                                            .flex_wrap()
+                                            .gap(px(5.))
+                                            .border_b_1()
+                                            .border_color(db_border)
+                                            .children(all_columns.iter().map(|property| {
+                                                let property_id = property.id;
+                                                let visible = columns
+                                                    .iter()
+                                                    .any(|column| column.id == property_id);
+                                                let mut item = div()
+                                                    .id(SharedString::from(format!(
+                                                        "db-column-toggle-{}-{}",
+                                                        db_id.0, property_id.0
+                                                    )))
+                                                    .px(px(7.))
+                                                    .py(px(4.))
+                                                    .flex()
+                                                    .items_center()
+                                                    .gap(px(5.))
+                                                    .rounded(px(4.))
+                                                    .text_size(px(11.))
+                                                    .text_color(if visible { text } else { muted })
+                                                    .child(if visible { "☑" } else { "□" })
+                                                    .child(property.name.clone());
+                                                if !self.session.page.locked {
+                                                    if let Some(view_id) = selected_view {
+                                                        item = item
+                                                            .cursor_pointer()
+                                                            .hover(|item| {
+                                                                item.bg(db_hover)
+                                                            })
+                                                            .on_click(cx.listener(
+                                                                move |this, _, window, cx| {
+                                                                    this.toggle_database_column(
+                                                                        block_id,
+                                                                        db_id,
+                                                                        view_id,
+                                                                        property_id,
+                                                                        window,
+                                                                        cx,
+                                                                    );
+                                                                },
+                                                            ));
+                                                    }
+                                                }
+                                                item
+                                            }))
+                                    });
                                     view.flex_col()
                                         .w(database_width)
                                         .rounded(px(7.))
@@ -5643,6 +5754,10 @@ impl Render for Workspace {
                                                         .on_click(cx.listener(move |this, _, window, cx| {
                                                             if let Some(view) = this.session.add_database_view(block_id) {
                                                                 this.selected_database_views.insert(db_id.0, view);
+                                                                    this.session.set_setting(
+                                                                        format!("gpui.database-view.{}", db_id.0),
+                                                                        view.0.to_string(),
+                                                                    );
                                                                 this.schedule_save(false, window, cx);
                                                                 cx.notify();
                                                             }
@@ -5658,7 +5773,51 @@ impl Render for Workspace {
                                                         .text_size(px(11.))
                                                         .text_color(muted)
                                                         .child(format!("{total} 行"))
-                                                        .child(div().flex().gap(px(4.)).child(
+                                                        .child(div().flex().gap(px(4.)).child({
+                                                            let mut button = div()
+                                                                .id(SharedString::from(format!(
+                                                                    "db-columns-toggle-{}",
+                                                                    block_id.0
+                                                                )))
+                                                                .px(px(8.))
+                                                                .py(px(4.))
+                                                                .rounded(px(4.))
+                                                                .text_color(if columns_open {
+                                                                    accent
+                                                                } else {
+                                                                    muted
+                                                                })
+                                                                .hover(|button| {
+                                                                    button.bg(
+                                                                        Palette::color(&p.bg)
+                                                                            .opacity(0.3),
+                                                                    )
+                                                                })
+                                                                .child(format!(
+                                                                    "列 {}/{}",
+                                                                    columns.len() + 1,
+                                                                    all_columns.len() + 1
+                                                                ));
+                                                            if !self.session.page.locked {
+                                                                button = button
+                                                                    .cursor_pointer()
+                                                                    .on_click(cx.listener(
+                                                                        move |this, _, _, cx| {
+                                                                            let key = selected_view
+                                                                                .map(|view| {
+                                                                                    (block_id.0, view.0)
+                                                                                });
+                                                                            this.database_columns_open =
+                                                                                key.filter(|key| {
+                                                                                    this.database_columns_open
+                                                                                        != Some(*key)
+                                                                                });
+                                                                            cx.notify();
+                                                                        },
+                                                                    ));
+                                                            }
+                                                            button
+                                                        }).child(
                                                             div()
                                                                 .id(SharedString::from(format!(
                                                                     "db-add-record-{}",
@@ -5709,6 +5868,9 @@ impl Render for Workspace {
                                                         )),
                                                 ),
                                         )
+                                        .when_some(column_picker, |view, picker| {
+                                            view.child(picker)
+                                        })
                                         .child(header)
                                         .child(rows)
                                 } else {
