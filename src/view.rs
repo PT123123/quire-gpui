@@ -346,6 +346,7 @@ pub struct Workspace {
     link_target_input: Entity<TextInput>,
     note_title_input: Entity<TextInput>,
     note_body_input: Entity<TextInput>,
+    task_title_input: Entity<TextInput>,
     task_due_input: Entity<TextInput>,
     organizer_tags_input: Entity<TextInput>,
     subtask_title_input: Entity<TextInput>,
@@ -353,6 +354,7 @@ pub struct Workspace {
     find_subscription: Option<Subscription>,
     note_title_subscription: Option<Subscription>,
     note_body_subscription: Option<Subscription>,
+    task_title_subscription: Option<Subscription>,
     task_due_subscription: Option<Subscription>,
     organizer_tags_subscription: Option<Subscription>,
     subtask_title_subscription: Option<Subscription>,
@@ -366,6 +368,8 @@ pub struct Workspace {
     backlinks_open: bool,
     hovered_block: Option<BlockId>,
     hovered_page: Option<quire_core::core::types::PageId>,
+    hovered_note: Option<quire_core::core::organizer::NoteId>,
+    hovered_task: Option<quire_core::core::organizer::TaskId>,
     inputs: BTreeMap<u64, Entity<TextInput>>,
     subscriptions: Vec<Subscription>,
     palette: Palette,
@@ -389,12 +393,15 @@ pub struct Workspace {
     selected_task_smart_view: Option<i32>,
     show_task_done: bool,
     task_sort: i32,
+    note_sort_recent: bool,
+    task_multi_select: bool,
     selected_note: Option<quire_core::core::organizer::NoteId>,
     selected_task: Option<quire_core::core::organizer::TaskId>,
     selected_task_ids: HashSet<quire_core::core::organizer::TaskId>,
     editing_subtask: Option<(quire_core::core::organizer::TaskId, u64)>,
     note_title_draft: String,
     note_body_draft: String,
+    task_title_draft: String,
     task_due_draft: String,
     organizer_tags_draft: String,
     subtask_title_draft: String,
@@ -437,6 +444,11 @@ impl Workspace {
         let note_body_input =
             cx.new(|cx| TextInput::new(String::new(), Vec::new(), 15., window, cx));
         note_body_input.update(cx, |input, _| input.placeholder = Some("写点什么…".into()));
+        let task_title_input =
+            cx.new(|cx| TextInput::new(String::new(), Vec::new(), 13., window, cx));
+        task_title_input.update(cx, |input, _| {
+            input.placeholder = Some("添加任务到「收集箱」…".into())
+        });
         let task_due_input =
             cx.new(|cx| TextInput::new(String::new(), Vec::new(), 12., window, cx));
         task_due_input.update(cx, |input, _| input.placeholder = Some("YYYY-MM-DD".into()));
@@ -458,6 +470,7 @@ impl Workspace {
             link_target_input.clone(),
             note_title_input.clone(),
             note_body_input.clone(),
+            task_title_input.clone(),
             task_due_input.clone(),
             organizer_tags_input.clone(),
             subtask_title_input.clone(),
@@ -474,6 +487,7 @@ impl Workspace {
             link_target_input,
             note_title_input,
             note_body_input,
+            task_title_input,
             task_due_input,
             organizer_tags_input,
             subtask_title_input,
@@ -481,6 +495,7 @@ impl Workspace {
             find_subscription: None,
             note_title_subscription: None,
             note_body_subscription: None,
+            task_title_subscription: None,
             task_due_subscription: None,
             organizer_tags_subscription: None,
             subtask_title_subscription: None,
@@ -494,6 +509,8 @@ impl Workspace {
             backlinks_open: false,
             hovered_block: None,
             hovered_page: None,
+            hovered_note: None,
+            hovered_task: None,
             inputs: BTreeMap::new(),
             subscriptions: Vec::new(),
             palette: Palette::load(theme),
@@ -517,12 +534,15 @@ impl Workspace {
             selected_task_smart_view: Some(0),
             show_task_done: false,
             task_sort: 0,
+            note_sort_recent: true,
+            task_multi_select: false,
             selected_note: None,
             selected_task: None,
             selected_task_ids: HashSet::new(),
             editing_subtask: None,
             note_title_draft: String::new(),
             note_body_draft: String::new(),
+            task_title_draft: String::new(),
             task_due_draft: String::new(),
             organizer_tags_draft: String::new(),
             subtask_title_draft: String::new(),
@@ -562,6 +582,19 @@ impl Workspace {
                 InputEvent::Split(_) => this.note_body_input.update(cx, |input, cx| {
                     input.insert_newline(cx);
                 }),
+                _ => {}
+            },
+        ));
+        let task_title_input = this.task_title_input.clone();
+        this.task_title_subscription = Some(cx.subscribe_in(
+            &task_title_input,
+            window,
+            |this, _, event, window, cx| match event {
+                InputEvent::Edited { text, .. } => {
+                    this.task_title_draft = text.clone();
+                    cx.notify();
+                }
+                InputEvent::Split(_) => this.create_task_from_draft(window, cx),
                 _ => {}
             },
         ));
@@ -1755,6 +1788,7 @@ impl Workspace {
             self.link_target_input.clone(),
             self.note_title_input.clone(),
             self.note_body_input.clone(),
+            self.task_title_input.clone(),
             self.task_due_input.clone(),
             self.organizer_tags_input.clone(),
             self.subtask_title_input.clone(),
@@ -2048,12 +2082,50 @@ impl Workspace {
         self.select_task(id, window, cx);
         self.schedule_save(true, window, cx);
     }
+    fn create_task_from_draft(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let title = self.task_title_draft.trim().to_owned();
+        if title.is_empty() || self.organizer_trash {
+            return;
+        }
+        self.commit_note_draft(window, cx);
+        let id = self.session.create_task_in(self.selected_task_list, title);
+        self.task_title_draft.clear();
+        self.task_title_input.update(cx, |input, cx| {
+            input.reset(String::new(), Vec::new(), 0, cx);
+        });
+        self.selected_task = None;
+        self.select_task(id, window, cx);
+        self.schedule_save(true, window, cx);
+        cx.notify();
+    }
     fn toggle_organizer_tab(&mut self, tasks: bool, window: &mut Window, cx: &mut Context<Self>) {
         if self.organizer_tasks == tasks {
+            let placeholder = if tasks {
+                "搜索任务…"
+            } else {
+                "搜索笔记…"
+            };
+            self.search_input.update(cx, |input, cx| {
+                input.placeholder = Some(placeholder.into());
+                input.reset(String::new(), Vec::new(), 0, cx);
+            });
+            self.search_query.clear();
             return;
         }
         self.commit_note_draft(window, cx);
         self.organizer_tasks = tasks;
+        self.search_query.clear();
+        self.search_input.update(cx, |input, cx| {
+            input.placeholder = Some(
+                if tasks {
+                    "搜索任务…"
+                } else {
+                    "搜索笔记…"
+                }
+                .into(),
+            );
+            input.reset(String::new(), Vec::new(), 0, cx);
+        });
         self.selected_task_ids.clear();
         self.selected_note = None;
         self.selected_task = None;
@@ -2311,6 +2383,18 @@ impl Workspace {
     fn toggle_organizer(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.commit_note_draft(window, cx);
         self.organizer_open = !self.organizer_open;
+        if self.organizer_open {
+            self.search_query.clear();
+            let placeholder = if self.organizer_tasks {
+                "搜索任务…"
+            } else {
+                "搜索笔记…"
+            };
+            self.search_input.update(cx, |input, cx| {
+                input.placeholder = Some(placeholder.into());
+                input.reset(String::new(), Vec::new(), 0, cx);
+            });
+        }
         if !self.organizer_open {
             self.restore_focus(window, cx);
         }
@@ -2431,6 +2515,7 @@ impl Workspace {
         self.search_query.clear();
         self.search_selected = 0;
         self.search_input.update(cx, |input, cx| {
+            input.placeholder = Some("搜索页面…".into());
             input.reset(String::new(), Vec::new(), 0, cx);
         });
         cx.notify();
@@ -2440,7 +2525,19 @@ impl Workspace {
         self.search_open = false;
         self.search_query.clear();
         self.search_selected = 0;
+        let placeholder = if self.theme_picker_open {
+            "搜索设置…"
+        } else if self.organizer_open {
+            if self.organizer_tasks {
+                "搜索任务…"
+            } else {
+                "搜索笔记…"
+            }
+        } else {
+            "搜索页面…"
+        };
         self.search_input.update(cx, |input, cx| {
+            input.placeholder = Some(placeholder.into());
             input.reset(String::new(), Vec::new(), 0, cx);
         });
         if let Some(id) = self.active
@@ -4945,25 +5042,59 @@ impl Render for Workspace {
             self.organizer_tag
                 .as_ref()
                 .is_none_or(|tag| note.tags.contains(tag))
+                && (self.search_query.trim().is_empty()
+                    || note
+                        .title
+                        .to_lowercase()
+                        .contains(&self.search_query.to_lowercase())
+                    || note
+                        .body
+                        .to_lowercase()
+                        .contains(&self.search_query.to_lowercase()))
         })
         .collect::<Vec<_>>();
         let note_count = notes.len();
-        notes.sort_by_key(|note| std::cmp::Reverse((note.pinned, note.edited)));
+        notes.sort_by_key(|note| {
+            std::cmp::Reverse((
+                note.pinned,
+                if self.note_sort_recent {
+                    note.created
+                } else {
+                    note.edited
+                },
+            ))
+        });
         let note_rows = notes
             .into_iter()
             .map(|note| {
                 let id = note.id;
                 let selected = self.selected_note == Some(id);
                 let pinned = note.pinned;
+                let edited_age = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs() as i64;
+                let edited_age = edited_age.saturating_sub(note.edited).max(0);
+                let edited_label = if edited_age < 60 {
+                    "刚刚".to_owned()
+                } else if edited_age < 3600 {
+                    format!("{} 分钟前", edited_age / 60)
+                } else if edited_age < 86400 {
+                    format!("{} 小时前", edited_age / 3600)
+                } else {
+                    format!("{} 天前", edited_age / 86400)
+                };
                 let preview = note
                     .body
                     .lines()
-                    .find(|line| !line.trim().is_empty())
-                    .unwrap_or_default()
+                    .filter(|line| !line.trim().is_empty())
+                    .take(3)
+                    .collect::<Vec<_>>()
+                    .join("\n")
                     .chars()
                     .take(150)
                     .collect::<String>();
-                let tags = note.tags.join("  ·  ");
+                let tags = note.tags.clone();
                 let title = if note.title.trim().is_empty() {
                     "无标题".to_owned()
                 } else {
@@ -4973,7 +5104,7 @@ impl Render for Workspace {
                     .id(SharedString::from(format!("organizer-note-{id:?}")))
                     .w_full()
                     .px(px(14.))
-                    .py(px(12.))
+                    .py(px(8.))
                     .rounded(px(9.))
                     .border_1()
                     .border_color(if selected {
@@ -4988,57 +5119,102 @@ impl Render for Workspace {
                     .on_click(
                         cx.listener(move |this, _, window, cx| this.select_note(id, window, cx)),
                     )
+                    .on_hover(cx.listener(move |this, hovered, _, cx| {
+                        if *hovered {
+                            this.hovered_note = Some(id);
+                        } else if this.hovered_note == Some(id) {
+                            this.hovered_note = None;
+                        }
+                        cx.notify();
+                    }))
                     .flex()
                     .flex_col()
-                    .gap(px(7.))
+                    .gap(px(4.))
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .justify_between()
+                            .text_size(px(11.))
+                            .text_color(muted)
+                            .child(edited_label)
+                            .when(pinned && !self.organizer_trash, |meta| {
+                                meta.child(div().text_color(accent).child("★"))
+                            }),
+                    )
                     .child(
                         div()
                             .flex()
                             .items_center()
                             .gap(px(5.))
-                            .child(div().flex_1().min_w_0().child(title))
                             .child(
                                 div()
-                                    .id(SharedString::from(format!("organizer-pin-{id:?}")))
-                                    .px(px(3.))
-                                    .text_color(if pinned { accent } else { muted })
-                                    .cursor_pointer()
-                                    .on_click(cx.listener(move |this, _, window, cx| {
-                                        this.toggle_note_pin(id, window, cx)
-                                    }))
-                                    .when(!self.organizer_trash, |button| {
-                                        button.child(if pinned { "★" } else { "☆" })
-                                    }),
+                                    .flex_1()
+                                    .min_w_0()
+                                    .text_size(px(14.))
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .child(title),
                             )
-                            .child(
-                                div()
-                                    .id(SharedString::from(format!("organizer-trash-{id:?}")))
-                                    .px(px(3.))
-                                    .text_color(muted)
-                                    .cursor_pointer()
-                                    .hover(|button| button.text_color(rgb(0xe5534b)))
-                                    .on_click(cx.listener(move |this, _, window, cx| {
-                                        if this.organizer_trash {
-                                            this.restore_note(id, window, cx)
-                                        } else {
-                                            this.trash_note(id, window, cx)
-                                        }
-                                    }))
-                                    .child(if self.organizer_trash { "↩" } else { "×" }),
-                            ),
+                            .when(self.hovered_note == Some(id), |header| {
+                                header
+                                    .child(
+                                        div()
+                                            .id(SharedString::from(format!("organizer-pin-{id:?}")))
+                                            .px(px(3.))
+                                            .text_color(if pinned { accent } else { muted })
+                                            .cursor_pointer()
+                                            .on_click(cx.listener(move |this, _, window, cx| {
+                                                this.toggle_note_pin(id, window, cx)
+                                            }))
+                                            .when(!self.organizer_trash, |button| {
+                                                button.child(if pinned { "★" } else { "☆" })
+                                            }),
+                                    )
+                                    .child(
+                                        div()
+                                            .id(SharedString::from(format!(
+                                                "organizer-trash-{id:?}"
+                                            )))
+                                            .px(px(3.))
+                                            .text_color(muted)
+                                            .cursor_pointer()
+                                            .hover(|button| button.text_color(rgb(0xe5534b)))
+                                            .on_click(cx.listener(move |this, _, window, cx| {
+                                                if this.organizer_trash {
+                                                    this.restore_note(id, window, cx)
+                                                } else {
+                                                    this.trash_note(id, window, cx)
+                                                }
+                                            }))
+                                            .child(if self.organizer_trash { "↩" } else { "×" }),
+                                    )
+                            }),
                     )
                     .when(!preview.is_empty(), |card| {
                         card.child(
                             div()
-                                .text_size(px(12.))
+                                .text_size(px(14.))
+                                .line_height(px(18.))
                                 .text_color(muted)
-                                .max_h(px(40.))
+                                .max_h(px(54.))
                                 .overflow_hidden()
                                 .child(preview),
                         )
                     })
                     .when(!tags.is_empty(), |card| {
-                        card.child(div().text_size(px(11.)).text_color(muted).child(tags))
+                        card.child(div().flex().flex_wrap().gap(px(4.)).children(
+                            tags.into_iter().map(|tag| {
+                                div()
+                                    .px(px(7.))
+                                    .py(px(2.))
+                                    .rounded(px(10.))
+                                    .border_1()
+                                    .border_color(Palette::color(&p.border))
+                                    .text_size(px(10.))
+                                    .text_color(muted)
+                                    .child(format!("#{tag}"))
+                            }),
+                        ))
                     })
             })
             .collect::<Vec<_>>();
@@ -5053,7 +5229,16 @@ impl Render for Workspace {
                 return self
                     .organizer_tag
                     .as_ref()
-                    .is_none_or(|tag| task.tags.contains(tag));
+                    .is_none_or(|tag| task.tags.contains(tag))
+                    && (self.search_query.trim().is_empty()
+                        || task
+                            .title
+                            .to_lowercase()
+                            .contains(&self.search_query.to_lowercase())
+                        || task
+                            .notes
+                            .to_lowercase()
+                            .contains(&self.search_query.to_lowercase()));
             }
             let in_scope = self
                 .selected_task_smart_view
@@ -5065,6 +5250,15 @@ impl Render for Workspace {
                     .organizer_tag
                     .as_ref()
                     .is_none_or(|tag| task.tags.contains(tag))
+                && (self.search_query.trim().is_empty()
+                    || task
+                        .title
+                        .to_lowercase()
+                        .contains(&self.search_query.to_lowercase())
+                    || task
+                        .notes
+                        .to_lowercase()
+                        .contains(&self.search_query.to_lowercase()))
                 && (self.selected_task_smart_view == Some(4) && task.done
                     || self.selected_task_smart_view != Some(4)
                         && (!task.done || self.show_task_done))
@@ -5072,6 +5266,30 @@ impl Render for Workspace {
         .cloned()
         .collect::<Vec<_>>();
         let task_count = tasks.len();
+        let task_view_title = if self.organizer_trash {
+            "回收站".to_owned()
+        } else if let Some(view) = self.selected_task_smart_view {
+            match view {
+                0 => "收集箱".to_owned(),
+                1 => "今天".to_owned(),
+                2 => "最近 7 天".to_owned(),
+                3 => "全部".to_owned(),
+                4 => "已完成".to_owned(),
+                _ => "任务".to_owned(),
+            }
+        } else {
+            self.session
+                .organizer
+                .list(self.selected_task_list)
+                .map(|list| list.name.clone())
+                .unwrap_or_else(|| "收集箱".to_owned())
+        };
+        let completed_task_count = self
+            .session
+            .organizer
+            .live_tasks()
+            .filter(|task| task.done)
+            .count();
         match self.task_sort {
             1 => tasks.sort_by(|a, b| {
                 a.due
@@ -5088,12 +5306,23 @@ impl Render for Workspace {
             }),
             _ => tasks.sort_by_key(|task| task.ord),
         }
+        let today = quire_core::core::date::today_iso();
         let task_rows = tasks
             .into_iter()
             .map(|task| {
                 let id = task.id;
                 let done = task.done;
                 let selected = self.selected_task == Some(id);
+                let task_tags = task.tags.clone();
+                let subtask_total = task.subtasks.len();
+                let subtask_done = task.subtasks.iter().filter(|item| item.done).count();
+                let due_label = task.due.as_deref().map(|due| {
+                    if due == today {
+                        "今天".to_owned()
+                    } else {
+                        due.to_owned()
+                    }
+                });
                 let title = if task.title.trim().is_empty() {
                     "无标题任务".to_owned()
                 } else {
@@ -5103,7 +5332,7 @@ impl Render for Workspace {
                     .id(SharedString::from(format!("organizer-task-{id:?}")))
                     .w_full()
                     .px(px(9.))
-                    .py(px(7.))
+                    .py(px(8.))
                     .rounded(px(5.))
                     .cursor_pointer()
                     .text_color(if selected { accent } else { text })
@@ -5112,12 +5341,20 @@ impl Render for Workspace {
                     .on_click(
                         cx.listener(move |this, _, window, cx| this.select_task(id, window, cx)),
                     )
+                    .on_hover(cx.listener(move |this, hovered, _, cx| {
+                        if *hovered {
+                            this.hovered_task = Some(id);
+                        } else if this.hovered_task == Some(id) {
+                            this.hovered_task = None;
+                        }
+                        cx.notify();
+                    }))
                     .child(
                         div()
                             .flex()
                             .items_center()
                             .gap(px(6.))
-                            .when(!self.organizer_trash, |row| {
+                            .when(!self.organizer_trash && self.task_multi_select, |row| {
                                 row.child(
                                     div()
                                         .id(SharedString::from(format!(
@@ -5173,8 +5410,26 @@ impl Render for Workspace {
                                     .flex_1()
                                     .min_w_0()
                                     .text_color(if done { muted } else { text })
+                                    .text_size(px(14.))
+                                    .font_weight(FontWeight::SEMIBOLD)
                                     .child(title),
                             )
+                            .when(task.priority != Priority::None, |row| {
+                                row.child(div().text_size(px(11.)).text_color(accent).child("◆"))
+                            })
+                            .when_some(due_label, |row, due| {
+                                row.child(
+                                    div()
+                                        .px(px(6.))
+                                        .py(px(2.))
+                                        .rounded(px(9.))
+                                        .border_1()
+                                        .border_color(Palette::color(&p.border))
+                                        .text_size(px(10.))
+                                        .text_color(muted)
+                                        .child(due),
+                                )
+                            })
                             .child(
                                 div()
                                     .id(SharedString::from(format!("organizer-task-trash-{id:?}")))
@@ -5188,9 +5443,40 @@ impl Render for Workspace {
                                             this.trash_task(id, window, cx)
                                         }
                                     }))
-                                    .child(if self.organizer_trash { "↩" } else { "×" }),
+                                    .when(
+                                        self.organizer_trash || self.hovered_task == Some(id),
+                                        |button| {
+                                            button.child(if self.organizer_trash {
+                                                "↩"
+                                            } else {
+                                                "×"
+                                            })
+                                        },
+                                    ),
                             ),
                     )
+                    .when(!task_tags.is_empty() || subtask_total > 0, |row| {
+                        row.child(
+                            div()
+                                .pl(px(if self.task_multi_select { 23. } else { 24. }))
+                                .flex()
+                                .items_center()
+                                .gap(px(5.))
+                                .text_size(px(10.))
+                                .text_color(muted)
+                                .children(task_tags.into_iter().map(|tag| {
+                                    div()
+                                        .px(px(6.))
+                                        .py(px(2.))
+                                        .rounded(px(8.))
+                                        .bg(Palette::color(&p.elevated).opacity(0.55))
+                                        .child(format!("#{tag}"))
+                                }))
+                                .when(subtask_total > 0, |meta| {
+                                    meta.child(format!("✓ {subtask_done}/{subtask_total}"))
+                                }),
+                        )
+                    })
             })
             .collect::<Vec<_>>();
         let task_summary = self.selected_task.and_then(|id| {
@@ -5215,7 +5501,6 @@ impl Render for Workspace {
         });
         let mut task_lists = self.session.organizer.lists.clone();
         task_lists.sort_by_key(|list| list.ord);
-        let today = quire_core::core::date::today_iso();
         let now_days = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
@@ -5397,7 +5682,7 @@ impl Render for Workspace {
                     .when(self.organizer_tasks, |column| {
                         // Reset flex-1's zero basis so the task list retains its
                         // intended 400px reference width inside the three-column card.
-                        column.flex_initial().w(px(400.)).flex_shrink_0()
+                        column.flex_initial().w(px(434.)).flex_shrink_0()
                     })
                     .h_full()
                     .border_r_1()
@@ -5413,7 +5698,7 @@ impl Render for Workspace {
                             .items_center()
                             .justify_between()
                             .child(div().font_weight(FontWeight::SEMIBOLD).child(if self.organizer_tasks {
-                                format!("任务 · {task_count} 项待办")
+                                format!("{task_view_title}  {task_count} 项待办")
                             } else {
                                 format!("全部笔记 · {note_count} 条")
                             }))
@@ -5458,30 +5743,102 @@ impl Render for Workspace {
                                         }))
                                         .child("＋清单"),
                                 )
+                                .child(
+                                    div()
+                                        .id("organizer-task-multiselect-toggle")
+                                        .px(px(7.))
+                                        .py(px(4.))
+                                        .rounded(px(4.))
+                                        .cursor_pointer()
+                                        .text_color(if self.task_multi_select { accent } else { muted })
+                                        .hover(|button| button.bg(Palette::color(&p.elevated)))
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.task_multi_select = !this.task_multi_select;
+                                            if !this.task_multi_select {
+                                                this.selected_task_ids.clear();
+                                            }
+                                            cx.notify();
+                                        }))
+                                        .child(if self.task_multi_select { "取消多选" } else { "多选" }),
+                                )
                             }),
                     )
+                    .when(!self.organizer_tasks, |list| {
+                        list.child(
+                            div()
+                                .id("organizer-note-toolbar")
+                                .w_full()
+                                .h(px(32.))
+                                .flex()
+                                .items_center()
+                                .gap(px(8.))
+                                .child(
+                                    div()
+                                        .id("organizer-note-search")
+                                        .w(px(240.))
+                                        .h(px(32.))
+                                        .px(px(8.))
+                                        .rounded(px(5.))
+                                        .bg(Palette::color(&p.bg).opacity(0.25))
+                                        .child(self.search_input.clone()),
+                                )
+                                .child(div().flex_1())
+                                .child(
+                                    div()
+                                        .id("organizer-note-sort-toggle")
+                                        .px(px(8.))
+                                        .py(px(6.))
+                                        .rounded(px(5.))
+                                        .cursor_pointer()
+                                        .text_color(muted)
+                                        .hover(|row| row.bg(Palette::color(&p.bg).opacity(0.25)))
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.note_sort_recent = !this.note_sort_recent;
+                                            cx.notify();
+                                        }))
+                                        .child(if self.note_sort_recent {
+                                            "最近创建  ⌄"
+                                        } else {
+                                            "最近更新  ⌄"
+                                        }),
+                                )
+                                .child(
+                                    div()
+                                        .id("organizer-note-trash-shortcut")
+                                        .px(px(8.))
+                                        .py(px(6.))
+                                        .rounded(px(5.))
+                                        .border_1()
+                                        .border_color(Palette::color(&p.border))
+                                        .cursor_pointer()
+                                        .text_color(muted)
+                                        .on_click(cx.listener(|this, _, window, cx| {
+                                            this.toggle_organizer_trash(window, cx)
+                                        }))
+                                        .child(if self.organizer_trash { "返回笔记" } else { "回收站" }),
+                                ),
+                        )
+                    })
                     .when(self.organizer_tasks && !self.organizer_trash, |list| {
-                        list.when(self.selected_task_smart_view != Some(4), |list| {
-                            list.child(
-                                div()
-                                    .id("organizer-show-done-toggle")
-                                    .px(px(8.))
-                                    .py(px(5.))
-                                    .rounded(px(5.))
-                                    .cursor_pointer()
-                                    .text_color(if self.show_task_done { accent } else { muted })
-                                    .hover(|row| row.bg(Palette::color(&p.elevated)))
-                                    .on_click(cx.listener(|this, _, window, cx| {
-                                        this.toggle_show_task_done(window, cx)
-                                    }))
-                                    .child(if self.show_task_done {
-                                        "☑ 显示已完成"
-                                    } else {
-                                        "□ 显示已完成"
-                                    }),
-                            )
-                        })
-                        .child(
+                        list.child(
+                            div()
+                                .id("organizer-task-quick-add")
+                                .w_full()
+                                .h(px(36.))
+                                .px(px(8.))
+                                .rounded(px(5.))
+                                .border_1()
+                                .border_color(Palette::color(&p.border))
+                                .bg(Palette::color(&p.bg).opacity(0.2))
+                                .flex()
+                                .items_center()
+                                .gap(px(8.))
+                                .child(div().flex_1().child(self.task_title_input.clone()))
+                                .child(div().text_size(px(10.)).text_color(muted).child("回车创建")),
+                        )
+                    })
+                    .when(self.organizer_tasks && !self.organizer_trash, |list| {
+                        list.child(
                             div()
                                 .id("organizer-task-sort-toggle")
                                 .px(px(8.))
@@ -5545,7 +5902,44 @@ impl Render for Workspace {
                             .overflow_y_scroll()
                             .when(self.organizer_tasks, |list| list.children(task_rows))
                             .when(!self.organizer_tasks, |list| list.children(note_rows)),
-                    ),
+                    )
+                    .when(self.organizer_tasks && !self.organizer_trash, |list| {
+                        list.child(
+                            div()
+                                .id("organizer-task-footer")
+                                .h(px(30.))
+                                .flex()
+                                .items_center()
+                                .justify_between()
+                                .border_t_1()
+                                .border_color(Palette::color(&p.border))
+                                .text_size(px(11.))
+                                .text_color(muted)
+                                .when(self.selected_task_smart_view != Some(4), |footer| {
+                                    footer.child(
+                                        div()
+                                            .id("organizer-show-done-toggle")
+                                            .px(px(8.))
+                                            .py(px(4.))
+                                            .rounded(px(4.))
+                                            .cursor_pointer()
+                                            .hover(|row| row.bg(Palette::color(&p.elevated)))
+                                            .on_click(cx.listener(|this, _, window, cx| {
+                                                this.toggle_show_task_done(window, cx)
+                                            }))
+                                            .child(if self.show_task_done {
+                                                "☑ 显示已完成"
+                                            } else {
+                                                "□ 显示已完成"
+                                            }),
+                                    )
+                                })
+                                .child(format!(
+                                    "已完成 {completed_task_count} / {}",
+                                    self.session.organizer.live_tasks().count()
+                                )),
+                        )
+                    }),
             )
             .child(
                 div()
@@ -5867,6 +6261,18 @@ impl Render for Workspace {
                                     div().id("organizer-tab-tasks").flex_1().px(px(9.)).py(px(6.)).rounded(px(5.)).cursor_pointer().text_color(if self.organizer_tasks { accent } else { muted }).when(self.organizer_tasks, |tab| tab.bg(Palette::color(&p.elevated))).on_click(cx.listener(|this, _, window, cx| this.toggle_organizer_tab(true, window, cx))).child("任务")
                                 ),
                             )
+                            .when(self.organizer_tasks, |nav| {
+                                nav.child(
+                                    div()
+                                        .id("organizer-task-search")
+                                        .w_full()
+                                        .h(px(32.))
+                                        .px(px(8.))
+                                        .rounded(px(5.))
+                                        .bg(Palette::color(&p.bg).opacity(0.25))
+                                        .child(self.search_input.clone()),
+                                )
+                            })
                             .when(!self.organizer_tasks, |nav| nav.child(
                                 div()
                                     .id("organizer-all-notes")
