@@ -772,6 +772,18 @@ impl Session {
         id
     }
     pub fn update_note_content(&mut self, id: NoteId, title: String, body: String) -> bool {
+        let Some(tags) = self.organizer.note(id).map(|note| note.tags.clone()) else {
+            return false;
+        };
+        self.update_note_editor(id, title, body, tags)
+    }
+    pub fn update_note_editor(
+        &mut self,
+        id: NoteId,
+        title: String,
+        body: String,
+        tags: Vec<String>,
+    ) -> bool {
         let Some(before) = self
             .organizer
             .notes
@@ -781,12 +793,13 @@ impl Session {
         else {
             return false;
         };
-        if before.title == title && before.body == body {
+        if before.title == title && before.body == body && before.tags == tags {
             return false;
         }
         let mut after = before.clone();
         after.title = title;
         after.body = body;
+        after.tags = tags;
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default();
@@ -804,6 +817,9 @@ impl Session {
     }
     pub fn set_note_pinned(&mut self, id: NoteId, pinned: bool) -> bool {
         self.update_note_metadata(id, |note| note.pinned = pinned)
+    }
+    pub fn set_note_tags(&mut self, id: NoteId, tags: Vec<String>) -> bool {
+        self.update_note_metadata(id, |note| note.tags = tags)
     }
     pub fn set_note_trashed(&mut self, id: NoteId, trashed: bool) -> bool {
         let now = std::time::SystemTime::now()
@@ -967,6 +983,19 @@ impl Session {
         notes: String,
         due: Option<String>,
     ) -> bool {
+        let Some(tags) = self.organizer.task(id).map(|task| task.tags.clone()) else {
+            return false;
+        };
+        self.update_task_editor_tags(id, title, notes, due, tags)
+    }
+    pub fn update_task_editor_tags(
+        &mut self,
+        id: TaskId,
+        title: String,
+        notes: String,
+        due: Option<String>,
+        tags: Vec<String>,
+    ) -> bool {
         if due
             .as_deref()
             .is_some_and(|date| !quire_core::core::date::is_iso_date(date))
@@ -977,6 +1006,7 @@ impl Session {
             task.title = title;
             task.notes = notes;
             task.due = due;
+            task.tags = tags;
         })
     }
     pub fn set_task_done(&mut self, id: TaskId, done: bool) -> bool {
@@ -992,6 +1022,12 @@ impl Session {
     }
     pub fn set_task_priority(&mut self, id: TaskId, priority: Priority) -> bool {
         self.update_task(id, |task| task.priority = priority)
+    }
+    pub fn set_task_repeat(&mut self, id: TaskId, repeat: organizer::Repeat) -> bool {
+        self.update_task(id, |task| task.repeat = repeat)
+    }
+    pub fn set_task_tags(&mut self, id: TaskId, tags: Vec<String>) -> bool {
+        self.update_task(id, |task| task.tags = tags)
     }
     pub fn set_task_due(&mut self, id: TaskId, due: Option<String>) -> bool {
         if due
@@ -1937,6 +1973,19 @@ mod tests {
             assert!(session.undo_organizer());
             assert_eq!(session.organizer.note(note_id).unwrap().title, "新建笔记");
             assert!(session.redo_organizer());
+            assert!(session.update_note_editor(
+                note_id,
+                "项目记录".into(),
+                "第一行\n第二行".into(),
+                vec!["设计".into(), "复刻".into()],
+            ));
+            assert_eq!(
+                session.organizer.note(note_id).unwrap().tags,
+                ["设计", "复刻"]
+            );
+            assert!(session.undo_organizer());
+            assert!(session.organizer.note(note_id).unwrap().tags.is_empty());
+            assert!(session.redo_organizer());
             assert!(session.set_note_pinned(note_id, true));
             assert!(session.organizer.note(note_id).unwrap().pinned);
             assert!(session.set_note_trashed(note_id, true));
@@ -1950,6 +1999,7 @@ mod tests {
         let note = reopened.organizer.note(note_id).unwrap();
         assert_eq!(note.title, "项目记录");
         assert_eq!(note.body, "第一行\n第二行");
+        assert_eq!(note.tags, ["设计", "复刻"]);
         assert!(!note.uuid.is_empty());
         assert!(note.pinned);
         assert!(note.is_trashed());
@@ -1972,6 +2022,11 @@ mod tests {
                 "检查安装包和回退说明".into(),
             ));
             assert!(session.set_task_priority(task_id, Priority::High));
+            assert!(session.set_task_repeat(task_id, Repeat::Weekly));
+            assert!(session.set_task_tags(task_id, vec!["发布".into(), "桌面端".into()]));
+            assert!(session.undo_organizer());
+            assert!(session.organizer.task(task_id).unwrap().tags.is_empty());
+            assert!(session.redo_organizer());
             assert!(session.set_task_due(task_id, Some("2026-11-02".into())));
             assert!(!session.set_task_due(task_id, Some("下周".into())));
             assert!(session.update_task_editor(
@@ -2014,6 +2069,8 @@ mod tests {
         assert_eq!(task.title, "发布候选版");
         assert_eq!(task.notes, "检查安装包和回退说明");
         assert_eq!(task.priority, Priority::High);
+        assert_eq!(task.repeat, Repeat::Weekly);
+        assert_eq!(task.tags, ["发布", "桌面端"]);
         assert_eq!(task.due.as_deref(), Some("2026-11-03"));
         assert!(!task.done);
         assert!(!task.is_trashed());

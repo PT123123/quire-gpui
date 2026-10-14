@@ -2,7 +2,7 @@ use crate::input::{InputEvent, TextInput};
 use gpui::{prelude::*, *};
 use quire_core::core::{
     command::Command,
-    organizer::{OrganizerCatalog, Priority, Task as OrganizerTask},
+    organizer::{OrganizerCatalog, Priority, Repeat, Task as OrganizerTask},
     types::{Block, BlockId, BlockKind, ColorKind, Lang},
 };
 use quire_gpui::session::Session;
@@ -46,6 +46,30 @@ fn priority_label(priority: Priority) -> &'static str {
         Priority::Medium => "中",
         Priority::High => "高",
     }
+}
+
+fn repeat_label(repeat: Repeat) -> &'static str {
+    match repeat {
+        Repeat::None => "不重复",
+        Repeat::Daily => "每天",
+        Repeat::Weekdays => "每个工作日",
+        Repeat::Weekly => "每周",
+        Repeat::Monthly => "每月",
+    }
+}
+
+fn parse_organizer_tags(input: &str) -> Vec<String> {
+    input
+        .split([',', '，'])
+        .map(str::trim)
+        .filter(|tag| !tag.is_empty())
+        .map(str::to_owned)
+        .fold(Vec::<String>::new(), |mut tags, tag| {
+            if !tags.iter().any(|existing| existing == &tag) {
+                tags.push(tag);
+            }
+            tags
+        })
 }
 
 fn task_matches_smart_view(
@@ -105,8 +129,16 @@ fn toc_headings(blocks: &[Block]) -> Vec<(BlockId, u8, String)> {
 
 #[cfg(test)]
 mod view_tests {
-    use super::{find_matches_in, toc_headings};
+    use super::{find_matches_in, parse_organizer_tags, toc_headings};
     use quire_core::core::types::{Block, BlockId, BlockKind, ColorKind, Lang, OrderKey, PageId};
+
+    #[test]
+    fn organizer_tag_entry_trims_deduplicates_and_accepts_fullwidth_commas() {
+        assert_eq!(
+            parse_organizer_tags(" 设计,复刻， 设计 ,,桌面端 "),
+            ["设计", "复刻", "桌面端"]
+        );
+    }
 
     fn block(id: u64, kind: BlockKind, text: &str, parent: Option<BlockId>, folded: bool) -> Block {
         Block {
@@ -310,11 +342,13 @@ pub struct Workspace {
     note_title_input: Entity<TextInput>,
     note_body_input: Entity<TextInput>,
     task_due_input: Entity<TextInput>,
+    organizer_tags_input: Entity<TextInput>,
     search_subscription: Option<Subscription>,
     find_subscription: Option<Subscription>,
     note_title_subscription: Option<Subscription>,
     note_body_subscription: Option<Subscription>,
     task_due_subscription: Option<Subscription>,
+    organizer_tags_subscription: Option<Subscription>,
     search_query: String,
     find_query: String,
     find_matches: Vec<(BlockId, Range<usize>)>,
@@ -336,6 +370,7 @@ pub struct Workspace {
     organizer_open: bool,
     organizer_tasks: bool,
     organizer_trash: bool,
+    organizer_tag: Option<String>,
     selected_task_list: quire_core::core::organizer::ListId,
     selected_task_smart_view: Option<i32>,
     show_task_done: bool,
@@ -344,6 +379,7 @@ pub struct Workspace {
     note_title_draft: String,
     note_body_draft: String,
     task_due_draft: String,
+    organizer_tags_draft: String,
     task_due_error: bool,
     status: String,
     error: bool,
@@ -386,6 +422,11 @@ impl Workspace {
         let task_due_input =
             cx.new(|cx| TextInput::new(String::new(), Vec::new(), 12., window, cx));
         task_due_input.update(cx, |input, _| input.placeholder = Some("YYYY-MM-DD".into()));
+        let organizer_tags_input =
+            cx.new(|cx| TextInput::new(String::new(), Vec::new(), 12., window, cx));
+        organizer_tags_input.update(cx, |input, _| {
+            input.placeholder = Some("标签，以逗号分隔".into())
+        });
         let mut this = Self {
             session,
             title_input,
@@ -397,11 +438,13 @@ impl Workspace {
             note_title_input,
             note_body_input,
             task_due_input,
+            organizer_tags_input,
             search_subscription: None,
             find_subscription: None,
             note_title_subscription: None,
             note_body_subscription: None,
             task_due_subscription: None,
+            organizer_tags_subscription: None,
             search_query: String::new(),
             find_query: String::new(),
             find_matches: Vec::new(),
@@ -423,6 +466,7 @@ impl Workspace {
             organizer_open: false,
             organizer_tasks: false,
             organizer_trash: false,
+            organizer_tag: None,
             selected_task_list: quire_core::core::organizer::ListId::INBOX,
             selected_task_smart_view: Some(0),
             show_task_done: false,
@@ -431,6 +475,7 @@ impl Workspace {
             note_title_draft: String::new(),
             note_body_draft: String::new(),
             task_due_draft: String::new(),
+            organizer_tags_draft: String::new(),
             task_due_error: false,
             status: "已保存".into(),
             error: false,
@@ -477,6 +522,19 @@ impl Workspace {
             |this, _, event, window, cx| match event {
                 InputEvent::Edited { text, .. } => {
                     this.task_due_draft = text.clone();
+                    cx.notify();
+                }
+                InputEvent::Blurred => this.commit_note_draft(window, cx),
+                _ => {}
+            },
+        ));
+        let organizer_tags_input = this.organizer_tags_input.clone();
+        this.organizer_tags_subscription = Some(cx.subscribe_in(
+            &organizer_tags_input,
+            window,
+            |this, _, event, window, cx| match event {
+                InputEvent::Edited { text, .. } => {
+                    this.organizer_tags_draft = text.clone();
                     cx.notify();
                 }
                 InputEvent::Blurred => this.commit_note_draft(window, cx),
@@ -1610,28 +1668,38 @@ impl Workspace {
         self.schedule_save(true, window, cx);
     }
     fn commit_note_draft(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let tags = parse_organizer_tags(&self.organizer_tags_draft);
         let changed = if let Some(id) = self.selected_note {
-            self.session.update_note_content(
+            self.session.update_note_editor(
                 id,
                 self.note_title_draft.clone(),
                 self.note_body_draft.clone(),
+                tags,
             )
         } else if let Some(id) = self.selected_task {
             let due = self.task_due_draft.trim();
             if !due.is_empty() && !quire_core::core::date::is_iso_date(due) {
                 self.task_due_error = true;
-                self.session.update_task_content(
+                let previous_due = self
+                    .session
+                    .organizer
+                    .task(id)
+                    .and_then(|task| task.due.clone());
+                self.session.update_task_editor_tags(
                     id,
                     self.note_title_draft.clone(),
                     self.note_body_draft.clone(),
+                    previous_due,
+                    tags,
                 )
             } else {
                 self.task_due_error = false;
-                self.session.update_task_editor(
+                self.session.update_task_editor_tags(
                     id,
                     self.note_title_draft.clone(),
                     self.note_body_draft.clone(),
                     (!due.is_empty()).then(|| due.to_owned()),
+                    tags,
                 )
             }
         } else {
@@ -1683,6 +1751,11 @@ impl Workspace {
         self.selected_task = None;
         self.selected_note = Some(id);
         self.task_due_draft.clear();
+        self.organizer_tags_draft = note.tags.join(", ");
+        let tags = self.organizer_tags_draft.clone();
+        self.organizer_tags_input.update(cx, |input, cx| {
+            input.reset(tags.clone(), Vec::new(), tags.len(), cx);
+        });
         self.task_due_error = false;
         self.task_due_input.update(cx, |input, cx| {
             input.reset(String::new(), Vec::new(), 0, cx);
@@ -1715,6 +1788,11 @@ impl Workspace {
         self.selected_note = None;
         self.selected_task = Some(id);
         self.task_due_draft = task.due.clone().unwrap_or_default();
+        self.organizer_tags_draft = task.tags.join(", ");
+        let tags = self.organizer_tags_draft.clone();
+        self.organizer_tags_input.update(cx, |input, cx| {
+            input.reset(tags.clone(), Vec::new(), tags.len(), cx);
+        });
         self.task_due_error = false;
         let due_draft = self.task_due_draft.clone();
         let due_len = due_draft.len();
@@ -1753,6 +1831,21 @@ impl Workspace {
         };
         let next = Priority::from_slot((task.priority.slot() + 1) % Priority::ALL.len() as i32);
         if self.session.set_task_priority(id, next) {
+            self.schedule_save(true, window, cx);
+            cx.notify();
+        }
+    }
+    fn cycle_task_repeat(
+        &mut self,
+        id: quire_core::core::organizer::TaskId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(task) = self.session.organizer.task(id) else {
+            return;
+        };
+        let next = Repeat::from_slot((task.repeat.slot() + 1) % Repeat::ALL.len() as i32);
+        if self.session.set_task_repeat(id, next) {
             self.schedule_save(true, window, cx);
             cx.notify();
         }
@@ -1886,6 +1979,7 @@ impl Workspace {
         self.note_title_draft.clear();
         self.note_body_draft.clear();
         self.task_due_draft.clear();
+        self.organizer_tags_draft.clear();
         self.task_due_error = false;
         self.note_title_input.update(cx, |input, cx| {
             input.reset(String::new(), Vec::new(), 0, cx);
@@ -1894,6 +1988,9 @@ impl Workspace {
             input.reset(String::new(), Vec::new(), 0, cx);
         });
         self.task_due_input.update(cx, |input, cx| {
+            input.reset(String::new(), Vec::new(), 0, cx);
+        });
+        self.organizer_tags_input.update(cx, |input, cx| {
             input.reset(String::new(), Vec::new(), 0, cx);
         });
         cx.notify();
@@ -2022,6 +2119,13 @@ impl Workspace {
     fn toggle_organizer_trash(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.commit_note_draft(window, cx);
         self.organizer_trash = !self.organizer_trash;
+        self.selected_note = None;
+        self.selected_task = None;
+        self.reset_organizer_item_inputs(cx);
+    }
+    fn toggle_organizer_tag(&mut self, tag: String, window: &mut Window, cx: &mut Context<Self>) {
+        self.commit_note_draft(window, cx);
+        self.organizer_tag = (self.organizer_tag.as_deref() != Some(tag.as_str())).then_some(tag);
         self.selected_note = None;
         self.selected_task = None;
         self.reset_organizer_item_inputs(cx);
@@ -4316,6 +4420,11 @@ impl Render for Workspace {
         })
         .into_iter()
         .cloned()
+        .filter(|note| {
+            self.organizer_tag
+                .as_ref()
+                .is_none_or(|tag| note.tags.contains(tag))
+        })
         .collect::<Vec<_>>();
         notes.sort_by_key(|note| std::cmp::Reverse((note.pinned, note.edited)));
         let note_rows = notes
@@ -4388,7 +4497,10 @@ impl Render for Workspace {
         .into_iter()
         .filter(|task| {
             if self.organizer_trash {
-                return true;
+                return self
+                    .organizer_tag
+                    .as_ref()
+                    .is_none_or(|tag| task.tags.contains(tag));
             }
             let in_scope = self
                 .selected_task_smart_view
@@ -4396,6 +4508,10 @@ impl Render for Workspace {
                     self.task_matches_smart_view(task, view)
                 });
             in_scope
+                && self
+                    .organizer_tag
+                    .as_ref()
+                    .is_none_or(|tag| task.tags.contains(tag))
                 && (self.selected_task_smart_view == Some(4) && task.done
                     || self.selected_task_smart_view != Some(4)
                         && (!task.done || self.show_task_done))
@@ -4490,6 +4606,7 @@ impl Render for Workspace {
                     id,
                     task.done,
                     priority_label(task.priority),
+                    repeat_label(task.repeat),
                     task.due.clone(),
                     task.list,
                     list_name,
@@ -4600,6 +4717,54 @@ impl Render for Workspace {
                         .child("×"),
                 )
         }));
+        let mut organizer_tags = Vec::<String>::new();
+        if self.organizer_tasks {
+            let tasks = if self.organizer_trash {
+                self.session.organizer.trashed_tasks().collect::<Vec<_>>()
+            } else {
+                self.session.organizer.live_tasks().collect::<Vec<_>>()
+            };
+            for task in tasks {
+                for tag in &task.tags {
+                    if !organizer_tags.contains(tag) {
+                        organizer_tags.push(tag.clone());
+                    }
+                }
+            }
+        } else {
+            let notes = if self.organizer_trash {
+                self.session.organizer.trashed_notes().collect::<Vec<_>>()
+            } else {
+                self.session.organizer.live_notes().collect::<Vec<_>>()
+            };
+            for note in notes {
+                for tag in &note.tags {
+                    if !organizer_tags.contains(tag) {
+                        organizer_tags.push(tag.clone());
+                    }
+                }
+            }
+        }
+        organizer_tags.sort();
+        let organizer_tag_buttons = organizer_tags
+            .into_iter()
+            .map(|tag| {
+                let selected = self.organizer_tag.as_deref() == Some(tag.as_str());
+                let label = tag.clone();
+                div()
+                    .id(SharedString::from(format!("organizer-tag-{tag}")))
+                    .px(px(8.))
+                    .py(px(4.))
+                    .rounded(px(10.))
+                    .cursor_pointer()
+                    .text_color(if selected { accent } else { muted })
+                    .when(selected, |chip| chip.bg(Palette::color(&p.elevated)))
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.toggle_organizer_tag(label.clone(), window, cx)
+                    }))
+                    .child(tag)
+            })
+            .collect::<Vec<_>>();
         let organizer_view = div()
             .id("organizer-main")
             .flex()
@@ -4750,6 +4915,16 @@ impl Render for Workspace {
                             },
                         )
                     })
+                    .when(!organizer_tag_buttons.is_empty(), |list| {
+                        list.child(
+                            div()
+                                .id("organizer-tag-filter-list")
+                                .flex()
+                                .flex_wrap()
+                                .gap(px(4.))
+                                .children(organizer_tag_buttons),
+                        )
+                    })
                     .child(
                         div()
                             .id("organizer-trash-toggle")
@@ -4805,7 +4980,7 @@ impl Render for Workspace {
                                 .gap(px(18.))
                                 .when_some(
                                     task_summary,
-                                    |pane, (id, done, priority, due, list_id, list_name)| {
+                                    |pane, (id, done, priority, repeat, due, list_id, list_name)| {
                                         pane.child(
                                             div()
                                                 .flex()
@@ -4838,6 +5013,26 @@ impl Render for Workspace {
                                                             },
                                                         ))
                                                         .child("更改优先级"),
+                                                )
+                                                .child(
+                                                    div()
+                                                        .id("organizer-task-repeat-cycle")
+                                                        .px(px(7.))
+                                                        .py(px(3.))
+                                                        .rounded(px(4.))
+                                                        .cursor_pointer()
+                                                        .text_color(accent)
+                                                        .hover(|button| {
+                                                            button.bg(Palette::color(&p.elevated))
+                                                        })
+                                                        .on_click(cx.listener(
+                                                            move |this, _, window, cx| {
+                                                                this.cycle_task_repeat(
+                                                                    id, window, cx,
+                                                                )
+                                                            },
+                                                        ))
+                                                        .child(format!("重复：{repeat}")),
                                                 )
                                                 .child(
                                                     div()
@@ -4923,6 +5118,25 @@ impl Render for Workspace {
                                         .flex_1()
                                         .min_h(px(300.))
                                         .child(self.note_body_input.clone()),
+                                )
+                                .child(
+                                    div()
+                                        .flex()
+                                        .items_center()
+                                        .gap(px(8.))
+                                        .text_color(muted)
+                                        .child("标签")
+                                        .child(
+                                            div()
+                                                .id("organizer-tags-input")
+                                                .flex_1()
+                                                .h(px(32.))
+                                                .rounded(px(5.))
+                                                .border_1()
+                                                .border_color(Palette::color(&p.border))
+                                                .px(px(8.))
+                                                .child(self.organizer_tags_input.clone()),
+                                        ),
                                 )
                         },
                     )
