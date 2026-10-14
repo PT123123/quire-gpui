@@ -462,3 +462,8 @@ GPUI 应用已超出第一竖切，但离完整复刻仍有较大差距。用户
 
 - 侧栏右边缘新增 6px 列宽拖动手柄，鼠标拖动时实时调整宽度并高亮边缘，限制在 200–480px；松开后将宽度保存到 GPUI 独立设置，启动时恢复。
 - 验证：16 项库测试 + 3 项视图测试、`cargo check`、release 构建、`cargo fmt --check`、`git diff --check` 通过。当前窗口截图确认侧栏初始几何与参考图一致；本机鼠标自动化未稳定触发 GPUI 鼠标按下事件，因此真实拖动、边界与重启读回暂列待验，不能当作已视觉验收。
+## 第六十轮：数据库单元格内联编辑
+
+- 数据库行的标题、text、number、date、checkbox、url、email、phone、select、status 可单击编辑；使用 core 属性 parser 校验后由 `SetDatabaseCell` 写入。Enter 或失焦提交，Esc 放弃；无效值不会写库。checkbox 绘成勾选状态并可单击切换。所有写入进入当前页面 core 撤销栈并持久化；虚拟行仍只按 uniform_list 可见范围读取。
+- 扩展 `db-cell-activated/changed/closed/toggled` 的人工语义追踪，明确哪些属性仍未接入。
+- 验证：隔离 SQLite 测试覆盖标题、文本、checkbox typed value 的读取/窗口绘制、撤销/重做和重开读回；16 项库测试 + 3 项视图测试、`cargo check`、`cargo fmt --check`、`git diff --check` 通过。release 窗口截图确认 checkbox 方框 16px、圆角与 jade 强调色/行间距；还需真窗口操作确认鼠标点击切换、输入焦点和非法值错误态。所有库均在测试 ScratchDir 或 `%TEMP%`，未访问正式用户库。

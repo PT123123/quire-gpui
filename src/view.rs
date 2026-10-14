@@ -400,6 +400,7 @@ pub struct Workspace {
     task_due_input: Entity<TextInput>,
     organizer_tags_input: Entity<TextInput>,
     subtask_title_input: Entity<TextInput>,
+    database_cell_input: Entity<TextInput>,
     search_subscription: Option<Subscription>,
     find_subscription: Option<Subscription>,
     note_title_subscription: Option<Subscription>,
@@ -408,6 +409,7 @@ pub struct Workspace {
     task_due_subscription: Option<Subscription>,
     organizer_tags_subscription: Option<Subscription>,
     subtask_title_subscription: Option<Subscription>,
+    database_cell_subscription: Option<Subscription>,
     search_query: String,
     find_query: String,
     find_matches: Vec<(BlockId, Range<usize>)>,
@@ -422,6 +424,7 @@ pub struct Workspace {
     hovered_task: Option<quire_core::core::organizer::TaskId>,
     inputs: BTreeMap<u64, Entity<TextInput>>,
     selected_database_views: HashMap<u64, ViewId>,
+    active_database_cell: Option<(u64, u64, u64, u64)>,
     subscriptions: Vec<Subscription>,
     palette: Palette,
     transition_palette: Option<Palette>,
@@ -534,6 +537,8 @@ impl Workspace {
         subtask_title_input.update(cx, |input, _| {
             input.placeholder = Some("添加子任务…".into())
         });
+        let database_cell_input =
+            cx.new(|cx| TextInput::new(String::new(), Vec::new(), 12., window, cx));
         let input_fg = Palette::color(&Palette::load(theme).fg);
         for input in [
             title_input.clone(),
@@ -546,6 +551,7 @@ impl Workspace {
             task_due_input.clone(),
             organizer_tags_input.clone(),
             subtask_title_input.clone(),
+            database_cell_input.clone(),
         ] {
             input.update(cx, |input, _| input.text_color = Some(input_fg));
         }
@@ -563,6 +569,7 @@ impl Workspace {
             task_due_input,
             organizer_tags_input,
             subtask_title_input,
+            database_cell_input,
             search_subscription: None,
             find_subscription: None,
             note_title_subscription: None,
@@ -571,6 +578,7 @@ impl Workspace {
             task_due_subscription: None,
             organizer_tags_subscription: None,
             subtask_title_subscription: None,
+            database_cell_subscription: None,
             search_query: String::new(),
             find_query: String::new(),
             find_matches: Vec::new(),
@@ -585,6 +593,7 @@ impl Workspace {
             hovered_task: None,
             inputs: BTreeMap::new(),
             selected_database_views: HashMap::new(),
+            active_database_cell: None,
             subscriptions: Vec::new(),
             palette: Palette::load(&theme_choice),
             transition_palette: None,
@@ -720,6 +729,27 @@ impl Workspace {
                     } else {
                         this.add_subtask_from_draft(window, cx)
                     }
+                }
+                _ => {}
+            },
+        ));
+        let database_cell_input = this.database_cell_input.clone();
+        this.database_cell_subscription = Some(cx.subscribe_in(
+            &database_cell_input,
+            window,
+            |this, _, event, window, cx| match event {
+                InputEvent::Edited { .. } => cx.notify(),
+                InputEvent::Split(_) => {
+                    this.commit_database_cell(true, window, cx);
+                    if this.active_database_cell.is_none() {
+                        this.focus_first(window, cx);
+                    }
+                }
+                InputEvent::Blurred => this.commit_database_cell(false, window, cx),
+                InputEvent::DismissSlash => {
+                    this.active_database_cell = None;
+                    this.focus_first(window, cx);
+                    cx.notify();
                 }
                 _ => {}
             },
@@ -1900,6 +1930,7 @@ impl Workspace {
             self.task_due_input.clone(),
             self.organizer_tags_input.clone(),
             self.subtask_title_input.clone(),
+            self.database_cell_input.clone(),
         ] {
             input.update(cx, |input, _| input.text_color = Some(fg));
         }
@@ -1934,6 +1965,7 @@ impl Workspace {
             self.task_due_input.clone(),
             self.organizer_tags_input.clone(),
             self.subtask_title_input.clone(),
+            self.database_cell_input.clone(),
         ];
         inputs.extend(self.inputs.values().cloned());
         for input in inputs {
@@ -1941,6 +1973,82 @@ impl Workspace {
         }
         self.schedule_save(true, window, cx);
         cx.notify();
+    }
+    fn begin_database_cell_edit(
+        &mut self,
+        block: u64,
+        db: u64,
+        record: u64,
+        property: u64,
+        mut value: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.session.page.locked {
+            return;
+        }
+        if self
+            .session
+            .databases
+            .properties_of(quire_core::core::database::DatabaseId(db))
+            .find(|definition| definition.id.0 == property)
+            .is_some_and(|definition| {
+                !matches!(
+                    definition.kind,
+                    quire_core::core::database::PropertyKind::Select
+                        | quire_core::core::database::PropertyKind::Status
+                )
+            })
+        {
+            if let Ok(stored) = self.session.repo.cell(
+                quire_core::core::database::RecordId(record),
+                quire_core::core::database::PropertyId(property),
+            ) {
+                value = stored.display();
+            }
+        }
+        self.active_database_cell = Some((block, db, record, property));
+        let caret = value.len();
+        self.database_cell_input
+            .update(cx, |input, cx| input.reset(value, Vec::new(), caret, cx));
+        let input = self.database_cell_input.read(cx);
+        window.focus(&input.focus);
+        cx.notify();
+    }
+    fn commit_database_cell(
+        &mut self,
+        keep_editing_on_error: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some((block, _db, record, property)) = self.active_database_cell else {
+            return;
+        };
+        let value = self
+            .database_cell_input
+            .read(cx)
+            .buffer
+            .committed()
+            .to_owned();
+        match self.session.set_database_cell(
+            BlockId(block),
+            quire_core::core::database::RecordId(record),
+            quire_core::core::database::PropertyId(property),
+            &value,
+        ) {
+            Ok(_) => {
+                self.active_database_cell = None;
+                self.schedule_save(true, window, cx);
+            }
+            Err(error) => {
+                self.status = error.to_string();
+                self.error = true;
+                if !keep_editing_on_error {
+                    self.active_database_cell = None;
+                }
+                cx.notify();
+            }
+        }
     }
     fn zoom_in(&mut self, _: &ZoomIn, window: &mut Window, cx: &mut Context<Self>) {
         self.set_ui_zoom(quire_gpui::ui_scale::step(self.ui_zoom, 1), window, cx);
@@ -4964,7 +5072,11 @@ impl Render for Workspace {
                                     database_table
                                 {
                                     let db_border = Palette::color(&p.border);
+                                    let db_hover = Palette::color(&p.bg).opacity(0.22);
+                                    let db_checkbox_fg = Palette::color(&p.bg);
                                     let query_columns = columns.clone();
+                                    let cell_title_property = title;
+                                                            let cell_block = block_id.0;
                                     let header = div()
                                         .w(database_width)
                                         .flex()
@@ -4999,7 +5111,7 @@ impl Render for Workspace {
                                         SharedString::from(format!("database-rows-{}", db_id.0)),
                                         total,
                                         cx.processor(
-                                            move |_this, range: Range<usize>, _window, _cx| {
+                                        move |_this, range: Range<usize>, _window, _cx| {
                                                 let request =
                                                     quire_core::core::database::RowRequest::new(
                                                         db_id,
@@ -5014,11 +5126,62 @@ impl Render for Workspace {
                                                     .unwrap_or_default()
                                                     .into_iter()
                                                     .map(|row| {
-                                                        let cells = std::iter::once(row.title)
+                                                    let cells = std::iter::once(row.title)
                                                             .chain(row.cells)
                                                             .enumerate()
-                                                            .map(|(index, value)| {
-                                                                div()
+                                                        .map(|(index, value)| {
+                                                            let property_id = if index == 0 {
+                                                                cell_title_property
+                                                            } else {
+                                                                query_columns[index - 1].id
+                                                            };
+                                                            let kind = if index == 0 {
+                                                                quire_core::core::database::PropertyKind::Title
+                                                            } else {
+                                                                query_columns[index - 1].kind
+                                                            };
+                                                            let editable = !_this.session.page.locked
+                                                                && !kind.is_computed()
+                                                                && !kind.is_derived()
+                                                                && !matches!(
+                                                                    kind,
+                                                                    quire_core::core::database::PropertyKind::MultiSelect
+                                                                        | quire_core::core::database::PropertyKind::Files
+                                                                        | quire_core::core::database::PropertyKind::Relation
+                                                                );
+                                                            let cell_key =
+                                                                (cell_block, db_id.0, row.record, property_id.0);
+                                                            let editing = _this.active_database_cell == Some(cell_key);
+                                                            let input = _this.database_cell_input.clone();
+                                                            let displayed = if value.is_empty() {
+                                                                "—".to_owned()
+                                                            } else {
+                                                                value.clone()
+                                                            };
+                                                            let checked = matches!(
+                                                                value.as_str(),
+                                                                "Yes" | "true" | "True"
+                                                            );
+                                                            let checkbox = div()
+                                                                .w(px(16.))
+                                                                .h(px(16.))
+                                                                .rounded(px(4.))
+                                                                .border_1()
+                                                                .border_color(if checked {
+                                                                    accent
+                                                                } else {
+                                                                    muted
+                                                                })
+                                                                .when(checked, |box_| {
+                                                                    box_.bg(accent).flex().items_center().justify_center().child(
+                                                                        div()
+                                                                            .text_size(px(10.))
+                                                                            .text_color(db_checkbox_fg)
+                                                                            .child("✓"),
+                                                                    )
+                                                                });
+                                                            let raw_value = value.clone();
+                                                            let mut cell = div()
                                                                     .id(SharedString::from(
                                                                         format!(
                                                                             "db-cell-{}-{}-{index}",
@@ -5044,11 +5207,61 @@ impl Render for Workspace {
                                                                     .border_color(db_border)
                                                                     .text_size(px(12.))
                                                                     .text_color(text)
-                                                                    .child(if value.is_empty() {
-                                                                        "—".to_owned()
-                                                                    } else {
-                                                                        value
+                                                                    .when(editing, |cell| {
+                                                                        cell.child(input.clone())
                                                                     })
+                                                                    .when(
+                                                                        !editing
+                                                                            && kind == quire_core::core::database::PropertyKind::Checkbox,
+                                                                        |cell| cell.child(checkbox),
+                                                                    )
+                                                                    .when(
+                                                                        !editing
+                                                                            && kind != quire_core::core::database::PropertyKind::Checkbox,
+                                                                        |cell| {
+                                                                        cell.child(displayed.clone())
+                                                                        },
+                                                                    );
+                                                            if editable && !editing {
+                                                                cell = cell.cursor_pointer().hover(|cell| cell.bg(db_hover));
+                                                                if kind
+                                                                    == quire_core::core::database::PropertyKind::Checkbox
+                                                                {
+                                                                    cell = cell.text_color(accent).on_click(_cx.listener(
+                                                                        move |this, _, window, cx| {
+                                                                            let next = if checked { "false" } else { "true" };
+                                                                            match this.session.set_database_cell(
+                                                                                BlockId(cell_block),
+                                                                                quire_core::core::database::RecordId(row.record),
+                                                                                quire_core::core::database::PropertyId(property_id.0),
+                                                                                next,
+                                                                            ) {
+                                                                                Ok(_) => this.schedule_save(true, window, cx),
+                                                                                Err(error) => {
+                                                                                    this.status = error.to_string();
+                                                                                    this.error = true;
+                                                                                    cx.notify();
+                                                                                }
+                                                                            }
+                                                                        },
+                                                                    ));
+                                                                } else {
+                                                                    cell = cell.on_click(_cx.listener(
+                                                                        move |this, _, window, cx| {
+                                                                            this.begin_database_cell_edit(
+                                                                                cell_block,
+                                                                                db_id.0,
+                                                                                row.record,
+                                                                                property_id.0,
+                                                                                raw_value.clone(),
+                                                                                window,
+                                                                                cx,
+                                                                            );
+                                                                        },
+                                                                    ));
+                                                                }
+                                                            }
+                                                            cell
                                                             })
                                                             .collect::<Vec<_>>();
                                                         div()

@@ -51,3 +51,7 @@ db-view-added,已实现,未验证,加号创建“表格 N”视图并立即选�
 zoom-in,已实现,未验证,外观设置提供 50%–300% 的整体缩放、加减和复位；不是只放大正文文字。,GPUI 根尺度以原子系数统一换算 view/input 的 px token，旧版阶梯 50/67/75/80/90/100/110/125/150/175/200/250/300%；gpui.ui-scale 持久化，开窗时读取。
 zoom-out,已实现,未验证,整体界面缩小，范围下限 75%，边界时禁用。,同一全局 px 换算路径，值持久化到独立 GPUI 设置。
 zoom-reset,已实现,未验证,一键恢复 100% 界面缩放。,将全局 px 系数和 gpui.ui-scale 同时重置为 1.00。
+"db-cell-activated","已实现","未验证","可编辑的标题与单值属性单击后进入单元格内联编辑；锁定页面、派生/计算/多值属性不可编辑","通过 uniform_list 的虚拟行事件按 database/record/property 标识打开共享 TextInput，并从当前行的显示值开始编辑"
+"db-cell-changed","已实现","未验证","输入内容经 core database_property::parse_one 校验；Enter 或失焦用 SetDatabaseCell 写入并进入页面撤销栈，非法输入显示错误且不落库","文本、数字、日期、复选框、URL、邮箱、电话与已配置的 select/status 名称走 core typed cell 写入；多值关系/文件和计算列仍未接入编辑器"
+"db-cell-closed","已实现","未验证","Enter/失焦提交；Esc 放弃当前输入；非法失焦放弃错误草稿并保留旧值","撤销与重做沿用 core SetDatabaseCell 历史"
+"db-cell-toggled","已实现","未验证","checkbox 属性绘为勾选/未勾选控件，点击直接切换 typed Flag 并保存；锁定页面禁用","点击调用 core SetDatabaseCell，进入同一页面撤销栈；使用 16px 自绘圆角方框与主题强调色勾选；点击事件、命中范围仍待真人操作确认"

@@ -4,7 +4,8 @@ use quire_core::{
     core::{
         command::{self, Command},
         database::{
-            DatabaseCatalog, DatabaseDraft, DatabaseId, PropertyId, View, ViewId, ViewLayout,
+            DatabaseCatalog, DatabaseDraft, DatabaseId, PropertyId, RecordId, View, ViewId,
+            ViewLayout,
         },
         document::{Document, Entry},
         history::History,
@@ -390,6 +391,57 @@ impl Session {
         self.databases.views.push(view);
         let _ = self.persistence.force_flush();
         Some(id)
+    }
+    pub fn set_database_cell(
+        &mut self,
+        block: BlockId,
+        record: RecordId,
+        property: PropertyId,
+        input: &str,
+    ) -> Result<bool> {
+        if self.page.locked {
+            return Ok(false);
+        }
+        let Some(definition) = self.session_database_property(block, property).cloned() else {
+            return Ok(false);
+        };
+        let from = self.repo.cell(record, property)?;
+        let to = quire_core::core::database_property::parse_one(
+            definition.kind,
+            &definition.config,
+            input,
+        )
+        .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+        if from == to {
+            return Ok(false);
+        }
+        let Some(entry) = command::plan(
+            &mut self.document,
+            self.page.id,
+            Command::SetDatabaseCell {
+                block,
+                record,
+                property,
+                from,
+                to,
+            },
+        ) else {
+            return Ok(false);
+        };
+        self.apply_entry(entry);
+        self.persistence.force_flush()?;
+        self.refresh_databases();
+        Ok(true)
+    }
+    fn session_database_property(
+        &self,
+        block: BlockId,
+        property: PropertyId,
+    ) -> Option<&quire_core::core::database::Property> {
+        let db = self.document.block(block)?.db_ref?;
+        self.databases
+            .properties_of(db)
+            .find(|candidate| candidate.id == property)
     }
     pub fn refresh_databases(&mut self) {
         if let Ok(catalog) = self.repo.load_databases() {
@@ -2085,6 +2137,7 @@ fn is_database_change(change: &Change) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use quire_core::core::database::CellValue;
     #[test]
     fn unicode_typing_split_merge_undo_and_reopen_use_real_core_and_sqlite() -> Result<()> {
         let scratch = quire_core::testing::ScratchDir::new("gpui-roundtrip");
@@ -2136,13 +2189,20 @@ mod tests {
                     .any(|property| property.id == title)
             );
             assert_eq!(session.databases.views_of(db).count(), 1);
-            session
+            let status_property = session
                 .add_database_property(
                     block,
                     "状态".into(),
                     quire_core::core::database::PropertyKind::Text,
                 )
                 .expect("property created");
+            let done_property = session
+                .add_database_property(
+                    block,
+                    "完成".into(),
+                    quire_core::core::database::PropertyKind::Checkbox,
+                )
+                .expect("checkbox property created");
             session.add_database_view(block).expect("view created");
             assert_eq!(session.databases.views_of(db).count(), 2);
             session.undo();
@@ -2150,6 +2210,21 @@ mod tests {
             session.redo();
             assert_eq!(session.databases.views_of(db).count(), 2);
             let record = session.add_database_record(block).expect("record created");
+            assert!(session.set_database_cell(block, record, title, "进行中")?);
+            assert!(session.set_database_cell(block, record, status_property, "待核准")?);
+            assert!(session.set_database_cell(block, record, done_property, "true")?);
+            assert_eq!(
+                session.repo.cell(record, title)?,
+                CellValue::Text("进行中".into())
+            );
+            assert_eq!(
+                session.repo.cell(record, status_property)?,
+                CellValue::Text("待核准".into())
+            );
+            assert_eq!(
+                session.repo.cell(record, done_property)?,
+                CellValue::Flag(true)
+            );
             session.persistence.force_flush()?;
             assert_eq!(session.repo.record_count(db)?, 1);
             assert_eq!(session.repo.record(record)?.unwrap().db, db);
@@ -2164,10 +2239,12 @@ mod tests {
                 quire_core::core::database::RowWindow { start: 0, end: 20 },
             )?;
             assert_eq!(rows.len(), 1);
-            assert_eq!(rows[0].cells.len(), 1);
+            assert_eq!(rows[0].cells.len(), 2);
+            assert_eq!(rows[0].title, "进行中");
+            assert_eq!(rows[0].cells[0], "待核准");
+            assert_eq!(rows[0].cells[1], "Yes");
             session.undo();
-            session.persistence.force_flush()?;
-            assert_eq!(session.repo.record_count(db)?, 0);
+            assert_eq!(session.repo.cell(record, done_property)?, CellValue::Empty);
             session.redo();
             session.persistence.force_flush()?;
             assert_eq!(session.repo.record_count(db)?, 1);
@@ -2188,6 +2265,29 @@ mod tests {
         );
         assert_eq!(reopened.databases.views_of(db).count(), 2);
         assert_eq!(reopened.repo.record_count(db)?, 1);
+        let record = reopened.repo.records_of(db)?[0].id;
+        let title = reopened.databases.title_property(db).unwrap().id;
+        let status = reopened
+            .databases
+            .properties_of(db)
+            .find(|property| property.name == "状态")
+            .unwrap()
+            .id;
+        let done = reopened
+            .databases
+            .properties_of(db)
+            .find(|property| property.name == "完成")
+            .unwrap()
+            .id;
+        assert_eq!(
+            reopened.repo.cell(record, title)?,
+            CellValue::Text("进行中".into())
+        );
+        assert_eq!(
+            reopened.repo.cell(record, status)?,
+            CellValue::Text("待核准".into())
+        );
+        assert_eq!(reopened.repo.cell(record, done)?, CellValue::Flag(true));
         Ok(())
     }
 
