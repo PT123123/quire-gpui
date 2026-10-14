@@ -57,7 +57,7 @@
 ## P4 — 数据库视图与属性
 
 - [ ] 对齐旧版实际支持的全部属性类型与配置。
-- [~] 普通表格块支持单元格编辑、追加/删除行列和 Tab/Shift+Tab/Enter/方向键网格导航。数据库现支持通过块类型/slash 创建、显示 schema、虚拟化 table rows、添加文本属性和记录；表格视图页签可切换/新建，新增操作走 core undo/persistence；标题及 text/number/date/checkbox/url/email/phone/select/status 单元格可内联编辑并走 typed core 命令、撤销/重做与持久化；复选框直接点击、多值/计算/派生单元格编辑、看板/画廊/日历/表单布局尚未完成。
+- [~] 普通表格块支持单元格编辑、追加/删除行列和 Tab/Shift+Tab/Enter/方向键网格导航。数据库现支持通过块类型/slash 创建、显示 schema、虚拟化 table rows、添加文本属性和记录；可双击非标题列名改名，改名走 core 可撤销命令并通过 SQLite 重开验证；表格视图页签可切换/新建，新增操作走 core undo/persistence；标题及 text/number/date/checkbox/url/email/phone/select/status 单元格可内联编辑并走 typed core 命令、撤销/重做与持久化；复选框直接点击、多值/计算/派生单元格编辑、看板/画廊/日历/表单布局尚未完成。
 - [~] 单元格内联编辑、checkbox 点击切换、排序、过滤、分组、列管理及宽度（数据库属性视图）。常用单值属性已由 typed core 命令编辑并纳入撤销/重做；其他属性编辑器和视图工具栏仍未完成。
 - [ ] formula、relation、rollup 的配置与计算显示。
 - [~] 数据库行使用 GPUI uniform_list 的可见 range 通过 core window_rows 读取，未全量加载；大表滚动/内存验收、行选择和 17 种属性完整编辑路径待完成；常用单值属性现已有 inline edit、checkbox click、Enter/失焦提交、Esc 取消与 core 撤销/重做。

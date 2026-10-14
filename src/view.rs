@@ -500,8 +500,10 @@ pub struct Workspace {
     subtask_title_input: Entity<TextInput>,
     database_cell_input: Entity<TextInput>,
     database_search_input: Entity<TextInput>,
+    database_property_name_input: Entity<TextInput>,
     search_subscription: Option<Subscription>,
     database_search_subscription: Option<Subscription>,
+    database_property_name_subscription: Option<Subscription>,
     find_subscription: Option<Subscription>,
     note_title_subscription: Option<Subscription>,
     note_body_subscription: Option<Subscription>,
@@ -530,6 +532,9 @@ pub struct Workspace {
     database_search_text: String,
     selected_database_record: Option<(u64, u64, u64)>,
     active_database_cell: Option<(u64, u64, u64, u64)>,
+    active_database_property_edit: Option<(u64, u64, u64)>,
+    database_property_name_draft: String,
+    database_header_click_seq: u64,
     subscriptions: Vec<Subscription>,
     palette: Palette,
     transition_palette: Option<Palette>,
@@ -649,6 +654,8 @@ impl Workspace {
             cx.new(|cx| TextInput::new(String::new(), Vec::new(), 12., window, cx));
         let database_search_input =
             cx.new(|cx| TextInput::new(String::new(), Vec::new(), 12., window, cx));
+        let database_property_name_input =
+            cx.new(|cx| TextInput::new(String::new(), Vec::new(), 11., window, cx));
         database_search_input.update(cx, |input, _| {
             input.placeholder = Some("搜索此数据库…".into())
         });
@@ -666,6 +673,7 @@ impl Workspace {
             subtask_title_input.clone(),
             database_cell_input.clone(),
             database_search_input.clone(),
+            database_property_name_input.clone(),
         ] {
             input.update(cx, |input, _| input.text_color = Some(input_fg));
         }
@@ -685,8 +693,10 @@ impl Workspace {
             subtask_title_input,
             database_cell_input,
             database_search_input,
+            database_property_name_input,
             search_subscription: None,
             database_search_subscription: None,
+            database_property_name_subscription: None,
             find_subscription: None,
             note_title_subscription: None,
             note_body_subscription: None,
@@ -715,6 +725,9 @@ impl Workspace {
             database_search_text: String::new(),
             selected_database_record: None,
             active_database_cell: None,
+            active_database_property_edit: None,
+            database_property_name_draft: String::new(),
+            database_header_click_seq: 0,
             subscriptions: Vec::new(),
             palette: Palette::load(&theme_choice),
             transition_palette: None,
@@ -966,6 +979,21 @@ impl Workspace {
                     cx.notify();
                 }
                 InputEvent::DismissSlash => this.close_database_search(window, cx),
+                _ => {}
+            },
+        ));
+        let database_property_name_input = this.database_property_name_input.clone();
+        this.database_property_name_subscription = Some(cx.subscribe_in(
+            &database_property_name_input,
+            window,
+            |this, _, event, window, cx| match event {
+                InputEvent::Edited { text, .. } => {
+                    this.database_property_name_draft = text.clone();
+                    cx.notify();
+                }
+                InputEvent::Split(_) => this.commit_database_property_name(true, window, cx),
+                InputEvent::Blurred => this.commit_database_property_name(false, window, cx),
+                InputEvent::DismissSlash => this.cancel_database_property_name(window, cx),
                 _ => {}
             },
         ));
@@ -2163,6 +2191,102 @@ impl Workspace {
         let input = self.database_cell_input.read(cx);
         window.focus(&input.focus);
         cx.notify();
+    }
+    fn begin_database_property_name_edit(
+        &mut self,
+        block: u64,
+        db: u64,
+        property: u64,
+        name: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.session.page.locked {
+            return;
+        }
+        self.active_database_property_edit = Some((block, db, property));
+        self.database_property_name_draft = name.clone();
+        let caret = name.len();
+        self.database_property_name_input
+            .update(cx, |input, cx| input.reset(name, Vec::new(), caret, cx));
+        window.focus(&self.database_property_name_input.read(cx).focus);
+        cx.notify();
+    }
+    fn cancel_database_property_name(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.active_database_property_edit.take().is_some() {
+            self.database_property_name_draft.clear();
+            self.focus_first(window, cx);
+            cx.notify();
+        }
+    }
+    fn commit_database_property_name(
+        &mut self,
+        restore_focus: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some((block, _db, property)) = self.active_database_property_edit else {
+            return;
+        };
+        let name = self
+            .database_property_name_input
+            .read(cx)
+            .buffer
+            .committed()
+            .to_owned();
+        if name.trim().is_empty() {
+            if restore_focus {
+                self.status = "属性名称不能为空".into();
+                self.error = true;
+                window.focus(&self.database_property_name_input.read(cx).focus);
+            } else {
+                self.active_database_property_edit = None;
+                self.database_property_name_draft.clear();
+            }
+            cx.notify();
+            return;
+        }
+        self.active_database_property_edit = None;
+        match self.session.rename_database_property(
+            BlockId(block),
+            quire_core::core::database::PropertyId(property),
+            &name,
+        ) {
+            Ok(true) => self.schedule_save(true, window, cx),
+            Ok(false) => {}
+            Err(error) => {
+                self.status = error.to_string();
+                self.error = true;
+            }
+        }
+        self.database_property_name_draft.clear();
+        if restore_focus {
+            self.focus_first(window, cx);
+        }
+        cx.notify();
+    }
+    fn schedule_database_header_sort(
+        &mut self,
+        block: BlockId,
+        db: quire_core::core::database::DatabaseId,
+        view_id: ViewId,
+        property: quire_core::core::database::PropertyId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.database_header_click_seq = self.database_header_click_seq.wrapping_add(1);
+        let sequence = self.database_header_click_seq;
+        cx.spawn_in(window, async move |weak, cx| {
+            cx.background_executor()
+                .timer(Duration::from_millis(500))
+                .await;
+            let _ = weak.update_in(cx, |this, window, cx| {
+                if this.database_header_click_seq == sequence {
+                    this.toggle_database_sort(block, db, view_id, property, window, cx);
+                }
+            });
+        })
+        .detach();
     }
     fn toggle_database_sort(
         &mut self,
@@ -5606,6 +5730,9 @@ impl Render for Workspace {
                                         .children(header_columns.into_iter().enumerate().map(
                                             |(index, (property, name, _is_title))| {
                                                 let width = column_widths[index];
+                                                let is_title = property == title;
+                                                let editing_name = self.active_database_property_edit
+                                                    == Some((block_id.0, db_id.0, property.0));
                                                 let indicator = view_sorts
                                                     .iter()
                                                     .position(|sort| sort.property == property)
@@ -5631,7 +5758,21 @@ impl Render for Workspace {
                                                     .items_center()
                                                     .text_color(muted)
                                                     .text_size(px(11.))
-                                                    .child(div().flex_1().min_w_0().child(name))
+                                                    .child(
+                                                        if editing_name {
+                                                            div()
+                                                                .flex_1()
+                                                                .min_w_0()
+                                                                .child(self.database_property_name_input.clone())
+                                                                .into_any_element()
+                                                        } else {
+                                                            div()
+                                                                .flex_1()
+                                                                .min_w_0()
+                                                                .child(name.clone())
+                                                                .into_any_element()
+                                                        },
+                                                    )
                                                     .child(indicator);
                                                 if let Some(view_id) = selected_view
                                                     .filter(|_| !self.session.page.locked)
@@ -5642,15 +5783,27 @@ impl Render for Workspace {
                                                             cell.bg(db_hover).text_color(text)
                                                         })
                                                         .on_click(cx.listener(
-                                                            move |this, _, window, cx| {
-                                                                this.toggle_database_sort(
-                                                                    block_id,
-                                                                    db_id,
-                                                                    view_id,
-                                                                    property,
-                                                                    window,
-                                                                    cx,
-                                                                );
+                                                            move |this, event: &ClickEvent, window, cx| {
+                                                                if event.click_count() >= 2 && !is_title {
+                                                                    this.database_header_click_seq = this.database_header_click_seq.wrapping_add(1);
+                                                                    this.begin_database_property_name_edit(
+                                                                        block_id.0,
+                                                                        db_id.0,
+                                                                        property.0,
+                                                                        name.clone(),
+                                                                        window,
+                                                                        cx,
+                                                                    );
+                                                                } else if event.click_count() == 1 {
+                                                                    this.schedule_database_header_sort(
+                                                                        block_id,
+                                                                        db_id,
+                                                                        view_id,
+                                                                        property,
+                                                                        window,
+                                                                        cx,
+                                                                    );
+                                                                }
                                                             },
                                                         ));
                                                 }

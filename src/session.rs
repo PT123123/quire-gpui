@@ -390,6 +390,58 @@ impl Session {
         let _ = self.persistence.force_flush();
         Some(id)
     }
+    pub fn rename_database_property(
+        &mut self,
+        block: BlockId,
+        property: PropertyId,
+        name: &str,
+    ) -> Result<bool> {
+        if self.page.locked {
+            return Ok(false);
+        }
+        let Some(db) = self.document.block(block).and_then(|block| block.db_ref) else {
+            return Ok(false);
+        };
+        let Some(current) = self
+            .databases
+            .properties
+            .iter()
+            .find(|candidate| candidate.id == property && candidate.db == db)
+            .cloned()
+        else {
+            return Ok(false);
+        };
+        let name = name.trim();
+        if name.is_empty() {
+            bail!("属性名称不能为空");
+        }
+        if current.name == name {
+            return Ok(false);
+        }
+        let Some(entry) = command::plan(
+            &mut self.document,
+            self.page.id,
+            Command::RenameDatabaseProperty {
+                block,
+                property,
+                from: current.name,
+                to: name.to_owned(),
+            },
+        ) else {
+            return Ok(false);
+        };
+        self.apply_entry(entry);
+        if let Some(property) = self
+            .databases
+            .properties
+            .iter_mut()
+            .find(|candidate| candidate.id == property)
+        {
+            property.name = name.to_owned();
+        }
+        self.persistence.force_flush()?;
+        Ok(true)
+    }
     pub fn add_database_view(&mut self, block: BlockId) -> Option<ViewId> {
         if self.page.locked {
             return None;
@@ -2206,6 +2258,7 @@ fn is_database_change(change: &Change) -> bool {
             | Change::CellSet { .. }
             | Change::PropertyAdded(_)
             | Change::PropertyDeleted { .. }
+            | Change::PropertyRenamed { .. }
             | Change::ViewAdded(_)
             | Change::ViewDeleted { .. }
     )
@@ -2273,6 +2326,29 @@ mod tests {
                     quire_core::core::database::PropertyKind::Text,
                 )
                 .expect("property created");
+            assert!(session.rename_database_property(block, status_property, "进度")?);
+            assert_eq!(
+                session
+                    .databases
+                    .properties
+                    .iter()
+                    .find(|property| property.id == status_property)
+                    .unwrap()
+                    .name,
+                "进度"
+            );
+            session.undo();
+            assert_eq!(
+                session
+                    .databases
+                    .properties
+                    .iter()
+                    .find(|property| property.id == status_property)
+                    .unwrap()
+                    .name,
+                "状态"
+            );
+            session.redo();
             let done_property = session
                 .add_database_property(
                     block,
@@ -2457,7 +2533,7 @@ mod tests {
             reopened
                 .databases
                 .properties_of(db)
-                .any(|property| property.name == "状态")
+                .any(|property| property.name == "进度")
         );
         assert_eq!(reopened.databases.views_of(db).count(), 2);
         assert_eq!(reopened.repo.record_count(db)?, 2);
@@ -2482,7 +2558,7 @@ mod tests {
         let status = reopened
             .databases
             .properties_of(db)
-            .find(|property| property.name == "状态")
+            .find(|property| property.name == "进度")
             .unwrap()
             .id;
         let done = reopened
