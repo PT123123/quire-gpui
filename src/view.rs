@@ -1482,6 +1482,12 @@ impl Workspace {
             }
             InputEvent::Focused => {
                 self.session.end_typing();
+                if self
+                    .block_menu_open
+                    .is_some_and(|(menu_block, _)| menu_block != id)
+                {
+                    self.block_menu_open = None;
+                }
                 self.active = Some(id);
                 cx.notify();
             }
