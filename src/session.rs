@@ -2462,6 +2462,30 @@ impl Session {
         retired
     }
 
+    pub fn sync_prune_stale_peers(
+        &mut self,
+        stale_after_secs: u64,
+    ) -> Vec<quire_core::services::sync::engine::PeerRecord> {
+        let now = quire_core::services::sync::engine::now_unix();
+        let mut peers = self.sync_peers();
+        let mut stale = Vec::new();
+        peers.retain(|peer| {
+            if now.saturating_sub(peer.last_seen) >= stale_after_secs {
+                stale.push(peer.clone());
+                false
+            } else {
+                true
+            }
+        });
+        if !stale.is_empty() {
+            self.set_setting(
+                "sync.peers",
+                serde_json::to_string(&peers).unwrap_or_default(),
+            );
+        }
+        stale
+    }
+
     pub fn sync_log_clear(&mut self) {
         self.set_setting("sync.log", "[]");
     }
@@ -4232,10 +4256,28 @@ mod tests {
                 last_seen: now.saturating_sub(3600),
                 last_sync: String::new(),
             },
+            quire_core::services::sync::engine::PeerRecord {
+                id: "stale".into(),
+                name: "Stale".into(),
+                kind: "windows".into(),
+                ip: "127.0.0.3".into(),
+                port: quire_core::services::sync::SYNC_PORT,
+                paired: true,
+                last_seen: now.saturating_sub(31 * 24 * 3600),
+                last_sync: String::new(),
+            },
         ];
         session.set_setting("sync.peers", serde_json::to_string(&peers)?);
         session.sync_log_push("Offline", false, "connection timed out");
         assert_eq!(session.sync_log().len(), 1);
+        let stale = session.sync_prune_stale_peers(30 * 24 * 3600);
+        assert_eq!(
+            stale
+                .iter()
+                .map(|peer| peer.id.as_str())
+                .collect::<Vec<_>>(),
+            ["stale"]
+        );
         let removed = session.sync_retire_offline_peers(15);
         assert_eq!(
             removed

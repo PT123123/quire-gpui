@@ -6471,6 +6471,23 @@ impl Render for Workspace {
                                 .child(div().h(px(1.)).bg(Palette::color(&p.border)))
                                 .child(div().flex().items_center().justify_between()
                                     .child(div().text_size(px(12.)).font_weight(FontWeight::SEMIBOLD).child(format!("设备 · {}", sync_peers.len())))
+                                    .child(div().id("sync-refresh").px(px(6.)).py(px(3.))
+                                        .border_1().border_color(Palette::color(&p.border)).cursor_pointer().text_size(px(9.))
+                                        .on_click(cx.listener(|this, _, window, cx| {
+                                            const STALE_AFTER: u64 = 30 * 24 * 60 * 60;
+                                            let stale = this.session.sync_prune_stale_peers(STALE_AFTER);
+                                            if stale.is_empty() {
+                                                this.sync_status = "设备列表已刷新；正在监听局域网广播".into();
+                                            } else {
+                                                let names = stale.iter().map(|peer| peer.name.as_str()).collect::<Vec<_>>().join("、");
+                                                let message = format!("刷新列表并清理 {} 台长期离线设备：{}", stale.len(), names);
+                                                this.session.sync_log_push("本机", true, &message);
+                                                this.sync_status = message;
+                                                this.schedule_save(true, window, cx);
+                                            }
+                                            cx.notify();
+                                        }))
+                                        .child("刷新列表"))
                                     .child(div().id("sync-forget-offline").px(px(6.)).py(px(3.))
                                         .border_1().border_color(Palette::color(&p.border)).cursor_pointer().text_size(px(9.))
                                         .on_click(cx.listener(|this, _, window, cx| {
