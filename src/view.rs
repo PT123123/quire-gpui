@@ -1,5 +1,5 @@
 use crate::input::{InputEvent, TextInput};
-use gpui::{prelude::*, *};
+use gpui::{AnimationExt, prelude::*, *};
 use quire_core::core::{
     command::Command,
     database::ViewId,
@@ -424,6 +424,7 @@ pub struct Workspace {
     selected_database_views: HashMap<u64, ViewId>,
     subscriptions: Vec<Subscription>,
     palette: Palette,
+    transition_palette: Option<Palette>,
     theme_choice: String,
     ui_zoom: f32,
     theme_picker_open: bool,
@@ -577,6 +578,7 @@ impl Workspace {
             selected_database_views: HashMap::new(),
             subscriptions: Vec::new(),
             palette: Palette::load(&theme_choice),
+            transition_palette: None,
             theme_choice,
             ui_zoom,
             theme_picker_open: false,
@@ -1871,6 +1873,7 @@ impl Workspace {
         self.schedule_save(false, window, cx);
     }
     fn select_theme(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
+        self.transition_palette = Some(self.palette.clone());
         self.palette = Palette::load(id);
         self.theme_choice = id.to_owned();
         let fg = Palette::color(&self.palette.fg);
@@ -7148,6 +7151,28 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::zoom_in))
             .on_action(cx.listener(Self::zoom_out))
             .on_action(cx.listener(Self::zoom_reset))
+            .when_some(self.transition_palette.clone(), |root, old_palette| {
+                root.child(
+                    div()
+                        .id("theme-transition-overlay")
+                        .absolute()
+                        .top_0()
+                        .right_0()
+                        .bottom_0()
+                        .left_0()
+                        .bg(linear_gradient(
+                            180.,
+                            linear_color_stop(Palette::color(&old_palette.bg), 0.),
+                            linear_color_stop(Palette::color(&old_palette.grad2), 1.),
+                        )
+                        .color_space(ColorSpace::Srgb))
+                        .with_animation(
+                            "theme-fade",
+                            Animation::new(Duration::from_millis(220)),
+                            |overlay, progress| overlay.opacity(1. - progress),
+                        ),
+                )
+            })
             .child(
                 div()
                     .h(px(40.))
