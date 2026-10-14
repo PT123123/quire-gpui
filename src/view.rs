@@ -3182,40 +3182,6 @@ impl Workspace {
 
 impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let workspace = cx.entity();
-        window.on_mouse_event({
-            let workspace = workspace.clone();
-            move |event: &MouseMoveEvent, _, _, cx| {
-                if !event.dragging() {
-                    return;
-                }
-                workspace.update(cx, |this, cx| {
-                    if this.sidebar_resizing {
-                        let zoom = quire_gpui::ui_scale::get();
-                        this.sidebar_width = (f32::from(event.position.x) / zoom
-                            + this.sidebar_drag_offset)
-                            .clamp(200., 480.);
-                        cx.notify();
-                    }
-                });
-            }
-        });
-        window.on_mouse_event({
-            let workspace = workspace.clone();
-            move |_: &MouseUpEvent, _, window, cx| {
-                workspace.update(cx, |this, cx| {
-                    if this.sidebar_resizing {
-                        this.sidebar_resizing = false;
-                        this.session.set_setting(
-                            "gpui.sidebar-width",
-                            format!("{:.1}", this.sidebar_width),
-                        );
-                        this.schedule_save(true, window, cx);
-                        cx.notify();
-                    }
-                });
-            }
-        });
         let p = self.palette.clone();
         let database_width = (window.bounds().size.width - px(356.))
             .min(px(760.))
@@ -7843,13 +7809,56 @@ impl Render for Workspace {
                                         })
                                         .on_mouse_down(
                                             MouseButton::Left,
-                                            cx.listener(|this, event: &MouseDownEvent, _, cx| {
-                                                let zoom = quire_gpui::ui_scale::get();
-                                                this.sidebar_drag_offset = this.sidebar_width
-                                                    - f32::from(event.position.x) / zoom;
-                                                this.sidebar_resizing = true;
-                                                cx.notify();
-                                            }),
+                                            cx.listener(
+                                                |this, event: &MouseDownEvent, window, cx| {
+                                                    let zoom = quire_gpui::ui_scale::get();
+                                                    this.sidebar_drag_offset = this.sidebar_width
+                                                        - f32::from(event.position.x) / zoom;
+                                                    this.sidebar_resizing = true;
+                                                    cx.notify();
+                                                    let workspace = cx.entity();
+                                                    window.on_mouse_event({
+                                                        let workspace = workspace.clone();
+                                                        move |event: &MouseMoveEvent, _, _, cx| {
+                                                            if !event.dragging() {
+                                                                return;
+                                                            }
+                                                            workspace.update(cx, |this, cx| {
+                                                                if this.sidebar_resizing {
+                                                                    let zoom =
+                                                                        quire_gpui::ui_scale::get();
+                                                                    this.sidebar_width = (f32::from(
+                                                                        event.position.x,
+                                                                    ) / zoom
+                                                                        + this.sidebar_drag_offset)
+                                                                        .clamp(200., 480.);
+                                                                    cx.notify();
+                                                                }
+                                                            });
+                                                        }
+                                                    });
+                                                    window.on_mouse_event({
+                                                        move |_: &MouseUpEvent, _, window, cx| {
+                                                            workspace.update(cx, |this, cx| {
+                                                                if this.sidebar_resizing {
+                                                                    this.sidebar_resizing = false;
+                                                                    this.session.set_setting(
+                                                                        "gpui.sidebar-width",
+                                                                        format!(
+                                                                            "{:.1}",
+                                                                            this.sidebar_width
+                                                                        ),
+                                                                    );
+                                                                    this.schedule_save(
+                                                                        true, window, cx,
+                                                                    );
+                                                                    cx.notify();
+                                                                }
+                                                            });
+                                                        }
+                                                    });
+                                                },
+                                            ),
                                         ),
                                 ),
                         )
