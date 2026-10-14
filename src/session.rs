@@ -1089,6 +1089,93 @@ impl Session {
         self.refresh_databases();
         Ok(true)
     }
+    pub fn set_database_rollup(
+        &mut self,
+        block: BlockId,
+        property: PropertyId,
+        relation: Option<PropertyId>,
+        column: Option<PropertyId>,
+        aggregate: quire_core::core::database_rollup::Aggregate,
+    ) -> Result<bool> {
+        if self.page.locked {
+            return Ok(false);
+        }
+        let Some(current) = self.session_database_property(block, property).cloned() else {
+            return Ok(false);
+        };
+        if current.kind != quire_core::core::database::PropertyKind::Rollup {
+            bail!("此列不是汇总类型");
+        }
+        let relation_property = relation.and_then(|id| {
+            self.databases
+                .properties
+                .iter()
+                .find(|candidate| candidate.id == id)
+        });
+        if relation_property.is_some_and(|relation| relation.db != current.db) {
+            bail!("汇总所用关联列必须属于当前数据库");
+        }
+        let relation_config = relation_property
+            .map(|relation| quire_core::core::database_relation::config_relation(&relation.config));
+        let target_db = relation_config.and_then(|config| config.target);
+        let column_property = column.and_then(|id| {
+            self.databases
+                .properties
+                .iter()
+                .find(|candidate| candidate.id == id)
+        });
+        if aggregate.reads_column() && column.is_none() {
+            bail!("此聚合方式需要选择目标列");
+        }
+        let facts = quire_core::core::database_rollup::RollupFacts {
+            relation_kind: relation_property
+                .map_or(quire_core::core::database::PropertyKind::Text, |property| {
+                    property.kind
+                }),
+            relation_target: target_db,
+            column_kind: column_property
+                .map_or(quire_core::core::database::PropertyKind::Text, |property| {
+                    property.kind
+                }),
+            column_is_in_target: match (target_db, column_property) {
+                (Some(target), Some(property)) => property.db == target,
+                (_, None) => !aggregate.reads_column(),
+                _ => false,
+            },
+        };
+        quire_core::core::database_rollup::check_config(&facts)
+            .map_err(|error| anyhow::anyhow!(error.message()))?;
+        let from = current.config.clone();
+        let to = quire_core::core::database_rollup::config_set_rollup(
+            &from, relation, column, aggregate,
+        );
+        if from == to {
+            return Ok(false);
+        }
+        let Some(entry) = command::plan(
+            &mut self.document,
+            self.page.id,
+            Command::SetDatabaseRollup {
+                block,
+                property,
+                from,
+                to: to.clone(),
+            },
+        ) else {
+            return Ok(false);
+        };
+        self.apply_entry(entry);
+        if let Some(definition) = self
+            .databases
+            .properties
+            .iter_mut()
+            .find(|definition| definition.id == property)
+        {
+            definition.config = to;
+        }
+        self.persistence.force_flush()?;
+        Ok(true)
+    }
     pub fn set_database_cell_many(
         &mut self,
         block: BlockId,

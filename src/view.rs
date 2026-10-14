@@ -341,7 +341,69 @@ fn evaluate_database_formula(
     })
 }
 
-fn database_property_kind_choices() -> [quire_core::core::database::PropertyKind; 14] {
+fn evaluate_database_rollup(
+    property: quire_core::core::database::PropertyId,
+    properties: &[quire_core::core::database::Property],
+    repo: &quire_core::storage::SqliteRepository,
+    record: quire_core::core::database::RecordId,
+) -> Result<quire_core::core::database_formula::Val, quire_core::core::database_formula::FormulaError>
+{
+    use quire_core::core::database::{CellValue, PropertyKind};
+    use quire_core::core::database_formula::{FormulaError, Val};
+    let definition = properties
+        .iter()
+        .find(|candidate| candidate.id == property)
+        .ok_or_else(|| FormulaError::Eval("rollup column no longer exists".into()))?;
+    let config = quire_core::core::database_rollup::config_rollup(&definition.config);
+    let Some(relation_id) = config.relation else {
+        return Ok(Val::Empty);
+    };
+    let relation = properties
+        .iter()
+        .find(|candidate| candidate.id == relation_id)
+        .ok_or_else(|| FormulaError::Eval("rollup relation no longer exists".into()))?;
+    let targets = match repo
+        .cell(record, relation_id)
+        .map_err(|error| FormulaError::Eval(error.to_string()))?
+    {
+        CellValue::Items(ids) => ids,
+        _ => Vec::new(),
+    };
+    let mut values = Vec::new();
+    if config.aggregate.reads_column() {
+        let Some(column_id) = config.column else {
+            return Ok(Val::Empty);
+        };
+        let column = properties
+            .iter()
+            .find(|candidate| candidate.id == column_id)
+            .ok_or_else(|| FormulaError::Eval("rollup target column no longer exists".into()))?;
+        if column.kind.is_computed() || column.kind == PropertyKind::Relation {
+            return Err(FormulaError::Eval(
+                "rollup target column is not aggregatable".into(),
+            ));
+        }
+        for target in &targets {
+            let Ok(target_id) = target.parse::<u64>() else {
+                continue;
+            };
+            let value = repo
+                .cell(quire_core::core::database::RecordId(target_id), column_id)
+                .map_err(|error| FormulaError::Eval(error.to_string()))?;
+            if value != CellValue::Empty {
+                values.push(quire_core::core::database_formula::val_of(
+                    column.kind,
+                    &value,
+                ));
+            }
+        }
+    }
+    let _ = relation;
+    quire_core::core::database_rollup::fold(config.aggregate, &values, targets.len())
+        .map_err(|error| FormulaError::Eval(error.to_string()))
+}
+
+fn database_property_kind_choices() -> [quire_core::core::database::PropertyKind; 15] {
     use quire_core::core::database::PropertyKind as Kind;
     [
         Kind::Text,
@@ -358,6 +420,7 @@ fn database_property_kind_choices() -> [quire_core::core::database::PropertyKind
         Kind::Formula,
         Kind::MultiSelect,
         Kind::Relation,
+        Kind::Rollup,
     ]
 }
 
@@ -434,8 +497,9 @@ fn toc_headings(blocks: &[Block]) -> Vec<(BlockId, u8, String)> {
 mod view_tests {
     use super::{
         database_filter_value_from_text, database_group_identity, database_group_label,
-        database_property_kind_choices, evaluate_database_formula, find_matches_in,
-        link_target_range, order_database_groups, parse_organizer_tags, toc_headings,
+        database_property_kind_choices, evaluate_database_formula, evaluate_database_rollup,
+        find_matches_in, link_target_range, order_database_groups, parse_organizer_tags,
+        toc_headings,
     };
     use quire_core::core::database::PropertyKind;
     use quire_core::core::database_view::FilterValue;
@@ -558,6 +622,80 @@ mod view_tests {
         let value = evaluate_database_formula(total, &properties, &session.repo, record, 0)
             .expect("formula evaluates");
         assert_eq!(quire_core::core::database_formula::display(&value), "12");
+    }
+
+    #[test]
+    fn database_rollup_uses_related_rows_and_typed_values() {
+        use quire_core::core::database::{PropertyKind, RecordId};
+        use quire_core::core::database_rollup::Aggregate;
+
+        let scratch = quire_core::testing::ScratchDir::new("gpui-rollup-cell");
+        let path = scratch.path().join("test.db");
+        let mut session = quire_gpui::session::Session::open(&path).expect("session opens");
+        let block = session.blocks()[0].id;
+        let db = session
+            .make_database(block, "汇总测试".into())
+            .expect("database created");
+        let relation = session
+            .add_database_property(block, "相关记录".into(), PropertyKind::Relation)
+            .expect("relation created");
+        assert!(
+            session
+                .set_database_relation_target(block, relation, Some(db))
+                .expect("target configured")
+        );
+        let amount = session
+            .add_database_property(block, "金额".into(), PropertyKind::Number)
+            .expect("amount created");
+        let rollup = session
+            .add_database_property(block, "金额合计".into(), PropertyKind::Rollup)
+            .expect("rollup created");
+        let source = session.add_database_record(block).expect("source created");
+        let target = session.add_database_record(block).expect("target created");
+        session
+            .set_database_cell(block, target, amount, "12.5")
+            .expect("amount written");
+        session
+            .set_database_relation_cell(block, source, relation, &[target])
+            .expect("relation written");
+        session
+            .set_database_rollup(block, rollup, Some(relation), Some(amount), Aggregate::Sum)
+            .expect("rollup configured");
+        let properties = session.databases.properties.clone();
+        let value =
+            evaluate_database_rollup(rollup, &properties, &session.repo, RecordId(source.0))
+                .expect("rollup evaluates");
+        assert_eq!(quire_core::core::database_formula::display(&value), "12.5");
+        session.undo();
+        assert_eq!(
+            quire_core::core::database_rollup::config_rollup(
+                &session
+                    .databases
+                    .properties
+                    .iter()
+                    .find(|property| property.id == rollup)
+                    .unwrap()
+                    .config
+            )
+            .aggregate,
+            Aggregate::None
+        );
+        session.redo();
+        drop(session);
+        let reopened = quire_gpui::session::Session::open(&path).expect("database reopens");
+        assert_eq!(
+            quire_core::core::database_rollup::config_rollup(
+                &reopened
+                    .databases
+                    .properties
+                    .iter()
+                    .find(|property| property.id == rollup)
+                    .unwrap()
+                    .config
+            )
+            .aggregate,
+            Aggregate::Sum
+        );
     }
 
     fn block(id: u64, kind: BlockKind, text: &str, parent: Option<BlockId>, folded: bool) -> Block {
@@ -3639,6 +3777,7 @@ impl Workspace {
                         | quire_core::core::database::PropertyKind::Status
                         | quire_core::core::database::PropertyKind::MultiSelect
                         | quire_core::core::database::PropertyKind::Relation
+                        | quire_core::core::database::PropertyKind::Rollup
                 ) {
                     if let Some(db) = self
                         .session
@@ -3651,7 +3790,11 @@ impl Workspace {
                         self.database_property_kind_open = Some((db.0, property.0));
                         if kind == quire_core::core::database::PropertyKind::Formula {
                             self.begin_database_formula_edit(block.0, db.0, property.0, window, cx);
-                        } else if kind != quire_core::core::database::PropertyKind::Relation {
+                        } else if !matches!(
+                            kind,
+                            quire_core::core::database::PropertyKind::Relation
+                                | quire_core::core::database::PropertyKind::Rollup
+                        ) {
                             self.begin_database_option_edit(block.0, db.0, property.0, window, cx);
                         }
                     }
@@ -3667,6 +3810,7 @@ impl Workspace {
                         | quire_core::core::database::PropertyKind::Status
                         | quire_core::core::database::PropertyKind::MultiSelect
                         | quire_core::core::database::PropertyKind::Relation
+                        | quire_core::core::database::PropertyKind::Rollup
                 ) {
                     if let Some(db) = self
                         .session
@@ -3679,7 +3823,11 @@ impl Workspace {
                         self.database_property_kind_open = Some((db.0, property.0));
                         if kind == quire_core::core::database::PropertyKind::Formula {
                             self.begin_database_formula_edit(block.0, db.0, property.0, window, cx);
-                        } else if kind != quire_core::core::database::PropertyKind::Relation {
+                        } else if !matches!(
+                            kind,
+                            quire_core::core::database::PropertyKind::Relation
+                                | quire_core::core::database::PropertyKind::Rollup
+                        ) {
                             self.begin_database_option_edit(block.0, db.0, property.0, window, cx);
                         }
                     }
@@ -7481,6 +7629,7 @@ impl Render for Workspace {
                                     let row_group_data = group_data.clone();
                                     let collapsed_groups = self.database_collapsed_groups.clone();
                                     let formula_properties = all_columns.clone();
+                                    let all_database_properties = self.session.databases.properties.clone();
                                     let rows = uniform_list(
                                         SharedString::from(format!("database-rows-{}", db_id.0)),
                                         list_total,
@@ -7523,9 +7672,7 @@ impl Render for Workspace {
                                                             let choice_open = _this.active_database_choice == Some(cell_key);
                                                             let relation_open = _this.active_database_relation == Some(cell_key);
                                                             let input = _this.database_cell_input.clone();
-                                                            let display_value = if kind
-                                                                == quire_core::core::database::PropertyKind::Formula
-                                                            {
+                                                            let display_value = if kind == quire_core::core::database::PropertyKind::Formula {
                                                                 evaluate_database_formula(
                                                                     property_id,
                                                                     &formula_properties,
@@ -7539,6 +7686,10 @@ impl Render for Workspace {
                                                                 .unwrap_or_else(|_| {
                                                                     quire_core::core::database_formula::FORMULA_ERROR_PAINT.into()
                                                                 })
+                                                            } else if kind == quire_core::core::database::PropertyKind::Rollup {
+                                                                evaluate_database_rollup(property_id, &all_database_properties, &repo, quire_core::core::database::RecordId(row.record))
+                                                                    .map(|value| quire_core::core::database_formula::display(&value))
+                                                                    .unwrap_or_else(|_| quire_core::core::database_formula::FORMULA_ERROR_PAINT.into())
                                                             } else {
                                                                 value.clone()
                                                             };
@@ -8345,6 +8496,50 @@ impl Render for Workspace {
                                                             }
                                                         })).child(database.name)
                                                     })));
+                                                }
+                                                if property_kind == quire_core::core::database::PropertyKind::Rollup {
+                                                    use quire_core::core::database_rollup::Aggregate;
+                                                    let config = quire_core::core::database_rollup::config_rollup(&property.config);
+                                                    let relations = self.session.databases.properties_of(db_id).filter(|candidate| candidate.kind == quire_core::core::database::PropertyKind::Relation).cloned().collect::<Vec<_>>();
+                                                    let target_db = config.relation.and_then(|relation| self.session.databases.properties.iter().find(|candidate| candidate.id == relation)).and_then(|relation| quire_core::core::database_relation::config_relation(&relation.config).target);
+                                                    let target_columns = target_db.map(|target| self.session.databases.properties_of(target).filter(|candidate| !candidate.kind.is_computed() && candidate.kind != quire_core::core::database::PropertyKind::Relation).cloned().collect::<Vec<_>>()).unwrap_or_default();
+                                                    let mut editor = div().id(SharedString::from(format!("db-rollup-editor-{}-{property_id}", db_id.0))).w_full().flex_col().gap(px(5.)).border_t_1().border_color(db_border).px(px(5.)).py(px(5.));
+                                                    editor = editor.child(div().flex().items_center().flex_wrap().gap(px(5.)).child(div().text_size(px(11.)).text_color(muted).child("关联列：")).children(relations.into_iter().map(|relation| {
+                                                        let selected = config.relation == Some(relation.id);
+                                                        let relation_id = relation.id;
+                                                        div().id(SharedString::from(format!("db-rollup-relation-{}-{}", property_id, relation_id.0))).px(px(7.)).py(px(4.)).rounded(px(4.)).text_size(px(11.)).text_color(if selected { text } else { muted }).when(selected, |item| item.bg(accent.opacity(0.32))).when(!self.session.page.locked, |item| item.cursor_pointer().hover(|item| item.bg(db_hover))).on_click(cx.listener(move |this, _, window, cx| {
+                                                            match this.session.set_database_rollup(block_id, quire_core::core::database::PropertyId(property_id), Some(relation_id), None, Aggregate::None) {
+                                                                Ok(_) => { this.schedule_save(true, window, cx); cx.notify(); }
+                                                                Err(error) => { this.status = error.to_string(); this.error = true; cx.notify(); }
+                                                            }
+                                                        })).child(relation.name)
+                                                    })));
+                                                    if config.relation.is_some() {
+                                                        editor = editor.child(div().flex().items_center().flex_wrap().gap(px(5.)).child(div().text_size(px(11.)).text_color(muted).child("目标列：")).children(target_columns.into_iter().map(|column| {
+                                                            let selected = config.column == Some(column.id);
+                                                            let column_id = column.id;
+                                                            let relation_id = config.relation;
+                                                            let aggregate = config.aggregate;
+                                                            div().id(SharedString::from(format!("db-rollup-column-{}-{}", property_id, column_id.0))).px(px(7.)).py(px(4.)).rounded(px(4.)).text_size(px(11.)).text_color(if selected { text } else { muted }).when(selected, |item| item.bg(accent.opacity(0.32))).when(!self.session.page.locked, |item| item.cursor_pointer().hover(|item| item.bg(db_hover))).on_click(cx.listener(move |this, _, window, cx| {
+                                                                match this.session.set_database_rollup(block_id, quire_core::core::database::PropertyId(property_id), relation_id, Some(column_id), aggregate) {
+                                                                    Ok(_) => { this.schedule_save(true, window, cx); cx.notify(); }
+                                                                    Err(error) => { this.status = error.to_string(); this.error = true; cx.notify(); }
+                                                                }
+                                                            })).child(column.name)
+                                                        })));
+                                                        editor = editor.child(div().flex().items_center().flex_wrap().gap(px(5.)).child(div().text_size(px(11.)).text_color(muted).child("计算：")).children(Aggregate::ALL.into_iter().map(|aggregate| {
+                                                            let selected = config.aggregate == aggregate;
+                                                            let relation_id = config.relation;
+                                                            let column_id = config.column;
+                                                            div().id(SharedString::from(format!("db-rollup-aggregate-{}-{}", property_id, aggregate.as_str()))).px(px(7.)).py(px(4.)).rounded(px(4.)).text_size(px(11.)).text_color(if selected { text } else { muted }).when(selected, |item| item.bg(accent.opacity(0.32))).when(!self.session.page.locked, |item| item.cursor_pointer().hover(|item| item.bg(db_hover))).on_click(cx.listener(move |this, _, window, cx| {
+                                                                match this.session.set_database_rollup(block_id, quire_core::core::database::PropertyId(property_id), relation_id, column_id, aggregate) {
+                                                                    Ok(_) => { this.schedule_save(true, window, cx); cx.notify(); }
+                                                                    Err(error) => { this.status = error.to_string(); this.error = true; cx.notify(); }
+                                                                }
+                                                            })).child(aggregate.label())
+                                                        })));
+                                                    }
+                                                    picker = picker.child(editor);
                                                 }
                                                 if matches!(property_kind, quire_core::core::database::PropertyKind::Select | quire_core::core::database::PropertyKind::Status | quire_core::core::database::PropertyKind::MultiSelect) {
                                                     let options = quire_core::core::database_property::PropertyOptions::from_config(&property.config);

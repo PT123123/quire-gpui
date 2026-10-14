@@ -598,3 +598,8 @@ GPUI 应用已超出第一竖切，但离完整复刻仍有较大差距。用户
 
 - 关联列可选择目标数据库；表格单元格点击后展示至多 40 条目标记录（依 core `records_named` SQL 限量读取），可多选/取消并显示目标记录实时标题，提供清除全部关联。配置走 `SetRelationConfig`，值走 core `SetRelation`，均进入撤销历史并立即落盘；会拒绝目标库外的记录 ID。
 - 隔离 SQLite 集成回归覆盖自关联目标库、目标记录写入、undo/redo、清除后撤销及重开恢复。验证：22 项库测试 + 10 项二进制测试、dev 检查通过；release 构建待完成。限制：候选仅展示前 40 条，当前没有 picker 搜索；双向配对、rollup 和附件字段尚未实现，原生窗口点击/遮挡待实测。
+
+## 第八十五轮：数据库 Rollup 汇总
+
+- Rollup 属性设置器可选择当前数据库的单向关联列、目标数据库属性和 `None/Count/Sum/Average/Min/Max`；保存前由 core `check_config` 校验关系目标与目标列类型，配置通过 core `SetDatabaseRollup` undo/redo 并持久化。虚拟行渲染仅对可见行读取关联记录值，复用 core `val_of`、`fold` 计算，错误投影为 `Error`。
+- 隔离数据库场景覆盖关联记录目标值聚合（12.5）、rollup 配置撤销及重开恢复。验证：22 项库测试 + 11 项二进制测试、`cargo check` 通过；release 构建待完成。候选配置和 rollup 面板未经原生窗口人工点击验收；fold 读取每个相关行的目标单元格，超大单条关系列表仍需后续性能验证。双向关系、附件列未完成。
