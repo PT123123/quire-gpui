@@ -2,7 +2,7 @@ use crate::input::{InputEvent, TextInput};
 use gpui::{prelude::*, *};
 use quire_core::core::{
     command::Command,
-    organizer::Priority,
+    organizer::{OrganizerCatalog, Priority, Task as OrganizerTask},
     types::{Block, BlockId, BlockKind, ColorKind, Lang},
 };
 use quire_gpui::session::Session;
@@ -45,6 +45,22 @@ fn priority_label(priority: Priority) -> &'static str {
         Priority::Low => "低",
         Priority::Medium => "中",
         Priority::High => "高",
+    }
+}
+
+fn task_matches_smart_view(
+    catalog: &OrganizerCatalog,
+    task: &OrganizerTask,
+    view: i32,
+    today: &str,
+    week: &str,
+) -> bool {
+    match view {
+        0 => catalog.list(task.list).is_none(),
+        1 => task.due.as_deref() == Some(today),
+        2 => matches!(task.due.as_deref(), Some(due) if due > today && due <= week),
+        4 => task.done,
+        _ => true,
     }
 }
 
@@ -320,6 +336,8 @@ pub struct Workspace {
     organizer_open: bool,
     organizer_tasks: bool,
     selected_task_list: quire_core::core::organizer::ListId,
+    selected_task_smart_view: Option<i32>,
+    show_task_done: bool,
     selected_note: Option<quire_core::core::organizer::NoteId>,
     selected_task: Option<quire_core::core::organizer::TaskId>,
     note_title_draft: String,
@@ -329,7 +347,7 @@ pub struct Workspace {
     status: String,
     error: bool,
     active: Option<BlockId>,
-    save_task: Option<Task<()>>,
+    save_task: Option<gpui::Task<()>>,
     flush_lock: Arc<Mutex<()>>,
     closing: bool,
     smoke: bool,
@@ -404,6 +422,8 @@ impl Workspace {
             organizer_open: false,
             organizer_tasks: false,
             selected_task_list: quire_core::core::organizer::ListId::INBOX,
+            selected_task_smart_view: Some(0),
+            show_task_done: false,
             selected_note: None,
             selected_task: None,
             note_title_draft: String::new(),
@@ -1756,11 +1776,16 @@ impl Workspace {
         self.selected_note = None;
         self.selected_task = None;
         if tasks {
+            let view = self.selected_task_smart_view.unwrap_or(0);
             let first_task = self
                 .session
                 .organizer
                 .live_tasks()
-                .next()
+                .find(|task| {
+                    self.task_matches_smart_view(task, view)
+                        && (view == 4 && task.done
+                            || view != 4 && (!task.done || self.show_task_done))
+                })
                 .map(|task| task.id);
             if let Some(id) = first_task {
                 self.select_task(id, window, cx);
@@ -1798,35 +1823,105 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         if self.selected_task_list == list {
-            return;
+            if self.selected_task_smart_view.is_none() {
+                return;
+            }
         }
         self.commit_note_draft(window, cx);
+        self.selected_task_smart_view = None;
         self.selected_task_list = list;
         self.selected_task = None;
         let first_task = self
             .session
             .organizer
             .live_tasks()
-            .find(|task| task.list == list)
+            .find(|task| task.list == list && (!task.done || self.show_task_done))
             .map(|task| task.id);
         if let Some(id) = first_task {
             self.select_task(id, window, cx);
         } else {
-            self.note_title_draft.clear();
-            self.note_body_draft.clear();
-            self.note_title_input.update(cx, |input, cx| {
-                input.reset(String::new(), Vec::new(), 0, cx);
-            });
-            self.note_body_input.update(cx, |input, cx| {
-                input.reset(String::new(), Vec::new(), 0, cx);
-            });
-            cx.notify();
+            self.reset_organizer_item_inputs(cx);
+        }
+    }
+    fn select_task_smart_view(&mut self, view: i32, window: &mut Window, cx: &mut Context<Self>) {
+        if self.selected_task_smart_view == Some(view) {
+            return;
+        }
+        self.commit_note_draft(window, cx);
+        self.selected_task_smart_view = Some(view);
+        self.selected_task_list = quire_core::core::organizer::ListId::INBOX;
+        self.selected_task = None;
+        let first_task = self
+            .session
+            .organizer
+            .live_tasks()
+            .find(|task| {
+                self.task_matches_smart_view(task, view)
+                    && (view == 4 && task.done || view != 4 && (!task.done || self.show_task_done))
+            })
+            .map(|task| task.id);
+        if let Some(id) = first_task {
+            self.select_task(id, window, cx);
+        } else {
+            self.reset_organizer_item_inputs(cx);
+        }
+    }
+    fn task_matches_smart_view(&self, task: &OrganizerTask, view: i32) -> bool {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+        let today = quire_core::core::date::today_iso();
+        let week = quire_core::core::date::to_iso(now.div_euclid(86_400) + 7);
+        task_matches_smart_view(&self.session.organizer, task, view, &today, &week)
+    }
+    fn reset_organizer_item_inputs(&mut self, cx: &mut Context<Self>) {
+        self.note_title_draft.clear();
+        self.note_body_draft.clear();
+        self.task_due_draft.clear();
+        self.task_due_error = false;
+        self.note_title_input.update(cx, |input, cx| {
+            input.reset(String::new(), Vec::new(), 0, cx);
+        });
+        self.note_body_input.update(cx, |input, cx| {
+            input.reset(String::new(), Vec::new(), 0, cx);
+        });
+        self.task_due_input.update(cx, |input, cx| {
+            input.reset(String::new(), Vec::new(), 0, cx);
+        });
+        cx.notify();
+    }
+    fn toggle_show_task_done(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.commit_note_draft(window, cx);
+        self.show_task_done = !self.show_task_done;
+        let first_task = self
+            .session
+            .organizer
+            .live_tasks()
+            .find(|task| {
+                let in_scope = self
+                    .selected_task_smart_view
+                    .map_or(task.list == self.selected_task_list, |view| {
+                        self.task_matches_smart_view(task, view)
+                    });
+                in_scope
+                    && (self.selected_task_smart_view == Some(4) && task.done
+                        || self.selected_task_smart_view != Some(4)
+                            && (!task.done || self.show_task_done))
+            })
+            .map(|task| task.id);
+        if let Some(id) = first_task {
+            self.select_task(id, window, cx);
+        } else {
+            self.selected_task = None;
+            self.reset_organizer_item_inputs(cx);
         }
     }
     fn create_task_list(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let number = self.session.organizer.lists.len() + 1;
         let id = self.session.create_task_list(format!("清单 {number}"));
         self.selected_task_list = id;
+        self.selected_task_smart_view = None;
         self.selected_task = None;
         self.schedule_save(true, window, cx);
     }
@@ -1855,6 +1950,7 @@ impl Workspace {
         self.commit_note_draft(window, cx);
         if self.session.set_task_list(task, list) {
             self.selected_task_list = list;
+            self.selected_task_smart_view = None;
             self.schedule_save(true, window, cx);
             cx.notify();
         }
@@ -4244,7 +4340,17 @@ impl Render for Workspace {
             .session
             .organizer
             .live_tasks()
-            .filter(|task| task.list == self.selected_task_list)
+            .filter(|task| {
+                let in_scope = self
+                    .selected_task_smart_view
+                    .map_or(task.list == self.selected_task_list, |view| {
+                        self.task_matches_smart_view(task, view)
+                    });
+                in_scope
+                    && (self.selected_task_smart_view == Some(4) && task.done
+                        || self.selected_task_smart_view != Some(4)
+                            && (!task.done || self.show_task_done))
+            })
             .cloned()
             .collect::<Vec<_>>();
         tasks.sort_by_key(|task| task.ord);
@@ -4336,33 +4442,52 @@ impl Render for Workspace {
         });
         let mut task_lists = self.session.organizer.lists.clone();
         task_lists.sort_by_key(|list| list.ord);
-        let mut task_list_buttons = vec![
+        let today = quire_core::core::date::today_iso();
+        let now_days = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64
+            / 86_400;
+        let week = quire_core::core::date::to_iso(now_days + 7);
+        let mut task_list_buttons = [
+            (0, "收集箱"),
+            (1, "今天"),
+            (2, "最近 7 天"),
+            (3, "全部"),
+            (4, "已完成"),
+        ]
+        .into_iter()
+        .map(|(view, label)| {
+            let count = self
+                .session
+                .organizer
+                .live_tasks()
+                .filter(|task| {
+                    task_matches_smart_view(&self.session.organizer, task, view, &today, &week)
+                        && (view == 4 && task.done
+                            || view != 4 && (!task.done || self.show_task_done))
+                })
+                .count();
             div()
-                .id("organizer-list-inbox")
+                .id(SharedString::from(format!("organizer-smart-view-{view}")))
                 .px(px(8.))
                 .py(px(5.))
                 .rounded(px(5.))
                 .cursor_pointer()
-                .text_color(if self.selected_task_list.is_inbox() {
+                .text_color(if self.selected_task_smart_view == Some(view) {
                     accent
                 } else {
                     muted
                 })
-                .when(self.selected_task_list.is_inbox(), |chip| {
+                .when(self.selected_task_smart_view == Some(view), |chip| {
                     chip.bg(Palette::color(&p.elevated))
                 })
-                .on_click(cx.listener(|this, _, window, cx| {
-                    this.select_task_list(quire_core::core::organizer::ListId::INBOX, window, cx)
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    this.select_task_smart_view(view, window, cx)
                 }))
-                .child(format!(
-                    "收集箱 · {}",
-                    self.session
-                        .organizer
-                        .live_tasks()
-                        .filter(|task| task.list.is_inbox())
-                        .count()
-                )),
-        ];
+                .child(format!("{label} · {count}"))
+        })
+        .collect::<Vec<_>>();
         task_list_buttons.extend(task_lists.into_iter().map(|list| {
             let id = list.id;
             let count = self
@@ -4385,14 +4510,20 @@ impl Render for Workspace {
                         .py(px(5.))
                         .rounded(px(5.))
                         .cursor_pointer()
-                        .text_color(if self.selected_task_list == id {
-                            accent
-                        } else {
-                            muted
-                        })
-                        .when(self.selected_task_list == id, |chip| {
-                            chip.bg(Palette::color(&p.elevated))
-                        })
+                        .text_color(
+                            if self.selected_task_smart_view.is_none()
+                                && self.selected_task_list == id
+                            {
+                                accent
+                            } else {
+                                muted
+                            },
+                        )
+                        .when(
+                            self.selected_task_smart_view.is_none()
+                                && self.selected_task_list == id,
+                            |chip| chip.bg(Palette::color(&p.elevated)),
+                        )
                         .on_click(cx.listener(move |this, _, window, cx| {
                             this.select_task_list(id, window, cx)
                         }))
@@ -4528,6 +4659,33 @@ impl Render for Workspace {
                                 .gap(px(4.))
                                 .overflow_y_scroll()
                                 .children(task_list_buttons),
+                        )
+                        .when(
+                            self.selected_task_smart_view != Some(4),
+                            |list| {
+                                list.child(
+                                    div()
+                                        .id("organizer-show-done-toggle")
+                                        .px(px(8.))
+                                        .py(px(5.))
+                                        .rounded(px(5.))
+                                        .cursor_pointer()
+                                        .text_color(if self.show_task_done {
+                                            accent
+                                        } else {
+                                            muted
+                                        })
+                                        .hover(|row| row.bg(Palette::color(&p.elevated)))
+                                        .on_click(cx.listener(|this, _, window, cx| {
+                                            this.toggle_show_task_done(window, cx)
+                                        }))
+                                        .child(if self.show_task_done {
+                                            "☑ 显示已完成"
+                                        } else {
+                                            "□ 显示已完成"
+                                        }),
+                                )
+                            },
                         )
                     })
                     .child(
