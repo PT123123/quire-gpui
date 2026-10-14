@@ -539,6 +539,10 @@ mod view_tests {
             capture_tag_replacement(draft, caret, "项目/工作"),
             Some(("记下 #项目/工作 继续".into(), "记下 #项目/工作 ".len()))
         );
+        assert_eq!(
+            capture_tag_replacement("记下 #工，继续", "记下 #工".len(), "项目/工作"),
+            Some(("记下 #项目/工作，继续".into(), "记下 #项目/工作".len()))
+        );
         assert_eq!(capture_tag_replacement("没有标签", 4, "项目"), None);
     }
 
@@ -6327,30 +6331,55 @@ fn capture_tags(text: &str) -> Vec<String> {
 }
 
 fn capture_tag_replacement(draft: &str, caret: usize, tag: &str) -> Option<(String, usize)> {
+    let is_boundary = |ch: char| {
+        ch.is_whitespace()
+            || matches!(
+                ch,
+                ',' | '，'
+                    | '、'
+                    | '.'
+                    | '。'
+                    | '!'
+                    | '！'
+                    | '?'
+                    | '？'
+                    | ')'
+                    | '）'
+                    | ']'
+                    | '】'
+                    | '}'
+                    | '：'
+                    | ':'
+                    | ';'
+                    | '；'
+                    | '»'
+                    | '」'
+                    | '』'
+            )
+    };
     let caret = caret.min(draft.len());
     if !draft.is_char_boundary(caret) {
         return None;
     }
     let hash = draft[..caret].rfind('#')?;
     let typed = &draft[hash + 1..caret];
-    if typed.contains([' ', '\n', '\t', ',', '，', '、']) {
+    if typed.chars().any(is_boundary) {
         return None;
     }
     let tail = &draft[caret..];
-    let token_end = caret
-        + tail
-            .find([' ', '\n', '\t', ',', '，', '、'])
-            .unwrap_or(tail.len());
+    let token_end = caret + tail.find(is_boundary).unwrap_or(tail.len());
     let mut next = String::with_capacity(draft.len() + tag.len());
     next.push_str(&draft[..hash]);
     next.push('#');
     next.push_str(tag);
     let mut suffix_start = token_end;
-    if let Some(separator @ (' ' | '\n' | '\t')) = draft[token_end..].chars().next() {
-        next.push(separator);
-        suffix_start += separator.len_utf8();
-    } else {
-        next.push(' ');
+    match draft[token_end..].chars().next() {
+        Some(separator) if separator.is_whitespace() => {
+            next.push(separator);
+            suffix_start += separator.len_utf8();
+        }
+        Some(_) => {}
+        None => next.push(' '),
     }
     let new_caret = next.len();
     next.push_str(&draft[suffix_start..]);
