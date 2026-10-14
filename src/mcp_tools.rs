@@ -1,7 +1,7 @@
 use crate::mcp::ToolDef;
 use quire_core::core::{
     organizer::{ListId, NoteId, Priority, TaskId},
-    types::PageId,
+    types::{BlockId, PageId},
 };
 use quire_gpui::session::Session;
 use serde_json::{Value, json};
@@ -183,6 +183,15 @@ pub fn execute(session: &mut Session, name: &str, args: &Value) -> Result<Value,
             Ok(
                 json!({"ok": true, "page_id": id.0, "title": new_title, "body_updated": body.is_some()}),
             )
+        }
+        "update_block_text" => {
+            let page_id = PageId(integer(args, "page_id")?);
+            let block_id = BlockId(integer(args, "block_id")?);
+            let text = required_string(args, "text")?.to_owned();
+            session
+                .replace_plain_page_block_text(page_id, block_id, text.clone())
+                .map_err(|error| error.to_string())?;
+            Ok(json!({"ok": true, "page_id": page_id.0, "block_id": block_id.0, "text": text}))
         }
         "list_notes" => {
             let include_trashed = args
@@ -436,6 +445,14 @@ pub fn tool_defs() -> Vec<ToolDef> {
             input_schema: schema(
                 json!({ "page_id": { "type": "integer" }, "title": { "type": "string" }, "body": { "type": "string", "description": "Markdown 正文，会全量替换该页内容；仅支持可无损往返的简单块页面" } }),
                 &["page_id"],
+            ),
+        },
+        ToolDef {
+            name: "update_block_text",
+            description: "替换页面中的单个纯文本块，保留其块类型和位置；有行内格式、子块、引用、附件或特殊块类型时拒绝修改。",
+            input_schema: schema(
+                json!({ "page_id": { "type": "integer" }, "block_id": { "type": "integer" }, "text": { "type": "string" } }),
+                &["page_id", "block_id", "text"],
             ),
         },
         ToolDef {
@@ -717,6 +734,46 @@ mod tests {
         .unwrap();
         assert_eq!(search["pages"][0]["page_id"], id);
         assert_eq!(search["pages"][0]["blocks"][0]["text"], "Updated body");
+        let body_block = session
+            .document
+            .page_blocks(PageId(id))
+            .iter()
+            .find(|block| block.text == "Updated body")
+            .unwrap()
+            .id
+            .0;
+        execute(
+            &mut session,
+            "update_block_text",
+            &json!({"page_id": id, "block_id": body_block, "text": "Edited one block"}),
+        )
+        .unwrap();
+        assert_eq!(session.page.id, current);
+        assert!(
+            session
+                .document
+                .page_blocks(PageId(id))
+                .iter()
+                .any(|block| block.id == BlockId(body_block) && block.text == "Edited one block")
+        );
+        assert!(session.select_page(PageId(id)));
+        session.undo();
+        assert!(
+            session
+                .document
+                .page_blocks(PageId(id))
+                .iter()
+                .any(|block| block.id == BlockId(body_block) && block.text == "Updated body")
+        );
+        session.redo();
+        assert!(
+            session
+                .document
+                .page_blocks(PageId(id))
+                .iter()
+                .any(|block| block.id == BlockId(body_block) && block.text == "Edited one block")
+        );
+        assert!(session.select_page(current));
         let complex = session.import_markdown("Complex page".into(), "Safe paragraph");
         assert!(session.select_page(complex));
         session.execute(quire_core::core::command::Command::AppendBlock {
@@ -724,6 +781,21 @@ mod tests {
             text: "Important callout".into(),
         });
         let complex_before = session.document.page_blocks(complex).to_vec();
+        let callout_id = complex_before
+            .iter()
+            .find(|block| block.kind == quire_core::core::types::BlockKind::Callout)
+            .unwrap()
+            .id
+            .0;
+        assert!(
+            execute(
+                &mut session,
+                "update_block_text",
+                &json!({"page_id":complex.0, "block_id":callout_id, "text":"changed"})
+            )
+            .unwrap_err()
+            .contains("拒绝直接替换")
+        );
         assert!(session.select_page(current));
         let rejected = execute(
             &mut session,
@@ -749,7 +821,7 @@ mod tests {
                 .document
                 .page_blocks(PageId(id))
                 .iter()
-                .any(|block| block.text == "Updated body")
+                .any(|block| block.text == "Edited one block")
         );
     }
 

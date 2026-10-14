@@ -2207,6 +2207,63 @@ impl Session {
         self.history.push(id, Entry { apply, revert });
         Ok(())
     }
+    /// Replace one plain text block without round-tripping the whole page
+    /// through Markdown. Rich text, child blocks and non-text entities are
+    /// rejected so the operation cannot discard structure or formatting.
+    pub fn replace_plain_page_block_text(
+        &mut self,
+        page_id: PageId,
+        block_id: BlockId,
+        text: String,
+    ) -> Result<()> {
+        let page = self
+            .pages
+            .iter()
+            .find(|page| page.id == page_id && !page.template)
+            .ok_or_else(|| anyhow::anyhow!("找不到页面 {}", page_id.0))?;
+        if page.locked {
+            bail!("页面 {} 已锁定", page_id.0);
+        }
+        let blocks = self.document.page_blocks(page_id);
+        let block = blocks
+            .iter()
+            .find(|block| block.id == block_id)
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("页面 {} 中找不到块 {}", page_id.0, block_id.0))?;
+        if !matches!(
+            block.kind,
+            BlockKind::Paragraph
+                | BlockKind::Heading1
+                | BlockKind::Heading2
+                | BlockKind::Heading3
+                | BlockKind::Bullet
+                | BlockKind::Numbered
+                | BlockKind::Todo
+                | BlockKind::Quote
+                | BlockKind::Code
+        ) || !block.marks.is_empty()
+            || block.color != ColorKind::Default
+            || block.background != ColorKind::Default
+            || block.page_ref.is_some()
+            || block.attachment.is_some()
+            || block.db_ref.is_some()
+            || block.sync_ref.is_some()
+            || block.folded
+            || blocks
+                .iter()
+                .any(|candidate| candidate.parent == Some(block_id))
+        {
+            bail!("该块包含格式、引用或子结构；为保护内容，拒绝直接替换");
+        }
+
+        let current_page = self.page.id;
+        if !self.select_page(page_id) {
+            bail!("无法打开页面 {}", page_id.0);
+        }
+        self.execute(Command::ReplaceText { id: block_id, text });
+        let _ = self.select_page(current_page);
+        Ok(())
+    }
     pub fn duplicate_page(&mut self, id: PageId) -> Option<PageId> {
         self.end_typing();
         let original = self.pages.iter().find(|page| page.id == id)?.clone();

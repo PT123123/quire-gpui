@@ -674,3 +674,9 @@ GPUI 已覆盖主编辑器、整理区、独立速记与标签建议、Windows �
 - 新增 `search_pages`，按页面标题和块正文进行不区分大小写的子串搜索，模板页不进入结果；返回命中页面、命中块 ID/类型和最多 240 字符的文本片段。结果数默认 20，限制在 1–100，空查询明确报错。
 - MCP 工具总数更新为 15。隔离库测试在正文更新后搜索匹配内容并验证页面与命中块；不修改选择状态或数据库。
 - 验证：`cargo fmt --all`、`cargo check -j 8`、`cargo test -j 8`（49 项）、`cargo build --release -j 8 --target-dir target-release` 和 `git diff --check` 通过；编译仅有 vendor GPUI 未来兼容提示及现存 dead-code 提示。
+
+## 第九十九轮：MCP 单块文本更新
+
+- 新增 `update_block_text`，允许 Agent 更新页面中的单个普通文本块并保留块类型、顺序和页面选择；锁定页、未知块以及带行内标记、子块、颜色、附件或引用的内容均拒绝修改。更新复用 core `ReplaceText` 命令，进入页面 undo/redo 历史。
+- 修改活动页面时仍阻止与 IME 组合输入竞争，并在成功后刷新 GPUI 输入实体；所有写入继续经唯一 Session 和统一 flush 路径。
+- MCP 共 16 个工具。隔离库回归验证创建页面后按 block ID 更新单块文本、页面选择保持、undo/redo、复杂块安全拒绝与数据库重开读回；验证：`cargo fmt --all`、`cargo check -j 8`、`cargo test -j 8`（49 项）、`cargo build --release -j 8 --target-dir target-release` 和 `git diff --check` 通过；未访问真实库。

@@ -5687,9 +5687,10 @@ impl Workspace {
             crate::platform::ShellEvent::Quit => cx.quit(),
             crate::platform::ShellEvent::McpCall(job) => {
                 let crate::mcp_tools::McpJob::Call { name, args, reply } = job;
-                let targets_active_page = name == "update_page"
-                    && args.get("page_id").and_then(serde_json::Value::as_u64)
-                        == Some(self.session.page.id.0);
+                let targets_active_page =
+                    matches!(name.as_str(), "update_page" | "update_block_text")
+                        && args.get("page_id").and_then(serde_json::Value::as_u64)
+                            == Some(self.session.page.id.0);
                 let execution = if targets_active_page && self.composing(cx) {
                     Err("当前页面正处于输入法组合状态，请完成输入后重试".to_owned())
                 } else {

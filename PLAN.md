@@ -13,7 +13,7 @@
 ## P0 — 参考冻结与依赖验证
 
 - [x] 阅读全部交接文档，核对快照 manifest 与旧版工作区差异。113 个文件 SHA-256 全量重算一致；`git_status_short` 与 `../quire-desktop` 当前 10 个脏文件逐行一致；本地 `quire-core` HEAD 正是 pin 的 `db0e95f`（2026-10-14 复核）。
-- [~] 从组件、UIState 回调、controller、state、core 服务建立完整功能矩阵。骨架已生成：246 callback / 261 property / 188 场景 / 44 个 .slint，见 `docs/PARITY.md`、`docs/PARITY.csv`；**语义列（预期行为、快捷键、持久化、undo、测试步骤）未填**，14 个只有声明的 callback 已单独核实。core 侧 50 个 Command 与 GPUI 当前 15 个 MCP 工具尚未全量交叉。
+- [~] 从组件、UIState 回调、controller、state、core 服务建立完整功能矩阵。骨架已生成：246 callback / 261 property / 188 场景 / 44 个 .slint，见 `docs/PARITY.md`、`docs/PARITY.csv`；**语义列（预期行为、快捷键、持久化、undo、测试步骤）未填**，14 个只有声明的 callback 已单独核实。core 侧 50 个 Command 与 GPUI 当前 16 个 MCP 工具尚未全量交叉。
 - [~] 以官方资料核对 GPUI 与 GPUI Kit/组件库组合。一手事实已核验并写入 `docs/ADR-001-GPUI-STACK.md`。官方最小窗和输入示例在本机成功编译运行；GPUI 应用也已打开真实窗口。剩余窗口、DPI、IME 定位等探针仍按 ADR 逐项验收。
 - [~] Rust 1.98.0 通过 `rust-toolchain.toml` 固定，GPUI 0.2.2、core revision 和 `Cargo.lock` 已钉；dev/release 均可构建。MSVC/SDK 环境可用（SDK 10.0.26100，fxc 10.0.26100.7705）；完整安装与多机复现尚未验。
 - [~] 确定独立应用标识、开发数据目录、日志目录和测试库策略。core 侧事实已查清（`APP_DIR_NAME="Quire"`、`--db` 压倒一切、`--portable`、legacy 迁移），**已定（2026-10-14）：独立数据目录 + 保留旧版并存**，见 `docs/13-DECISIONS-NEEDED.md` 第 4 条。
@@ -78,7 +78,7 @@
 
 - [ ] 按实际代码对齐全部设置入口、搜索、主题卡、快捷键、关于。
 - [~] GPUI 已启动 core LAN Engine 并接通唯一 Session：设备广播/发现、全库 snapshot（页面/块/附件/数据库 schema/记录/值/整理区）、core 三方合并、附件传输、远端改动落库及 peer shadow；设置页可改本机名称（flush 后以相同库路径和启动参数重启广播身份）、手动同步全部/单设备、开启/关闭自动同步并选 10/30/60 秒间隔、忘记设备、清离线设备、清 30 天无广播的陈旧记录与清空日志。自动任务按设备去重，目标使用旧版 60 秒广播新鲜度门限，在线指示与离线清理使用 15 秒门限。ScratchDir 覆盖导出、页面/块/笔记远端合并、shadow 重开、偏好和设备/日志维护；**尚未做两台真实设备的网络往返和协议兼容验收**。
-- [~] MCP 已接本机 HTTP JSON-RPC（仅绑定 127.0.0.1，默认 5880，Bearer token）、启停/重启服务、自定义端口、HTTP 与 stdio 客户端配置和 Agent 提示词复制、日志清空；stdio 子命令只把 stdin/stdout 转发到活动应用，不打开第二个数据库写者。15 个工具覆盖页面列表/搜索/读取/Markdown 新建/改名和安全替换简单页面正文，以及整理区笔记和任务 CRUD；锁定页面拒绝修改，无法无损 Markdown 往返的复杂页面拒绝整页替换。所有写入经主线程唯一 Session 并立即 flush，最多保留 50 条不含成功调用正文的日志。协议和桥接隔离测试已覆盖；外部客户端真人连接和桌面重启恢复仍待验收。
+- [~] MCP 已接本机 HTTP JSON-RPC（仅绑定 127.0.0.1，默认 5880，Bearer token）、启停/重启服务、自定义端口、HTTP 与 stdio 客户端配置和 Agent 提示词复制、日志清空；stdio 子命令只把 stdin/stdout 转发到活动应用，不打开第二个数据库写者。16 个工具覆盖页面列表/搜索/读取/Markdown 新建/改名、安全替换简单页面正文与安全编辑普通纯文本块，以及整理区笔记和任务 CRUD；锁定页面拒绝修改，复杂块拒绝可能破坏结构或格式的编辑。所有写入经主线程唯一 Session 并立即 flush，最多保留 50 条不含成功调用正文的日志。协议和桥接隔离测试已覆盖；外部客户端真人连接和桌面重启恢复仍待验收。
 - [~] Windows 托盘退出会触发 GPUI shutdown flush 并释放托盘/全局热键线程；MCP server 随 workspace 释放停止；同步使用 core 引擎工作线程，数据变化按同步批次 flush。同步监听端口冲突、应用异常退出与只读/损坏库提示尚未完整呈现。
 - [ ] 安装包、资源、版本信息、独立应用标识。
 
