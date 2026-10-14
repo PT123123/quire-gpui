@@ -287,6 +287,16 @@ fn database_group_label(key: &quire_core::core::database_view::GroupKey, config:
     }
 }
 
+fn database_group_identity(key: &quire_core::core::database_view::GroupKey) -> String {
+    use quire_core::core::database_view::GroupKey;
+    match key {
+        GroupKey::Empty => "empty".into(),
+        GroupKey::Unchecked => "unchecked".into(),
+        GroupKey::Checked => "checked".into(),
+        GroupKey::Option(id) => format!("option:{id}"),
+    }
+}
+
 fn editable_database_kinds() -> [quire_core::core::database::PropertyKind; 9] {
     use quire_core::core::database::PropertyKind as Kind;
     [
@@ -374,8 +384,9 @@ fn toc_headings(blocks: &[Block]) -> Vec<(BlockId, u8, String)> {
 #[cfg(test)]
 mod view_tests {
     use super::{
-        database_filter_value_from_text, database_group_label, find_matches_in, link_target_range,
-        order_database_groups, parse_organizer_tags, toc_headings,
+        database_filter_value_from_text, database_group_identity, database_group_label,
+        find_matches_in, link_target_range, order_database_groups, parse_organizer_tags,
+        toc_headings,
     };
     use quire_core::core::database::PropertyKind;
     use quire_core::core::database_view::FilterValue;
@@ -415,6 +426,11 @@ mod view_tests {
             ]
         );
         assert_eq!(database_group_label(&GroupKey::Empty, ""), "无值");
+        assert_eq!(database_group_identity(&GroupKey::Empty), "empty");
+        assert_eq!(
+            database_group_identity(&GroupKey::Option("7".into())),
+            "option:7"
+        );
         assert_eq!(
             database_group_label(
                 &GroupKey::Option("7".into()),
@@ -776,6 +792,7 @@ pub struct Workspace {
     database_columns_open: Option<(u64, u64)>,
     database_filter_open: Option<(u64, u64)>,
     database_group_open: Option<(u64, u64)>,
+    database_collapsed_groups: HashSet<(u64, u64, String)>,
     database_filter_panel: usize,
     database_filter_edit_row: Option<usize>,
     database_filter_value_input: Entity<TextInput>,
@@ -983,6 +1000,7 @@ impl Workspace {
             database_columns_open: None,
             database_filter_open: None,
             database_group_open: None,
+            database_collapsed_groups: HashSet::new(),
             database_property_kind_open: None,
             database_column_drag: None,
             database_search_open: None,
@@ -2884,6 +2902,10 @@ impl Workspace {
         {
             Ok(true) => {
                 self.database_group_open = None;
+                self.database_collapsed_groups
+                    .retain(|(collapsed_block, collapsed_view, _)| {
+                        *collapsed_block != block.0 || *collapsed_view != view_id.0
+                    });
                 self.schedule_save(true, window, cx);
                 cx.notify();
             }
@@ -6028,7 +6050,21 @@ impl Render for Workspace {
                             Some((spec, order_database_groups(groups, &config), config))
                         });
                         let list_total = group_data.as_ref().map_or(total, |(_, groups, _)| {
-                            groups.iter().map(|(_, count)| count + 1).sum()
+                            let view_id = selected_view.expect("database table has selected view");
+                            groups
+                                .iter()
+                                .map(|(key, count)| {
+                                    1 + if self.database_collapsed_groups.contains(&(
+                                        block_id.0,
+                                        view_id.0,
+                                        database_group_identity(key),
+                                    )) {
+                                        0
+                                    } else {
+                                        *count
+                                    }
+                                })
+                                .sum()
                         });
                         Some((
                             db_id,
@@ -6896,9 +6932,12 @@ impl Render for Workspace {
                                                 cell
                                             },
                                         ));
+                                    let active_view_id = selected_view
+                                        .expect("database table has selected view");
                                     let row_sorts = view_sorts.clone();
                                     let row_filter = view_filter.clone();
                                     let row_group_data = group_data.clone();
+                                    let collapsed_groups = self.database_collapsed_groups.clone();
                                     let rows = uniform_list(
                                         SharedString::from(format!("database-rows-{}", db_id.0)),
                                         list_total,
@@ -7070,7 +7109,20 @@ impl Render for Workspace {
                                                         rendered_row
                                                 };
                                                 if let Some((spec, groups, config)) = &row_group_data {
-                                                    let counts = groups.iter().map(|(_, count)| *count).collect::<Vec<_>>();
+                                                    let counts = groups
+                                                        .iter()
+                                                        .map(|(key, count)| {
+                                                            if collapsed_groups.contains(&(
+                                                                block_id.0,
+                                                                active_view_id.0,
+                                                                database_group_identity(key),
+                                                            )) {
+                                                                0
+                                                            } else {
+                                                                *count
+                                                            }
+                                                        })
+                                                        .collect::<Vec<_>>();
                                                     let window = quire_core::core::database::RowWindow {
                                                         start: range.start,
                                                         end: range.end,
@@ -7079,7 +7131,18 @@ impl Render for Workspace {
                                                     for (group_index, entry) in layout.headers {
                                                         let (key, count) = &groups[group_index];
                                                         let label = database_group_label(key, config);
-                                                        entries.push((entry, div()
+                                                        let identity = database_group_identity(key);
+                                                        let collapsed = collapsed_groups.contains(&(
+                                                            block_id.0,
+                                                            active_view_id.0,
+                                                            identity.clone(),
+                                                        ));
+                                                        let collapsed_key = (
+                                                            block_id.0,
+                                                            active_view_id.0,
+                                                            identity,
+                                                        );
+                                                        let header = div()
                                                             .id(SharedString::from(format!("db-group-{}-{group_index}", db_id.0)))
                                                             .w_full()
                                                             .h(px(36.))
@@ -7092,9 +7155,18 @@ impl Render for Workspace {
                                                             .bg(db_hover)
                                                             .text_size(px(11.))
                                                             .text_color(text)
-                                                            .child(label)
+                                                            .cursor_pointer()
+                                                            .hover(|header| header.bg(db_hover.opacity(0.75)))
+                                                            .on_click(_cx.listener(move |this, _, _, cx| {
+                                                                if !this.database_collapsed_groups.remove(&collapsed_key) {
+                                                                    this.database_collapsed_groups.insert(collapsed_key.clone());
+                                                                }
+                                                                cx.notify();
+                                                            }))
+                                                            .child(format!("{}  {label}", if collapsed { "›" } else { "⌄" }))
                                                             .child(format!("{count} 行"))
-                                                            .into_any_element()));
+                                                            .into_any_element();
+                                                        entries.push((entry, header));
                                                     }
                                                     for slice in layout.rows {
                                                         let (key, _) = &groups[slice.group];
@@ -7138,7 +7210,6 @@ impl Render for Workspace {
                                     let filter_open = selected_view.is_some_and(|view_id| {
                                         self.database_filter_open == Some((block_id.0, view_id.0))
                                     });
-                                    let active_view_id = selected_view.expect("database table has selected view");
                                     let filter_columns = self
                                         .session
                                         .databases
