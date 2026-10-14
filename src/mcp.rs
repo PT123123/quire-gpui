@@ -431,6 +431,7 @@ pub fn mint_token() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::{Read, Write};
 
     #[test]
     fn json_rpc_negotiates_lists_tools_and_returns_tool_errors_as_mcp_results() {
@@ -472,5 +473,64 @@ mod tests {
         let scratch = quire_core::testing::ScratchDir::new("gpui-mcp-pointer");
         write_pointer(scratch.path(), 5880, "secret").unwrap();
         assert_eq!(read_pointer(scratch.path()), Some((5880, "secret".into())));
+    }
+
+    #[test]
+    fn loopback_http_requires_token_and_dispatches_tools() {
+        fn post(port: u16, token: Option<&str>, body: &str) -> String {
+            let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
+            let auth = token
+                .map(|token| format!("Authorization: Bearer {token}\r\n"))
+                .unwrap_or_default();
+            write!(
+                stream,
+                "POST /mcp HTTP/1.1\r\nHost: 127.0.0.1\r\n{auth}Content-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            )
+            .unwrap();
+            let mut response = String::new();
+            stream.read_to_string(&mut response).unwrap();
+            response
+        }
+
+        let port = TcpListener::bind(("127.0.0.1", 0))
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let tools = vec![ToolDef {
+            name: "echo",
+            description: "echo input",
+            input_schema: json!({"type":"object"}),
+        }];
+        let call: CallFn = Arc::new(|name, args| {
+            assert_eq!(name, "echo");
+            Ok(json!({"echo": args["value"]}))
+        });
+        let mut server = McpServer::new(port, "secret".into(), tools, call)
+            .spawn()
+            .unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        let unauthorized = loop {
+            match TcpStream::connect(("127.0.0.1", port)) {
+                Ok(_) => break post(port, None, "{}"),
+                Err(_) if std::time::Instant::now() < deadline => {
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+                Err(error) => panic!("loopback MCP server never bound: {error}"),
+            }
+        };
+        assert!(unauthorized.starts_with("HTTP/1.1 401 Unauthorized"));
+        let response = post(
+            port,
+            Some("secret"),
+            r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"echo","arguments":{"value":"ok"}}}"#,
+        );
+        assert!(response.starts_with("HTTP/1.1 200 OK"));
+        let payload = response.split_once("\r\n\r\n").unwrap().1;
+        let value: Value = serde_json::from_str(payload).unwrap();
+        assert_eq!(value["result"]["isError"], false);
+        assert_eq!(value["result"]["content"][0]["text"], "{\"echo\":\"ok\"}");
+        server.stop();
     }
 }

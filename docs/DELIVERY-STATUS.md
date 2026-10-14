@@ -630,3 +630,9 @@ GPUI 应用已超出第一竖切，但离完整复刻仍有较大差距。用户
 - 完成 initialize / ping / tools/list / tools/call JSON-RPC 与 10 个笔记/任务工具；调用通过 shell event pump 回到唯一 UI 线程 Session 写入并立即 flush，不开启第二个 SQLite writer。任务日期/优先级先验证，更新保留未提供字段，删除只进回收站。日志最多 50 条，成功日志不持久化正文内容。
 - 隔离 ScratchDir 测试覆盖 MCP 工具创建、更新、列举、回收站/恢复、标签去重、任务无效日期不落半成品、更新字段保留与协议协商/错误响应/指针往返。`cargo check -j 8` 和 MCP 专项测试通过；全量测试、release 构建、真实 MCP 客户端连接/开关重启未验证。
 - 同步仍未接入 GPUI：core 提供网络引擎与合并算法，但全库 snapshot 导出/导入、稳定 ID 分配、数据库记录值和附件写回位于 Slint 桌面壳；这轮没有把设备发现伪装成同步完成。后续需把该壳层适配迁入 GPUI Session，并在隔离库做双端往返。
+
+## 第九十二轮：GPUI 同步适配与同步设置控制
+
+- 在 GPUI `Session` 完成 core LAN sync 的壳层适配：完整导出页面、块、附件元数据、数据库 schema/记录/单元格值及笔记/任务/清单；读取前 flush，任何关键数据读取失败都拒绝发送不完整快照。通过 core 三方 merge 和稳定 ID allocator 合并远端；附件先落入附件存储，页面/块、数据库与 organizer 变更转为 core `Change`，落库后保存每设备 shadow 并 flush。
+- 同步设置可手动同步在线设备/单台设备，切换自动同步并设 10/30/60 秒周期，查看在线状态与最近结果，忘记设备、批量清理离线设备、清空最多 50 条的日志。自动轮询沿用旧版 60 秒设备新鲜度门限；15 秒门限只用于在线指示和清理离线设备。同一设备同步在途时不重复排队。另补齐 MCP listener 重启、调用日志清空，并在首次打开 GPUI 工作区时持久化生成的令牌，保证未启用服务前复制的连接配置在重启后仍稳定。托盘速记和全局 Alt+N 是前几轮已接功能，本轮没有改变其既有行为。
+- 新增隔离库测试：全量快照包括数据库记录与 organizer；模拟远端页面/块/笔记编辑并验证 merge、shadow 和重开；同步自动/周期偏好、离线 peer 清理及日志清空持久化。另加实际 loopback HTTP 测试，验证 MCP token 拒绝和 tools/call 分发。`cargo check -j 8`、`cargo test -j 8`（44 项）和 `cargo build --release -j 8 --target-dir target-release` 全部通过；release 可执行文件 `--help` 正常。未访问真实用户库，未做两台机器网络互通、托盘桌面交互和 MCP 客户端真人验收；同步监听端口冲突提示仍需完善。

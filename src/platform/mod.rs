@@ -1,6 +1,5 @@
 use std::sync::mpsc::Sender;
 
-#[derive(Debug)]
 pub enum ShellEvent {
     ShowMain,
     QuickNote,

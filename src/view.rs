@@ -1143,11 +1143,15 @@ pub struct Workspace {
     mcp_port: u16,
     mcp_token: String,
     mcp_status: String,
+    sync_cmd_tx: std::sync::mpsc::Sender<quire_core::services::sync::engine::Cmd>,
+    sync_status: String,
+    sync_last_auto: std::time::Instant,
+    sync_pending: HashSet<String>,
 }
 
 impl Workspace {
     pub fn new(
-        session: Session,
+        mut session: Session,
         theme: &str,
         smoke: bool,
         shell_events: std::sync::mpsc::Receiver<crate::platform::ShellEvent>,
@@ -1264,11 +1268,18 @@ impl Workspace {
             .and_then(|value| value.parse::<u16>().ok())
             .filter(|port| *port > 0)
             .unwrap_or(crate::mcp::DEFAULT_PORT);
-        let mcp_token = session
-            .setting("gpui.mcp.token")
-            .map(str::to_owned)
-            .unwrap_or_else(crate::mcp::mint_token);
+        let mcp_token = match session.setting("gpui.mcp.token") {
+            Some(token) => token.to_owned(),
+            None => {
+                let token = crate::mcp::mint_token();
+                session.set_setting("gpui.mcp.token", token.clone());
+                token
+            }
+        };
         let mcp_enabled = session.setting("gpui.mcp.enabled") == Some("true");
+        let sync_self = session.sync_self_info();
+        let (sync_job_tx, sync_job_rx) = std::sync::mpsc::channel();
+        let sync_cmd_tx = quire_core::services::sync::engine::Engine::start(sync_self, sync_job_tx);
         let mut this = Self {
             session,
             title_input,
@@ -1403,6 +1414,10 @@ impl Workspace {
                 "尚未启用"
             }
             .into(),
+            sync_cmd_tx,
+            sync_status: "正在搜索局域网设备".into(),
+            sync_last_auto: std::time::Instant::now(),
+            sync_pending: HashSet::new(),
         };
         if mcp_enabled {
             this.start_mcp();
@@ -1802,6 +1817,22 @@ impl Workspace {
                         })
                     });
                 }
+                loop {
+                    let job = match sync_job_rx.try_recv() {
+                        Ok(job) => job,
+                        Err(std::sync::mpsc::TryRecvError::Empty)
+                        | Err(std::sync::mpsc::TryRecvError::Disconnected) => break,
+                    };
+                    let _ = cx.update(|app| {
+                        WindowHandle::<Workspace>::new(window_id).update(app, |this, window, cx| {
+                            this.handle_sync_job(job, window, cx)
+                        })
+                    });
+                }
+                let _ = cx.update(|app| {
+                    WindowHandle::<Workspace>::new(window_id)
+                        .update(app, |this, window, cx| this.sync_auto_tick(window, cx))
+                });
             }
         })
         .detach();
@@ -5539,6 +5570,185 @@ impl Workspace {
             }
         }
     }
+    fn handle_sync_job(
+        &mut self,
+        job: quire_core::services::sync::engine::Job,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        use quire_core::services::sync::engine::Job;
+        match job {
+            Job::ExportSnapshot { reply } => match self.session.sync_export() {
+                Ok(snapshot) => {
+                    let _ = reply.send(snapshot);
+                }
+                Err(error) => {
+                    self.sync_status = format!("同步快照失败：{error}");
+                }
+            },
+            Job::ListLocalAttachments { reply } => {
+                let _ = reply.send(self.session.attachments.keys().copied().collect());
+            }
+            Job::AttachmentBytes { id, reply } => {
+                let bytes = self
+                    .session
+                    .attachment_display_path(quire_core::core::types::AttachmentId(id))
+                    .or_else(|| {
+                        self.session
+                            .attachment_path(quire_core::core::types::AttachmentId(id))
+                    })
+                    .and_then(|path| std::fs::read(path).ok());
+                if let Some(bytes) = bytes {
+                    let _ = reply.send(bytes);
+                } else {
+                    self.sync_status = format!("缺少附件 {id}，本轮同步中止");
+                }
+            }
+            Job::ApplyRemote {
+                peer,
+                snapshot,
+                bytes,
+                reply,
+            } => {
+                let known = self
+                    .session
+                    .sync_peers()
+                    .into_iter()
+                    .find(|known| known.id == peer.id);
+                let Some(mut peer) = known else {
+                    let error = "拒绝从本机尚未发现的设备接收同步".to_owned();
+                    self.session.sync_log_push("未知设备", false, &error);
+                    self.sync_status = error.clone();
+                    let _ = reply.send(Err(error));
+                    cx.notify();
+                    return;
+                };
+                if !snapshot.device.is_empty() {
+                    peer.name = snapshot.device.clone();
+                }
+                let result = self
+                    .session
+                    .sync_apply_remote(&snapshot, &bytes, &peer)
+                    .map_err(|error| error.to_string());
+                match &result {
+                    Ok(_) => {
+                        self.session.sync_note_device(
+                            &peer.id, &peer.name, &peer.kind, &peer.ip, peer.port,
+                        );
+                        self.sync_status = format!("已与 {} 同步", peer.name);
+                        self.title_input.update(cx, |input, cx| {
+                            let title = self.session.page.title.clone();
+                            input.reset(title.clone(), Vec::new(), title.len(), cx);
+                        });
+                        self.sync_inputs(window, cx);
+                    }
+                    Err(error) => {
+                        self.sync_status = format!("与 {} 同步失败：{error}", peer.name);
+                    }
+                }
+                let _ = reply.send(result);
+            }
+            Job::InboundPair { device, ip, reply } => {
+                self.session.sync_note_device(
+                    &device.id,
+                    &device.name,
+                    &device.kind,
+                    &ip,
+                    device.port,
+                );
+                self.session
+                    .sync_log_push(&device.name, true, "设备已加入局域网同步");
+                self.sync_status = format!("{} 已加入同步", device.name);
+                let _ = reply.send(true);
+            }
+            Job::Discovered { device, ip } => {
+                self.session.sync_note_device(
+                    &device.id,
+                    &device.name,
+                    &device.kind,
+                    &ip,
+                    device.port,
+                );
+                self.sync_status = format!("发现设备：{}", device.name);
+            }
+            Job::SyncDone {
+                peer_id,
+                ok,
+                message,
+            } => {
+                self.sync_pending.remove(&peer_id);
+                self.session.sync_mark_done(&peer_id, ok, &message);
+                self.sync_status = message;
+            }
+            Job::Paired { device, ip } => {
+                self.session.sync_note_device(
+                    &device.id,
+                    &device.name,
+                    &device.kind,
+                    &ip,
+                    device.port,
+                );
+                self.sync_status = format!("已连接 {}", device.name);
+            }
+            Job::AutoTick => {}
+        }
+        cx.notify();
+    }
+    fn sync_now_all(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let now = quire_core::services::sync::engine::now_unix();
+        let peers = self
+            .session
+            .sync_peers()
+            .into_iter()
+            .filter(|peer| {
+                now.saturating_sub(peer.last_seen) <= 60 && !self.sync_pending.contains(&peer.id)
+            })
+            .collect::<Vec<_>>();
+        if peers.is_empty() {
+            self.sync_status = if self.sync_pending.is_empty() {
+                "暂未发现在线设备".into()
+            } else {
+                "当前同步仍在进行中".into()
+            };
+        } else {
+            self.sync_status = format!("正在同步 {} 台设备…", peers.len());
+            for peer in peers {
+                self.sync_pending.insert(peer.id.clone());
+                let _ = self
+                    .sync_cmd_tx
+                    .send(quire_core::services::sync::engine::Cmd::SyncWith(peer));
+            }
+        }
+        self.schedule_save(false, window, cx);
+        cx.notify();
+    }
+    fn sync_auto_tick(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        let (automatic, interval) = self.session.sync_config();
+        if !automatic || self.sync_last_auto.elapsed().as_secs() < interval {
+            return;
+        }
+        self.sync_last_auto = std::time::Instant::now();
+        let now = quire_core::services::sync::engine::now_unix();
+        let peers = self
+            .session
+            .sync_peers()
+            .into_iter()
+            .filter(|peer| {
+                now.saturating_sub(peer.last_seen) <= 60 && !self.sync_pending.contains(&peer.id)
+            })
+            .collect::<Vec<_>>();
+        let mut queued = false;
+        for peer in peers {
+            self.sync_pending.insert(peer.id.clone());
+            let _ = self
+                .sync_cmd_tx
+                .send(quire_core::services::sync::engine::Cmd::SyncWith(peer));
+            queued = true;
+        }
+        if queued {
+            cx.notify();
+        }
+    }
     fn start_mcp(&mut self) {
         let call = crate::mcp_tools::call_sender(self.mcp_event_tx.clone());
         match crate::mcp::McpServer::new(
@@ -5587,6 +5797,12 @@ impl Workspace {
         } else {
             self.start_mcp();
         }
+        self.schedule_save(true, window, cx);
+        cx.notify();
+    }
+    fn restart_mcp(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.stop_mcp();
+        self.start_mcp();
         self.schedule_save(true, window, cx);
         cx.notify();
     }
@@ -5821,6 +6037,21 @@ impl Render for Workspace {
             .setting("gpui.mcp.log")
             .and_then(|value| serde_json::from_str(value).ok())
             .unwrap_or_default();
+        let sync_peers = self.session.sync_peers();
+        let sync_logs = self.session.sync_log();
+        let (sync_auto, sync_interval) = self.session.sync_config();
+        let sync_offline_count = sync_peers
+            .iter()
+            .filter(|peer| {
+                quire_core::services::sync::engine::now_unix().saturating_sub(peer.last_seen) > 15
+            })
+            .count();
+        let sync_status = self.sync_status.clone();
+        let sync_device_name = self
+            .session
+            .setting("sync.device-name")
+            .unwrap_or("Quire")
+            .to_owned();
         let backlinks_count = self
             .session
             .repo
@@ -6204,17 +6435,107 @@ impl Render for Workspace {
                             ),
                         ))
                         .when(self.settings_tab == 2, |dialog| dialog.child(
-                            div().flex().flex_col().gap(px(12.)).child(
-                                div().flex().items_center().justify_between().child(div().text_size(px(20.)).font_weight(FontWeight::SEMIBOLD).child("局域网同步")).child(div().text_size(px(11.)).text_color(muted).child("GPUI 版本尚未连接同步服务")),
-                            ).child(
-                                div().h(px(1.)).bg(Palette::color(&p.border)),
-                            ).child(
-                                div().text_size(px(12.)).text_color(muted).child("本机设备、在线状态、同步进度与日志将在同步传输层接入后显示。"),
-                            ).child(
-                                div().flex().gap(px(8.)).children(["设备", "统计", "日志"].into_iter().map(|label| div().px(px(10.)).py(px(6.)).rounded(px(5.)).border_1().border_color(Palette::color(&p.border)).text_size(px(12.)).child(label))),
-                            ).child(
-                                div().flex_1().flex().items_center().justify_center().text_color(muted).child("尚无同步会话"),
-                            ),
+                            div().flex().flex_col().gap(px(8.))
+                                .child(div().flex().items_center().justify_between()
+                                    .child(div().flex().flex_col().gap(px(2.))
+                                        .child(div().text_size(px(20.)).font_weight(FontWeight::SEMIBOLD).child("局域网同步"))
+                                        .child(div().text_size(px(10.)).text_color(muted).child(format!("本机：{sync_device_name}"))))
+                                    .child(div().id("sync-now-all").px(px(10.)).py(px(6.)).rounded(px(5.))
+                                        .bg(Palette::color(&p.accent)).text_color(Palette::color(&p.fg)).cursor_pointer().text_size(px(11.))
+                                        .on_click(cx.listener(|this, _, window, cx| this.sync_now_all(window, cx)))
+                                        .child("立即同步")))
+                                .child(div().text_size(px(10.)).text_color(muted).child(sync_status.clone()))
+                                .child(div().flex().items_center().gap(px(5.))
+                                    .child(div().text_size(px(10.)).child(if sync_auto { "自动同步" } else { "手动同步" }))
+                                    .child(div().id("sync-auto-toggle").px(px(7.)).py(px(4.)).rounded(px(4.))
+                                        .border_1().border_color(Palette::color(&p.border)).cursor_pointer().text_size(px(9.))
+                                        .on_click(cx.listener(|this, _, window, cx| {
+                                            let (enabled, _) = this.session.sync_config();
+                                            this.session.sync_set_auto(!enabled);
+                                            this.sync_last_auto = std::time::Instant::now();
+                                            this.sync_status = if enabled { "自动同步已关闭" } else { "自动同步已开启" }.into();
+                                            this.schedule_save(true, window, cx);
+                                            cx.notify();
+                                        }))
+                                        .child(if sync_auto { "关闭" } else { "开启" }))
+                                    .children([10u64, 30, 60].into_iter().map(|seconds|
+                                        div().id(SharedString::from(format!("sync-interval-{seconds}"))).px(px(6.)).py(px(4.)).rounded(px(4.))
+                                            .border_1().border_color(Palette::color(&p.border)).cursor_pointer().text_size(px(9.))
+                                            .when(sync_interval == seconds, |chip| chip.bg(Palette::color(&p.accent)).text_color(Palette::color(&p.fg)))
+                                            .on_click(cx.listener(move |this, _, window, cx| {
+                                                this.session.sync_set_interval(seconds);
+                                                this.schedule_save(true, window, cx);
+                                                cx.notify();
+                                            }))
+                                            .child(format!("{seconds}s")))))
+                                .child(div().h(px(1.)).bg(Palette::color(&p.border)))
+                                .child(div().flex().items_center().justify_between()
+                                    .child(div().text_size(px(12.)).font_weight(FontWeight::SEMIBOLD).child(format!("设备 · {}", sync_peers.len())))
+                                    .child(div().id("sync-forget-offline").px(px(6.)).py(px(3.))
+                                        .border_1().border_color(Palette::color(&p.border)).cursor_pointer().text_size(px(9.))
+                                        .on_click(cx.listener(|this, _, window, cx| {
+                                            let retired = this.session.sync_retire_offline_peers(15);
+                                            if retired.is_empty() {
+                                                this.sync_status = "没有离线设备需要清理".into();
+                                            } else {
+                                                let names = retired.iter().map(|peer| peer.name.as_str()).collect::<Vec<_>>().join("、");
+                                                let message = format!("已移除 {} 台离线设备：{}", retired.len(), names);
+                                                this.session.sync_log_push("本机", true, &message);
+                                                this.sync_status = message;
+                                                this.schedule_save(true, window, cx);
+                                            }
+                                            cx.notify();
+                                        }))
+                                        .child(format!("清理离线 · {sync_offline_count}"))))
+                                .children(sync_peers.iter().map(|peer| {
+                                    let peer_for_sync = peer.clone();
+                                    let peer_key = peer.id.clone();
+                                    let id_for_forget = peer.id.clone();
+                                    let peer_id = peer.id.clone();
+                                    let peer_name = peer.name.clone();
+                                    let last_sync = if peer.last_sync.is_empty() { "尚未同步".to_owned() } else { peer.last_sync.clone() };
+                                    let online = quire_core::services::sync::engine::now_unix().saturating_sub(peer.last_seen) <= 15;
+                                    div().flex().items_center().justify_between().gap(px(6.)).px(px(7.)).py(px(5.))
+                                        .rounded(px(5.)).border_1().border_color(Palette::color(&p.border))
+                                        .child(div().flex().flex_col().gap(px(2.))
+                                            .child(div().text_size(px(11.)).child(format!("{}  {}", if online { "●" } else { "○" }, peer.name)))
+                                            .child(div().text_size(px(9.)).text_color(muted).child(format!("{}:{} · {}", peer.ip, peer.port, last_sync))))
+                                        .child(div().flex().gap(px(5.))
+                                            .child(div().id(SharedString::from(format!("sync-peer-{peer_id}"))).px(px(7.)).py(px(4.)).rounded(px(4.))
+                                                .bg(Palette::color(&p.accent)).text_color(Palette::color(&p.fg)).cursor_pointer().text_size(px(9.))
+                                                .on_click(cx.listener(move |this, _, _, cx| {
+                                                    if !this.sync_pending.insert(peer_key.clone()) {
+                                                        this.sync_status = "该设备的同步仍在进行中".into();
+                                                        cx.notify();
+                                                        return;
+                                                    }
+                                                    let _ = this.sync_cmd_tx.send(quire_core::services::sync::engine::Cmd::SyncWith(peer_for_sync.clone()));
+                                                    this.sync_status = format!("正在与 {peer_name} 同步…");
+                                                    cx.notify();
+                                                }))
+                                                .child("同步"))
+                                            .child(div().id(SharedString::from(format!("forget-peer-{peer_id}"))).px(px(7.)).py(px(4.))
+                                                .border_1().border_color(Palette::color(&p.border)).cursor_pointer().text_size(px(9.))
+                                                .on_click(cx.listener(move |this, _, window, cx| {
+                                                    this.session.sync_forget_peer(&id_for_forget);
+                                                    this.schedule_save(true, window, cx);
+                                                    cx.notify();
+                                                }))
+                                                .child("忘记")))
+                                }))
+                                .when(sync_peers.is_empty(), |panel| panel.child(div().py(px(8.)).text_size(px(10.)).text_color(muted).child("正在搜索设备；请确认设备位于同一局域网并已启动 Quire。")))
+                                .child(div().h(px(1.)).bg(Palette::color(&p.border)))
+                                .child(div().flex().items_center().justify_between()
+                                    .child(div().text_size(px(11.)).font_weight(FontWeight::SEMIBOLD).child(format!("同步日志 · {} 条", sync_logs.len())))
+                                    .child(div().id("sync-clear-log").px(px(6.)).py(px(3.))
+                                        .border_1().border_color(Palette::color(&p.border)).cursor_pointer().text_size(px(9.))
+                                        .on_click(cx.listener(|this, _, window, cx| {
+                                            this.session.sync_log_clear();
+                                            this.schedule_save(true, window, cx);
+                                            cx.notify();
+                                        }))
+                                        .child("清空")))
+                                .children(sync_logs.iter().rev().take(3).map(|line| div().text_size(px(9.)).text_color(muted).child(format!("{} · {} · {}", line.at, line.peer, line.message))))
                         ))
                         .when(self.settings_tab == 3, |dialog| dialog.child(
                             div().flex().flex_col().gap(px(10.))
@@ -6222,11 +6543,16 @@ impl Render for Workspace {
                                     .child(div().flex().items_center().gap(px(10.))
                                         .child(div().text_size(px(20.)).font_weight(FontWeight::SEMIBOLD).child("MCP"))
                                         .child(div().text_size(px(11.)).text_color(muted).child(mcp_status.clone())))
-                                    .child(div().id("mcp-toggle").px(px(11.)).py(px(6.)).rounded(px(5.))
-                                        .bg(Palette::color(&p.accent)).text_color(Palette::color(&p.fg))
-                                        .cursor_pointer().text_size(px(11.))
-                                        .on_click(cx.listener(|this, _, window, cx| this.toggle_mcp(window, cx)))
-                                        .child(if mcp_enabled { "关闭服务" } else { "启用服务" })))
+                                    .child(div().flex().items_center().gap(px(5.))
+                                        .when(mcp_enabled, |row| row.child(div().id("mcp-restart").px(px(8.)).py(px(5.)).rounded(px(5.))
+                                            .border_1().border_color(Palette::color(&p.border)).cursor_pointer().text_size(px(10.))
+                                            .on_click(cx.listener(|this, _, window, cx| this.restart_mcp(window, cx)))
+                                            .child("重启")))
+                                        .child(div().id("mcp-toggle").px(px(11.)).py(px(6.)).rounded(px(5.))
+                                            .bg(Palette::color(&p.accent)).text_color(Palette::color(&p.fg))
+                                            .cursor_pointer().text_size(px(11.))
+                                            .on_click(cx.listener(|this, _, window, cx| this.toggle_mcp(window, cx)))
+                                            .child(if mcp_enabled { "关闭服务" } else { "启用服务" }))))
                                 .child(div().h(px(1.)).bg(Palette::color(&p.border)))
                                 .child(div().font_weight(FontWeight::SEMIBOLD).text_size(px(12.)).child("客户端连接信息"))
                                 .child(div().text_size(px(11.)).text_color(muted).child(format!("Endpoint  {mcp_endpoint}")))
@@ -6254,7 +6580,16 @@ impl Render for Workspace {
                                         .child("复制 Agent 提示词")))
                                 .child(div().text_size(px(10.)).text_color(muted).child("服务仅监听本机 127.0.0.1；工具可以读取和修改笔记/任务，删除只进入回收站。令牌保存在当前库目录的 mcp.json。"))
                                 .child(div().h(px(1.)).bg(Palette::color(&p.border)))
-                                .child(div().font_weight(FontWeight::SEMIBOLD).text_size(px(12.)).child(format!("调用日志 · {} 条记录", mcp_logs.len())))
+                                .child(div().flex().items_center().justify_between()
+                                    .child(div().font_weight(FontWeight::SEMIBOLD).text_size(px(12.)).child(format!("调用日志 · {} 条记录", mcp_logs.len())))
+                                    .child(div().id("mcp-clear-log").px(px(6.)).py(px(3.))
+                                        .border_1().border_color(Palette::color(&p.border)).cursor_pointer().text_size(px(9.))
+                                        .on_click(cx.listener(|this, _, window, cx| {
+                                            this.session.set_setting("gpui.mcp.log", "[]");
+                                            this.schedule_save(true, window, cx);
+                                            cx.notify();
+                                        }))
+                                        .child("清空")))
                                 .children(mcp_logs.iter().rev().take(6).map(|entry| {
                                     let ok = entry.get("ok").and_then(serde_json::Value::as_bool).unwrap_or(false);
                                     let tool = entry.get("tool").and_then(serde_json::Value::as_str).unwrap_or("tool");

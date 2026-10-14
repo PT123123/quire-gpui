@@ -5,7 +5,7 @@
 | 文件 | 内容 | 规模 |
 | --- | --- | --- |
 | `docs/PARITY.csv` | 每个 UIState callback 一行：入口、签名、controller 注册点、首条语句、调用的 core/state、关联场景、实现/验证状态、差异、人工语义（后四列来自 sidecar） | 246 行 |
-| `docs/PARITY-SEMANTICS.csv` | **人工维护**，按 `回调名` 索引：`实现状态,验证状态,差异,人工语义` | 当前只有表头，等实现阶段逐行填 |
+| `docs/PARITY-SEMANTICS.csv` | **人工维护**，按 `回调名` 索引：`实现状态,验证状态,差异,人工语义` | 每完成一段实现，就补对应回调；GPUI 同步/MCP 当前已逐项标出已实现与未实现项 |
 | `docs/PARITY-STATE.csv` | 每个 UIState property 一行：方向、类型、默认值、声明位置 | 261 行 |
 | `docs/PARITY-UNWIRED.txt` | 无调用点/无注册的 callback 清单 | 14 + 8 |
 | `docs/15-SCENE-CATALOG.md` | 截图场景目录（含「叠加」「暗色变体」两列） | 188 个场景 |

@@ -131,6 +131,470 @@ fn adjust_marks(old: &str, new: &str, marks: &[Mark]) -> Vec<Mark> {
     adjusted
 }
 
+fn page_depth(
+    page: &quire_core::services::sync::model::SPage,
+    pages: &[quire_core::services::sync::model::SPage],
+) -> usize {
+    let mut depth = 0;
+    let mut parent = page.parent;
+    let mut seen = std::collections::HashSet::new();
+    while let Some(id) = parent {
+        if !seen.insert(id) {
+            break;
+        }
+        depth += 1;
+        parent = pages
+            .iter()
+            .find(|candidate| candidate.id == id)
+            .and_then(|candidate| candidate.parent);
+    }
+    depth
+}
+
+fn block_depth(
+    block: &quire_core::services::sync::model::SBlock,
+    blocks: &[quire_core::services::sync::model::SBlock],
+) -> usize {
+    let mut depth = 0;
+    let mut parent = block.parent;
+    let mut seen = std::collections::HashSet::new();
+    while let Some(id) = parent {
+        if !seen.insert(id) {
+            break;
+        }
+        depth += 1;
+        parent = blocks
+            .iter()
+            .find(|candidate| candidate.id == id)
+            .and_then(|candidate| candidate.parent);
+    }
+    depth
+}
+
+fn normalize_page_tree(pages: &mut [quire_core::services::sync::model::SPage]) {
+    let original = pages.to_vec();
+    for page in pages {
+        let mut parent = page.parent;
+        let mut seen = std::collections::HashSet::new();
+        seen.insert(page.id);
+        let mut valid = true;
+        while let Some(id) = parent {
+            if !seen.insert(id) {
+                valid = false;
+                break;
+            }
+            parent = original
+                .iter()
+                .find(|candidate| candidate.id == id)
+                .and_then(|candidate| candidate.parent);
+            if !original.iter().any(|candidate| candidate.id == id) {
+                valid = false;
+                break;
+            }
+        }
+        if !valid {
+            page.parent = None;
+        }
+    }
+}
+
+fn normalize_block_tree(blocks: &mut [quire_core::services::sync::model::SBlock]) {
+    let original = blocks.to_vec();
+    for block in blocks {
+        let mut parent = block.parent;
+        let mut seen = std::collections::HashSet::new();
+        seen.insert(block.id);
+        let mut valid = true;
+        while let Some(id) = parent {
+            if !seen.insert(id) {
+                valid = false;
+                break;
+            }
+            parent = original
+                .iter()
+                .find(|candidate| candidate.id == id)
+                .and_then(|candidate| candidate.parent);
+            if !original.iter().any(|candidate| candidate.id == id) {
+                valid = false;
+                break;
+            }
+        }
+        if !valid {
+            block.parent = None;
+        }
+    }
+}
+
+fn sync_block_diff(
+    before: &quire_core::services::sync::model::SBlock,
+    after: &quire_core::services::sync::model::SBlock,
+    changes: &mut Vec<quire_core::core::persistence::Change>,
+) {
+    use quire_core::core::{
+        persistence::Change,
+        types::{BlockId, PageId},
+    };
+    let id = BlockId(after.id);
+    if before.page != after.page {
+        changes.push(Change::BlockMovedToPage {
+            id,
+            page: PageId(after.page),
+            parent: after.parent.map(BlockId),
+            order: quire_core::core::OrderKey(after.ord),
+        });
+    } else if before.parent != after.parent || before.ord != after.ord {
+        changes.push(Change::BlockMoved {
+            id,
+            parent: after.parent.map(BlockId),
+            order: quire_core::core::OrderKey(after.ord),
+        });
+    }
+    if before.text != after.text {
+        changes.push(Change::BlockTextSet {
+            id,
+            text: after.text.clone(),
+        });
+    }
+    if before.kind != after.kind {
+        changes.push(Change::BlockKindSet {
+            id,
+            kind: after.to_core().kind,
+        });
+    }
+    if before.checked != after.checked {
+        changes.push(Change::BlockCheckedSet {
+            id,
+            checked: after.checked,
+        });
+    }
+    if before.folded != after.folded {
+        changes.push(Change::BlockFoldedSet {
+            id,
+            folded: after.folded,
+        });
+    }
+    if before.marks != after.marks {
+        changes.push(Change::BlockMarksSet {
+            id,
+            marks: after.to_core().marks,
+        });
+    }
+    if before.color != after.color || before.background != after.background {
+        changes.push(Change::BlockColorSet {
+            id,
+            color: after.to_core().color,
+            background: after.to_core().background,
+        });
+    }
+    if before.page_ref != after.page_ref {
+        changes.push(Change::BlockRefSet {
+            id,
+            page: after.page_ref.map(PageId),
+        });
+    }
+    if before.sync_ref != after.sync_ref {
+        changes.push(Change::BlockSyncSet {
+            id,
+            source: after.sync_ref.map(BlockId),
+        });
+    }
+    if before.attachment != after.attachment {
+        changes.push(Change::BlockAttachmentSet {
+            id,
+            attachment: after.attachment.map(quire_core::core::types::AttachmentId),
+        });
+    }
+    if before.img_percent != after.img_percent {
+        changes.push(Change::BlockImageWidthSet {
+            id,
+            percent: after.img_percent,
+        });
+    }
+    if before.columns != after.columns {
+        changes.push(Change::BlockColumnsSet {
+            id,
+            columns: after.columns,
+        });
+    }
+    if before.lang != after.lang {
+        changes.push(Change::BlockLangSet {
+            id,
+            lang: after.to_core().lang,
+        });
+    }
+    if before.db_ref != after.db_ref {
+        changes.push(Change::BlockDbRefSet {
+            id,
+            db: after.db_ref.map(quire_core::core::database::DatabaseId),
+        });
+    }
+}
+
+fn sync_database_changes(
+    local: &[quire_core::services::sync::model::SDatabase],
+    merged: &[quire_core::services::sync::model::SDatabase],
+    changes: &mut Vec<quire_core::core::persistence::Change>,
+) {
+    use quire_core::core::{
+        database::{CellValue, DatabaseId, PropertyId, RecordId, ViewId},
+        persistence::Change,
+    };
+    for db in merged {
+        let db_id = DatabaseId(db.id);
+        let Some(before_db) = local.iter().find(|row| row.id == db.id) else {
+            changes.push(Change::DatabaseCreated(db.to_core_entity()));
+            changes.extend(
+                db.properties
+                    .iter()
+                    .map(|property| Change::PropertyAdded(property.to_core())),
+            );
+            changes.extend(
+                db.views
+                    .iter()
+                    .map(|view| Change::ViewAdded(view.to_core())),
+            );
+            continue;
+        };
+        if before_db.name != db.name {
+            changes.push(Change::DatabaseRenamed {
+                id: db_id,
+                name: db.name.clone(),
+            });
+        }
+        if before_db.template != db.template {
+            changes.push(Change::DatabaseTemplateSet {
+                id: db_id,
+                template: db.template.clone(),
+            });
+        }
+        for property in &db.properties {
+            match before_db
+                .properties
+                .iter()
+                .find(|row| row.id == property.id)
+            {
+                None => changes.push(Change::PropertyAdded(property.to_core())),
+                Some(before) => {
+                    let id = PropertyId(property.id);
+                    if before.name != property.name {
+                        changes.push(Change::PropertyRenamed {
+                            id,
+                            name: property.name.clone(),
+                        });
+                    }
+                    if before.kind != property.kind {
+                        changes.push(Change::PropertyKindSet {
+                            id,
+                            kind: property.to_core().kind,
+                        });
+                    }
+                    if before.config != property.config {
+                        changes.push(Change::PropertyConfigSet {
+                            id,
+                            config: property.config.clone(),
+                        });
+                    }
+                    if before.ord != property.ord {
+                        changes.push(Change::PropertyOrdSet {
+                            id,
+                            ord: quire_core::core::OrderKey(property.ord),
+                        });
+                    }
+                }
+            }
+        }
+        for view in &db.views {
+            match before_db.views.iter().find(|row| row.id == view.id) {
+                None => changes.push(Change::ViewAdded(view.to_core())),
+                Some(before) => {
+                    let id = ViewId(view.id);
+                    if before.name != view.name {
+                        changes.push(Change::ViewRenamed {
+                            id,
+                            name: view.name.clone(),
+                        });
+                    }
+                    if before.layout != view.layout {
+                        changes.push(Change::ViewLayoutSet {
+                            id,
+                            layout: view.to_core().layout,
+                        });
+                    }
+                    if before.definition != view.definition {
+                        changes.push(Change::ViewDefinitionSet {
+                            id,
+                            definition: view.definition.clone(),
+                        });
+                    }
+                    if before.ord != view.ord {
+                        changes.push(Change::ViewOrdSet {
+                            id,
+                            ord: quire_core::core::OrderKey(view.ord),
+                        });
+                    }
+                }
+            }
+        }
+    }
+    let local_records: Vec<_> = local.iter().flat_map(|db| db.records.iter()).collect();
+    let local_values: std::collections::HashMap<_, _> = local
+        .iter()
+        .flat_map(|db| {
+            db.values
+                .iter()
+                .map(|value| ((value.record, value.property), value))
+        })
+        .collect();
+    let merged_record_ids: std::collections::HashSet<_> = merged
+        .iter()
+        .flat_map(|db| db.records.iter().map(|row| row.id))
+        .collect();
+    let merged_value_ids: std::collections::HashSet<_> = merged
+        .iter()
+        .flat_map(|db| db.values.iter().map(|value| (value.record, value.property)))
+        .collect();
+    for db in merged {
+        for record in &db.records {
+            let id = RecordId(record.id);
+            match local_records.iter().find(|row| row.id == record.id) {
+                None => changes.push(Change::RecordCreated(record.to_core_record())),
+                Some(before) => {
+                    if before.ord != record.ord {
+                        changes.push(Change::RecordOrdSet {
+                            id,
+                            ord: quire_core::core::OrderKey(record.ord),
+                        });
+                    }
+                    if before.page != record.page {
+                        changes.push(Change::RecordPageSet {
+                            id,
+                            page: record.page.map(quire_core::core::types::PageId),
+                        });
+                    }
+                }
+            }
+        }
+        for value in &db.values {
+            if local_values
+                .get(&(value.record, value.property))
+                .is_none_or(|before| *before != value)
+            {
+                changes.push(Change::CellSet {
+                    record: RecordId(value.record),
+                    property: PropertyId(value.property),
+                    value: value.to_core(),
+                });
+            }
+        }
+    }
+    for (key, _) in &local_values {
+        if !merged_value_ids.contains(key) {
+            changes.push(Change::CellSet {
+                record: RecordId(key.0),
+                property: PropertyId(key.1),
+                value: CellValue::Empty,
+            });
+        }
+    }
+    for record in &local_records {
+        if !merged_record_ids.contains(&record.id) {
+            changes.push(Change::RecordDeleted {
+                id: RecordId(record.id),
+            });
+        }
+    }
+    for db in local {
+        for property in &db.properties {
+            if !merged.iter().any(|row| {
+                row.properties
+                    .iter()
+                    .any(|candidate| candidate.id == property.id)
+            }) {
+                changes.push(Change::PropertyDeleted {
+                    id: PropertyId(property.id),
+                });
+            }
+        }
+        for view in &db.views {
+            if !merged
+                .iter()
+                .any(|row| row.views.iter().any(|candidate| candidate.id == view.id))
+            {
+                changes.push(Change::ViewDeleted {
+                    id: ViewId(view.id),
+                });
+            }
+        }
+    }
+    let merged_db_ids: std::collections::HashSet<_> = merged.iter().map(|db| db.id).collect();
+    for db in local {
+        if !merged_db_ids.contains(&db.id) {
+            changes.push(Change::DatabaseDeleted {
+                id: DatabaseId(db.id),
+            });
+        }
+    }
+}
+
+fn sync_organizer_changes(
+    local: &quire_core::services::sync::model::SyncSnapshot,
+    merged: &quire_core::services::sync::model::SyncSnapshot,
+    changes: &mut Vec<quire_core::core::persistence::Change>,
+) {
+    use quire_core::core::{
+        organizer::{ListId, NoteId, TaskId},
+        persistence::Change,
+    };
+    for note in &merged.notes {
+        let row = note.to_core();
+        match local.notes.iter().find(|before| before.id == note.id) {
+            None => changes.push(Change::NoteAdded(row)),
+            Some(before) if before != note => changes.push(Change::NoteUpdated(row)),
+            _ => {}
+        }
+    }
+    let notes: std::collections::HashSet<_> = merged.notes.iter().map(|row| row.id).collect();
+    for note in &local.notes {
+        if !notes.contains(&note.id) {
+            changes.push(Change::NoteDeleted {
+                id: NoteId(note.id),
+            });
+        }
+    }
+    for list in &merged.lists {
+        let row = list.to_core();
+        match local.lists.iter().find(|before| before.id == list.id) {
+            None => changes.push(Change::TaskListAdded(row)),
+            Some(before) if before != list => changes.push(Change::TaskListUpdated(row)),
+            _ => {}
+        }
+    }
+    for task in &merged.tasks {
+        let row = task.to_core();
+        match local.tasks.iter().find(|before| before.id == task.id) {
+            None => changes.push(Change::TaskAdded(row)),
+            Some(before) if before != task => changes.push(Change::TaskUpdated(row)),
+            _ => {}
+        }
+    }
+    let tasks: std::collections::HashSet<_> = merged.tasks.iter().map(|row| row.id).collect();
+    for task in &local.tasks {
+        if !tasks.contains(&task.id) {
+            changes.push(Change::TaskDeleted {
+                id: TaskId(task.id),
+            });
+        }
+    }
+    let lists: std::collections::HashSet<_> = merged.lists.iter().map(|row| row.id).collect();
+    for list in &local.lists {
+        if !lists.contains(&list.id) {
+            changes.push(Change::TaskListDeleted {
+                id: ListId(list.id),
+            });
+        }
+    }
+}
+
 impl Session {
     pub fn open(path: &Path) -> Result<Self> {
         if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
@@ -1837,6 +2301,562 @@ impl Session {
         self.persistence
             .record(vec![Change::SettingSet { key, value }]);
     }
+    pub fn sync_self_info(&mut self) -> quire_core::services::sync::engine::DeviceInfo {
+        use quire_core::services::sync::{SYNC_PORT, engine::DeviceInfo};
+        let mut id = self
+            .setting("sync.device-id")
+            .unwrap_or_default()
+            .to_owned();
+        if id.is_empty() {
+            let nonce = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|value| value.as_nanos())
+                .unwrap_or_default();
+            id = format!("{}-{nonce:x}-{:x}", DeviceInfo::kind(), std::process::id());
+            self.set_setting("sync.device-id", id.clone());
+        }
+        let mut name = self
+            .setting("sync.device-name")
+            .unwrap_or_default()
+            .to_owned();
+        if name.is_empty() {
+            name = DeviceInfo::default_name(&id);
+            self.set_setting("sync.device-name", name.clone());
+        }
+        DeviceInfo {
+            id,
+            name,
+            kind: DeviceInfo::kind(),
+            port: SYNC_PORT,
+        }
+    }
+
+    pub fn sync_peers(&self) -> Vec<quire_core::services::sync::engine::PeerRecord> {
+        self.setting("sync.peers")
+            .and_then(|value| serde_json::from_str(value).ok())
+            .unwrap_or_default()
+    }
+
+    pub fn sync_note_device(&mut self, id: &str, name: &str, kind: &str, ip: &str, port: u16) {
+        let now = quire_core::services::sync::engine::now_unix();
+        let mut peers = self.sync_peers();
+        if let Some(peer) = peers.iter_mut().find(|peer| peer.id == id) {
+            peer.name = name.to_owned();
+            peer.kind = kind.to_owned();
+            peer.ip = ip.to_owned();
+            if port != 0 {
+                peer.port = port;
+            }
+            peer.paired = true;
+            peer.last_seen = now;
+        } else {
+            peers.push(quire_core::services::sync::engine::PeerRecord {
+                id: id.to_owned(),
+                name: name.to_owned(),
+                kind: kind.to_owned(),
+                ip: ip.to_owned(),
+                port: if port == 0 {
+                    quire_core::services::sync::SYNC_PORT
+                } else {
+                    port
+                },
+                paired: true,
+                last_seen: now,
+                last_sync: String::new(),
+            });
+        }
+        self.set_setting(
+            "sync.peers",
+            serde_json::to_string(&peers).unwrap_or_default(),
+        );
+    }
+
+    pub fn sync_mark_done(&mut self, peer_id: &str, ok: bool, message: &str) {
+        let mut peers = self.sync_peers();
+        let name = if let Some(peer) = peers.iter_mut().find(|peer| peer.id == peer_id) {
+            if ok {
+                peer.last_sync = quire_core::services::sync::engine::now_rfc3339();
+            }
+            peer.name.clone()
+        } else {
+            peer_id.to_owned()
+        };
+        self.set_setting(
+            "sync.peers",
+            serde_json::to_string(&peers).unwrap_or_default(),
+        );
+        self.sync_log_push(&name, ok, message);
+    }
+
+    pub fn sync_log(&self) -> Vec<quire_core::services::sync::engine::LogLine> {
+        self.setting("sync.log")
+            .and_then(|value| serde_json::from_str(value).ok())
+            .unwrap_or_default()
+    }
+
+    pub fn sync_log_push(&mut self, peer: &str, ok: bool, message: &str) {
+        let mut log = self.sync_log();
+        log.push(quire_core::services::sync::engine::LogLine {
+            at: quire_core::services::sync::engine::now_rfc3339(),
+            peer: peer.to_owned(),
+            ok,
+            message: message.to_owned(),
+        });
+        if log.len() > 50 {
+            log.drain(..log.len() - 50);
+        }
+        self.set_setting("sync.log", serde_json::to_string(&log).unwrap_or_default());
+    }
+
+    pub fn sync_forget_peer(&mut self, id: &str) {
+        let mut peers = self.sync_peers();
+        peers.retain(|peer| peer.id != id);
+        self.set_setting(
+            "sync.peers",
+            serde_json::to_string(&peers).unwrap_or_default(),
+        );
+    }
+
+    pub fn sync_config(&self) -> (bool, u64) {
+        let automatic = self
+            .setting("sync.auto")
+            .map(|value| value != "0")
+            .unwrap_or(true);
+        let interval = self
+            .setting("sync.interval")
+            .and_then(|value| value.parse::<u64>().ok())
+            .unwrap_or(10)
+            .max(10);
+        (automatic, interval)
+    }
+
+    pub fn sync_set_auto(&mut self, automatic: bool) {
+        self.set_setting("sync.auto", if automatic { "1" } else { "0" });
+    }
+
+    pub fn sync_set_interval(&mut self, seconds: u64) {
+        self.set_setting("sync.interval", seconds.max(10).to_string());
+    }
+
+    pub fn sync_retire_offline_peers(
+        &mut self,
+        online_window_secs: u64,
+    ) -> Vec<quire_core::services::sync::engine::PeerRecord> {
+        let now = quire_core::services::sync::engine::now_unix();
+        let mut peers = self.sync_peers();
+        let mut retired = Vec::new();
+        peers.retain(|peer| {
+            if now.saturating_sub(peer.last_seen) >= online_window_secs {
+                retired.push(peer.clone());
+                false
+            } else {
+                true
+            }
+        });
+        if !retired.is_empty() {
+            self.set_setting(
+                "sync.peers",
+                serde_json::to_string(&peers).unwrap_or_default(),
+            );
+        }
+        retired
+    }
+
+    pub fn sync_log_clear(&mut self) {
+        self.set_setting("sync.log", "[]");
+    }
+
+    /// Build a complete network-sync snapshot from this session. A partial
+    /// database/attachment read is an error: peers interpret omitted rows as
+    /// deletions, so returning a shortened snapshot would corrupt the merge.
+    pub fn sync_export(
+        &mut self,
+    ) -> anyhow::Result<quire_core::services::sync::model::SyncSnapshot> {
+        use quire_core::{
+            core::database::{DatabaseId, PropertyId},
+            services::sync::model::{
+                self, SAttachment, SBlock, SNote, SPage, SRecord, STask, STaskList, SValue,
+                SyncSnapshot,
+            },
+        };
+        let me = self.sync_self_info();
+        self.persistence.force_flush()?;
+        let mut snapshot = SyncSnapshot::default();
+        snapshot.device_id = me.id;
+        snapshot.device = me.name;
+        snapshot.pages = self.pages.iter().map(SPage::from).collect();
+        snapshot.blocks = self.document.all_blocks().map(SBlock::from).collect();
+        snapshot.attachments = self.attachments.values().map(SAttachment::from).collect();
+        snapshot.databases = model::catalog_schema(&self.databases);
+        for database in &mut snapshot.databases {
+            let records = self.repo.records_of(DatabaseId(database.id))?;
+            let record_ids: Vec<_> = records.iter().map(|record| record.id).collect();
+            database.records = records
+                .iter()
+                .map(|record| SRecord {
+                    id: record.id.0,
+                    db: record.db.0,
+                    page: record.page.map(|page| page.0),
+                    ord: record.ord.0,
+                })
+                .collect();
+            for property in &database.properties {
+                let kind = quire_core::core::database::PropertyKind::try_from_str(&property.kind);
+                if kind
+                    .map(|kind| kind.is_computed() || kind.is_derived())
+                    .unwrap_or(true)
+                {
+                    continue;
+                }
+                let values = self.repo.values_of(&record_ids, PropertyId(property.id))?;
+                for (record, value) in values {
+                    database.values.push(SValue::from_core(
+                        quire_core::core::database::RecordId(record),
+                        PropertyId(property.id),
+                        &value,
+                    ));
+                }
+            }
+        }
+        snapshot.notes = self.organizer.notes.iter().map(SNote::from).collect();
+        snapshot.tasks = self.organizer.tasks.iter().map(STask::from).collect();
+        snapshot.lists = self.organizer.lists.iter().map(STaskList::from).collect();
+        Ok(snapshot)
+    }
+
+    pub fn sync_apply_remote(
+        &mut self,
+        remote: &quire_core::services::sync::model::SyncSnapshot,
+        bytes: &[(u64, Vec<u8>)],
+        peer: &quire_core::services::sync::engine::PeerRecord,
+    ) -> anyhow::Result<quire_core::services::sync::model::SyncSnapshot> {
+        use quire_core::{
+            core::{
+                persistence::Change,
+                types::{AttachmentId, BlockId, PageId},
+            },
+            services::sync::model::{SBlock, SyncSnapshot},
+        };
+        let local = self.sync_export()?;
+        let shadow = self
+            .setting(&format!("sync.shadow.{}", peer.id))
+            .and_then(|value| SyncSnapshot::from_json(value).ok());
+
+        macro_rules! allocator {
+            ($name:ident, $last:expr) => {
+                let mut $name = $last.saturating_add(1).max(1);
+                let mut $name = || {
+                    let id = $name;
+                    $name = $name.saturating_add(1);
+                    id
+                };
+            };
+        }
+        allocator!(
+            next_page,
+            local.pages.iter().map(|row| row.id).max().unwrap_or(0)
+        );
+        allocator!(
+            next_block,
+            local.blocks.iter().map(|row| row.id).max().unwrap_or(0)
+        );
+        allocator!(
+            next_attachment,
+            local
+                .attachments
+                .iter()
+                .map(|row| row.id)
+                .max()
+                .unwrap_or(0)
+        );
+        allocator!(
+            next_db,
+            local.databases.iter().map(|row| row.id).max().unwrap_or(0)
+        );
+        allocator!(
+            next_property,
+            local
+                .databases
+                .iter()
+                .flat_map(|db| db.properties.iter().map(|row| row.id))
+                .max()
+                .unwrap_or(0)
+        );
+        allocator!(
+            next_record,
+            local
+                .databases
+                .iter()
+                .flat_map(|db| db.records.iter().map(|row| row.id))
+                .max()
+                .unwrap_or(0)
+        );
+        allocator!(
+            next_view,
+            local
+                .databases
+                .iter()
+                .flat_map(|db| db.views.iter().map(|row| row.id))
+                .max()
+                .unwrap_or(0)
+        );
+        allocator!(
+            next_note,
+            local.notes.iter().map(|row| row.id).max().unwrap_or(0)
+        );
+        allocator!(
+            next_task,
+            local.tasks.iter().map(|row| row.id).max().unwrap_or(0)
+        );
+        allocator!(
+            next_list,
+            local.lists.iter().map(|row| row.id).max().unwrap_or(0)
+        );
+        let mut uuid = || quire_core::core::organizer::new_uuid();
+        let mut ctx = quire_core::services::sync::merge::MergeCtx {
+            next_page: &mut next_page,
+            next_block: &mut next_block,
+            next_attachment: &mut next_attachment,
+            next_db: &mut next_db,
+            next_property: &mut next_property,
+            next_record: &mut next_record,
+            next_view: &mut next_view,
+            next_note: &mut next_note,
+            next_task: &mut next_task,
+            next_list: &mut next_list,
+            new_uuid: &mut uuid,
+        };
+        let outcome = quire_core::services::sync::merge::merge(
+            &local,
+            shadow.as_ref(),
+            remote,
+            &peer.name,
+            &mut ctx,
+        );
+        let attachment_remap = outcome.attachment_remap;
+        let mut merged = outcome.merged;
+        drop(ctx);
+
+        // Never apply an invalid page/block forest. Network snapshots are
+        // untrusted; missing parents and cycles are repaired to the root before
+        // the storage tree or in-memory document can be touched.
+        normalize_page_tree(&mut merged.pages);
+        normalize_block_tree(&mut merged.blocks);
+
+        let bytes: std::collections::HashMap<u64, &[u8]> = bytes
+            .iter()
+            .map(|(id, data)| {
+                let target = attachment_remap
+                    .iter()
+                    .find(|(remote_id, _)| remote_id == id)
+                    .map(|(_, local_id)| *local_id)
+                    .unwrap_or(*id);
+                (target, data.as_slice())
+            })
+            .collect();
+        let mut changes = Vec::<Change>::new();
+
+        // Attachments are materialized before rows point to them. A missing
+        // payload fails the round instead of silently persisting a broken file.
+        for row in &merged.attachments {
+            if self.attachments.contains_key(&row.id) {
+                continue;
+            }
+            let data = bytes
+                .get(&row.id)
+                .ok_or_else(|| anyhow::anyhow!("对端快照缺少附件 {} 的文件", row.id))?;
+            let id = AttachmentId(row.id);
+            let stored = if row.mime.starts_with("image/") {
+                self.attachment_store.import_bytes(id, &row.name, data).ok()
+            } else {
+                let temp = std::env::temp_dir().join(format!(
+                    "quire-sync-{}-{}-{}.bin",
+                    std::process::id(),
+                    row.id,
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|value| value.as_nanos())
+                        .unwrap_or_default()
+                ));
+                std::fs::write(&temp, data)?;
+                let imported = self.attachment_store.import_any_file(id, &temp).ok();
+                let _ = std::fs::remove_file(&temp);
+                imported
+            }
+            .ok_or_else(|| anyhow::anyhow!("无法写入同步附件 {}", row.id))?;
+            self.attachments.insert(row.id, stored.clone());
+            changes.push(Change::AttachmentAdded(stored));
+        }
+
+        let local_pages: std::collections::HashMap<u64, _> = self
+            .pages
+            .iter()
+            .map(|page| (page.id.0, page.clone()))
+            .collect();
+        let merged_page_ids: std::collections::HashSet<u64> =
+            merged.pages.iter().map(|page| page.id).collect();
+        let mut deleted_pages: Vec<_> = local_pages
+            .keys()
+            .copied()
+            .filter(|id| !merged_page_ids.contains(id))
+            .collect();
+        deleted_pages.sort_unstable();
+        let mut page_deletions = Vec::new();
+        for id in deleted_pages.iter().copied().filter(|id| {
+            local_pages
+                .get(id)
+                .and_then(|page| page.parent)
+                .is_none_or(|parent| merged_page_ids.contains(&parent.0))
+        }) {
+            page_deletions.push(Change::PageDeleted { id: PageId(id) });
+        }
+        let mut ordered_pages = merged.pages.clone();
+        ordered_pages.sort_by_key(|page| page_depth(page, &merged.pages));
+        for wire in &ordered_pages {
+            let page = wire.to_core();
+            match local_pages.get(&wire.id) {
+                None => changes.push(Change::PageCreated(page)),
+                Some(before) => {
+                    let id = before.id;
+                    if before.title != page.title {
+                        changes.push(Change::PageTitleSet {
+                            id,
+                            title: page.title.clone(),
+                        });
+                    }
+                    if before.parent != page.parent || before.order != page.order {
+                        changes.push(Change::PageMoved {
+                            id,
+                            parent: page.parent,
+                            order: page.order,
+                        });
+                    }
+                    if before.favorite != page.favorite {
+                        changes.push(Change::PageFavoriteSet {
+                            id,
+                            favorite: page.favorite,
+                        });
+                    }
+                    if before.expanded != page.expanded {
+                        changes.push(Change::PageExpandedSet {
+                            id,
+                            expanded: page.expanded,
+                        });
+                    }
+                    if before.font != page.font {
+                        changes.push(Change::PageFontSet {
+                            id,
+                            font: page.font,
+                        });
+                    }
+                    if before.full_width != page.full_width || before.small_text != page.small_text
+                    {
+                        changes.push(Change::PageLayoutSet {
+                            id,
+                            full_width: page.full_width,
+                            small_text: page.small_text,
+                        });
+                    }
+                    if before.icon != page.icon {
+                        changes.push(Change::PageIconSet {
+                            id,
+                            icon: page.icon.clone(),
+                        });
+                    }
+                    if before.cover != page.cover {
+                        changes.push(Change::PageCoverSet {
+                            id,
+                            cover: page.cover,
+                        });
+                    }
+                    if before.locked != page.locked {
+                        changes.push(Change::PageLockedSet {
+                            id,
+                            locked: page.locked,
+                        });
+                    }
+                }
+            }
+        }
+
+        let local_blocks: std::collections::HashMap<u64, SBlock> = self
+            .document
+            .all_blocks()
+            .map(|block| (block.id.0, SBlock::from(block)))
+            .collect();
+        let merged_block_ids: std::collections::HashSet<u64> =
+            merged.blocks.iter().map(|block| block.id).collect();
+        let mut ordered_blocks = merged.blocks.clone();
+        ordered_blocks.sort_by_key(|block| block_depth(block, &merged.blocks));
+        for wire in &ordered_blocks {
+            match local_blocks.get(&wire.id) {
+                None => changes.push(Change::BlockInserted(wire.to_core())),
+                Some(before) => sync_block_diff(before, wire, &mut changes),
+            }
+        }
+        let mut deleted_blocks: Vec<_> = local_blocks
+            .keys()
+            .copied()
+            .filter(|id| !merged_block_ids.contains(id))
+            .collect();
+        deleted_blocks.sort_unstable();
+        for id in deleted_blocks.iter().copied().filter(|id| {
+            local_blocks
+                .get(id)
+                .is_some_and(|block| merged_page_ids.contains(&block.page))
+                && local_blocks
+                    .get(id)
+                    .and_then(|block| block.parent)
+                    .is_none_or(|parent| merged_block_ids.contains(&parent))
+        }) {
+            changes.push(Change::BlockDeleted { id: BlockId(id) });
+        }
+        changes.extend(page_deletions);
+
+        sync_database_changes(&local.databases, &merged.databases, &mut changes);
+        sync_organizer_changes(&local, &merged, &mut changes);
+
+        // The document, catalogs, and persistence queue must observe the same
+        // ordered batch. Page rows are maintained by Session; block operations
+        // are applied by Document; the two catalogs have dedicated reducers.
+        for page in &ordered_pages {
+            if !local_pages.contains_key(&page.id) {
+                self.document.set_page_blocks(PageId(page.id), Vec::new());
+            }
+        }
+        self.document.apply(&changes);
+        for id in &deleted_pages {
+            self.document.drop_page(PageId(*id));
+        }
+        self.pages = ordered_pages
+            .into_iter()
+            .map(|page| page.to_core())
+            .collect();
+        self.pages.sort_by_key(|page| (page.parent, page.order));
+        self.apply_database_changes(&changes);
+        self.apply_organizer_changes(&changes);
+        self.persistence.record(changes);
+        self.persistence.force_flush()?;
+        self.databases = self.repo.load_databases()?;
+        if let Some(page) = self
+            .pages
+            .iter()
+            .find(|page| page.id == self.page.id)
+            .cloned()
+        {
+            self.page = page;
+        } else if let Some(page) = self.pages.iter().find(|page| !page.template).cloned() {
+            self.page = page;
+        }
+        self.ensure_page_has_block();
+
+        let me = self.sync_self_info();
+        merged.device_id = me.id;
+        merged.device = me.name;
+        self.set_setting(format!("sync.shadow.{}", peer.id), merged.to_json());
+        self.persistence.force_flush()?;
+        Ok(merged)
+    }
     pub fn set_page_layout(&mut self, full_width: bool, small_text: bool) {
         if self.page.locked
             || (self.page.full_width == full_width && self.page.small_text == small_text)
@@ -3179,6 +4199,166 @@ fn is_database_change(change: &Change) -> bool {
 mod tests {
     use super::*;
     use quire_core::core::database::CellValue;
+
+    #[test]
+    fn sync_preferences_and_peer_cleanup_are_persisted() -> Result<()> {
+        let scratch = quire_core::testing::ScratchDir::new("gpui-sync-preferences");
+        let path = scratch.path().join("sync.db");
+        let mut session = Session::open(&path)?;
+        assert_eq!(session.sync_config(), (true, 10));
+        session.sync_set_auto(false);
+        session.sync_set_interval(5);
+        assert_eq!(session.sync_config(), (false, 10));
+
+        let now = quire_core::services::sync::engine::now_unix();
+        let peers = vec![
+            quire_core::services::sync::engine::PeerRecord {
+                id: "online".into(),
+                name: "Online".into(),
+                kind: "windows".into(),
+                ip: "127.0.0.1".into(),
+                port: quire_core::services::sync::SYNC_PORT,
+                paired: true,
+                last_seen: now,
+                last_sync: String::new(),
+            },
+            quire_core::services::sync::engine::PeerRecord {
+                id: "offline".into(),
+                name: "Offline".into(),
+                kind: "windows".into(),
+                ip: "127.0.0.2".into(),
+                port: quire_core::services::sync::SYNC_PORT,
+                paired: true,
+                last_seen: now.saturating_sub(3600),
+                last_sync: String::new(),
+            },
+        ];
+        session.set_setting("sync.peers", serde_json::to_string(&peers)?);
+        session.sync_log_push("Offline", false, "connection timed out");
+        assert_eq!(session.sync_log().len(), 1);
+        let removed = session.sync_retire_offline_peers(15);
+        assert_eq!(
+            removed
+                .iter()
+                .map(|peer| peer.id.as_str())
+                .collect::<Vec<_>>(),
+            ["offline"]
+        );
+        assert_eq!(
+            session
+                .sync_peers()
+                .iter()
+                .map(|peer| peer.id.as_str())
+                .collect::<Vec<_>>(),
+            ["online"]
+        );
+        session.sync_log_clear();
+        assert!(session.sync_log().is_empty());
+        session.persistence.force_flush()?;
+        drop(session);
+
+        let reopened = Session::open(&path)?;
+        assert_eq!(reopened.sync_config(), (false, 10));
+        assert_eq!(reopened.sync_peers().len(), 1);
+        assert!(reopened.sync_log().is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn sync_export_carries_pages_blocks_database_rows_and_organizer() -> Result<()> {
+        let scratch = quire_core::testing::ScratchDir::new("gpui-sync-export");
+        let mut session = Session::open(&scratch.path().join("sync.db"))?;
+        let note = session.create_note();
+        session.update_note_editor(note, "sync note".into(), "body".into(), vec![]);
+        let task = session.create_task("sync task".into());
+        let block = session.blocks()[0].id;
+        let database = session
+            .make_database(block, "Sync database".into())
+            .unwrap();
+        let record = session.add_database_record(block).unwrap();
+        let snapshot = session.sync_export()?;
+        assert!(!snapshot.device_id.is_empty());
+        assert_eq!(snapshot.pages.len(), session.pages.len());
+        assert!(snapshot.blocks.iter().any(|row| row.id == block.0));
+        let database = snapshot
+            .databases
+            .iter()
+            .find(|row| row.id == database.0)
+            .unwrap();
+        assert!(database.records.iter().any(|row| row.id == record.0));
+        assert!(snapshot.notes.iter().any(|row| row.id == note.0));
+        assert!(snapshot.tasks.iter().any(|row| row.id == task.0));
+        Ok(())
+    }
+
+    #[test]
+    fn sync_merge_applies_remote_organizer_changes_and_persists_shadow() -> Result<()> {
+        let scratch = quire_core::testing::ScratchDir::new("gpui-sync-merge");
+        let path = scratch.path().join("sync.db");
+        let mut session = Session::open(&path)?;
+        let note_id = session.create_note();
+        session.update_note_editor(note_id, "Local title".into(), "body".into(), vec![]);
+        let mut remote = session.sync_export()?;
+        remote.device_id = "remote-device".into();
+        remote.device = "Remote".into();
+        let remote_note = remote
+            .notes
+            .iter_mut()
+            .find(|note| note.id == note_id.0)
+            .unwrap();
+        remote_note.title = "Remote title".into();
+        remote_note.edited += 1;
+        remote_note.rev = "9999999999999-remote-device".into();
+        let mut extra_page = remote.pages[0].clone();
+        extra_page.id = 999;
+        extra_page.title = "Remote page".into();
+        extra_page.parent = None;
+        remote.pages.push(extra_page);
+        let mut extra_block = remote.blocks[0].clone();
+        extra_block.id = 999;
+        extra_block.page = 999;
+        extra_block.parent = None;
+        extra_block.text = "remote page content".into();
+        remote.blocks.push(extra_block);
+        let peer = quire_core::services::sync::engine::PeerRecord {
+            id: remote.device_id.clone(),
+            name: remote.device.clone(),
+            kind: "windows".into(),
+            ip: "127.0.0.1".into(),
+            port: quire_core::services::sync::SYNC_PORT,
+            paired: true,
+            last_seen: 0,
+            last_sync: String::new(),
+        };
+        let answer = session.sync_apply_remote(&remote, &[], &peer)?;
+        assert_eq!(
+            session.organizer.note(note_id).unwrap().title,
+            "Remote title"
+        );
+        assert!(
+            session
+                .pages
+                .iter()
+                .any(|page| page.id.0 == 999 && page.title == "Remote page")
+        );
+        assert!(
+            session
+                .document
+                .page_blocks(quire_core::core::types::PageId(999))
+                .iter()
+                .any(|block| block.text == "remote page content")
+        );
+        assert_eq!(answer.device_id, session.sync_self_info().id);
+        assert!(session.setting("sync.shadow.remote-device").is_some());
+        drop(session);
+        let reopened = Session::open(&path)?;
+        assert_eq!(
+            reopened.organizer.note(note_id).unwrap().title,
+            "Remote title"
+        );
+        assert!(reopened.pages.iter().any(|page| page.id.0 == 999));
+        Ok(())
+    }
 
     #[test]
     fn undoing_a_formula_config_flushes_before_reopening() -> Result<()> {
