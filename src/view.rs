@@ -1181,6 +1181,7 @@ pub struct Workspace {
     mcp_token: String,
     mcp_status: String,
     tray_available: bool,
+    quick_note_window: Option<WindowHandle<QuickNoteWindow>>,
     sync_cmd_tx: std::sync::mpsc::Sender<quire_core::services::sync::engine::Cmd>,
     sync_status: String,
     sync_listener_warning: Option<String>,
@@ -1504,6 +1505,7 @@ impl Workspace {
             }
             .into(),
             tray_available,
+            quick_note_window: None,
             sync_cmd_tx,
             sync_status: sync_listener_warning
                 .as_deref()
@@ -5670,6 +5672,18 @@ impl Workspace {
         self.open_quick_note(cx);
     }
     fn open_quick_note(&mut self, cx: &mut Context<Self>) {
+        if let Some(handle) = self.quick_note_window {
+            if handle
+                .update(cx, |note, window, cx| {
+                    window.activate_window();
+                    window.focus(&note.input.read(cx).focus);
+                })
+                .is_ok()
+            {
+                return;
+            }
+            self.quick_note_window = None;
+        }
         let owner = cx.entity();
         let theme = self.palette.clone();
         let draft = self
@@ -5687,10 +5701,13 @@ impl Workspace {
         let opened = cx.open_window(options, move |window, cx| {
             cx.new(|cx| QuickNoteWindow::new(owner, theme, draft, window, cx))
         });
-        if let Err(error) = opened {
-            self.status = format!("无法打开速记窗口：{error}");
-            self.error = true;
-            cx.notify();
+        match opened {
+            Ok(handle) => self.quick_note_window = Some(handle),
+            Err(error) => {
+                self.status = format!("无法打开速记窗口：{error}");
+                self.error = true;
+                cx.notify();
+            }
         }
     }
     fn handle_shell_event(

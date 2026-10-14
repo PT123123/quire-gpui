@@ -696,3 +696,8 @@ GPUI 已覆盖主编辑器、整理区、独立速记与标签建议、Windows �
 
 - 持久化设置中的 Alt+N/Alt+M 启动注册失败时，把对应快捷键和系统返回的错误放入“设置 → 通用”的快捷键状态提示，同时保留 stderr 诊断；避免偏好显示开启但系统没有成功注册时完全无提示。
 - 验证：`cargo fmt --all`、`cargo check -j 8`、`cargo test -j 8`（51 项）、`cargo build --release -j 8 --target-dir target-release` 和 `git diff --check` 通过；未触发真实系统快捷键冲突。
+
+## 第一百零三轮：复用已有速记窗口
+
+- 重复触发 Alt+N 或托盘速记入口时，激活并聚焦已打开的速记窗口；窗口已关闭时才创建新窗口。这样多个入口不会同时持有彼此不同的速记草稿。
+- 验证：`cargo fmt --all`、`cargo check -j 8`、`cargo test -j 8`（51 项）、`cargo build --release -j 8 --target-dir target-release` 和 `git diff --check` 通过；复用窗口行为尚待真人桌面触发检查。
