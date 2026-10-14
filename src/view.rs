@@ -1319,14 +1319,26 @@ impl Workspace {
         let set_hotkey = platform_services.set_hotkey.clone();
         let hotkey_alt_n = session.setting("gpui.hotkey.alt-n").unwrap_or("true") == "true";
         let hotkey_alt_m = session.setting("gpui.hotkey.alt-m").unwrap_or("false") == "true";
+        let mut hotkey_startup_warnings = Vec::new();
         for (id, enabled) in [
             (crate::platform::HOTKEY_ALT_N, hotkey_alt_n),
             (crate::platform::HOTKEY_ALT_M, hotkey_alt_m),
         ] {
             if let Err(error) = set_hotkey(id, enabled) {
                 eprintln!("Quire GPUI: persisted global hotkey {id} could not be applied: {error}");
+                let label = if id == crate::platform::HOTKEY_ALT_N {
+                    "Alt+N"
+                } else {
+                    "Alt+M"
+                };
+                hotkey_startup_warnings.push(format!("{label} 未能注册：{error}"));
             }
         }
+        let hotkey_startup_notice = if hotkey_startup_warnings.is_empty() {
+            "Alt+N 默认开启；Alt+M 默认关闭".to_owned()
+        } else {
+            hotkey_startup_warnings.join("；")
+        };
         let mcp_port = session
             .setting("gpui.mcp.port")
             .and_then(|value| value.parse::<u16>().ok())
@@ -1502,7 +1514,7 @@ impl Workspace {
             sync_pending: HashSet::new(),
             restart_on_quit: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             set_hotkey,
-            hotkey_notice: "Alt+N 默认开启；Alt+M 默认关闭".into(),
+            hotkey_notice: hotkey_startup_notice,
         };
         if mcp_enabled {
             this.start_mcp();

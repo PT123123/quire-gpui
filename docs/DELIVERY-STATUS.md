@@ -691,3 +691,8 @@ GPUI 已覆盖主编辑器、整理区、独立速记与标签建议、Windows �
 
 - 将 GPUI 托盘安装结果传入工作区。Windows 托盘未能初始化或当前平台没有托盘支持时，“设置 → 通用”明确提示关闭窗口会保存并退出，避免用户误以为应用仍在后台运行；托盘正常时不显示提示。
 - 验证：`cargo fmt --all`、`cargo check -j 8`、`cargo test -j 8`（51 项）、`cargo build --release -j 8 --target-dir target-release` 和 `git diff --check` 通过；未启动真实桌面窗口。
+
+## 第一百零二轮：全局快捷键启动失败反馈
+
+- 持久化设置中的 Alt+N/Alt+M 启动注册失败时，把对应快捷键和系统返回的错误放入“设置 → 通用”的快捷键状态提示，同时保留 stderr 诊断；避免偏好显示开启但系统没有成功注册时完全无提示。
+- 验证：`cargo fmt --all`、`cargo check -j 8`、`cargo test -j 8`（51 项）、`cargo build --release -j 8 --target-dir target-release` 和 `git diff --check` 通过；未触发真实系统快捷键冲突。
