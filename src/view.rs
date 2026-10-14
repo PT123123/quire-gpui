@@ -1763,6 +1763,11 @@ impl Workspace {
         }
         self.sync_inputs(window, cx);
         self.theme_picker_open = false;
+        self.search_query.clear();
+        self.search_input.update(cx, |input, cx| {
+            input.placeholder = Some("搜索页面…".into());
+            input.reset(String::new(), Vec::new(), 0, cx);
+        });
         self.session
             .set_setting("gpui.theme", self.palette.id.clone());
         self.schedule_save(true, window, cx);
@@ -2973,39 +2978,199 @@ impl Render for Workspace {
                 serde_json::from_str(include_str!("palettes.json")).expect("checked-in palettes");
             palettes
                 .into_iter()
+                .filter(|palette| {
+                    let query = self.search_query.trim().to_lowercase();
+                    query.is_empty()
+                        || palette.id.to_lowercase().contains(&query)
+                        || match palette.id.as_str() {
+                            "midnight" => "暗夜蓝".contains(&query),
+                            "graphite" => "石墨灰".contains(&query),
+                            "violet" => "紫罗兰".contains(&query),
+                            "emerald" => "森林绿".contains(&query),
+                            "amber" => "琥珀暖".contains(&query),
+                            "ocean" => "海洋青".contains(&query),
+                            "rose" => "珊瑚红".contains(&query),
+                            "light" => "明亮".contains(&query),
+                            "jade" => "翡翠绿".contains(&query),
+                            "deepblue" => "深空蓝".contains(&query),
+                            "twilight" => "曙光紫".contains(&query),
+                            "crimson" => "荣焰红".contains(&query),
+                            _ => false,
+                        }
+                })
                 .map(|palette| {
                     let id = palette.id.clone();
-                    let label = id.clone();
+                    let label = match id.as_str() {
+                        "midnight" => "暗夜蓝",
+                        "graphite" => "石墨灰",
+                        "violet" => "紫罗兰",
+                        "emerald" => "森林绿",
+                        "amber" => "琥珀暖",
+                        "ocean" => "海洋青",
+                        "rose" => "珊瑚红",
+                        "light" => "明亮",
+                        "jade" => "翡翠绿",
+                        "deepblue" => "深空蓝",
+                        "twilight" => "曙光紫",
+                        "crimson" => "荣焰红",
+                        _ => id.as_str(),
+                    }
+                    .to_owned();
                     let selected = id == self.palette.id;
                     div()
                         .id(SharedString::from(format!("theme-option-{id}")))
-                        .w_full()
-                        .h(px(28.))
-                        .px(px(8.))
+                        .w(px(110.))
+                        .h(px(62.))
+                        .p(px(7.))
                         .flex()
-                        .items_center()
-                        .gap(px(8.))
-                        .rounded(px(5.))
+                        .items_end()
+                        .rounded(px(6.))
+                        .border_1()
+                        .border_color(if selected {
+                            accent
+                        } else {
+                            Palette::color(&p.border)
+                        })
                         .cursor_pointer()
-                        .when(selected, |row| row.bg(Palette::color(&p.bg).opacity(0.35)))
-                        .hover(|row| row.bg(Palette::color(&p.bg).opacity(0.5)))
+                        .bg(linear_gradient(
+                            135.,
+                            linear_color_stop(Palette::color(&palette.bg), 0.),
+                            linear_color_stop(Palette::color(&palette.grad2), 1.),
+                        )
+                        .color_space(ColorSpace::Srgb))
+                        .hover(|row| row.border_color(accent))
                         .on_click(cx.listener(move |this, _, window, cx| {
                             this.select_theme(&id, window, cx)
                         }))
                         .child(
-                            div().size(px(16.)).rounded(px(4.)).bg(linear_gradient(
-                                135.,
-                                linear_color_stop(Palette::color(&palette.bg), 0.),
-                                linear_color_stop(Palette::color(&palette.grad2), 1.),
-                            )
-                            .color_space(ColorSpace::Srgb)),
+                            div()
+                                .text_size(px(12.))
+                                .font_weight(FontWeight::MEDIUM)
+                                .text_color(Palette::color(&palette.fg))
+                                .child(format!("{}{}", label, if selected { "  ✓" } else { "" })),
                         )
-                        .child(format!("{}{}", label, if selected { "  ✓" } else { "" }))
                 })
                 .collect::<Vec<_>>()
         } else {
             Vec::new()
         };
+        let settings_overlay = self.theme_picker_open.then(|| {
+            div()
+                .id("settings-overlay")
+                .absolute()
+                .top(px(0.))
+                .right(px(0.))
+                .bottom(px(0.))
+                .left(px(0.))
+                .flex()
+                .items_center()
+                .justify_center()
+                .bg(Hsla::from(rgb(0x000000)).opacity(0.32))
+                .child(
+                    div()
+                        .id("settings-dialog")
+                        .w(px(560.))
+                        .h(px(612.))
+                        .p(px(16.))
+                        .rounded(px(12.))
+                        .border_1()
+                        .border_color(Palette::color(&p.border))
+                        .bg(Palette::color(&p.elevated))
+                        .flex()
+                        .flex_col()
+                        .gap(px(12.))
+                        .child(
+                            div()
+                                .text_size(px(18.))
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .child("设置"),
+                        )
+                        .child(
+                            div()
+                                .id("settings-search")
+                                .w_full()
+                                .h(px(32.))
+                                .px(px(8.))
+                                .rounded(px(5.))
+                                .border_1()
+                                .border_color(Palette::color(&p.border))
+                                .bg(Palette::color(&p.bg).opacity(0.25))
+                                .child(self.search_input.clone()),
+                        )
+                        .child(
+                            div()
+                                .id("settings-tabs")
+                                .w_full()
+                                .h(px(32.))
+                                .flex()
+                                .items_center()
+                                .justify_between()
+                                .rounded(px(5.))
+                                .border_1()
+                                .border_color(Palette::color(&p.border))
+                                .children(
+                                    ["外观", "通用", "同步", "MCP", "快捷键", "关于"]
+                                        .into_iter()
+                                        .map(|tab| {
+                                            div()
+                                                .flex_1()
+                                                .py(px(6.))
+                                                .text_size(px(12.))
+                                                .text_center()
+                                                .text_color(if tab == "外观" {
+                                                    text
+                                                } else {
+                                                    muted
+                                                })
+                                                .when(tab == "外观", |item| {
+                                                    item.bg(Palette::color(&p.bg).opacity(0.4))
+                                                })
+                                                .child(tab)
+                                        }),
+                                ),
+                        )
+                        .child(div().h(px(1.)).bg(Palette::color(&p.border)))
+                        .child(
+                            div()
+                                .text_size(px(12.))
+                                .text_color(muted)
+                                .child("外观 · 渐变主题"),
+                        )
+                        .child(
+                            div()
+                                .id("settings-theme-grid")
+                                .w_full()
+                                .flex()
+                                .flex_wrap()
+                                .gap(px(8.))
+                                .children(theme_options),
+                        )
+                        .child(div().flex_1())
+                        .child(
+                            div().flex().justify_end().child(
+                                div()
+                                    .id("settings-done")
+                                    .px(px(14.))
+                                    .py(px(7.))
+                                    .rounded(px(5.))
+                                    .border_1()
+                                    .border_color(Palette::color(&p.border))
+                                    .cursor_pointer()
+                                    .hover(|button| button.bg(Palette::color(&p.bg).opacity(0.35)))
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.theme_picker_open = false;
+                                        this.search_query.clear();
+                                        this.search_input.update(cx, |input, cx| {
+                                            input.placeholder = Some("搜索页面…".into());
+                                            input.reset(String::new(), Vec::new(), 0, cx);
+                                        });
+                                        cx.notify();
+                                    }))
+                                    .child("完成"),
+                            ),
+                        ),
+                )
+        });
         let icon_options = if self.icon_picker_open {
             div()
                 .id("page-icon-popover")
@@ -6380,11 +6545,20 @@ impl Render for Workspace {
                                         .hover(|row| row.bg(Palette::color(&p.bg).opacity(0.3)))
                                         .on_click(cx.listener(|this, _, _, cx| {
                                             this.theme_picker_open = !this.theme_picker_open;
+                                            this.search_query.clear();
+                                            let placeholder = if this.theme_picker_open {
+                                                "搜索设置…"
+                                            } else {
+                                                "搜索页面…"
+                                            };
+                                            this.search_input.update(cx, |input, cx| {
+                                                input.placeholder = Some(placeholder.into());
+                                                input.reset(String::new(), Vec::new(), 0, cx);
+                                            });
                                             cx.notify();
                                         }))
                                         .child("⚙  设置 / 外观"),
                                 )
-                                .children(theme_options)
                                 .when_some(delete_confirmation, |sidebar, confirmation| {
                                     sidebar.child(confirmation)
                                 })
@@ -6495,6 +6669,7 @@ impl Render for Workspace {
                 )
             })
             .when(self.search_open, |root| root.child(search_overlay))
+            .when_some(settings_overlay, |root, overlay| root.child(overlay))
     }
 }
 
