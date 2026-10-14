@@ -72,6 +72,7 @@ fn run() -> Result<()> {
         return Ok(());
     }
     let session = Session::open(&path)?;
+    let sync_listener_warning = sync_listener_preflight(quire_core::services::sync::SYNC_PORT);
     let theme = theme
         .or_else(|| session.setting("gpui.theme").map(str::to_owned))
         .unwrap_or_else(|| "midnight".into());
@@ -106,6 +107,7 @@ fn run() -> Result<()> {
                         session,
                         &theme,
                         smoke,
+                        sync_listener_warning.clone(),
                         shell_rx,
                         platform_services,
                         window,
@@ -175,6 +177,17 @@ fn restored_window_bounds(session: &Session, cx: &App) -> Bounds<Pixels> {
     if visible { bounds } else { fallback() }
 }
 
+fn sync_listener_preflight(port: u16) -> Option<String> {
+    std::net::TcpListener::bind(("0.0.0.0", port))
+        .err()
+        .map(|error| {
+            format!(
+                "同步监听端口 {port} 启动时已被占用：{}。本机可能无法接收其他设备发起的同步，请关闭占用程序后重启 Quire。",
+                error
+            )
+        })
+}
+
 fn parse_window_bounds(x: &str, y: &str, width: &str, height: &str) -> Option<Bounds<Pixels>> {
     let (x, y, width, height) = (
         x.parse::<f32>().ok()?,
@@ -198,7 +211,7 @@ fn parse_window_bounds(x: &str, y: &str, width: &str, height: &str) -> Option<Bo
 
 #[cfg(test)]
 mod window_geometry_tests {
-    use super::parse_window_bounds;
+    use super::{parse_window_bounds, sync_listener_preflight};
 
     #[test]
     fn saved_window_bounds_accept_valid_position_and_size() {
@@ -220,5 +233,22 @@ mod window_geometry_tests {
         ] {
             assert!(parse_window_bounds(values.0, values.1, values.2, values.3).is_none());
         }
+    }
+
+    #[test]
+    fn sync_listener_preflight_reports_an_occupied_port() {
+        let listener = std::net::TcpListener::bind(("0.0.0.0", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let warning = sync_listener_preflight(port).unwrap();
+        assert!(warning.contains(&port.to_string()));
+        assert!(warning.contains("已被占用"));
+    }
+
+    #[test]
+    fn sync_listener_preflight_accepts_a_free_port() {
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+        assert!(sync_listener_preflight(port).is_none());
     }
 }

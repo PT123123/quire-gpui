@@ -679,4 +679,10 @@ GPUI 已覆盖主编辑器、整理区、独立速记与标签建议、Windows �
 
 - 新增 `update_block_text`，允许 Agent 更新页面中的单个普通文本块并保留块类型、顺序和页面选择；锁定页、未知块以及带行内标记、子块、颜色、附件或引用的内容均拒绝修改。更新复用 core `ReplaceText` 命令，进入页面 undo/redo 历史。
 - 修改活动页面时仍阻止与 IME 组合输入竞争，并在成功后刷新 GPUI 输入实体；所有写入继续经唯一 Session 和统一 flush 路径。
-- MCP 共 16 个工具。隔离库回归验证创建页面后按 block ID 更新单块文本、页面选择保持、undo/redo、复杂块安全拒绝与数据库重开读回；验证：`cargo fmt --all`、`cargo check -j 8`、`cargo test -j 8`（49 项）、`cargo build --release -j 8 --target-dir target-release` 和 `git diff --check` 通过；未访问真实库。
+- MCP 共 16 个工具。隔离库回归验证创建页面后按 block ID 更新单块文本、页面选择保持、undo/redo、复杂块安全拒绝与数据库重开读回；验证：`cargo fmt --all`、`cargo check -j 8`、`cargo test -j 8`（51 项）、`cargo build --release -j 8 --target-dir target-release` 和 `git diff --check` 通过；未访问真实库。
+
+## 第一百轮：同步监听端口冲突提示
+
+- 启动局域网同步引擎前检查固定 TCP 端口 `5878` 能否绑定。发现端口已占用时，在设置 → 局域网同步持续显示带端口与系统错误详情的提示，说明本机可能无法接收其他设备同步，并给出关闭占用进程后重启的处理方式；core 代码保持不变。
+- 回归测试覆盖占用端口和空闲端口。该启动预检与 core 后台 listener 绑定之间存在很短的竞态窗口，因此诊断表示启动时检测结果，最终 listener 错误仍由 core 记录到 stderr。
+- 验证：`cargo fmt --all`、`cargo check -j 8`、`cargo test -j 8`（51 项）、`cargo build --release -j 8 --target-dir target-release` 和 `git diff --check` 通过；端口冲突和空闲用例均通过，未启动真实桌面窗口。

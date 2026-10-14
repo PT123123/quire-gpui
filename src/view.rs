@@ -1182,6 +1182,7 @@ pub struct Workspace {
     mcp_status: String,
     sync_cmd_tx: std::sync::mpsc::Sender<quire_core::services::sync::engine::Cmd>,
     sync_status: String,
+    sync_listener_warning: Option<String>,
     sync_last_auto: std::time::Instant,
     sync_pending: HashSet<String>,
     restart_on_quit: Arc<std::sync::atomic::AtomicBool>,
@@ -1194,6 +1195,7 @@ impl Workspace {
         mut session: Session,
         theme: &str,
         smoke: bool,
+        sync_listener_warning: Option<String>,
         shell_events: std::sync::mpsc::Receiver<crate::platform::ShellEvent>,
         platform_services: crate::platform::Services,
         window: &mut Window,
@@ -1488,7 +1490,11 @@ impl Workspace {
             }
             .into(),
             sync_cmd_tx,
-            sync_status: "正在搜索局域网设备".into(),
+            sync_status: sync_listener_warning
+                .as_deref()
+                .unwrap_or("正在搜索局域网设备")
+                .to_owned(),
+            sync_listener_warning,
             sync_last_auto: std::time::Instant::now(),
             sync_pending: HashSet::new(),
             restart_on_quit: Arc::new(std::sync::atomic::AtomicBool::new(false)),
@@ -6432,6 +6438,7 @@ impl Render for Workspace {
             })
             .count();
         let sync_status = self.sync_status.clone();
+        let sync_listener_warning = self.sync_listener_warning.clone();
         let sync_device_name = self
             .session
             .setting("sync.device-name")
@@ -6852,6 +6859,9 @@ impl Render for Workspace {
                                         .on_click(cx.listener(|this, _, window, cx| this.sync_now_all(window, cx)))
                                         .child("立即同步")))
                                 .child(div().text_size(px(10.)).text_color(muted).child(sync_status.clone()))
+                                .when_some(sync_listener_warning, |panel, warning| panel.child(
+                                    div().text_size(px(10.)).text_color(rgb(0xd9a441)).child(warning),
+                                ))
                                 .child(div().flex().items_center().gap(px(6.))
                                     .child(div().h(px(27.)).flex_1().min_w_0().px(px(7.)).rounded(px(4.))
                                         .border_1().border_color(Palette::color(&p.border))
