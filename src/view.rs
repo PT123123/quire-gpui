@@ -5879,26 +5879,94 @@ impl Render for Workspace {
                             .child(div().font_weight(FontWeight::SEMIBOLD).child("Quire"))
                             .child(
                                 div()
-                                    .id("organizer-toggle")
+                                    .id("sidebar-organizer-notes")
                                     .h(px(30.))
                                     .px(px(8.))
                                     .flex()
                                     .items_center()
                                     .rounded(px(5.))
                                     .cursor_pointer()
-                                    .text_color(if self.organizer_open { accent } else { muted })
-                                    .when(self.organizer_open, |row| {
+                                    .text_color(if self.organizer_open && !self.organizer_tasks {
+                                        accent
+                                    } else {
+                                        muted
+                                    })
+                                    .when(self.organizer_open && !self.organizer_tasks, |row| {
                                         row.bg(Palette::color(&p.bg).opacity(0.3))
                                     })
                                     .hover(|row| row.bg(Palette::color(&p.bg).opacity(0.3)))
                                     .on_click(cx.listener(|this, _, window, cx| {
-                                        this.toggle_organizer(window, cx)
+                                        if !this.organizer_open {
+                                            this.toggle_organizer(window, cx);
+                                        }
+                                        this.toggle_organizer_tab(false, window, cx);
                                     }))
                                     .child(format!(
-                                        "整理区 · {} 笔记 · {} 任务",
-                                        self.session.organizer.live_notes().count(),
+                                        "▤  笔记  ·  {}",
+                                        self.session.organizer.live_notes().count()
+                                    )),
+                            )
+                            .child(
+                                div()
+                                    .id("sidebar-organizer-tasks")
+                                    .h(px(30.))
+                                    .px(px(8.))
+                                    .flex()
+                                    .items_center()
+                                    .rounded(px(5.))
+                                    .cursor_pointer()
+                                    .text_color(if self.organizer_open && self.organizer_tasks {
+                                        accent
+                                    } else {
+                                        muted
+                                    })
+                                    .when(self.organizer_open && self.organizer_tasks, |row| {
+                                        row.bg(Palette::color(&p.bg).opacity(0.3))
+                                    })
+                                    .hover(|row| row.bg(Palette::color(&p.bg).opacity(0.3)))
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        if !this.organizer_open {
+                                            this.toggle_organizer(window, cx);
+                                        }
+                                        this.toggle_organizer_tab(true, window, cx);
+                                    }))
+                                    .child(format!(
+                                        "✓  任务  ·  {}",
                                         self.session.organizer.live_tasks().count()
                                     )),
+                            )
+                            .child(
+                                div()
+                                    .id("sidebar-search")
+                                    .h(px(30.))
+                                    .px(px(8.))
+                                    .flex()
+                                    .items_center()
+                                    .rounded(px(5.))
+                                    .cursor_pointer()
+                                    .text_color(muted)
+                                    .hover(|row| row.bg(Palette::color(&p.bg).opacity(0.3)))
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        window.focus(&this.search_input.read(cx).focus);
+                                    }))
+                                    .child("⌕  搜索                    Ctrl P"),
+                            )
+                            .child(
+                                div()
+                                    .id("sidebar-settings")
+                                    .h(px(30.))
+                                    .px(px(8.))
+                                    .flex()
+                                    .items_center()
+                                    .rounded(px(5.))
+                                    .cursor_pointer()
+                                    .text_color(muted)
+                                    .hover(|row| row.bg(Palette::color(&p.bg).opacity(0.3)))
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.theme_picker_open = !this.theme_picker_open;
+                                        cx.notify();
+                                    }))
+                                    .child("⚙  设置 / 外观"),
                             )
                             .children(theme_options)
                             .child(
