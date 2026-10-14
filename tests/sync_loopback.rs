@@ -54,7 +54,8 @@ fn answer_job(session: &mut Session, job: Job) {
                 .unwrap_or_default();
             reply.send(bytes).unwrap();
         }
-        Job::InboundPair { reply, .. } => {
+        Job::InboundPair { device, ip, reply } => {
+            session.sync_note_device(&device.id, &device.name, &device.kind, &ip, device.port);
             reply.send(true).unwrap();
         }
         _ => panic!("unexpected sync job in loopback test"),
@@ -162,6 +163,30 @@ fn two_isolated_sessions_exchange_changes_over_sync_http_and_reopen() -> anyhow:
     };
 
     let jobs_b_snapshot = jobs_b;
+    let (status, info_a_bytes) =
+        transport::http_get("127.0.0.1", port_a, "/sync/info", Duration::from_secs(3))
+            .map_err(anyhow::Error::msg)?;
+    assert_eq!(status, 200);
+    let info_a =
+        DeviceInfo::from_json(&String::from_utf8(info_a_bytes)?).map_err(anyhow::Error::msg)?;
+    let pair_body = info_a.to_json();
+    let (status, body) = request_while_pumping(&jobs_b_snapshot, &mut b, move |reply| {
+        let _ = reply.send(transport::http_post(
+            "127.0.0.1",
+            port_b,
+            "/sync/pair",
+            &pair_body,
+            Duration::from_secs(3),
+        ));
+    })
+    .map_err(anyhow::Error::msg)?;
+    assert_eq!(status, 200, "{body}");
+    assert!(
+        b.sync_peers()
+            .iter()
+            .any(|peer| peer.id == info_a.id && peer.paired)
+    );
+
     let (status, snapshot_bytes) = request_while_pumping(&jobs_b_snapshot, &mut b, move |reply| {
         let _ = reply.send(transport::http_get(
             "127.0.0.1",

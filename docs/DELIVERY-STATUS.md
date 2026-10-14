@@ -759,7 +759,7 @@ GPUI 已覆盖主编辑器、整理区、独立速记与标签建议、Windows �
 
 ## 第一百一十四轮：双隔离会话局域网同步回环
 
-- 新增双节点集成回归：两个独立 `ScratchDir` Session 分别创建不同内容，使用两个动态 loopback TCP 端口运行 core `SyncServer`；通过正式 `/sync/info`、GET `/sync/snapshot`、`/sync/attachment/<id>`、GPUI `sync_apply_remote` 和 POST `/sync/snapshot` 完成拉取、附件获取、合并与推送。
+- 新增双节点集成回归：两个独立 `ScratchDir` Session 分别创建不同内容，使用两个动态 loopback TCP 端口运行 core `SyncServer`；通过正式 `/sync/info`、`POST /sync/pair`、GET `/sync/snapshot`、`/sync/attachment/<id>`、GPUI `sync_apply_remote` 和 POST `/sync/snapshot` 完成设备登记、拉取、附件获取、合并与推送。
 - 验证 A 的 organizer 笔记到达 B，B 的页面/正文、数据库 schema/记录/文本单元格及附件文件到达 A；两端分别强制 flush、关闭并重开库后再次确认内容、文件字节及设备 shadow。测试没有启动 UDP 广播监听，不占用正式 5878/5879 端口，也不访问用户库。
 - `cargo test --test sync_loopback` 通过。仍需两台真实设备验证 UDP 发现、配对交互、防火墙/网络互通、附件跨端传输和不同版本拒绝提示；托盘点击路径仍待真实桌面验收。
 
