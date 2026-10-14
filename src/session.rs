@@ -2123,6 +2123,90 @@ impl Session {
         self.ensure_page_has_block();
         id
     }
+    pub fn replace_page_markdown(&mut self, id: PageId, source: &str) -> Result<()> {
+        self.end_typing();
+        let page = self
+            .pages
+            .iter()
+            .find(|page| page.id == id && !page.template)
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("找不到页面 {}", id.0))?;
+        if page.locked {
+            bail!("页面 {} 已锁定", id.0);
+        }
+        let previous = self.document.page_blocks(id).to_vec();
+        let exported = quire_core::services::export_service::export_page(&previous);
+        let parsed = quire_core::services::import_service::parse_markdown(&exported);
+        let empty_seed = previous.len() == 1
+            && previous[0].kind == BlockKind::Paragraph
+            && previous[0].text.is_empty();
+        let markdown_round_trips = (parsed.len() == previous.len()
+            && parsed.iter().zip(&previous).all(|(parsed, block)| {
+                parsed.kind == block.kind
+                    && parsed.text == block.text
+                    && parsed.checked == block.checked
+                    && parsed.marks == block.marks
+                    && parsed.lang == block.lang
+            }))
+            || (parsed.is_empty() && empty_seed);
+        let safe_blocks = previous.iter().all(|block| {
+            block.parent.is_none()
+                && matches!(
+                    block.kind,
+                    BlockKind::Paragraph
+                        | BlockKind::Heading1
+                        | BlockKind::Heading2
+                        | BlockKind::Heading3
+                        | BlockKind::Bullet
+                        | BlockKind::Numbered
+                        | BlockKind::Todo
+                        | BlockKind::Quote
+                        | BlockKind::Code
+                        | BlockKind::Divider
+                        | BlockKind::Math
+                )
+                && block.color == ColorKind::Default
+                && block.background == ColorKind::Default
+                && !block.folded
+                && block.attachment.is_none()
+                && block.page_ref.is_none()
+                && block.sync_ref.is_none()
+                && block.db_ref.is_none()
+        });
+        if !safe_blocks || !markdown_round_trips {
+            bail!("页面含 Markdown 无法完整往返的块或样式；为避免丢失内容，拒绝整页替换");
+        }
+        let imported = {
+            let mut allocate = || self.document.alloc_block_id();
+            quire_core::services::import_service::import_markdown(source, &page, &mut allocate)
+        };
+        let inserted = imported
+            .into_iter()
+            .filter_map(|change| match change {
+                Change::BlockInserted(block) => Some(block),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        let mut apply = previous
+            .iter()
+            .filter(|block| block.parent.is_none())
+            .map(|block| Change::BlockDeleted { id: block.id })
+            .collect::<Vec<_>>();
+        apply.extend(inserted.iter().cloned().map(Change::BlockInserted));
+        if apply.is_empty() {
+            return Ok(());
+        }
+        let mut revert = inserted
+            .iter()
+            .filter(|block| block.parent.is_none())
+            .map(|block| Change::BlockDeleted { id: block.id })
+            .collect::<Vec<_>>();
+        revert.extend(previous.into_iter().map(Change::BlockInserted));
+        self.document.apply(&apply);
+        self.persistence.record(apply.clone());
+        self.history.push(id, Entry { apply, revert });
+        Ok(())
+    }
     pub fn duplicate_page(&mut self, id: PageId) -> Option<PageId> {
         self.end_typing();
         let original = self.pages.iter().find(|page| page.id == id)?.clone();

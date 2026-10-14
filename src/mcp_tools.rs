@@ -104,8 +104,12 @@ pub fn execute(session: &mut Session, name: &str, args: &Value) -> Result<Value,
         }
         "update_page" => {
             let id = PageId(integer(args, "page_id")?);
-            let title = required_string(args, "title")?.trim();
-            if title.is_empty() {
+            let title = args.get("title").and_then(Value::as_str);
+            let body = args.get("body").and_then(Value::as_str);
+            if title.is_none() && body.is_none() {
+                return Err("至少提供 title 或 body".into());
+            }
+            if title.is_some_and(|title| title.trim().is_empty()) {
                 return Err("页面标题不能为空".into());
             }
             let page = session
@@ -117,12 +121,27 @@ pub fn execute(session: &mut Session, name: &str, args: &Value) -> Result<Value,
                 return Err(format!("页面 {} 已锁定", id.0));
             }
             let current = session.page.id;
-            if !session.select_page(id) {
-                return Err(format!("无法打开页面 {}", id.0));
+            if let Some(body) = body {
+                session
+                    .replace_page_markdown(id, body)
+                    .map_err(|error| error.to_string())?;
             }
-            session.set_page_title(title.to_owned());
-            let _ = session.select_page(current);
-            Ok(json!({"ok": true, "page_id": id.0, "title": title}))
+            if let Some(title) = title {
+                if !session.select_page(id) {
+                    return Err(format!("无法打开页面 {}", id.0));
+                }
+                session.set_page_title(title.trim().to_owned());
+                let _ = session.select_page(current);
+            }
+            let new_title = session
+                .pages
+                .iter()
+                .find(|page| page.id == id)
+                .map(|page| page.title.as_str())
+                .unwrap_or_default();
+            Ok(
+                json!({"ok": true, "page_id": id.0, "title": new_title, "body_updated": body.is_some()}),
+            )
         }
         "list_notes" => {
             let include_trashed = args
@@ -364,10 +383,10 @@ pub fn tool_defs() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "update_page",
-            description: "修改普通页面标题；锁定页面拒绝编辑。",
+            description: "修改普通页面标题和/或以 Markdown 全量替换正文；锁定页面或含无法无损往返的复杂块/样式时拒绝正文替换。",
             input_schema: schema(
-                json!({ "page_id": { "type": "integer" }, "title": { "type": "string" } }),
-                &["page_id", "title"],
+                json!({ "page_id": { "type": "integer" }, "title": { "type": "string" }, "body": { "type": "string", "description": "Markdown 正文，会全量替换该页内容；仅支持可无损往返的简单块页面" } }),
+                &["page_id"],
             ),
         },
         ToolDef {
@@ -610,7 +629,7 @@ mod tests {
         execute(
             &mut session,
             "update_page",
-            &json!({"page_id": id, "title":"Renamed page"}),
+            &json!({"page_id": id, "title":"Renamed page", "body":"# Revised\n\nUpdated body"}),
         )
         .unwrap();
         assert_eq!(session.page.id, current);
@@ -623,6 +642,39 @@ mod tests {
                 .title,
             "Renamed page"
         );
+        assert!(session.select_page(PageId(id)));
+        session.undo();
+        assert!(
+            session
+                .document
+                .page_blocks(PageId(id))
+                .iter()
+                .any(|block| block.text == "Page body")
+        );
+        session.redo();
+        assert!(
+            session
+                .document
+                .page_blocks(PageId(id))
+                .iter()
+                .any(|block| block.text == "Updated body")
+        );
+        assert!(session.select_page(current));
+        let complex = session.import_markdown("Complex page".into(), "Safe paragraph");
+        assert!(session.select_page(complex));
+        session.execute(quire_core::core::command::Command::AppendBlock {
+            kind: quire_core::core::types::BlockKind::Callout,
+            text: "Important callout".into(),
+        });
+        let complex_before = session.document.page_blocks(complex).to_vec();
+        assert!(session.select_page(current));
+        let rejected = execute(
+            &mut session,
+            "update_page",
+            &json!({"page_id": complex.0, "body":"replacement"}),
+        );
+        assert!(rejected.unwrap_err().contains("拒绝整页替换"));
+        assert_eq!(session.document.page_blocks(complex), complex_before);
         session.persistence.force_flush().unwrap();
         drop(session);
         let reopened = Session::open(&scratch.path().join("test.db")).unwrap();
@@ -640,7 +692,7 @@ mod tests {
                 .document
                 .page_blocks(PageId(id))
                 .iter()
-                .any(|block| block.text == "Page body")
+                .any(|block| block.text == "Updated body")
         );
     }
 

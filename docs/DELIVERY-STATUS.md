@@ -104,7 +104,7 @@
 
 ## 仍然没有做的事（不要误认已完成）
 
-GPUI 已覆盖主编辑器、整理区、独立速记与标签建议、Windows 托盘/全局热键、局域网同步、MCP HTTP/stdio 和页面/笔记/任务工具；49 项自动测试通过，但多数交互仍待真人桌面回归。尚未完成的重点包括完整的页面正文 MCP 编辑、设置搜索与全部入口细节、附件 UX、多窗口、DPI/性能基准、双机同步互通、托盘唤回和外部 MCP 客户端连接验收。功能矩阵语义仍不完整，core 的 50 个 Command 尚未与所有入口全量交叉。参考图仍缺 hover/pressed/focus/disabled 态、窄窗口、真窗口 GPU 对照和动效中间帧。
+GPUI 已覆盖主编辑器、整理区、独立速记与标签建议、Windows 托盘/全局热键、局域网同步、MCP HTTP/stdio 和页面/笔记/任务工具；49 项自动测试通过，但多数交互仍待真人桌面回归。页面 MCP 支持简单 Markdown 页正文全量替换；复杂块、层级或非默认样式的页面会安全拒绝，需要后续细粒度块编辑工具。其他未完成重点包括设置搜索与全部入口细节、附件 UX、多窗口、DPI/性能基准、双机同步互通、托盘唤回和外部 MCP 客户端连接验收。功能矩阵语义仍不完整，core 的 50 个 Command 尚未与所有入口全量交叉。参考图仍缺 hover/pressed/focus/disabled 态、窄窗口、真窗口 GPU 对照和动效中间帧。
 
 旧版源码中的截图工具与场景已保存，可由后续 AI 在独立测试环境生成参考图。源码和 token 是可追溯的参考，不等于新程序已有同样行为。
 
@@ -663,8 +663,8 @@ GPUI 已覆盖主编辑器、整理区、独立速记与标签建议、Windows �
 - 修复同步自动/手动/单设备队列发送失败时仍遗留“进行中”状态的问题；命令通道关闭后立即清除对应 pending 标记并展示需要重启应用的可见错误。
 - 验证：`cargo fmt --all`、`cargo check -j 8`、`cargo test -j 8`（47 项）、`cargo build --release -j 8 --target-dir target-release`、release `--help`、parity 生成及 `git diff --check` 均通过；未访问真实库。双机局域网互通、Shell 托盘唤回及外部 MCP 客户端连接仍需桌面实测。
 
-## 第九十七轮：MCP 页面读取与基础写入
+## 第九十七轮：MCP 页面读取与安全写入
 
-- MCP 新增 `list_pages`、`read_page`、`create_page`、`update_page`：Agent 可列出非模板页面、读取页面有序块、用 Markdown 新建顶层页面及修改页面标题。重命名锁定页面会拒绝；创建/改名完成后恢复原当前页；不提供页面永久删除或全文覆盖。
-- 工具仍通过唯一 UI Session 执行并由 MCP event pump flush。隔离库测试覆盖 Markdown 页面创建、页块读取、标题重命名、重开持久化、当前页面选择保持及锁定页拒绝。
+- MCP 新增 `list_pages`、`read_page`、`create_page`、`update_page`：Agent 可列出非模板页面、读取页面有序块、用 Markdown 新建顶层页面及修改标题/正文。正文替换只允许简单 Markdown 块，先校验 core 导出再导入可无损往返；遇到表格/数据库/附件/引用、层级、折叠或自定义颜色等复杂内容时拒绝整页覆盖，避免静默丢数据。锁定页面拒绝修改；改当前页后同步更新 GPUI 输入实体，IME 组合期间拒绝并发覆盖。
+- 工具仍通过唯一 UI Session 执行并由 MCP event pump flush。隔离库测试覆盖 Markdown 页面创建、页块读取、标题/正文更新、正文单步 undo/redo、重开持久化、当前页面选择保持、复杂页面拒绝覆盖及锁定页拒绝。
 - 旧版基线与 GPUI 扩展的差异已记入决策文档和计划。验证：`cargo fmt --all`、`cargo check -j 8`、`cargo test -j 8`（49 项）、`cargo build --release -j 8 --target-dir target-release` 与 `git diff --check` 通过；未访问真实库。真实 MCP 客户端仍需桌面连接验收。

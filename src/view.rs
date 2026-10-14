@@ -5683,14 +5683,29 @@ impl Workspace {
             crate::platform::ShellEvent::Quit => cx.quit(),
             crate::platform::ShellEvent::McpCall(job) => {
                 let crate::mcp_tools::McpJob::Call { name, args, reply } = job;
-                let result =
-                    crate::mcp_tools::execute(&mut self.session, &name, &args).and_then(|value| {
-                        self.session
-                            .persistence
-                            .force_flush()
-                            .map_err(|error| error.to_string())?;
-                        Ok(value)
+                let targets_active_page = name == "update_page"
+                    && args.get("page_id").and_then(serde_json::Value::as_u64)
+                        == Some(self.session.page.id.0);
+                let execution = if targets_active_page && self.composing(cx) {
+                    Err("当前页面正处于输入法组合状态，请完成输入后重试".to_owned())
+                } else {
+                    crate::mcp_tools::execute(&mut self.session, &name, &args)
+                };
+                if execution.is_ok() && targets_active_page {
+                    let title = self.session.page.title.clone();
+                    self.title_input.update(cx, |input, cx| {
+                        input.reset(title.clone(), Vec::new(), title.len(), cx);
                     });
+                    self.sync_inputs(window, cx);
+                    self.focus_first(window, cx);
+                }
+                let result = execution.and_then(|value| {
+                    self.session
+                        .persistence
+                        .force_flush()
+                        .map_err(|error| error.to_string())?;
+                    Ok(value)
+                });
                 // Do not copy note/task contents into the persistent call log.
                 let message = match &result {
                     Ok(_) => "调用成功".to_owned(),
