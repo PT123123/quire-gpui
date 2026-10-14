@@ -561,6 +561,7 @@ pub struct Workspace {
     flush_lock: Arc<Mutex<()>>,
     closing: bool,
     smoke: bool,
+    normal_window_bounds: Bounds<Pixels>,
 }
 
 impl Workspace {
@@ -732,7 +733,14 @@ impl Workspace {
             flush_lock: Arc::new(Mutex::new(())),
             closing: false,
             smoke,
+            normal_window_bounds: window.bounds(),
         };
+        let bounds_subscription = cx.observe_window_bounds(window, |this, window, _| {
+            if !window.is_maximized() && !window.is_fullscreen() {
+                this.normal_window_bounds = window.bounds();
+            }
+        });
+        this.subscriptions.push(bounds_subscription);
         let note_title_input = this.note_title_input.clone();
         this.note_title_subscription = Some(cx.subscribe_in(
             &note_title_input,
@@ -3398,6 +3406,18 @@ impl Workspace {
             });
         }
         self.session.end_typing();
+        if !window.is_maximized() && !window.is_fullscreen() {
+            self.normal_window_bounds = window.bounds();
+        }
+        let bounds = self.normal_window_bounds;
+        for (key, value) in [
+            ("window.x", f32::from(bounds.origin.x)),
+            ("window.y", f32::from(bounds.origin.y)),
+            ("window.w", f32::from(bounds.size.width)),
+            ("window.h", f32::from(bounds.size.height)),
+        ] {
+            self.session.set_setting(key, value.round().to_string());
+        }
         self.closing = true;
         self.schedule_save(true, window, cx);
     }

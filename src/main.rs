@@ -73,7 +73,7 @@ fn run() -> Result<()> {
         // The Slint reference's window is 1280×800. GPUI's custom frame paints
         // through the invisible resize edge, so the client surface uses that
         // same full window footprint.
-        let bounds = Bounds::centered(None, size(px(1280.), px(800.)), cx);
+        let bounds = restored_window_bounds(&session, cx);
         let window = cx.open_window(
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
@@ -125,4 +125,70 @@ fn run() -> Result<()> {
         .detach();
     });
     Ok(())
+}
+
+fn restored_window_bounds(session: &Session, cx: &App) -> Bounds<Pixels> {
+    let fallback = || Bounds::centered(None, size(px(1280.), px(800.)), cx);
+    let Some(bounds) = session
+        .setting("window.x")
+        .zip(session.setting("window.y"))
+        .zip(session.setting("window.w"))
+        .zip(session.setting("window.h"))
+        .and_then(|(((x, y), width), height)| parse_window_bounds(x, y, width, height))
+    else {
+        return fallback();
+    };
+    let visible = cx.displays().into_iter().any(|display| {
+        let intersection = bounds.intersect(&display.bounds());
+        f32::from(intersection.size.width) >= 160. && f32::from(intersection.size.height) >= 40.
+    });
+    if visible { bounds } else { fallback() }
+}
+
+fn parse_window_bounds(x: &str, y: &str, width: &str, height: &str) -> Option<Bounds<Pixels>> {
+    let (x, y, width, height) = (
+        x.parse::<f32>().ok()?,
+        y.parse::<f32>().ok()?,
+        width.parse::<f32>().ok()?,
+        height.parse::<f32>().ok()?,
+    );
+    if ![x, y, width, height].into_iter().all(f32::is_finite)
+        || width < 924.
+        || height < 591.
+        || width > 16_384.
+        || height > 16_384.
+    {
+        return None;
+    }
+    Some(Bounds::new(
+        point(px(x), px(y)),
+        size(px(width), px(height)),
+    ))
+}
+
+#[cfg(test)]
+mod window_geometry_tests {
+    use super::parse_window_bounds;
+
+    #[test]
+    fn saved_window_bounds_accept_valid_position_and_size() {
+        let bounds = parse_window_bounds("120", "80", "1440", "900").unwrap();
+        assert_eq!(f32::from(bounds.origin.x), 120.);
+        assert_eq!(f32::from(bounds.origin.y), 80.);
+        assert_eq!(f32::from(bounds.size.width), 1440.);
+        assert_eq!(f32::from(bounds.size.height), 900.);
+    }
+
+    #[test]
+    fn saved_window_bounds_reject_invalid_or_unusable_geometry() {
+        for values in [
+            ("NaN", "80", "1440", "900"),
+            ("0", "0", "923", "900"),
+            ("0", "0", "1440", "590"),
+            ("0", "0", "20000", "900"),
+            ("0", "0", "1440", "bad"),
+        ] {
+            assert!(parse_window_bounds(values.0, values.1, values.2, values.3).is_none());
+        }
+    }
 }
