@@ -281,8 +281,12 @@ pub struct Workspace {
     search_input: Entity<TextInput>,
     find_input: Entity<TextInput>,
     link_target_input: Entity<TextInput>,
+    note_title_input: Entity<TextInput>,
+    note_body_input: Entity<TextInput>,
     search_subscription: Option<Subscription>,
     find_subscription: Option<Subscription>,
+    note_title_subscription: Option<Subscription>,
+    note_body_subscription: Option<Subscription>,
     search_query: String,
     find_query: String,
     find_matches: Vec<(BlockId, Range<usize>)>,
@@ -301,6 +305,10 @@ pub struct Workspace {
     slash_selection: usize,
     mention_menu: Option<(BlockId, usize, String)>,
     mention_selection: usize,
+    organizer_open: bool,
+    selected_note: Option<quire_core::core::organizer::NoteId>,
+    note_title_draft: String,
+    note_body_draft: String,
     status: String,
     error: bool,
     active: Option<BlockId>,
@@ -333,6 +341,12 @@ impl Workspace {
         link_target_input.update(cx, |input, _| {
             input.placeholder = Some("https://… 或 quire://page/ID".into())
         });
+        let note_title_input =
+            cx.new(|cx| TextInput::new(String::new(), Vec::new(), 24., window, cx));
+        note_title_input.update(cx, |input, _| input.placeholder = Some("笔记标题".into()));
+        let note_body_input =
+            cx.new(|cx| TextInput::new(String::new(), Vec::new(), 15., window, cx));
+        note_body_input.update(cx, |input, _| input.placeholder = Some("写点什么…".into()));
         let mut this = Self {
             session,
             title_input,
@@ -341,8 +355,12 @@ impl Workspace {
             search_input,
             find_input,
             link_target_input,
+            note_title_input,
+            note_body_input,
             search_subscription: None,
             find_subscription: None,
+            note_title_subscription: None,
+            note_body_subscription: None,
             search_query: String::new(),
             find_query: String::new(),
             find_matches: Vec::new(),
@@ -361,6 +379,10 @@ impl Workspace {
             slash_selection: 0,
             mention_menu: None,
             mention_selection: 0,
+            organizer_open: false,
+            selected_note: None,
+            note_title_draft: String::new(),
+            note_body_draft: String::new(),
             status: "已保存".into(),
             error: false,
             active: None,
@@ -369,6 +391,36 @@ impl Workspace {
             closing: false,
             smoke,
         };
+        let note_title_input = this.note_title_input.clone();
+        this.note_title_subscription = Some(cx.subscribe_in(
+            &note_title_input,
+            window,
+            |this, _, event, window, cx| match event {
+                InputEvent::Edited { text, .. } => {
+                    this.note_title_draft = text.clone();
+                    cx.notify();
+                }
+                InputEvent::Blurred => this.commit_note_draft(window, cx),
+                InputEvent::Split(_) => window.focus(&this.note_body_input.read(cx).focus),
+                _ => {}
+            },
+        ));
+        let note_body_input = this.note_body_input.clone();
+        this.note_body_subscription = Some(cx.subscribe_in(
+            &note_body_input,
+            window,
+            |this, _, event, window, cx| match event {
+                InputEvent::Edited { text, .. } => {
+                    this.note_body_draft = text.clone();
+                    cx.notify();
+                }
+                InputEvent::Blurred => this.commit_note_draft(window, cx),
+                InputEvent::Split(_) => this.note_body_input.update(cx, |input, cx| {
+                    input.insert_newline(cx);
+                }),
+                _ => {}
+            },
+        ));
         let title_input = this.title_input.clone();
         this.title_subscription = Some(cx.subscribe_in(
             &title_input,
@@ -1495,6 +1547,126 @@ impl Workspace {
             .set_setting("gpui.theme", self.palette.id.clone());
         self.schedule_save(true, window, cx);
     }
+    fn commit_note_draft(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(id) = self.selected_note else {
+            return;
+        };
+        if self.session.update_note_content(
+            id,
+            self.note_title_draft.clone(),
+            self.note_body_draft.clone(),
+        ) {
+            self.schedule_save(true, window, cx);
+        }
+    }
+    fn reload_selected_note(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(id) = self.selected_note else {
+            return;
+        };
+        self.selected_note = None;
+        if self.session.organizer.note(id).is_some() {
+            self.select_note(id, window, cx);
+        } else {
+            self.note_title_draft.clear();
+            self.note_body_draft.clear();
+            self.note_title_input.update(cx, |input, cx| {
+                input.reset(String::new(), Vec::new(), 0, cx);
+            });
+            self.note_body_input.update(cx, |input, cx| {
+                input.reset(String::new(), Vec::new(), 0, cx);
+            });
+            cx.notify();
+        }
+    }
+    fn select_note(
+        &mut self,
+        id: quire_core::core::organizer::NoteId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.selected_note == Some(id) {
+            return;
+        }
+        self.commit_note_draft(window, cx);
+        let Some(note) = self.session.organizer.note(id).cloned() else {
+            return;
+        };
+        self.selected_note = Some(id);
+        self.note_title_draft = note.title.clone();
+        self.note_body_draft = note.body.clone();
+        self.note_title_input.update(cx, |input, cx| {
+            let len = note.title.len();
+            input.reset(note.title, Vec::new(), len, cx);
+        });
+        self.note_body_input.update(cx, |input, cx| {
+            let len = note.body.len();
+            input.reset(note.body, Vec::new(), len, cx);
+        });
+        cx.notify();
+    }
+    fn create_note(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.commit_note_draft(window, cx);
+        let id = self.session.create_note();
+        self.organizer_open = true;
+        self.selected_note = None;
+        self.select_note(id, window, cx);
+        self.schedule_save(true, window, cx);
+    }
+    fn toggle_note_pin(
+        &mut self,
+        id: quire_core::core::organizer::NoteId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(note) = self.session.organizer.note(id) else {
+            return;
+        };
+        if self.session.set_note_pinned(id, !note.pinned) {
+            self.schedule_save(true, window, cx);
+        }
+    }
+    fn trash_note(
+        &mut self,
+        id: quire_core::core::organizer::NoteId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.commit_note_draft(window, cx);
+        if self.session.set_note_trashed(id, true) {
+            if self.selected_note == Some(id) {
+                self.selected_note = None;
+                self.note_title_draft.clear();
+                self.note_body_draft.clear();
+                self.note_title_input.update(cx, |input, cx| {
+                    input.reset(String::new(), Vec::new(), 0, cx);
+                });
+                self.note_body_input.update(cx, |input, cx| {
+                    input.reset(String::new(), Vec::new(), 0, cx);
+                });
+            }
+            self.schedule_save(true, window, cx);
+        }
+    }
+    fn toggle_organizer(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.commit_note_draft(window, cx);
+        self.organizer_open = !self.organizer_open;
+        if self.organizer_open {
+            let first_note = self
+                .session
+                .organizer
+                .live_notes()
+                .next()
+                .map(|note| note.id);
+            if self.selected_note.is_none()
+                && let Some(note) = first_note
+            {
+                self.select_note(note, window, cx);
+            }
+        } else {
+            self.restore_focus(window, cx);
+        }
+        cx.notify();
+    }
     fn toggle_theme_picker(&mut self, cx: &mut Context<Self>) {
         self.theme_picker_open = !self.theme_picker_open;
         self.icon_picker_open = false;
@@ -1863,11 +2035,20 @@ impl Workspace {
         self.move_find(-1, window, cx);
     }
     fn save(&mut self, _: &Save, window: &mut Window, cx: &mut Context<Self>) {
+        self.commit_note_draft(window, cx);
         self.session.end_typing();
         self.schedule_save(true, window, cx);
     }
     fn undo(&mut self, _: &Undo, window: &mut Window, cx: &mut Context<Self>) {
         if self.composing(cx) {
+            return;
+        }
+        if self.organizer_open {
+            self.commit_note_draft(window, cx);
+            if self.session.undo_organizer() {
+                self.reload_selected_note(window, cx);
+            }
+            self.schedule_save(false, window, cx);
             return;
         }
         self.session.undo();
@@ -1877,6 +2058,14 @@ impl Workspace {
     }
     fn redo(&mut self, _: &Redo, window: &mut Window, cx: &mut Context<Self>) {
         if self.composing(cx) {
+            return;
+        }
+        if self.organizer_open {
+            self.commit_note_draft(window, cx);
+            if self.session.redo_organizer() {
+                self.reload_selected_note(window, cx);
+            }
+            self.schedule_save(false, window, cx);
             return;
         }
         self.session.redo();
@@ -3705,6 +3894,242 @@ impl Render for Workspace {
                     .when_some(color_picker_view, |row, picker| row.child(picker))
             })
             .collect::<Vec<_>>();
+        let mut notes = self
+            .session
+            .organizer
+            .live_notes()
+            .cloned()
+            .collect::<Vec<_>>();
+        notes.sort_by_key(|note| std::cmp::Reverse((note.pinned, note.edited)));
+        let note_rows = notes
+            .into_iter()
+            .map(|note| {
+                let id = note.id;
+                let selected = self.selected_note == Some(id);
+                let pinned = note.pinned;
+                let title = if note.title.trim().is_empty() {
+                    "无标题".to_owned()
+                } else {
+                    note.title
+                };
+                div()
+                    .id(SharedString::from(format!("organizer-note-{id:?}")))
+                    .w_full()
+                    .px(px(9.))
+                    .py(px(7.))
+                    .rounded(px(5.))
+                    .cursor_pointer()
+                    .text_color(if selected { accent } else { text })
+                    .when(selected, |row| row.bg(Palette::color(&p.bg).opacity(0.34)))
+                    .hover(|row| row.bg(Palette::color(&p.bg).opacity(0.28)))
+                    .on_click(
+                        cx.listener(move |this, _, window, cx| this.select_note(id, window, cx)),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(5.))
+                            .child(div().flex_1().min_w_0().child(title))
+                            .child(
+                                div()
+                                    .id(SharedString::from(format!("organizer-pin-{id:?}")))
+                                    .px(px(3.))
+                                    .text_color(if pinned { accent } else { muted })
+                                    .cursor_pointer()
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        this.toggle_note_pin(id, window, cx)
+                                    }))
+                                    .child(if pinned { "★" } else { "☆" }),
+                            )
+                            .child(
+                                div()
+                                    .id(SharedString::from(format!("organizer-trash-{id:?}")))
+                                    .px(px(3.))
+                                    .text_color(muted)
+                                    .cursor_pointer()
+                                    .hover(|button| button.text_color(rgb(0xe5534b)))
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        this.trash_note(id, window, cx)
+                                    }))
+                                    .child("×"),
+                            ),
+                    )
+            })
+            .collect::<Vec<_>>();
+        let organizer_view = div()
+            .id("organizer-main")
+            .flex()
+            .flex_1()
+            .min_h_0()
+            .child(
+                div()
+                    .id("organizer-note-list")
+                    .w(px(260.))
+                    .flex_shrink_0()
+                    .h_full()
+                    .border_r_1()
+                    .border_color(Palette::color(&p.border))
+                    .px(px(12.))
+                    .py(px(14.))
+                    .flex()
+                    .flex_col()
+                    .gap(px(6.))
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .justify_between()
+                            .child(div().font_weight(FontWeight::SEMIBOLD).child("笔记"))
+                            .child(
+                                div()
+                                    .id("organizer-create-note")
+                                    .px(px(8.))
+                                    .py(px(4.))
+                                    .rounded(px(4.))
+                                    .cursor_pointer()
+                                    .text_color(accent)
+                                    .hover(|button| button.bg(Palette::color(&p.elevated)))
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.create_note(window, cx)
+                                    }))
+                                    .child("＋"),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .id("organizer-notes-scroll")
+                            .flex_1()
+                            .h_full()
+                            .overflow_y_scroll()
+                            .children(note_rows),
+                    ),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .h_full()
+                    .px(px(48.))
+                    .py(px(48.))
+                    .when(self.selected_note.is_some(), |editor| {
+                        editor
+                            .max_w(px(760.))
+                            .mx_auto()
+                            .w_full()
+                            .flex()
+                            .flex_col()
+                            .gap(px(18.))
+                            .child(
+                                div()
+                                    .text_size(px(30.))
+                                    .font_weight(FontWeight::BOLD)
+                                    .child(self.note_title_input.clone()),
+                            )
+                            .child(
+                                div()
+                                    .id("organizer-note-body")
+                                    .flex_1()
+                                    .min_h(px(300.))
+                                    .child(self.note_body_input.clone()),
+                            )
+                    })
+                    .when(self.selected_note.is_none(), |empty| {
+                        empty
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .text_color(muted)
+                            .child(
+                                div()
+                                    .text_size(px(14.))
+                                    .child("选择一篇笔记，或新建笔记开始记录。"),
+                            )
+                    }),
+            );
+        let page_content = if self.organizer_open {
+            organizer_view
+        } else {
+            div()
+                .id("document-scroll")
+                .flex_1()
+                .min_w_0()
+                .h_full()
+                .overflow_y_scroll()
+                .px(px(48.))
+                .child(
+                    div()
+                        .w_full()
+                        .max_w(px(if self.session.page.full_width {
+                            1120.
+                        } else {
+                            760.
+                        }))
+                        .mx_auto()
+                        .pt(px(64.))
+                        .pb(px(128.))
+                        .flex()
+                        .flex_col()
+                        .when_some(cover_path, |page, path| {
+                            page.child(
+                                img(path)
+                                    .w_full()
+                                    .h(px(180.))
+                                    .object_fit(ObjectFit::Cover)
+                                    .rounded(px(8.))
+                                    .mb(px(16.)),
+                            )
+                        })
+                        .child(
+                            div()
+                                .text_size(px(38.))
+                                .font_weight(FontWeight::BOLD)
+                                .mb(px(16.))
+                                .child(self.title_input.clone()),
+                        )
+                        .when(self.session.page.locked, |d| {
+                            d.child(div().text_color(muted).mb(px(12.)).child("此页面已锁定"))
+                        })
+                        .when(self.backlinks_open, |d| {
+                            d.child(
+                                div()
+                                    .id("page-backlinks-panel")
+                                    .w_full()
+                                    .max_h(px(220.))
+                                    .overflow_y_scroll()
+                                    .mb(px(12.))
+                                    .rounded(px(6.))
+                                    .border_1()
+                                    .border_color(Palette::color(&p.border))
+                                    .bg(Palette::color(&p.elevated))
+                                    .px(px(8.))
+                                    .py(px(6.))
+                                    .flex()
+                                    .flex_col()
+                                    .gap(px(2.))
+                                    .child(
+                                        div()
+                                            .px(px(9.))
+                                            .py(px(4.))
+                                            .text_size(px(11.))
+                                            .text_color(muted)
+                                            .child(format!("引用此页面的内容 · {backlinks_count}")),
+                                    )
+                                    .when(backlinks_empty, |panel| {
+                                        panel.child(
+                                            div()
+                                                .px(px(9.))
+                                                .py(px(7.))
+                                                .text_color(muted)
+                                                .child("暂无反向链接"),
+                                        )
+                                    })
+                                    .children(backlink_rows),
+                            )
+                        })
+                        .children(rows),
+                )
+        };
         div()
             .key_context("Quire")
             .size_full()
@@ -3999,6 +4424,28 @@ impl Render for Workspace {
                             .flex_col()
                             .gap(px(12.))
                             .child(div().font_weight(FontWeight::SEMIBOLD).child("Quire"))
+                            .child(
+                                div()
+                                    .id("organizer-toggle")
+                                    .h(px(30.))
+                                    .px(px(8.))
+                                    .flex()
+                                    .items_center()
+                                    .rounded(px(5.))
+                                    .cursor_pointer()
+                                    .text_color(if self.organizer_open { accent } else { muted })
+                                    .when(self.organizer_open, |row| {
+                                        row.bg(Palette::color(&p.bg).opacity(0.3))
+                                    })
+                                    .hover(|row| row.bg(Palette::color(&p.bg).opacity(0.3)))
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.toggle_organizer(window, cx)
+                                    }))
+                                    .child(format!(
+                                        "整理区 · {}",
+                                        self.session.organizer.live_notes().count()
+                                    )),
+                            )
                             .children(theme_options)
                             .child(
                                 div()
@@ -4091,94 +4538,7 @@ impl Render for Workspace {
                                     .child("GPUI · 开发预览"),
                             ),
                     )
-                    .child(
-                        div()
-                            .id("document-scroll")
-                            .flex_1()
-                            .min_w_0()
-                            .h_full()
-                            .overflow_y_scroll()
-                            .px(px(48.))
-                            .child(
-                                div()
-                                    .w_full()
-                                    .max_w(px(if self.session.page.full_width {
-                                        1120.
-                                    } else {
-                                        760.
-                                    }))
-                                    .mx_auto()
-                                    .pt(px(64.))
-                                    .pb(px(128.))
-                                    .flex()
-                                    .flex_col()
-                                    .when_some(cover_path, |page, path| {
-                                        page.child(
-                                            img(path)
-                                                .w_full()
-                                                .h(px(180.))
-                                                .object_fit(ObjectFit::Cover)
-                                                .rounded(px(8.))
-                                                .mb(px(16.)),
-                                        )
-                                    })
-                                    .child(
-                                        div()
-                                            .text_size(px(38.))
-                                            .font_weight(FontWeight::BOLD)
-                                            .mb(px(16.))
-                                            .child(self.title_input.clone()),
-                                    )
-                                    .when(self.session.page.locked, |d| {
-                                        d.child(
-                                            div()
-                                                .text_color(muted)
-                                                .mb(px(12.))
-                                                .child("此页面已锁定"),
-                                        )
-                                    })
-                                    .when(self.backlinks_open, |d| {
-                                        d.child(
-                                            div()
-                                                .id("page-backlinks-panel")
-                                                .w_full()
-                                                .max_h(px(220.))
-                                                .overflow_y_scroll()
-                                                .mb(px(12.))
-                                                .rounded(px(6.))
-                                                .border_1()
-                                                .border_color(Palette::color(&p.border))
-                                                .bg(Palette::color(&p.elevated))
-                                                .px(px(8.))
-                                                .py(px(6.))
-                                                .flex()
-                                                .flex_col()
-                                                .gap(px(2.))
-                                                .child(
-                                                    div()
-                                                        .px(px(9.))
-                                                        .py(px(4.))
-                                                        .text_size(px(11.))
-                                                        .text_color(muted)
-                                                        .child(format!(
-                                                            "引用此页面的内容 · {backlinks_count}"
-                                                        )),
-                                                )
-                                                .when(backlinks_empty, |panel| {
-                                                    panel.child(
-                                                        div()
-                                                            .px(px(9.))
-                                                            .py(px(7.))
-                                                            .text_color(muted)
-                                                            .child("暂无反向链接"),
-                                                    )
-                                                })
-                                                .children(backlink_rows),
-                                        )
-                                    })
-                                    .children(rows),
-                            ),
-                    ),
+                    .child(page_content),
             )
             .child(
                 div()

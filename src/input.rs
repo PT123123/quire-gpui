@@ -121,6 +121,13 @@ impl TextInput {
         self.layout = None;
         cx.notify();
     }
+    pub fn insert_newline(&mut self, cx: &mut Context<Self>) {
+        if self.buffer.composing() {
+            return;
+        }
+        self.buffer.replace(None, "\n");
+        self.changed(true, cx);
+    }
     fn changed(&mut self, boundary: bool, cx: &mut Context<Self>) {
         if !self.buffer.composing() {
             cx.emit(InputEvent::Edited {

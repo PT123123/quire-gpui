@@ -5,10 +5,11 @@ use quire_core::{
         command::{self, Command},
         document::{Document, Entry},
         history::History,
+        organizer::{self, Note, NoteId, OrganizerCatalog},
         persistence::{Change, Repository},
         types::{
-            Attachment, AttachmentId, Block, BlockId, BlockKind, Mark, OrderKey, Page, PageFont,
-            PageId,
+            Attachment, AttachmentId, Block, BlockId, BlockKind, Mark, ORGANIZER_STACK, OrderKey,
+            Page, PageFont, PageId,
         },
     },
     services::attachment_store::AttachmentStore,
@@ -32,6 +33,7 @@ pub struct Session {
     pub persistence: Arc<PersistenceService>,
     pub repo: Arc<SqliteRepository>,
     pub attachments: BTreeMap<u64, Attachment>,
+    pub organizer: OrganizerCatalog,
     attachment_store: AttachmentStore,
     next_attachment_id: u64,
     history: History,
@@ -140,6 +142,7 @@ impl Session {
         let repo =
             Arc::new(SqliteRepository::open(path).context("无法打开库；不会覆盖或重建已有文件")?);
         let loaded = repo.load()?;
+        let organizer = repo.load_organizer()?;
         let attachments = repo
             .load_attachments()?
             .into_iter()
@@ -210,6 +213,7 @@ impl Session {
             persistence,
             repo,
             attachments,
+            organizer,
             attachment_store,
             next_attachment_id,
             history: History::default(),
@@ -723,6 +727,149 @@ impl Session {
         apply.push(Change::BlockRefSet { id, page: target });
         revert.insert(0, Change::BlockRefSet { id, page: previous });
         self.apply_entry(Entry { apply, revert });
+        true
+    }
+    pub fn create_note(&mut self) -> NoteId {
+        let id = NoteId(
+            self.organizer
+                .notes
+                .iter()
+                .map(|note| note.id.0)
+                .max()
+                .unwrap_or(0)
+                .saturating_add(1)
+                .max(1),
+        );
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default();
+        let millis = now.as_millis().min(i64::MAX as u128) as i64;
+        let seconds = now.as_secs().min(i64::MAX as u64) as i64;
+        let note = Note {
+            id,
+            uuid: organizer::new_uuid(),
+            title: "新建笔记".into(),
+            body: String::new(),
+            pinned: false,
+            tags: Vec::new(),
+            created: seconds,
+            edited: seconds,
+            ref_note: None,
+            deleted_at: None,
+            rev: organizer::rev(millis, "quire-gpui"),
+        };
+        let Some(entry) = command::plan(
+            &mut self.document,
+            ORGANIZER_STACK,
+            Command::CreateNote { note },
+        ) else {
+            return id;
+        };
+        self.apply_organizer_entry(entry);
+        id
+    }
+    pub fn update_note_content(&mut self, id: NoteId, title: String, body: String) -> bool {
+        let Some(before) = self
+            .organizer
+            .notes
+            .iter()
+            .find(|note| note.id == id)
+            .cloned()
+        else {
+            return false;
+        };
+        if before.title == title && before.body == body {
+            return false;
+        }
+        let mut after = before.clone();
+        after.title = title;
+        after.body = body;
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default();
+        after.edited = now.as_secs().min(i64::MAX as u64) as i64;
+        after.rev = organizer::rev(now.as_millis().min(i64::MAX as u128) as i64, "quire-gpui");
+        let Some(entry) = command::plan(
+            &mut self.document,
+            ORGANIZER_STACK,
+            Command::UpdateNote { id, before, after },
+        ) else {
+            return false;
+        };
+        self.apply_organizer_entry(entry);
+        true
+    }
+    pub fn set_note_pinned(&mut self, id: NoteId, pinned: bool) -> bool {
+        self.update_note_metadata(id, |note| note.pinned = pinned)
+    }
+    pub fn set_note_trashed(&mut self, id: NoteId, trashed: bool) -> bool {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default();
+        let deleted_at = trashed.then(|| now.as_secs().min(i64::MAX as u64) as i64);
+        self.update_note_metadata(id, |note| note.deleted_at = deleted_at)
+    }
+    fn update_note_metadata(&mut self, id: NoteId, update: impl FnOnce(&mut Note)) -> bool {
+        let Some(before) = self.organizer.note(id).cloned() else {
+            return false;
+        };
+        let mut after = before.clone();
+        update(&mut after);
+        if before == after {
+            return false;
+        }
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default();
+        after.rev = organizer::rev(now.as_millis().min(i64::MAX as u128) as i64, "quire-gpui");
+        let Some(entry) = command::plan(
+            &mut self.document,
+            ORGANIZER_STACK,
+            Command::UpdateNote { id, before, after },
+        ) else {
+            return false;
+        };
+        self.apply_organizer_entry(entry);
+        true
+    }
+    fn apply_organizer_entry(&mut self, entry: Entry) {
+        self.document.apply(&entry.apply);
+        self.apply_organizer_changes(&entry.apply);
+        self.persistence.record(entry.apply.clone());
+        self.history.push(ORGANIZER_STACK, entry);
+    }
+    fn apply_organizer_changes(&mut self, changes: &[Change]) {
+        for change in changes {
+            match change {
+                Change::NoteAdded(note) => self.organizer.notes.push(note.clone()),
+                Change::NoteUpdated(note) => {
+                    if let Some(existing) =
+                        self.organizer.notes.iter_mut().find(|n| n.id == note.id)
+                    {
+                        *existing = note.clone();
+                    }
+                }
+                Change::NoteDeleted { id } => self.organizer.notes.retain(|note| note.id != *id),
+                _ => {}
+            }
+        }
+    }
+    pub fn undo_organizer(&mut self) -> bool {
+        let Some(entry) = self.history.undo(ORGANIZER_STACK) else {
+            return false;
+        };
+        self.document.apply(&entry.revert);
+        self.apply_organizer_changes(&entry.revert);
+        self.persistence.record(entry.revert);
+        true
+    }
+    pub fn redo_organizer(&mut self) -> bool {
+        let Some(entry) = self.history.redo(ORGANIZER_STACK) else {
+            return false;
+        };
+        self.document.apply(&entry.apply);
+        self.apply_organizer_changes(&entry.apply);
+        self.persistence.record(entry.apply);
         true
     }
     pub fn set_block_folded(&mut self, id: BlockId, folded: bool) {
@@ -1543,6 +1690,45 @@ mod tests {
         let mention = &reopened.document.block(block_id).unwrap().marks[0];
         assert_eq!(mention.kind, quire_core::core::types::MarkKind::Mention);
         assert_eq!(mention.url, quire_core::core::page_uri(target_page));
+        Ok(())
+    }
+
+    #[test]
+    fn organizer_note_crud_undo_and_reopen_use_core_changes() -> Result<()> {
+        let scratch = quire_core::testing::ScratchDir::new("gpui-organizer-note");
+        let path = scratch.path().join("test.db");
+        let note_id;
+        {
+            let mut session = Session::open(&path)?;
+            note_id = session.create_note();
+            assert_eq!(session.organizer.note(note_id).unwrap().title, "新建笔记");
+            assert!(session.update_note_content(
+                note_id,
+                "项目记录".into(),
+                "第一行\n第二行".into(),
+            ));
+            let note = session.organizer.note(note_id).unwrap();
+            assert_eq!(note.title, "项目记录");
+            assert_eq!(note.body, "第一行\n第二行");
+            assert!(session.undo_organizer());
+            assert_eq!(session.organizer.note(note_id).unwrap().title, "新建笔记");
+            assert!(session.redo_organizer());
+            assert!(session.set_note_pinned(note_id, true));
+            assert!(session.organizer.note(note_id).unwrap().pinned);
+            assert!(session.set_note_trashed(note_id, true));
+            assert!(session.organizer.note(note_id).unwrap().is_trashed());
+            assert!(session.undo_organizer());
+            assert!(!session.organizer.note(note_id).unwrap().is_trashed());
+            assert!(session.redo_organizer());
+            session.persistence.force_flush()?;
+        }
+        let reopened = Session::open(&path)?;
+        let note = reopened.organizer.note(note_id).unwrap();
+        assert_eq!(note.title, "项目记录");
+        assert_eq!(note.body, "第一行\n第二行");
+        assert!(!note.uuid.is_empty());
+        assert!(note.pinned);
+        assert!(note.is_trashed());
         Ok(())
     }
 
