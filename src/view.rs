@@ -1888,6 +1888,71 @@ impl Workspace {
         });
         cx.notify();
     }
+    fn close_selected_note(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.selected_note.is_none() {
+            return;
+        }
+        self.commit_note_draft(window, cx);
+        self.selected_note = None;
+        self.note_title_draft.clear();
+        self.note_body_draft.clear();
+        self.organizer_tags_draft.clear();
+        self.note_title_input.update(cx, |input, cx| {
+            input.reset(String::new(), Vec::new(), 0, cx);
+        });
+        self.note_body_input.update(cx, |input, cx| {
+            input.reset(String::new(), Vec::new(), 0, cx);
+        });
+        self.organizer_tags_input.update(cx, |input, cx| {
+            input.reset(String::new(), Vec::new(), 0, cx);
+        });
+        cx.notify();
+    }
+    fn convert_note_to_task(
+        &mut self,
+        id: quire_core::core::organizer::NoteId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.commit_note_draft(window, cx);
+        let Some(note) = self.session.organizer.note(id).cloned() else {
+            return;
+        };
+        let title = if note.title.trim().is_empty() {
+            note.body
+                .lines()
+                .map(|line| {
+                    line.trim()
+                        .trim_start_matches(['#', '>', '-', '*', '+'])
+                        .trim()
+                })
+                .find(|line| !line.is_empty())
+                .unwrap_or("新任务")
+                .chars()
+                .take(50)
+                .collect::<String>()
+        } else {
+            note.title.trim().chars().take(50).collect::<String>()
+        };
+        let task_id = self
+            .session
+            .create_task_in(quire_core::core::organizer::ListId::INBOX, title.clone());
+        self.session.update_task_editor_tags(
+            task_id,
+            title.clone(),
+            note.body.clone(),
+            None,
+            note.tags.clone(),
+        );
+        self.session.set_note_trashed(id, true);
+        self.selected_note = None;
+        self.selected_task = Some(task_id);
+        self.organizer_tasks = true;
+        self.note_title_draft.clear();
+        self.note_body_draft.clear();
+        self.schedule_save(true, window, cx);
+        cx.notify();
+    }
     fn select_note(
         &mut self,
         id: quire_core::core::organizer::NoteId,
@@ -6365,15 +6430,29 @@ impl Render for Workspace {
                                         .child(div().flex_1().text_size(px(18.)).font_weight(FontWeight::SEMIBOLD).child(self.note_title_input.clone()))
                                         .child(
                                             div()
-                                                .id("organizer-note-detail-close")
-                                                .px(px(8.))
-                                                .py(px(4.))
-                                                .rounded(px(5.))
-                                                .cursor_pointer()
-                                                .text_color(muted)
-                                                .hover(|button| button.bg(Palette::color(&p.elevated)))
-                                                .on_click(cx.listener(|this, _, window, cx| this.reload_selected_note(window, cx)))
-                                                .child("×"),
+                                                .flex()
+                                                .items_center()
+                                                .gap(px(4.))
+                                                .children(self.selected_note.map(|id| {
+                                                    let pinned = self.session.organizer.note(id).is_some_and(|note| note.pinned);
+                                                    vec![
+                                                        div().id("organizer-note-detail-pin").px(px(6.)).py(px(4.)).rounded(px(5.)).cursor_pointer().text_color(if pinned { accent } else { muted }).hover(|button| button.bg(Palette::color(&p.elevated))).on_click(cx.listener(move |this, _, window, cx| this.toggle_note_pin(id, window, cx))).child(if pinned { "★" } else { "☆" }),
+                                                        div().id("organizer-note-detail-to-task").px(px(6.)).py(px(4.)).rounded(px(5.)).cursor_pointer().text_color(muted).hover(|button| button.text_color(accent)).on_click(cx.listener(move |this, _, window, cx| this.convert_note_to_task(id, window, cx))).child("✓"),
+                                                        div().id("organizer-note-detail-trash").px(px(6.)).py(px(4.)).rounded(px(5.)).cursor_pointer().text_color(muted).hover(|button| button.text_color(rgb(0xe5534b))).on_click(cx.listener(move |this, _, window, cx| this.trash_note(id, window, cx))).child("▣"),
+                                                    ]
+                                                }).unwrap_or_default())
+                                                .child(
+                                                    div()
+                                                        .id("organizer-note-detail-close")
+                                                        .px(px(8.))
+                                                        .py(px(4.))
+                                                        .rounded(px(5.))
+                                                        .cursor_pointer()
+                                                        .text_color(muted)
+                                                        .hover(|button| button.bg(Palette::color(&p.elevated)))
+                                                        .on_click(cx.listener(|this, _, window, cx| this.close_selected_note(window, cx)))
+                                                        .child("×"),
+                                                ),
                                         ),
                                 )
                                 .child(
