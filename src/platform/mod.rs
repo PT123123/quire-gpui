@@ -36,9 +36,13 @@ pub fn install(tx: Sender<ShellEvent>) -> Services {
     let event_tx = tx.clone();
     let mut services: Vec<ServiceHandle> = Vec::new();
     let show = tx.clone();
+    let quick_note = tx.clone();
     let tray_available = match tray::install(
         Box::new(move || {
             let _ = show.send(ShellEvent::ShowMain);
+        }),
+        Box::new(move || {
+            let _ = quick_note.send(ShellEvent::QuickNote);
         }),
         Box::new({
             let quit = tx.clone();

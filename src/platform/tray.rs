@@ -66,20 +66,22 @@ impl Drop for Tray {
 /// Put the icon in the notification area and start its thread.
 ///
 /// `on_show` answers the icon's left-click and the menu's 「显示主界面」;
-/// `on_quit` the menu's 「退出」. Both run on the tray thread and must hop
-/// themselves into the UI thread (the callers wrap `invoke_from_event_loop`).
+/// `on_quick_note` opens the independent capture window; `on_quit` handles
+/// 「退出」. All callbacks run on the tray thread and must hop themselves into
+/// the UI thread (the callers wrap `invoke_from_event_loop`).
 /// Uses the Windows application icon until this shell owns a branded `.ico`.
 pub fn install(
     on_show: Box<dyn Fn() + Send>,
+    on_quick_note: Box<dyn Fn() + Send>,
     on_quit: Box<dyn Fn() + Send>,
 ) -> Result<Tray, String> {
     #[cfg(target_os = "windows")]
     {
-        imp::install(on_show, on_quit)
+        imp::install(on_show, on_quick_note, on_quit)
     }
     #[cfg(not(target_os = "windows"))]
     {
-        let _ = (on_show, on_quit);
+        let _ = (on_show, on_quick_note, on_quit);
         Err("the native tray is Windows-only; the Slint tray is the fallback".into())
     }
 }
@@ -124,7 +126,8 @@ mod imp {
     const TPM_RETURNCMD: u32 = 0x0100;
 
     const MENU_SHOW: u32 = 1;
-    const MENU_QUIT: u32 = 2;
+    const MENU_QUICK_NOTE: u32 = 2;
+    const MENU_QUIT: u32 = 3;
 
     const HKEY_CURRENT_USER: isize = 0x8000_0001u32 as isize;
     const KEY_READ: u32 = 0x20019;
@@ -472,6 +475,7 @@ mod imp {
 
     struct Ctx {
         on_show: Box<dyn Fn() + Send>,
+        on_quick_note: Box<dyn Fn() + Send>,
         on_quit: Box<dyn Fn() + Send>,
     }
 
@@ -509,7 +513,14 @@ mod imp {
                         return 0;
                     }
                     let show = wide("显示主界面");
+                    let quick_note = wide("新建速记");
                     let quit = wide("退出");
+                    AppendMenuW(
+                        menu,
+                        MF_STRING,
+                        MENU_QUICK_NOTE as usize,
+                        quick_note.as_ptr(),
+                    );
                     AppendMenuW(menu, MF_STRING, MENU_SHOW as usize, show.as_ptr());
                     AppendMenuW(menu, MF_SEPARATOR, 0, std::ptr::null());
                     AppendMenuW(menu, MF_STRING, MENU_QUIT as usize, quit.as_ptr());
@@ -531,6 +542,7 @@ mod imp {
                     CTX.with(|c| {
                         if let Some(ctx) = c.borrow().as_ref() {
                             match picked as u32 {
+                                MENU_QUICK_NOTE => (ctx.on_quick_note)(),
                                 MENU_SHOW => (ctx.on_show)(),
                                 MENU_QUIT => (ctx.on_quit)(),
                                 _ => {}
@@ -597,6 +609,7 @@ mod imp {
 
     pub fn install(
         on_show: Box<dyn Fn() + Send>,
+        on_quick_note: Box<dyn Fn() + Send>,
         on_quit: Box<dyn Fn() + Send>,
     ) -> Result<Tray, String> {
         // The window is created on the thread that will pump it: a tray
@@ -675,7 +688,11 @@ mod imp {
                     hwnd
                 };
                 CTX.with(|c| {
-                    *c.borrow_mut() = Some(Ctx { on_show, on_quit });
+                    *c.borrow_mut() = Some(Ctx {
+                        on_show,
+                        on_quick_note,
+                        on_quit,
+                    });
                 });
                 let mut msg = Msg {
                     hwnd: 0,
