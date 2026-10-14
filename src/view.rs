@@ -441,6 +441,9 @@ pub struct Workspace {
     mention_selection: usize,
     organizer_open: bool,
     sidebar_open: bool,
+    sidebar_width: f32,
+    sidebar_resizing: bool,
+    sidebar_drag_offset: f32,
     organizer_tasks: bool,
     organizer_trash: bool,
     organizer_tag: Option<String>,
@@ -484,6 +487,12 @@ impl Workspace {
             .and_then(|value| value.parse::<f32>().ok())
             .filter(|value| (0.5..=3.0).contains(value))
             .unwrap_or(1.0);
+        let sidebar_width = session
+            .setting("gpui.sidebar-width")
+            .and_then(|value| value.parse::<f32>().ok())
+            .filter(|value| value.is_finite())
+            .unwrap_or(260.)
+            .clamp(200., 480.);
         quire_gpui::ui_scale::set(ui_zoom);
         let title_input =
             cx.new(|cx| TextInput::new(session.page.title.clone(), Vec::new(), 38., window, cx));
@@ -595,6 +604,9 @@ impl Workspace {
             mention_selection: 0,
             organizer_open: false,
             sidebar_open: true,
+            sidebar_width,
+            sidebar_resizing: false,
+            sidebar_drag_offset: 0.,
             organizer_tasks: false,
             organizer_trash: false,
             organizer_tag: None,
@@ -3170,6 +3182,40 @@ impl Workspace {
 
 impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let workspace = cx.entity();
+        window.on_mouse_event({
+            let workspace = workspace.clone();
+            move |event: &MouseMoveEvent, _, _, cx| {
+                if !event.dragging() {
+                    return;
+                }
+                workspace.update(cx, |this, cx| {
+                    if this.sidebar_resizing {
+                        let zoom = quire_gpui::ui_scale::get();
+                        this.sidebar_width = (f32::from(event.position.x) / zoom
+                            + this.sidebar_drag_offset)
+                            .clamp(200., 480.);
+                        cx.notify();
+                    }
+                });
+            }
+        });
+        window.on_mouse_event({
+            let workspace = workspace.clone();
+            move |_: &MouseUpEvent, _, window, cx| {
+                workspace.update(cx, |this, cx| {
+                    if this.sidebar_resizing {
+                        this.sidebar_resizing = false;
+                        this.session.set_setting(
+                            "gpui.sidebar-width",
+                            format!("{:.1}", this.sidebar_width),
+                        );
+                        this.schedule_save(true, window, cx);
+                        cx.notify();
+                    }
+                });
+            }
+        });
         let p = self.palette.clone();
         let database_width = (window.bounds().size.width - px(356.))
             .min(px(760.))
@@ -7193,7 +7239,11 @@ impl Render for Workspace {
                             .absolute()
                             .left_0()
                             .top_0()
-                            .w(if self.sidebar_open { px(260.) } else { px(0.) })
+                            .w(if self.sidebar_open {
+                                px(self.sidebar_width)
+                            } else {
+                                px(0.)
+                            })
                             .h(px(40.))
                             .bg(Palette::color(&p.elevated)),
                     )
@@ -7561,7 +7611,8 @@ impl Render for Workspace {
                     .when(self.sidebar_open, |body| {
                         body.child(
                             div()
-                                .w(px(260.))
+                                .relative()
+                                .w(px(self.sidebar_width))
                                 .flex_shrink_0()
                                 .h_full()
                                 .bg(Palette::color(&p.elevated))
@@ -7774,6 +7825,32 @@ impl Render for Workspace {
                                         .text_size(px(11.))
                                         .text_color(muted)
                                         .child("0.1.0"),
+                                )
+                                .child(
+                                    div()
+                                        .id("sidebar-resize-handle")
+                                        .absolute()
+                                        .top_0()
+                                        .right_0()
+                                        .bottom_0()
+                                        .w(px(6.))
+                                        .cursor(CursorStyle::ResizeLeftRight)
+                                        .hover(|handle| {
+                                            handle.bg(Palette::color(&p.border).opacity(0.8))
+                                        })
+                                        .when(self.sidebar_resizing, |handle| {
+                                            handle.bg(Palette::color(&p.border).opacity(0.8))
+                                        })
+                                        .on_mouse_down(
+                                            MouseButton::Left,
+                                            cx.listener(|this, event: &MouseDownEvent, _, cx| {
+                                                let zoom = quire_gpui::ui_scale::get();
+                                                this.sidebar_drag_offset = this.sidebar_width
+                                                    - f32::from(event.position.x) / zoom;
+                                                this.sidebar_resizing = true;
+                                                cx.notify();
+                                            }),
+                                        ),
                                 ),
                         )
                     })
