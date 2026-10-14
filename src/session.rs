@@ -955,9 +955,28 @@ impl Session {
         Some(count)
     }
     pub fn update_task_content(&mut self, id: TaskId, title: String, notes: String) -> bool {
+        let Some(due) = self.organizer.task(id).and_then(|task| task.due.clone()) else {
+            return self.update_task_editor(id, title, notes, None);
+        };
+        self.update_task_editor(id, title, notes, Some(due))
+    }
+    pub fn update_task_editor(
+        &mut self,
+        id: TaskId,
+        title: String,
+        notes: String,
+        due: Option<String>,
+    ) -> bool {
+        if due
+            .as_deref()
+            .is_some_and(|date| !quire_core::core::date::is_iso_date(date))
+        {
+            return false;
+        }
         self.update_task(id, |task| {
             task.title = title;
             task.notes = notes;
+            task.due = due;
         })
     }
     pub fn set_task_done(&mut self, id: TaskId, done: bool) -> bool {
@@ -970,6 +989,18 @@ impl Session {
             task.done = done;
             task.completed_at = done.then_some(now);
         })
+    }
+    pub fn set_task_priority(&mut self, id: TaskId, priority: Priority) -> bool {
+        self.update_task(id, |task| task.priority = priority)
+    }
+    pub fn set_task_due(&mut self, id: TaskId, due: Option<String>) -> bool {
+        if due
+            .as_deref()
+            .is_some_and(|date| !quire_core::core::date::is_iso_date(date))
+        {
+            return false;
+        }
+        self.update_task(id, |task| task.due = due)
     }
     pub fn set_task_trashed(&mut self, id: TaskId, trashed: bool) -> bool {
         let now = std::time::SystemTime::now()
@@ -1940,6 +1971,15 @@ mod tests {
                 "发布候选版".into(),
                 "检查安装包和回退说明".into(),
             ));
+            assert!(session.set_task_priority(task_id, Priority::High));
+            assert!(session.set_task_due(task_id, Some("2026-11-02".into())));
+            assert!(!session.set_task_due(task_id, Some("下周".into())));
+            assert!(session.update_task_editor(
+                task_id,
+                "发布候选版".into(),
+                "检查安装包和回退说明".into(),
+                Some("2026-11-03".into()),
+            ));
             assert!(session.set_task_done(task_id, true));
             assert!(
                 session
@@ -1973,6 +2013,8 @@ mod tests {
         let task = reopened.organizer.task(task_id).unwrap();
         assert_eq!(task.title, "发布候选版");
         assert_eq!(task.notes, "检查安装包和回退说明");
+        assert_eq!(task.priority, Priority::High);
+        assert_eq!(task.due.as_deref(), Some("2026-11-03"));
         assert!(!task.done);
         assert!(!task.is_trashed());
         assert_eq!(task.list, list_id);

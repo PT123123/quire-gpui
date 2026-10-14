@@ -2,6 +2,7 @@ use crate::input::{InputEvent, TextInput};
 use gpui::{prelude::*, *};
 use quire_core::core::{
     command::Command,
+    organizer::Priority,
     types::{Block, BlockId, BlockKind, ColorKind, Lang},
 };
 use quire_gpui::session::Session;
@@ -36,6 +37,15 @@ fn find_matches_in(text: &str, query: &str) -> Vec<Range<usize>> {
         }
     }
     ranges
+}
+
+fn priority_label(priority: Priority) -> &'static str {
+    match priority {
+        Priority::None => "无",
+        Priority::Low => "低",
+        Priority::Medium => "中",
+        Priority::High => "高",
+    }
 }
 
 fn toc_headings(blocks: &[Block]) -> Vec<(BlockId, u8, String)> {
@@ -283,10 +293,12 @@ pub struct Workspace {
     link_target_input: Entity<TextInput>,
     note_title_input: Entity<TextInput>,
     note_body_input: Entity<TextInput>,
+    task_due_input: Entity<TextInput>,
     search_subscription: Option<Subscription>,
     find_subscription: Option<Subscription>,
     note_title_subscription: Option<Subscription>,
     note_body_subscription: Option<Subscription>,
+    task_due_subscription: Option<Subscription>,
     search_query: String,
     find_query: String,
     find_matches: Vec<(BlockId, Range<usize>)>,
@@ -312,6 +324,8 @@ pub struct Workspace {
     selected_task: Option<quire_core::core::organizer::TaskId>,
     note_title_draft: String,
     note_body_draft: String,
+    task_due_draft: String,
+    task_due_error: bool,
     status: String,
     error: bool,
     active: Option<BlockId>,
@@ -350,6 +364,9 @@ impl Workspace {
         let note_body_input =
             cx.new(|cx| TextInput::new(String::new(), Vec::new(), 15., window, cx));
         note_body_input.update(cx, |input, _| input.placeholder = Some("写点什么…".into()));
+        let task_due_input =
+            cx.new(|cx| TextInput::new(String::new(), Vec::new(), 12., window, cx));
+        task_due_input.update(cx, |input, _| input.placeholder = Some("YYYY-MM-DD".into()));
         let mut this = Self {
             session,
             title_input,
@@ -360,10 +377,12 @@ impl Workspace {
             link_target_input,
             note_title_input,
             note_body_input,
+            task_due_input,
             search_subscription: None,
             find_subscription: None,
             note_title_subscription: None,
             note_body_subscription: None,
+            task_due_subscription: None,
             search_query: String::new(),
             find_query: String::new(),
             find_matches: Vec::new(),
@@ -389,6 +408,8 @@ impl Workspace {
             selected_task: None,
             note_title_draft: String::new(),
             note_body_draft: String::new(),
+            task_due_draft: String::new(),
+            task_due_error: false,
             status: "已保存".into(),
             error: false,
             active: None,
@@ -424,6 +445,19 @@ impl Workspace {
                 InputEvent::Split(_) => this.note_body_input.update(cx, |input, cx| {
                     input.insert_newline(cx);
                 }),
+                _ => {}
+            },
+        ));
+        let task_due_input = this.task_due_input.clone();
+        this.task_due_subscription = Some(cx.subscribe_in(
+            &task_due_input,
+            window,
+            |this, _, event, window, cx| match event {
+                InputEvent::Edited { text, .. } => {
+                    this.task_due_draft = text.clone();
+                    cx.notify();
+                }
+                InputEvent::Blurred => this.commit_note_draft(window, cx),
                 _ => {}
             },
         ));
@@ -1561,11 +1595,23 @@ impl Workspace {
                 self.note_body_draft.clone(),
             )
         } else if let Some(id) = self.selected_task {
-            self.session.update_task_content(
-                id,
-                self.note_title_draft.clone(),
-                self.note_body_draft.clone(),
-            )
+            let due = self.task_due_draft.trim();
+            if !due.is_empty() && !quire_core::core::date::is_iso_date(due) {
+                self.task_due_error = true;
+                self.session.update_task_content(
+                    id,
+                    self.note_title_draft.clone(),
+                    self.note_body_draft.clone(),
+                )
+            } else {
+                self.task_due_error = false;
+                self.session.update_task_editor(
+                    id,
+                    self.note_title_draft.clone(),
+                    self.note_body_draft.clone(),
+                    (!due.is_empty()).then(|| due.to_owned()),
+                )
+            }
         } else {
             false
         };
@@ -1614,6 +1660,11 @@ impl Workspace {
         };
         self.selected_task = None;
         self.selected_note = Some(id);
+        self.task_due_draft.clear();
+        self.task_due_error = false;
+        self.task_due_input.update(cx, |input, cx| {
+            input.reset(String::new(), Vec::new(), 0, cx);
+        });
         self.note_title_draft = note.title.clone();
         self.note_body_draft = note.body.clone();
         self.note_title_input.update(cx, |input, cx| {
@@ -1641,6 +1692,13 @@ impl Workspace {
         };
         self.selected_note = None;
         self.selected_task = Some(id);
+        self.task_due_draft = task.due.clone().unwrap_or_default();
+        self.task_due_error = false;
+        let due_draft = self.task_due_draft.clone();
+        let due_len = due_draft.len();
+        self.task_due_input.update(cx, |input, cx| {
+            input.reset(due_draft, Vec::new(), due_len, cx);
+        });
         self.note_title_draft = task.title.clone();
         self.note_body_draft = task.notes.clone();
         self.note_title_input.update(cx, |input, cx| {
@@ -1660,6 +1718,22 @@ impl Workspace {
         self.selected_note = None;
         self.select_note(id, window, cx);
         self.schedule_save(true, window, cx);
+    }
+    fn cycle_task_priority(
+        &mut self,
+        id: quire_core::core::organizer::TaskId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.commit_note_draft(window, cx);
+        let Some(task) = self.session.organizer.task(id) else {
+            return;
+        };
+        let next = Priority::from_slot((task.priority.slot() + 1) % Priority::ALL.len() as i32);
+        if self.session.set_task_priority(id, next) {
+            self.schedule_save(true, window, cx);
+            cx.notify();
+        }
     }
     fn create_task(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.commit_note_draft(window, cx);
@@ -4253,7 +4327,7 @@ impl Render for Workspace {
                 (
                     id,
                     task.done,
-                    task.priority.label(),
+                    priority_label(task.priority),
                     task.due.clone(),
                     task.list,
                     list_name,
@@ -4501,6 +4575,26 @@ impl Render for Workspace {
                                                 ))
                                                 .child(
                                                     div()
+                                                        .id("organizer-task-priority-cycle")
+                                                        .px(px(7.))
+                                                        .py(px(3.))
+                                                        .rounded(px(4.))
+                                                        .cursor_pointer()
+                                                        .text_color(accent)
+                                                        .hover(|button| {
+                                                            button.bg(Palette::color(&p.elevated))
+                                                        })
+                                                        .on_click(cx.listener(
+                                                            move |this, _, window, cx| {
+                                                                this.cycle_task_priority(
+                                                                    id, window, cx,
+                                                                )
+                                                            },
+                                                        ))
+                                                        .child("更改优先级"),
+                                                )
+                                                .child(
+                                                    div()
                                                         .id("organizer-task-toggle-done")
                                                         .px(px(8.))
                                                         .py(px(4.))
@@ -4633,6 +4727,37 @@ impl Render for Workspace {
                                     .object_fit(ObjectFit::Cover)
                                     .rounded(px(8.))
                                     .mb(px(16.)),
+                            )
+                        })
+                        .when(self.selected_task.is_some(), |pane| {
+                            pane.child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(8.))
+                                    .child(div().text_color(muted).child("截止日期"))
+                                    .child(
+                                        div()
+                                            .id("organizer-task-due-input")
+                                            .w(px(140.))
+                                            .h(px(30.))
+                                            .rounded(px(4.))
+                                            .border_1()
+                                            .border_color(if self.task_due_error {
+                                                Hsla::from(rgb(0xe5534b))
+                                            } else {
+                                                Palette::color(&p.border)
+                                            })
+                                            .px(px(6.))
+                                            .child(self.task_due_input.clone()),
+                                    )
+                                    .when(self.task_due_error, |row| {
+                                        row.child(
+                                            div()
+                                                .text_color(rgb(0xe5534b))
+                                                .child("请输入 YYYY-MM-DD 日期"),
+                                        )
+                                    }),
                             )
                         })
                         .child(

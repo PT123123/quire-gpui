@@ -30,3 +30,5 @@
 "org-list-created","已实现","未验证","任务页可新建具名清单并立即切换到该清单","TaskList 通过 core CreateTaskList 写入 organizer history 和 SQLite"
 "org-list-picked","已实现","未验证","任务页可切换收集箱和已创建清单并显示对应任务","列表过滤依据 Task.list；选择行为只改会话 UI 状态"
 "org-task-list-set","已实现","未验证","选中任务详情可将任务移动到收集箱或其他清单","通过 core UpdateTask 修改 list，撤销时恢复旧清单，任务顺序重新追加"
+"org-task-priority-set","已实现","未验证","任务详情可循环设置无/低/中/高优先级","优先级更新走 core UpdateTask；和标题、备注、截止日期草稿的提交边界分开"
+"org-task-due-set","已实现","未验证","任务详情可编辑或清除 YYYY-MM-DD 截止日期，格式错误时拒绝写入并显示提示","有效日期与标题/备注共用单条 UpdateTask；core date::is_iso_date 校验固定十字节 ISO 日期格式"

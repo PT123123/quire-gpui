@@ -310,3 +310,10 @@ GPUI 应用已超出第一竖切，但离完整复刻仍有较大差距。用户
 - 删除清单使用 core 单一 `DeleteTaskList` 命令，在同一个可撤销步骤中把该清单的任务（含回收站行）移入收集箱；清单恢复时任务归属也恢复。新增清单色值按 core 十色调色板轮转。
 - 新增隔离库测试覆盖清单创建、移动任务、撤销/重做、删除带任务清单、撤销恢复及 flush/reopen；PARITY sidecar 补录清单创建、筛选和任务移动行为。
 - 验证：16 项测试通过；`cargo build --release -j 8 --target-dir target-check` 通过；独立临时库 UI smoke 通过并用 `--dump-state` 重启读回；PARITY 生成器复跑成功，sidecar 合并 31 条人工语义。未做真人逐项 UI 验收。清单重命名/改色、智能视图、优先级/截止日期编辑、回收站与延迟删除条仍缺。
+
+## 第三十五轮：任务优先级与截止日期编辑
+
+- 任务详情的优先级入口循环切换无/低/中/高；截止日期支持按 `YYYY-MM-DD` 编辑、清空和格式错误提示。
+- 标题、备注和有效日期在详情编辑提交时合并为单条 core `UpdateTask` history；日期使用 core `date::is_iso_date` 格式门，不自己解析日期语义。优先级单独走 core `UpdateTask`。
+- 扩展隔离库测试覆盖优先级、截止日期有效/无效输入、编辑及重开读回；PARITY sidecar 补录对应回调行为。
+- 验证：16 项测试和 PARITY 重生成通过；`cargo build --release -j 8 --target-dir target-check` 通过；独立临时库 UI smoke 及 `--dump-state` 重启读回通过。未做真人逐项 UI 验收。智能视图、排序、标签、清单管理细项、延迟删除和回收站视图仍缺。
