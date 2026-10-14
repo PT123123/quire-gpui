@@ -66,6 +66,7 @@ pub struct TextInput {
     bounds: Option<Bounds<Pixels>>,
     selecting: bool,
     pub font_size: f32,
+    pub font_weight: FontWeight,
     pub text_color: Option<Hsla>,
     pub code_lang: Lang,
     pub code_colors: [Hsla; 5],
@@ -103,6 +104,7 @@ impl TextInput {
             bounds: None,
             selecting: false,
             font_size,
+            font_weight: FontWeight::NORMAL,
             text_color: None,
             code_lang: Lang::Plain,
             code_colors: [
@@ -480,6 +482,7 @@ impl TextLayout {
         marked: Option<Range<usize>>,
         width: Pixels,
         font_size: Pixels,
+        font_weight: FontWeight,
         dim: bool,
         text_color: Option<Hsla>,
         code_lang: Lang,
@@ -487,9 +490,11 @@ impl TextLayout {
         window: &Window,
     ) -> Self {
         let style = window.text_style();
+        let mut font = style.font();
+        font.weight = font_weight;
         let run = TextRun {
             len: text.len(),
-            font: style.font(),
+            font,
             color: if dim {
                 text_color.unwrap_or(style.color).opacity(0.56)
             } else {
@@ -702,6 +707,7 @@ impl Element for TextElement {
         let marks = input.marks.clone();
         let marked = input.buffer.marked();
         let font_size = px(input.font_size);
+        let font_weight = input.font_weight;
         let text_color = input.text_color;
         let code_lang = input.code_lang;
         let code_colors = input.code_colors;
@@ -720,6 +726,7 @@ impl Element for TextElement {
                 marked.clone(),
                 width,
                 font_size,
+                font_weight,
                 dim,
                 text_color,
                 code_lang,
@@ -760,6 +767,7 @@ impl Element for TextElement {
                     input.buffer.marked(),
                     bounds.size.width,
                     px(input.font_size),
+                    input.font_weight,
                     dim,
                     input.text_color,
                     input.code_lang,

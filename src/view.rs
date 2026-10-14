@@ -425,6 +425,7 @@ impl Workspace {
     ) -> Self {
         let title_input =
             cx.new(|cx| TextInput::new(session.page.title.clone(), Vec::new(), 38., window, cx));
+        title_input.update(cx, |input, _| input.font_weight = FontWeight::BOLD);
         let search_input = cx.new(|cx| TextInput::new(String::new(), Vec::new(), 12., window, cx));
         search_input.update(cx, |input, _| {
             input.placeholder = Some("搜索页面…".into());
@@ -788,12 +789,24 @@ impl Workspace {
                 _ if self.session.page.small_text => 13.,
                 _ => 15.5,
             };
+            let weight = if matches!(
+                block.kind,
+                BlockKind::Heading1 | BlockKind::Heading2 | BlockKind::Heading3
+            ) {
+                FontWeight::BOLD
+            } else {
+                FontWeight::NORMAL
+            };
             let input = if let Some(input) = self.inputs.get(&block.id.0) {
                 input.clone()
             } else {
                 let text = block.text.clone();
                 let marks = block.marks.clone();
-                let input = cx.new(|cx| TextInput::new(text, marks, font, window, cx));
+                let input = cx.new(|cx| {
+                    let mut input = TextInput::new(text, marks, font, window, cx);
+                    input.font_weight = weight;
+                    input
+                });
                 self.inputs.insert(block.id.0, input.clone());
                 input
             };
@@ -808,6 +821,7 @@ impl Workspace {
             ];
             input.update(cx, |input, cx| {
                 input.font_size = font;
+                input.font_weight = weight;
                 input.text_color =
                     Some(block_text_color.unwrap_or_else(|| Palette::color(&self.palette.fg)));
                 input.code_lang = if block.kind == BlockKind::Code {
