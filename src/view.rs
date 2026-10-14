@@ -341,7 +341,7 @@ fn evaluate_database_formula(
     })
 }
 
-fn database_property_kind_choices() -> [quire_core::core::database::PropertyKind; 12] {
+fn database_property_kind_choices() -> [quire_core::core::database::PropertyKind; 13] {
     use quire_core::core::database::PropertyKind as Kind;
     [
         Kind::Text,
@@ -356,6 +356,7 @@ fn database_property_kind_choices() -> [quire_core::core::database::PropertyKind
         Kind::CreatedTime,
         Kind::LastEditedTime,
         Kind::Formula,
+        Kind::MultiSelect,
     ]
 }
 
@@ -880,6 +881,7 @@ pub struct Workspace {
     subtask_title_input: Entity<TextInput>,
     database_cell_input: Entity<TextInput>,
     database_formula_input: Entity<TextInput>,
+    database_option_input: Entity<TextInput>,
     database_search_input: Entity<TextInput>,
     database_property_name_input: Entity<TextInput>,
     search_subscription: Option<Subscription>,
@@ -894,6 +896,7 @@ pub struct Workspace {
     subtask_title_subscription: Option<Subscription>,
     database_cell_subscription: Option<Subscription>,
     database_formula_subscription: Option<Subscription>,
+    database_option_subscription: Option<Subscription>,
     search_query: String,
     find_query: String,
     find_matches: Vec<(BlockId, Range<usize>)>,
@@ -924,6 +927,7 @@ pub struct Workspace {
     selected_database_record: Option<(u64, u64, u64)>,
     active_database_cell: Option<(u64, u64, u64, u64)>,
     active_database_formula: Option<(u64, u64, u64)>,
+    active_database_option: Option<(u64, u64, u64)>,
     active_database_property_edit: Option<(u64, u64, u64)>,
     active_database_view_edit: Option<(u64, u64, u64)>,
     database_property_name_draft: String,
@@ -1050,6 +1054,11 @@ impl Workspace {
         database_formula_input.update(cx, |input, _| {
             input.placeholder = Some("例如：[数量] * [单价]".into())
         });
+        let database_option_input =
+            cx.new(|cx| TextInput::new(String::new(), Vec::new(), 11., window, cx));
+        database_option_input.update(cx, |input, _| {
+            input.placeholder = Some("新选项名，按 Enter 添加".into())
+        });
         let database_search_input =
             cx.new(|cx| TextInput::new(String::new(), Vec::new(), 12., window, cx));
         let database_filter_value_input =
@@ -1076,6 +1085,7 @@ impl Workspace {
             subtask_title_input.clone(),
             database_cell_input.clone(),
             database_formula_input.clone(),
+            database_option_input.clone(),
             database_search_input.clone(),
             database_property_name_input.clone(),
         ] {
@@ -1097,6 +1107,7 @@ impl Workspace {
             subtask_title_input,
             database_cell_input,
             database_formula_input,
+            database_option_input,
             database_search_input,
             database_property_name_input,
             search_subscription: None,
@@ -1111,6 +1122,7 @@ impl Workspace {
             subtask_title_subscription: None,
             database_cell_subscription: None,
             database_formula_subscription: None,
+            database_option_subscription: None,
             search_query: String::new(),
             find_query: String::new(),
             find_matches: Vec::new(),
@@ -1141,6 +1153,7 @@ impl Workspace {
             selected_database_record: None,
             active_database_cell: None,
             active_database_formula: None,
+            active_database_option: None,
             active_database_property_edit: None,
             active_database_view_edit: None,
             database_property_name_draft: String::new(),
@@ -1350,6 +1363,21 @@ impl Workspace {
                 InputEvent::Split(_) => this.commit_database_formula(true, window, cx),
                 InputEvent::DismissSlash => {
                     this.active_database_formula = None;
+                    this.focus_first(window, cx);
+                    cx.notify();
+                }
+                _ => {}
+            },
+        ));
+        let database_option_input = this.database_option_input.clone();
+        this.database_option_subscription = Some(cx.subscribe_in(
+            &database_option_input,
+            window,
+            |this, _, event, window, cx| match event {
+                InputEvent::Edited { .. } => cx.notify(),
+                InputEvent::Split(_) => this.commit_database_option(window, cx),
+                InputEvent::DismissSlash => {
+                    this.active_database_option = None;
                     this.focus_first(window, cx);
                     cx.notify();
                 }
@@ -2638,6 +2666,7 @@ impl Workspace {
             self.subtask_title_input.clone(),
             self.database_cell_input.clone(),
             self.database_formula_input.clone(),
+            self.database_option_input.clone(),
         ] {
             input.update(cx, |input, _| input.text_color = Some(fg));
         }
@@ -2674,6 +2703,7 @@ impl Workspace {
             self.subtask_title_input.clone(),
             self.database_cell_input.clone(),
             self.database_formula_input.clone(),
+            self.database_option_input.clone(),
         ];
         inputs.extend(self.inputs.values().cloned());
         for input in inputs {
@@ -2695,30 +2725,56 @@ impl Workspace {
         if self.session.page.locked {
             return;
         }
-        if self
+        let definition = self
             .session
             .databases
             .properties_of(quire_core::core::database::DatabaseId(db))
             .find(|definition| definition.id.0 == property)
-            .is_some_and(|definition| {
-                !matches!(
-                    definition.kind,
-                    quire_core::core::database::PropertyKind::Select
-                        | quire_core::core::database::PropertyKind::Status
-                )
-            })
-        {
+            .cloned();
+        if definition.as_ref().is_some_and(|definition| {
+            !matches!(
+                definition.kind,
+                quire_core::core::database::PropertyKind::Select
+                    | quire_core::core::database::PropertyKind::Status
+                    | quire_core::core::database::PropertyKind::MultiSelect
+            )
+        }) {
             if let Ok(stored) = self.session.repo.cell(
                 quire_core::core::database::RecordId(record),
                 quire_core::core::database::PropertyId(property),
             ) {
                 value = stored.display();
             }
+        } else if let Some(definition) = definition {
+            if definition.kind == quire_core::core::database::PropertyKind::MultiSelect
+                && let Ok(quire_core::core::database::CellValue::Items(ids)) =
+                    self.session.repo.cell(
+                        quire_core::core::database::RecordId(record),
+                        quire_core::core::database::PropertyId(property),
+                    )
+            {
+                let options = quire_core::core::database_property::PropertyOptions::from_config(
+                    &definition.config,
+                );
+                value = ids
+                    .iter()
+                    .map(|id| {
+                        options
+                            .iter()
+                            .find(|option| option.id.to_string() == *id)
+                            .map(|option| option.name.as_str())
+                            .unwrap_or(id)
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ");
+            }
         }
         self.active_database_cell = Some((block, db, record, property));
         let caret = value.len();
-        self.database_cell_input
-            .update(cx, |input, cx| input.reset(value, Vec::new(), caret, cx));
+        self.database_cell_input.update(cx, |input, cx| {
+            input.reset(value, Vec::new(), caret, cx);
+            input.placeholder = Some("多个选项用逗号分隔".into());
+        });
         let input = self.database_cell_input.read(cx);
         window.focus(&input.focus);
         cx.notify();
@@ -2784,6 +2840,66 @@ impl Workspace {
             }
             Err(error) => {
                 self.status = format!("公式未保存：{error}");
+                self.error = true;
+                cx.notify();
+            }
+        }
+    }
+    fn begin_database_option_edit(
+        &mut self,
+        block: u64,
+        db: u64,
+        property: u64,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.session.page.locked {
+            return;
+        }
+        self.active_database_option = Some((block, db, property));
+        self.database_option_input.update(cx, |input, cx| {
+            input.reset(String::new(), Vec::new(), 0, cx);
+            input.placeholder = Some("新选项名，按 Enter 添加".into());
+        });
+        window.focus(&self.database_option_input.read(cx).focus);
+        cx.notify();
+    }
+    fn commit_database_option(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some((block, _db, property)) = self.active_database_option else {
+            return;
+        };
+        let name = self
+            .database_option_input
+            .read(cx)
+            .buffer
+            .committed()
+            .trim()
+            .to_owned();
+        if name.is_empty() {
+            return;
+        }
+        match self.session.add_database_property_option(
+            BlockId(block),
+            quire_core::core::database::PropertyId(property),
+            &name,
+        ) {
+            Ok(true) => {
+                self.database_option_input.update(cx, |input, cx| {
+                    input.reset(String::new(), Vec::new(), 0, cx);
+                    input.placeholder = Some("新选项名，按 Enter 添加".into());
+                });
+                self.status = format!("已添加选项：{name}");
+                self.error = false;
+                self.schedule_save(true, window, cx);
+                cx.notify();
+            }
+            Ok(false) => {
+                self.status = "选项已存在或名称为空".into();
+                self.error = false;
+                cx.notify();
+            }
+            Err(error) => {
+                self.status = format!("添加选项失败：{error}");
                 self.error = true;
                 cx.notify();
             }
@@ -3502,7 +3618,13 @@ impl Workspace {
                 self.status = "列类型已更改；已有值不会自动转换".into();
                 self.error = false;
                 self.schedule_save(true, window, cx);
-                if kind == quire_core::core::database::PropertyKind::Formula {
+                if matches!(
+                    kind,
+                    quire_core::core::database::PropertyKind::Formula
+                        | quire_core::core::database::PropertyKind::Select
+                        | quire_core::core::database::PropertyKind::Status
+                        | quire_core::core::database::PropertyKind::MultiSelect
+                ) {
                     if let Some(db) = self
                         .session
                         .databases
@@ -3512,14 +3634,24 @@ impl Workspace {
                         .map(|candidate| candidate.db)
                     {
                         self.database_property_kind_open = Some((db.0, property.0));
-                        self.begin_database_formula_edit(block.0, db.0, property.0, window, cx);
+                        if kind == quire_core::core::database::PropertyKind::Formula {
+                            self.begin_database_formula_edit(block.0, db.0, property.0, window, cx);
+                        } else {
+                            self.begin_database_option_edit(block.0, db.0, property.0, window, cx);
+                        }
                     }
                 } else {
                     self.database_property_kind_open = None;
                 }
             }
             Ok(false) => {
-                if kind == quire_core::core::database::PropertyKind::Formula {
+                if matches!(
+                    kind,
+                    quire_core::core::database::PropertyKind::Formula
+                        | quire_core::core::database::PropertyKind::Select
+                        | quire_core::core::database::PropertyKind::Status
+                        | quire_core::core::database::PropertyKind::MultiSelect
+                ) {
                     if let Some(db) = self
                         .session
                         .databases
@@ -3529,7 +3661,11 @@ impl Workspace {
                         .map(|candidate| candidate.db)
                     {
                         self.database_property_kind_open = Some((db.0, property.0));
-                        self.begin_database_formula_edit(block.0, db.0, property.0, window, cx);
+                        if kind == quire_core::core::database::PropertyKind::Formula {
+                            self.begin_database_formula_edit(block.0, db.0, property.0, window, cx);
+                        } else {
+                            self.begin_database_option_edit(block.0, db.0, property.0, window, cx);
+                        }
                     }
                 } else {
                     self.database_property_kind_open = None;
@@ -3664,12 +3800,32 @@ impl Workspace {
             .buffer
             .committed()
             .to_owned();
-        match self.session.set_database_cell(
-            BlockId(block),
-            quire_core::core::database::RecordId(record),
-            quire_core::core::database::PropertyId(property),
-            &value,
-        ) {
+        let property_id = quire_core::core::database::PropertyId(property);
+        let result = if self.session.databases.properties.iter().any(|definition| {
+            definition.id == property_id
+                && definition.kind == quire_core::core::database::PropertyKind::MultiSelect
+        }) {
+            let items = value
+                .split([',', '，'])
+                .map(str::trim)
+                .filter(|item| !item.is_empty())
+                .map(str::to_owned)
+                .collect::<Vec<_>>();
+            self.session.set_database_cell_many(
+                BlockId(block),
+                quire_core::core::database::RecordId(record),
+                property_id,
+                &items,
+            )
+        } else {
+            self.session.set_database_cell(
+                BlockId(block),
+                quire_core::core::database::RecordId(record),
+                property_id,
+                &value,
+            )
+        };
+        match result {
             Ok(_) => {
                 self.active_database_cell = None;
                 self.schedule_save(true, window, cx);
@@ -7223,8 +7379,7 @@ impl Render for Workspace {
                                                                 && !kind.is_derived()
                                                                 && !matches!(
                                                                     kind,
-                                                                    quire_core::core::database::PropertyKind::MultiSelect
-                                                                        | quire_core::core::database::PropertyKind::Files
+                                                                    quire_core::core::database::PropertyKind::Files
                                                                         | quire_core::core::database::PropertyKind::Relation
                                                                 );
                                                             let cell_key =
@@ -7826,20 +7981,18 @@ impl Render for Workspace {
                                                                     this.database_property_kind_open =
                                                                         (this.database_property_kind_open != Some(key))
                                                                             .then_some(key);
-                                                                    if this.database_property_kind_open == Some(key)
-                                                                        && property_kind == quire_core::core::database::PropertyKind::Formula
-                                                                    {
-                                                                        this.begin_database_formula_edit(
-                                                                            block_id.0,
-                                                                            db_id.0,
-                                                                            property_id.0,
-                                                                            window,
-                                                                            cx,
-                                                                        );
+                                                                    if this.database_property_kind_open == Some(key) {
+                                                                        if property_kind == quire_core::core::database::PropertyKind::Formula {
+                                                                            this.begin_database_formula_edit(block_id.0, db_id.0, property_id.0, window, cx);
+                                                                        } else if matches!(property_kind, quire_core::core::database::PropertyKind::Select | quire_core::core::database::PropertyKind::Status | quire_core::core::database::PropertyKind::MultiSelect) {
+                                                                            this.begin_database_option_edit(block_id.0, db_id.0, property_id.0, window, cx);
+                                                                        }
                                                                     } else if this.active_database_formula
                                                                         == Some((block_id.0, db_id.0, property_id.0))
                                                                     {
                                                                         this.active_database_formula = None;
+                                                                    } else if this.active_database_option == Some((block_id.0, db_id.0, property_id.0)) {
+                                                                        this.active_database_option = None;
                                                                     }
                                                                     cx.notify();
                                                                 },
@@ -7966,6 +8119,34 @@ impl Render for Workspace {
                                                             .child("点击公式类型可编辑表达式");
                                                     }
                                                     picker = picker.child(formula_editor);
+                                                }
+                                                if matches!(property_kind, quire_core::core::database::PropertyKind::Select | quire_core::core::database::PropertyKind::Status | quire_core::core::database::PropertyKind::MultiSelect) {
+                                                    let options = quire_core::core::database_property::PropertyOptions::from_config(&property.config);
+                                                    let editing = self.active_database_option == Some((block_id.0, db_id.0, property_id));
+                                                    let mut option_editor = div()
+                                                        .id(SharedString::from(format!("db-option-editor-{}-{property_id}", db_id.0)))
+                                                        .w_full()
+                                                        .flex_col()
+                                                        .gap(px(5.))
+                                                        .border_t_1()
+                                                        .border_color(db_border)
+                                                        .px(px(5.))
+                                                        .py(px(5.));
+                                                    if options.is_empty() {
+                                                        option_editor = option_editor.child(div().text_size(px(11.)).text_color(muted).child("还没有选项"));
+                                                    } else {
+                                                        option_editor = option_editor.child(div().flex().flex_wrap().gap(px(5.)).children(options.iter().map(|option| {
+                                                            div().px(px(7.)).py(px(3.)).rounded(px(4.)).bg(db_hover).text_size(px(11.)).text_color(text).child(option.name.clone())
+                                                        })));
+                                                    }
+                                                    if editing && !self.session.page.locked {
+                                                        option_editor = option_editor.child(div().flex().items_center().gap(px(5.)).child(div().flex_1().child(self.database_option_input.clone())).child(
+                                                            div().id(SharedString::from(format!("db-option-add-{}-{property_id}", db_id.0))).px(px(8.)).py(px(5.)).rounded(px(4.)).text_size(px(11.)).text_color(accent).cursor_pointer().hover(|button| button.bg(db_hover)).on_click(cx.listener(|this, _, window, cx| this.commit_database_option(window, cx))).child("添加")
+                                                        ));
+                                                    } else if !self.session.page.locked {
+                                                        option_editor = option_editor.child(div().text_size(px(11.)).text_color(muted).child("点击类型标签添加选项"));
+                                                    }
+                                                    picker = picker.child(option_editor);
                                                 }
                                             }
                                         }

@@ -780,6 +780,109 @@ impl Session {
         self.persistence.force_flush()?;
         Ok(true)
     }
+    pub fn add_database_property_option(
+        &mut self,
+        block: BlockId,
+        property: PropertyId,
+        name: &str,
+    ) -> Result<bool> {
+        if self.page.locked {
+            return Ok(false);
+        }
+        let Some(db) = self.document.block(block).and_then(|block| block.db_ref) else {
+            return Ok(false);
+        };
+        let Some(current) = self
+            .databases
+            .properties
+            .iter()
+            .find(|candidate| candidate.id == property && candidate.db == db)
+            .cloned()
+        else {
+            bail!("该列不属于此数据库");
+        };
+        if !matches!(
+            current.kind,
+            quire_core::core::database::PropertyKind::Select
+                | quire_core::core::database::PropertyKind::Status
+                | quire_core::core::database::PropertyKind::MultiSelect
+        ) {
+            bail!("此列类型不支持选项");
+        }
+        let name = name.trim();
+        if name.is_empty() {
+            return Ok(false);
+        }
+        let mut options =
+            quire_core::core::database_property::PropertyOptions::from_config(&current.config);
+        let before_len = options.len();
+        options.option_named(name);
+        if options.len() == before_len {
+            return Ok(false);
+        }
+        let config = options.to_config();
+        self.apply_entry(Entry {
+            apply: vec![Change::PropertyConfigSet {
+                id: property,
+                config: config.clone(),
+            }],
+            revert: vec![Change::PropertyConfigSet {
+                id: property,
+                config: current.config,
+            }],
+        });
+        if let Some(property) = self
+            .databases
+            .properties
+            .iter_mut()
+            .find(|candidate| candidate.id == property)
+        {
+            property.config = config;
+        }
+        self.persistence.force_flush()?;
+        Ok(true)
+    }
+    pub fn set_database_cell_many(
+        &mut self,
+        block: BlockId,
+        record: RecordId,
+        property: PropertyId,
+        inputs: &[String],
+    ) -> Result<bool> {
+        if self.page.locked {
+            return Ok(false);
+        }
+        let Some(definition) = self.session_database_property(block, property).cloned() else {
+            return Ok(false);
+        };
+        let from = self.repo.cell(record, property)?;
+        let to = quire_core::core::database_property::parse_many(
+            definition.kind,
+            &definition.config,
+            inputs,
+        )
+        .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+        if from == to {
+            return Ok(false);
+        }
+        let Some(entry) = command::plan(
+            &mut self.document,
+            self.page.id,
+            Command::SetDatabaseCell {
+                block,
+                record,
+                property,
+                from,
+                to,
+            },
+        ) else {
+            return Ok(false);
+        };
+        self.apply_entry(entry);
+        self.persistence.force_flush()?;
+        self.refresh_databases();
+        Ok(true)
+    }
     pub fn set_database_cell(
         &mut self,
         block: BlockId,
@@ -2617,6 +2720,81 @@ mod tests {
         assert_eq!(
             reopened.databases.views_of(db).next().unwrap().layout,
             ViewLayout::List
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn multiselect_options_and_values_are_undoable_and_persist() -> Result<()> {
+        use quire_core::core::database::{CellValue, PropertyKind};
+
+        let scratch = quire_core::testing::ScratchDir::new("gpui-database-multiselect");
+        let path = scratch.path().join("test.db");
+        let (block, db, property, record);
+        {
+            let mut session = Session::open(&path)?;
+            block = session.blocks()[0].id;
+            db = session
+                .make_database(block, "多选测试".into())
+                .expect("database created");
+            property = session
+                .add_database_property(block, "标签".into(), PropertyKind::MultiSelect)
+                .expect("property created");
+            assert!(session.add_database_property_option(block, property, "进行中")?);
+            assert!(session.add_database_property_option(block, property, "已完成")?);
+            assert!(!session.add_database_property_option(block, property, "进行中")?);
+            record = session.add_database_record(block).expect("record created");
+
+            assert!(session.set_database_cell_many(
+                block,
+                record,
+                property,
+                &["进行中".into(), "已完成".into()]
+            )?);
+            let expected = quire_core::core::database_property::PropertyOptions::from_config(
+                &session
+                    .databases
+                    .properties
+                    .iter()
+                    .find(|definition| definition.id == property)
+                    .unwrap()
+                    .config,
+            );
+            assert_eq!(
+                session.repo.cell(record, property)?,
+                CellValue::Items(
+                    expected
+                        .iter()
+                        .map(|option| option.id.to_string())
+                        .collect()
+                )
+            );
+            session.undo();
+            assert_eq!(session.repo.cell(record, property)?, CellValue::Empty);
+            session.redo();
+        }
+
+        let reopened = Session::open(&path)?;
+        let definition = reopened
+            .databases
+            .properties
+            .iter()
+            .find(|definition| definition.id == property)
+            .unwrap();
+        assert_eq!(definition.db, db);
+        assert_eq!(definition.kind, PropertyKind::MultiSelect);
+        assert_eq!(
+            quire_core::core::database_property::PropertyOptions::from_config(&definition.config)
+                .iter()
+                .map(|option| option.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["进行中", "已完成"]
+        );
+        let values =
+            quire_core::core::database_property::PropertyOptions::from_config(&definition.config);
+        assert_eq!(
+            reopened.repo.cell(record, property)?,
+            CellValue::Items(values.iter().map(|option| option.id.to_string()).collect())
         );
         Ok(())
     }
