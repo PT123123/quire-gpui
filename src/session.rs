@@ -3,6 +3,7 @@ use anyhow::{Context, Result, bail};
 use quire_core::{
     core::{
         command::{self, Command},
+        database::{DatabaseCatalog, DatabaseDraft, DatabaseId, PropertyId, ViewId},
         document::{Document, Entry},
         history::History,
         organizer::{
@@ -37,6 +38,7 @@ pub struct Session {
     pub repo: Arc<SqliteRepository>,
     pub attachments: BTreeMap<u64, Attachment>,
     pub organizer: OrganizerCatalog,
+    pub databases: DatabaseCatalog,
     attachment_store: AttachmentStore,
     next_attachment_id: u64,
     history: History,
@@ -146,6 +148,7 @@ impl Session {
             Arc::new(SqliteRepository::open(path).context("无法打开库；不会覆盖或重建已有文件")?);
         let loaded = repo.load()?;
         let organizer = repo.load_organizer()?;
+        let databases = repo.load_databases()?;
         let attachments = repo
             .load_attachments()?
             .into_iter()
@@ -217,6 +220,7 @@ impl Session {
             repo,
             attachments,
             organizer,
+            databases,
             attachment_store,
             next_attachment_id,
             history: History::default(),
@@ -239,6 +243,121 @@ impl Session {
     }
     pub fn blocks(&self) -> &[Block] {
         self.document.page_blocks(self.page.id)
+    }
+    pub fn make_database(&mut self, block: BlockId, name: String) -> Option<DatabaseId> {
+        if self.page.locked {
+            return None;
+        }
+        let db = DatabaseId(
+            self.repo
+                .max_id(quire_core::storage::database_store::DbTable::Databases)
+                .ok()?
+                .saturating_add(1),
+        );
+        let property = PropertyId(
+            self.repo
+                .max_id(quire_core::storage::database_store::DbTable::Properties)
+                .ok()?
+                .saturating_add(1),
+        );
+        let view = ViewId(
+            self.repo
+                .max_id(quire_core::storage::database_store::DbTable::Views)
+                .ok()?
+                .saturating_add(1),
+        );
+        let draft = DatabaseDraft::new(db, property, view, name);
+        let database = draft.database.clone();
+        let title = draft.title.clone();
+        let first_view = draft.view.clone();
+        let entry = command::plan(
+            &mut self.document,
+            self.page.id,
+            Command::MakeDatabase { id: block, draft },
+        )?;
+        self.apply_entry(entry);
+        self.databases.databases.push(database);
+        self.databases.properties.push(title);
+        self.databases.views.push(first_view);
+        let _ = self.persistence.force_flush();
+        Some(db)
+    }
+    pub fn add_database_record(
+        &mut self,
+        block: BlockId,
+    ) -> Option<quire_core::core::database::RecordId> {
+        if self.page.locked {
+            return None;
+        }
+        let db = self.document.block(block)?.db_ref?;
+        let id = quire_core::core::database::RecordId(
+            self.repo
+                .max_id(quire_core::storage::database_store::DbTable::Records)
+                .ok()?
+                .saturating_add(1),
+        );
+        let last = self.repo.last_record_ord(db).ok().flatten();
+        let ord = OrderKey::between(last, None)?;
+        let entry = command::plan(
+            &mut self.document,
+            self.page.id,
+            Command::AddDatabaseRecord {
+                block,
+                record: id,
+                ord,
+            },
+        )?;
+        self.apply_entry(entry);
+        let _ = self.persistence.force_flush();
+        Some(id)
+    }
+    pub fn add_database_property(
+        &mut self,
+        block: BlockId,
+        name: String,
+        kind: quire_core::core::database::PropertyKind,
+    ) -> Option<PropertyId> {
+        if self.page.locked {
+            return None;
+        }
+        let db = self.document.block(block)?.db_ref?;
+        let id = PropertyId(
+            self.repo
+                .max_id(quire_core::storage::database_store::DbTable::Properties)
+                .ok()?
+                .saturating_add(1),
+        );
+        let last = self
+            .databases
+            .properties_of(db)
+            .map(|property| property.ord)
+            .max();
+        let ord = OrderKey::between(last, None)?;
+        let property = quire_core::core::database::Property {
+            id,
+            db,
+            name,
+            kind,
+            config: String::new(),
+            ord,
+        };
+        let entry = command::plan(
+            &mut self.document,
+            self.page.id,
+            Command::AddDatabaseProperty {
+                block,
+                property: property.clone(),
+            },
+        )?;
+        self.apply_entry(entry);
+        self.databases.properties.push(property);
+        let _ = self.persistence.force_flush();
+        Some(id)
+    }
+    pub fn refresh_databases(&mut self) {
+        if let Ok(catalog) = self.repo.load_databases() {
+            self.databases = catalog;
+        }
     }
     pub fn import_attachment(
         &mut self,
@@ -1773,15 +1892,157 @@ impl Session {
     pub fn undo(&mut self) {
         self.end_typing();
         if let Some(changes) = command::undo(&mut self.document, &mut self.history, self.page.id) {
+            let database_change = changes.iter().any(is_database_change);
+            self.apply_database_changes(&changes);
             self.persistence.record(changes);
+            if database_change {
+                let _ = self.persistence.force_flush();
+            }
         }
     }
     pub fn redo(&mut self) {
         self.end_typing();
         if let Some(changes) = command::redo(&mut self.document, &mut self.history, self.page.id) {
+            let database_change = changes.iter().any(is_database_change);
+            self.apply_database_changes(&changes);
             self.persistence.record(changes);
+            if database_change {
+                let _ = self.persistence.force_flush();
+            }
         }
     }
+    fn apply_database_changes(&mut self, changes: &[Change]) {
+        for change in changes {
+            match change {
+                Change::DatabaseCreated(database) => {
+                    if !self
+                        .databases
+                        .databases
+                        .iter()
+                        .any(|item| item.id == database.id)
+                    {
+                        self.databases.databases.push(database.clone());
+                    }
+                }
+                Change::DatabaseDeleted { id } => {
+                    self.databases
+                        .databases
+                        .retain(|database| database.id != *id);
+                    self.databases
+                        .properties
+                        .retain(|property| property.db != *id);
+                    self.databases.views.retain(|view| view.db != *id);
+                }
+                Change::PropertyAdded(property) => self.databases.properties.push(property.clone()),
+                Change::PropertyDeleted { id } => self
+                    .databases
+                    .properties
+                    .retain(|property| property.id != *id),
+                Change::PropertyRenamed { id, name } => {
+                    if let Some(property) = self
+                        .databases
+                        .properties
+                        .iter_mut()
+                        .find(|property| property.id == *id)
+                    {
+                        property.name = name.clone();
+                    }
+                }
+                Change::PropertyKindSet { id, kind } => {
+                    if let Some(property) = self
+                        .databases
+                        .properties
+                        .iter_mut()
+                        .find(|property| property.id == *id)
+                    {
+                        property.kind = *kind;
+                    }
+                }
+                Change::PropertyOrdSet { id, ord } => {
+                    if let Some(property) = self
+                        .databases
+                        .properties
+                        .iter_mut()
+                        .find(|property| property.id == *id)
+                    {
+                        property.ord = *ord;
+                    }
+                }
+                Change::PropertyConfigSet { id, config } => {
+                    if let Some(property) = self
+                        .databases
+                        .properties
+                        .iter_mut()
+                        .find(|property| property.id == *id)
+                    {
+                        property.config = config.clone();
+                    }
+                }
+                Change::ViewAdded(view) => self.databases.views.push(view.clone()),
+                Change::ViewDeleted { id } => self.databases.views.retain(|view| view.id != *id),
+                Change::ViewRenamed { id, name } => {
+                    if let Some(view) = self.databases.views.iter_mut().find(|view| view.id == *id)
+                    {
+                        view.name = name.clone();
+                    }
+                }
+                Change::ViewLayoutSet { id, layout } => {
+                    if let Some(view) = self.databases.views.iter_mut().find(|view| view.id == *id)
+                    {
+                        view.layout = *layout;
+                    }
+                }
+                Change::ViewDefinitionSet { id, definition } => {
+                    if let Some(view) = self.databases.views.iter_mut().find(|view| view.id == *id)
+                    {
+                        view.definition = definition.clone();
+                    }
+                }
+                Change::ViewOrdSet { id, ord } => {
+                    if let Some(view) = self.databases.views.iter_mut().find(|view| view.id == *id)
+                    {
+                        view.ord = *ord;
+                    }
+                }
+                Change::DatabaseRenamed { id, name } => {
+                    if let Some(database) = self
+                        .databases
+                        .databases
+                        .iter_mut()
+                        .find(|database| database.id == *id)
+                    {
+                        database.name = name.clone();
+                    }
+                }
+                Change::DatabaseTemplateSet { id, template } => {
+                    if let Some(database) = self
+                        .databases
+                        .databases
+                        .iter_mut()
+                        .find(|database| database.id == *id)
+                    {
+                        database.template = template.clone();
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
+fn is_database_change(change: &Change) -> bool {
+    matches!(
+        change,
+        Change::DatabaseCreated(_)
+            | Change::DatabaseDeleted { .. }
+            | Change::RecordCreated(_)
+            | Change::RecordDeleted { .. }
+            | Change::CellSet { .. }
+            | Change::PropertyAdded(_)
+            | Change::PropertyDeleted { .. }
+            | Change::ViewAdded(_)
+            | Change::ViewDeleted { .. }
+    )
 }
 
 #[cfg(test)]
@@ -1816,6 +2077,73 @@ mod tests {
         assert_eq!(s.blocks()[0].text, "中文🦀");
         assert_eq!(s.blocks()[1].text, "第一段");
         assert_ne!(s.blocks()[0].id, s.blocks()[1].id);
+        Ok(())
+    }
+
+    #[test]
+    fn database_block_and_rows_use_core_history_and_reopen_from_sqlite() -> Result<()> {
+        let scratch = quire_core::testing::ScratchDir::new("gpui-database-table");
+        let path = scratch.path().join("test.db");
+        {
+            let mut session = Session::open(&path)?;
+            let block = session.blocks()[0].id;
+            let db = session
+                .make_database(block, "项目库".into())
+                .expect("database created");
+            assert_eq!(session.databases.database(db).unwrap().name, "项目库");
+            let title = session.databases.title_property(db).unwrap().id;
+            assert!(
+                session
+                    .databases
+                    .properties_of(db)
+                    .any(|property| property.id == title)
+            );
+            assert_eq!(session.databases.views_of(db).count(), 1);
+            session
+                .add_database_property(
+                    block,
+                    "状态".into(),
+                    quire_core::core::database::PropertyKind::Text,
+                )
+                .expect("property created");
+            let record = session.add_database_record(block).expect("record created");
+            session.persistence.force_flush()?;
+            assert_eq!(session.repo.record_count(db)?, 1);
+            assert_eq!(session.repo.record(record)?.unwrap().db, db);
+            let columns = session
+                .databases
+                .properties_of(db)
+                .filter(|property| !property.kind.is_title())
+                .cloned()
+                .collect::<Vec<_>>();
+            let rows = session.repo.window_rows(
+                &quire_core::core::database::RowRequest::new(db, title, &columns),
+                quire_core::core::database::RowWindow { start: 0, end: 20 },
+            )?;
+            assert_eq!(rows.len(), 1);
+            assert_eq!(rows[0].cells.len(), 1);
+            session.undo();
+            session.persistence.force_flush()?;
+            assert_eq!(session.repo.record_count(db)?, 0);
+            session.redo();
+            session.persistence.force_flush()?;
+            assert_eq!(session.repo.record_count(db)?, 1);
+        }
+        let reopened = Session::open(&path)?;
+        let block = reopened
+            .blocks()
+            .iter()
+            .find(|block| block.kind == BlockKind::Database)
+            .unwrap();
+        let db = block.db_ref.unwrap();
+        assert_eq!(reopened.databases.database(db).unwrap().name, "项目库");
+        assert!(
+            reopened
+                .databases
+                .properties_of(db)
+                .any(|property| property.name == "状态")
+        );
+        assert_eq!(reopened.repo.record_count(db)?, 1);
         Ok(())
     }
 

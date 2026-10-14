@@ -1,46 +1,48 @@
 ﻿回调名,实现状态,验证状态,差异,人工语义
-"toggle-mark","已实现","未验证","工具条和快捷键支持粗体、斜体、删除线、行内代码；选中文字可创建或替换链接目标，Ctrl+点击可打开网页或跳转本地页面；数学块提供 core LaTeX 子集 Unicode 预览","富文本工具条对链接选区以单条可撤销历史项更新 Link 标记，同时保留所选范围外的旧链接片段；其他格式按 UTF-8 字节范围调用 core ToggleMark"
-"open-link","已实现","未验证","Ctrl+点击普通链接或 @页面提及可打开网页/跳转目标页；Embed 卡片使用同一安全地址校验打开外链","@页面由 core InsertReference 原子命令写入 page URI；外链只允许 http/https/mailto 交给系统打开"
-"duplicate-block","已实现","未验证","行尾副本入口调用 core DuplicateBlock；表格/分栏保留网格子块，普通容器会复制完整子树；界面交互待验","普通块含子块时以单条 InsertForest 历史项复制并重映射 parent；表格和分栏复用 core DuplicateBlock 专用结构复制"
-"find-start","已实现","未验证","Ctrl+F 打开当前页面查找浮条；搜索块正文，不包含页面标题与折叠/不可编辑容器内容","可从当前文本选区预填查询；命中按块顺序枚举，ASCII 大小写不敏感"
-"find-step","已实现","未验证","查找浮条提供上/下一个并显示命中位置；定位块并选中 UTF-8 文本区间","每次移动重扫当前页，循环遍历命中并把焦点移到匹配文本"
-"find-close","已实现","未验证","查找浮条的 × 关闭入口","关闭 overlay，不改正文"
-"title-commit","已实现","未验证","页面标题即时写入；Enter 或失焦结束编辑，Esc 可恢复本次编辑前标题","PageTitleSet 沿用 core 持久化；Esc 写回编辑起始值，Enter 将焦点移到正文"
-"title-cancel","已实现","未验证","标题编辑期间 Esc 取消本轮标题修改；IME 组合中 Esc 只取消组合，不回滚标题","TextInput 组合态先行取消；非组合态恢复开始编辑时的标题"
-"toc-jump","已实现","未验证","新增目录块，列出当前页面可见的一级至三级标题；点击条目定位并聚焦对应标题","按页面块序遍历标题，跳过折叠子树与表格单元格；空标题显示“无标题”，层级缩进由标题级别决定"
-"backlink-jump","已实现","未验证","页面栏显示反向链接计数；展开后按来源页面列出引用块，点击切换来源页面并定位引用块","数据直接来自 core SQLite repository 的 references 投影；面板最多显示 500 项，计数显示完整数量"
-"backlink-toggle","已实现","未验证","页面工具栏开关反向链接面板，展示引用当前页面的块级引用和 @页面提及","不复制或缓存引用数据；关闭面板后不修改文档"
-"indent-list","已实现","未验证","Tab 只缩进 core 允许的列表项，目前最多一级嵌套","将列表项设为前一个兼容列表项的子项；缩进后保持可编辑"
-"outdent-list","已实现","未验证","Shift+Tab 只对 core 允许的嵌套列表项生效","将列表项提升到父列表之后；提升后保持可编辑"
-"todo-toggled","已实现","未验证","待办标记由行首复选框点击；视觉仍待与旧版对照","调用 core ToggleTodoChecked 切换当前块完成状态并保存"
-"page-create-requested","已实现","未验证","支持侧栏根页面和子页面加号；暂无跨层级移动和模板创建","新建页面写入 core PageCreated，创建首个段落并切换到该页"
-"set-theme","已实现","未验证","主题面板展示 12 套渐变预览；主题卡片仍待与旧版尺寸、排序和状态对照","选择主题更新背景渐变和 palette，并写入 GPUI 独立设置"
-"table-row-added","已实现","未验证","普通表格工具区支持追加行；用户操作尚未逐项回归","调用 core TableAddRow，新增单元格并同步输入控件后保存"
-"table-row-removed","已实现","未验证","普通表格工具区支持删除末行；至少保留一行","调用 core TableDeleteRow，重建输入控件并保存，沿用 core 撤销"
-"table-column-added","已实现","未验证","普通表格工具区支持追加列；用户操作尚未逐项回归","调用 core TableAddColumn，新增单元格并同步输入控件后保存"
-"table-column-removed","已实现","未验证","普通表格工具区支持删除末列；至少保留一列","调用 core TableDeleteColumn，重建输入控件并保存，沿用 core 撤销"
-"org-note-title-set","已实现","未验证","整理区笔记详情标题支持编辑并在失焦/切换/保存时提交","编辑草稿以 core UpdateNote 写入 organizer 独立撤销栈及 SQLite；Session CRUD/撤销/重开有隔离库测试"
-"org-note-body-set","已实现","未验证","整理区笔记正文支持多行纯文本编辑","保留换行并用 core UpdateNote 保存；UI 输入事件在应用层提交，SQLite flush/reopen 有隔离库测试"
-"org-note-pin-toggled","已实现","未验证","笔记列表可切换置顶，置顶项排在未置顶项之前","pinned 字段通过 core UpdateNote 修改，沿用 organizer 撤销栈与 change stream"
-"org-note-deleted","已实现","未验证","笔记移入回收站并从当前列表隐藏","用 deleted_at 软删除，不物理删除；UpdateNote 可撤销恢复"
-"org-task-title-set","已实现","未验证","任务详情标题支持编辑并提交","以 core UpdateTask 更新任务标题，使用 organizer 独立撤销栈与 SQLite"
-"org-task-notes-set","已实现","未验证","任务备注支持多行纯文本编辑","任务标题与备注草稿在切换/失焦/保存时提交；隔离库测试覆盖内容写回和重启读取"
-"org-task-done-toggled","已实现","未验证","任务列表复选入口和详情按钮可切换完成状态","完成时写 completed_at，重新打开时清除；通过 core UpdateTask 同步写 done 与时间戳"
-"org-task-deleted","已实现","未验证","任务移入回收站并从当前列表隐藏","用 deleted_at 软删除并复用 organizer 撤销栈；无永久删除"
-"org-list-created","已实现","未验证","任务页可新建具名清单并立即切换到该清单","TaskList 通过 core CreateTaskList 写入 organizer history 和 SQLite"
-"org-list-picked","已实现","未验证","任务页可切换收集箱和已创建清单并显示对应任务","列表过滤依据 Task.list；选择行为只改会话 UI 状态"
-"org-task-list-set","已实现","未验证","选中任务详情可将任务移动到收集箱或其他清单","通过 core UpdateTask 修改 list，撤销时恢复旧清单，任务顺序重新追加"
-"org-task-priority-set","已实现","未验证","任务详情可循环设置无/低/中/高优先级","优先级更新走 core UpdateTask；和标题、备注、截止日期草稿的提交边界分开"
-"org-task-due-set","已实现","未验证","任务详情可编辑或清除 YYYY-MM-DD 截止日期，格式错误时拒绝写入并显示提示","有效日期与标题/备注共用单条 UpdateTask；core date::is_iso_date 校验固定十字节 ISO 日期格式"
-"org-view-picked","已实现","未验证","任务区域提供收集箱、今天、最近 7 天、全部、已完成智能视图及手动/截止日期/优先级排序，并显示实时任务计数","日期范围由 core ISO 日期比较；排序和筛选只改变投影，不写入数据库"
-"org-show-done-toggled","已实现","未验证","任务清单提供显示/隐藏已完成开关；已完成视图固定只显示完成项","过滤仅作用于实时列表投影，不修改任务完成状态"
-"org-note-deleted","已实现","未验证","笔记列表移入回收站后可从回收站恢复","通过 core organizer deleted_at 软删除；恢复走同一 UpdateNote 历史命令，可撤销并持久化"
-"org-task-deleted","已实现","未验证","任务列表移入回收站后可从回收站恢复","通过 core organizer deleted_at 软删除；恢复走同一 UpdateTask 历史命令，可撤销并持久化"
-"org-task-repeat-set","已实现","未验证","任务详情可循环设置不重复/每天/工作日/每周/每月重复规则","用 core Repeat 受控枚举更新任务行；完成重复任务的自动滚动生成尚未实现"
-"org-task-tags-set","已实现","未验证","任务详情支持逗号分隔标签编辑，侧栏标签可筛选任务","解析时去首尾空格、忽略空项并按首次输入去重；更新与标题/备注/截止日期作为单条 UpdateTask"
-"org-note-tags-set","已实现","未验证","笔记详情支持逗号分隔标签编辑，侧栏标签可筛选笔记","更新与标题/正文作为单条 UpdateNote；标签过滤为单选精确匹配"
-"org-tag-picked","已实现","未验证","整理区侧栏可点选一个标签过滤当前页签的活动项目或回收站项目","标签只作用于列表投影，不修改标签或其他筛选状态"
-"org-task-done-toggled","已实现","未验证","单项完成切换和多选批量完成均可用；批量操作作为一个可撤销历史项","批量调用 core command::exec_all，Ctrl+Z 一次撤销整批"
-"org-subtask-added","已实现","未验证","任务详情可新增和重命名子任务，输入后按 Enter 或点添加提交","子任务嵌入 Task 行，新增/改名走单条 UpdateTask，ID 由任务内最大子任务 ID 递增"
-"org-subtask-done-toggled","已实现","未验证","任务详情可独立勾选/取消子任务完成状态","更新整个 Task 的 subtasks 并作为单条 core 历史记录"
-"org-subtask-deleted","已实现","未验证","任务详情可删除子任务","从 Task 子任务数组移除；core UpdateTask 支持撤销恢复"
+toggle-mark,已实现,未验证,工具条和快捷键支持粗体、斜体、删除线、行内代码；选中文字可创建或替换链接目标，Ctrl+点击可打开网页或跳转本地页面；数学块提供 core LaTeX 子集 Unicode 预览,富文本工具条对链接选区以单条可撤销历史项更新 Link 标记，同时保留所选范围外的旧链接片段；其他格式按 UTF-8 字节范围调用 core ToggleMark
+open-link,已实现,未验证,Ctrl+点击普通链接或 @页面提及可打开网页/跳转目标页；Embed 卡片使用同一安全地址校验打开外链,@页面由 core InsertReference 原子命令写入 page URI；外链只允许 http/https/mailto 交给系统打开
+duplicate-block,已实现,未验证,行尾副本入口调用 core DuplicateBlock；表格/分栏保留网格子块，普通容器会复制完整子树；界面交互待验,普通块含子块时以单条 InsertForest 历史项复制并重映射 parent；表格和分栏复用 core DuplicateBlock 专用结构复制
+find-start,已实现,未验证,Ctrl+F 打开当前页面查找浮条；搜索块正文，不包含页面标题与折叠/不可编辑容器内容,可从当前文本选区预填查询；命中按块顺序枚举，ASCII 大小写不敏感
+find-step,已实现,未验证,查找浮条提供上/下一个并显示命中位置；定位块并选中 UTF-8 文本区间,每次移动重扫当前页，循环遍历命中并把焦点移到匹配文本
+find-close,已实现,未验证,查找浮条的 × 关闭入口,关闭 overlay，不改正文
+title-commit,已实现,未验证,页面标题即时写入；Enter 或失焦结束编辑，Esc 可恢复本次编辑前标题,PageTitleSet 沿用 core 持久化；Esc 写回编辑起始值，Enter 将焦点移到正文
+title-cancel,已实现,未验证,标题编辑期间 Esc 取消本轮标题修改；IME 组合中 Esc 只取消组合，不回滚标题,TextInput 组合态先行取消；非组合态恢复开始编辑时的标题
+toc-jump,已实现,未验证,新增目录块，列出当前页面可见的一级至三级标题；点击条目定位并聚焦对应标题,按页面块序遍历标题，跳过折叠子树与表格单元格；空标题显示“无标题”，层级缩进由标题级别决定
+backlink-jump,已实现,未验证,页面栏显示反向链接计数；展开后按来源页面列出引用块，点击切换来源页面并定位引用块,数据直接来自 core SQLite repository 的 references 投影；面板最多显示 500 项，计数显示完整数量
+backlink-toggle,已实现,未验证,页面工具栏开关反向链接面板，展示引用当前页面的块级引用和 @页面提及,不复制或缓存引用数据；关闭面板后不修改文档
+indent-list,已实现,未验证,Tab 只缩进 core 允许的列表项，目前最多一级嵌套,将列表项设为前一个兼容列表项的子项；缩进后保持可编辑
+outdent-list,已实现,未验证,Shift+Tab 只对 core 允许的嵌套列表项生效,将列表项提升到父列表之后；提升后保持可编辑
+todo-toggled,已实现,未验证,待办标记由行首复选框点击；视觉仍待与旧版对照,调用 core ToggleTodoChecked 切换当前块完成状态并保存
+page-create-requested,已实现,未验证,支持侧栏根页面和子页面加号；暂无跨层级移动和模板创建,新建页面写入 core PageCreated，创建首个段落并切换到该页
+set-theme,已实现,未验证,主题面板展示 12 套渐变预览；主题卡片仍待与旧版尺寸、排序和状态对照,选择主题更新背景渐变和 palette，并写入 GPUI 独立设置
+table-row-added,已实现,未验证,普通表格工具区支持追加行；用户操作尚未逐项回归,调用 core TableAddRow，新增单元格并同步输入控件后保存
+table-row-removed,已实现,未验证,普通表格工具区支持删除末行；至少保留一行,调用 core TableDeleteRow，重建输入控件并保存，沿用 core 撤销
+table-column-added,已实现,未验证,普通表格工具区支持追加列；用户操作尚未逐项回归,调用 core TableAddColumn，新增单元格并同步输入控件后保存
+table-column-removed,已实现,未验证,普通表格工具区支持删除末列；至少保留一列,调用 core TableDeleteColumn，重建输入控件并保存，沿用 core 撤销
+org-note-title-set,已实现,未验证,整理区笔记详情标题支持编辑并在失焦/切换/保存时提交,编辑草稿以 core UpdateNote 写入 organizer 独立撤销栈及 SQLite；Session CRUD/撤销/重开有隔离库测试
+org-note-body-set,已实现,未验证,整理区笔记正文支持多行纯文本编辑,保留换行并用 core UpdateNote 保存；UI 输入事件在应用层提交，SQLite flush/reopen 有隔离库测试
+org-note-pin-toggled,已实现,未验证,笔记列表可切换置顶，置顶项排在未置顶项之前,pinned 字段通过 core UpdateNote 修改，沿用 organizer 撤销栈与 change stream
+org-note-deleted,已实现,未验证,笔记移入回收站并从当前列表隐藏,用 deleted_at 软删除，不物理删除；UpdateNote 可撤销恢复
+org-task-title-set,已实现,未验证,任务详情标题支持编辑并提交,以 core UpdateTask 更新任务标题，使用 organizer 独立撤销栈与 SQLite
+org-task-notes-set,已实现,未验证,任务备注支持多行纯文本编辑,任务标题与备注草稿在切换/失焦/保存时提交；隔离库测试覆盖内容写回和重启读取
+org-task-done-toggled,已实现,未验证,任务列表复选入口和详情按钮可切换完成状态,完成时写 completed_at，重新打开时清除；通过 core UpdateTask 同步写 done 与时间戳
+org-task-deleted,已实现,未验证,任务移入回收站并从当前列表隐藏,用 deleted_at 软删除并复用 organizer 撤销栈；无永久删除
+org-list-created,已实现,未验证,任务页可新建具名清单并立即切换到该清单,TaskList 通过 core CreateTaskList 写入 organizer history 和 SQLite
+org-list-picked,已实现,未验证,任务页可切换收集箱和已创建清单并显示对应任务,列表过滤依据 Task.list；选择行为只改会话 UI 状态
+org-task-list-set,已实现,未验证,选中任务详情可将任务移动到收集箱或其他清单,通过 core UpdateTask 修改 list，撤销时恢复旧清单，任务顺序重新追加
+org-task-priority-set,已实现,未验证,任务详情可循环设置无/低/中/高优先级,优先级更新走 core UpdateTask；和标题、备注、截止日期草稿的提交边界分开
+org-task-due-set,已实现,未验证,任务详情可编辑或清除 YYYY-MM-DD 截止日期，格式错误时拒绝写入并显示提示,有效日期与标题/备注共用单条 UpdateTask；core date::is_iso_date 校验固定十字节 ISO 日期格式
+org-view-picked,已实现,未验证,任务区域提供收集箱、今天、最近 7 天、全部、已完成智能视图及手动/截止日期/优先级排序，并显示实时任务计数,日期范围由 core ISO 日期比较；排序和筛选只改变投影，不写入数据库
+org-show-done-toggled,已实现,未验证,任务清单提供显示/隐藏已完成开关；已完成视图固定只显示完成项,过滤仅作用于实时列表投影，不修改任务完成状态
+org-note-deleted,已实现,未验证,笔记列表移入回收站后可从回收站恢复,通过 core organizer deleted_at 软删除；恢复走同一 UpdateNote 历史命令，可撤销并持久化
+org-task-deleted,已实现,未验证,任务列表移入回收站后可从回收站恢复,通过 core organizer deleted_at 软删除；恢复走同一 UpdateTask 历史命令，可撤销并持久化
+org-task-repeat-set,已实现,未验证,任务详情可循环设置不重复/每天/工作日/每周/每月重复规则,用 core Repeat 受控枚举更新任务行；完成重复任务的自动滚动生成尚未实现
+org-task-tags-set,已实现,未验证,任务详情支持逗号分隔标签编辑，侧栏标签可筛选任务,解析时去首尾空格、忽略空项并按首次输入去重；更新与标题/备注/截止日期作为单条 UpdateTask
+org-note-tags-set,已实现,未验证,笔记详情支持逗号分隔标签编辑，侧栏标签可筛选笔记,更新与标题/正文作为单条 UpdateNote；标签过滤为单选精确匹配
+org-tag-picked,已实现,未验证,整理区侧栏可点选一个标签过滤当前页签的活动项目或回收站项目,标签只作用于列表投影，不修改标签或其他筛选状态
+org-task-done-toggled,已实现,未验证,单项完成切换和多选批量完成均可用；批量操作作为一个可撤销历史项,批量调用 core command::exec_all，Ctrl+Z 一次撤销整批
+org-subtask-added,已实现,未验证,任务详情可新增和重命名子任务，输入后按 Enter 或点添加提交,子任务嵌入 Task 行，新增/改名走单条 UpdateTask，ID 由任务内最大子任务 ID 递增
+org-subtask-done-toggled,已实现,未验证,任务详情可独立勾选/取消子任务完成状态,更新整个 Task 的 subtasks 并作为单条 core 历史记录
+org-subtask-deleted,已实现,未验证,任务详情可删除子任务,从 Task 子任务数组移除；core UpdateTask 支持撤销恢复
+db-row-added,已实现,未验证,数据库块支持新建记录并即时刷新表格行数；删除记录、行标题/单元格编辑及页面化打开尚未实现,Command::AddDatabaseRecord 创建无页面的记录，命令走当前页面 history；core 数据库窗口查询由 uniform_list 按可见 range 执行，避免全量加载；隔离 SQLite 测试覆盖写入、撤销/重做和重启读回
+db-viewport,已实现,未验证,GPUI uniform_list 按可见 range 查询记录，未复刻旧版 pixel viewport 回调,窗口化查询使用 SqliteRepository::window_rows，单帧仅读取 uniform_list 传入的 range；需要大表 UI/性能验收

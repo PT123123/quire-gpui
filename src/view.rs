@@ -251,6 +251,11 @@ fn slash_items() -> &'static [(&'static str, &'static str, BlockKind)] {
         ("提示块", "callout", BlockKind::Callout),
         ("分隔线", "divider", BlockKind::Divider),
         ("表格", "table grid", BlockKind::Table),
+        (
+            "数据库",
+            "database records properties table board calendar",
+            BlockKind::Database,
+        ),
         ("分栏", "columns layout", BlockKind::Columns),
         ("目录", "toc table of contents", BlockKind::Toc),
     ]
@@ -1162,6 +1167,14 @@ impl Workspace {
             .active
             .or_else(|| self.session.blocks().first().map(|b| b.id));
         if let Some(id) = target {
+            if kind == BlockKind::Database {
+                self.session.make_database(id, "新数据库".into());
+                self.sync_inputs(window, cx);
+                self.active = Some(id);
+                self.schedule_save(false, window, cx);
+                cx.notify();
+                return;
+            }
             self.session.execute(Command::SetBlockType { id, kind });
             self.sync_inputs(window, cx);
             self.active = Some(self.first_child_editor(id, kind).unwrap_or(id));
@@ -1557,7 +1570,12 @@ impl Workspace {
             return;
         }
         self.slash_menu = None;
-        self.session.convert_prefix(id, String::new(), kind);
+        if kind == BlockKind::Database {
+            self.session.replace(id, String::new(), false);
+            self.session.make_database(id, "新数据库".into());
+        } else {
+            self.session.convert_prefix(id, String::new(), kind);
+        }
         self.sync_inputs(window, cx);
         self.active = Some(self.first_child_editor(id, kind).unwrap_or(id));
         self.restore_focus(window, cx);
@@ -3052,8 +3070,11 @@ impl Workspace {
 }
 
 impl Render for Workspace {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let p = self.palette.clone();
+        let database_width = (window.bounds().size.width - px(356.))
+            .min(px(760.))
+            .max(px(200.));
         let text = Palette::color(&p.fg);
         let muted = Palette::color(&p.muted);
         let accent = Palette::color(&p.accent);
@@ -3921,6 +3942,7 @@ impl Render for Workspace {
                 ("提示", BlockKind::Callout),
                 ("分隔线", BlockKind::Divider),
                 ("表格", BlockKind::Table),
+                ("数据库", BlockKind::Database),
                 ("分栏", BlockKind::Columns),
                 ("目录", BlockKind::Toc),
             ]
@@ -4137,6 +4159,30 @@ impl Render for Workspace {
                 let is_todo = block.kind == BlockKind::Todo;
                 let is_toggle = block.kind == BlockKind::Toggle;
                 let kind = block.kind;
+                let database_table = if kind == BlockKind::Database {
+                    block.db_ref.and_then(|db_id| {
+                        let database = self.session.databases.database(db_id)?;
+                        let title = self.session.databases.title_property(db_id)?.id;
+                        let columns = self
+                            .session
+                            .databases
+                            .properties_of(db_id)
+                            .filter(|property| !property.kind.is_title())
+                            .cloned()
+                            .collect::<Vec<_>>();
+                        let total = self.session.repo.record_count(db_id).ok()?;
+                        Some((
+                            db_id,
+                            database.name.clone(),
+                            title,
+                            columns,
+                            total,
+                            self.session.repo.clone(),
+                        ))
+                    })
+                } else {
+                    None
+                };
                 let toc_entries = if kind == BlockKind::Toc {
                     toc_headings(self.session.blocks())
                         .into_iter()
@@ -4697,12 +4743,217 @@ impl Render for Workspace {
                         div()
                             .flex_1()
                             .min_w_0()
+                            .w_full()
                             .flex()
                             .flex_col()
                             .when(kind == BlockKind::Table, |view| {
                                 view.flex_col()
                                     .children(table_rows)
                                     .child(div().flex().gap(px(6.)).children(table_actions))
+                            })
+                            .when(kind == BlockKind::Database, |view| {
+                                if let Some((db_id, name, title, columns, total, repo)) =
+                                    database_table
+                                {
+                                    let db_border = Palette::color(&p.border);
+                                    let query_columns = columns.clone();
+                                    let header = div()
+                                        .w(database_width)
+                                        .flex()
+                                        .h(px(34.))
+                                        .border_b_1()
+                                        .border_color(Palette::color(&p.border))
+                                        .child(
+                                            div()
+                                                .w(px(220.))
+                                                .flex_1()
+                                                .min_w(px(220.))
+                                                .px(px(10.))
+                                                .flex()
+                                                .items_center()
+                                                .text_color(muted)
+                                                .text_size(px(11.))
+                                                .child("名称"),
+                                        )
+                                        .children(columns.iter().map(|property| {
+                                            div()
+                                                .w(px(160.))
+                                                .flex_1()
+                                                .min_w(px(160.))
+                                                .px(px(10.))
+                                                .flex()
+                                                .items_center()
+                                                .text_color(muted)
+                                                .text_size(px(11.))
+                                                .child(property.name.clone())
+                                        }));
+                                    let rows = uniform_list(
+                                        SharedString::from(format!("database-rows-{}", db_id.0)),
+                                        total,
+                                        cx.processor(
+                                            move |_this, range: Range<usize>, _window, _cx| {
+                                                let request =
+                                                    quire_core::core::database::RowRequest::new(
+                                                        db_id,
+                                                        title,
+                                                        &query_columns,
+                                                    );
+                                                let slice = quire_core::core::database::RowWindow {
+                                                    start: range.start,
+                                                    end: range.end,
+                                                };
+                                                repo.window_rows(&request, slice)
+                                                    .unwrap_or_default()
+                                                    .into_iter()
+                                                    .map(|row| {
+                                                        let cells = std::iter::once(row.title)
+                                                            .chain(row.cells)
+                                                            .enumerate()
+                                                            .map(|(index, value)| {
+                                                                div()
+                                                                    .id(SharedString::from(
+                                                                        format!(
+                                                                            "db-cell-{}-{}-{index}",
+                                                                            db_id.0, row.record
+                                                                        ),
+                                                                    ))
+                                                                    .w(px(if index == 0 {
+                                                                        220.
+                                                                    } else {
+                                                                        160.
+                                                                    }))
+                                                                    .flex_1()
+                                                                    .min_w(px(if index == 0 {
+                                                                        220.
+                                                                    } else {
+                                                                        160.
+                                                                    }))
+                                                                    .h(px(36.))
+                                                                    .px(px(10.))
+                                                                    .flex()
+                                                                    .items_center()
+                                                                    .border_r_1()
+                                                                    .border_color(db_border)
+                                                                    .text_size(px(12.))
+                                                                    .text_color(text)
+                                                                    .child(if value.is_empty() {
+                                                                        "—".to_owned()
+                                                                    } else {
+                                                                        value
+                                                                    })
+                                                            })
+                                                            .collect::<Vec<_>>();
+                                                        div()
+                                                            .id(SharedString::from(format!(
+                                                                "db-row-{}-{}",
+                                                                db_id.0, row.record
+                                                            )))
+                                                            .flex()
+                                                            .w_full()
+                                                            .h(px(36.))
+                                                            .border_b_1()
+                                                            .border_color(db_border)
+                                                            .children(cells)
+                                                    })
+                                                    .collect::<Vec<_>>()
+                                            },
+                                        ),
+                                    )
+                                    .h(px((total.min(8).max(1) as f32 * 36.).max(40.)))
+                                    .w(database_width)
+                                    .max_h(px(288.))
+                                    .flex_1()
+                                    .min_h(px(40.));
+                                    view.flex_col()
+                                        .w(database_width)
+                                        .rounded(px(7.))
+                                        .border_1()
+                                        .border_color(Palette::color(&p.border))
+                                        .bg(Palette::color(&p.elevated))
+                                        .child(
+                                            div()
+                                                .flex()
+                                                .items_center()
+                                                .justify_between()
+                                                .px(px(10.))
+                                                .py(px(7.))
+                                                .border_b_1()
+                                                .border_color(Palette::color(&p.border))
+                                                .child(
+                                                    div()
+                                                        .font_weight(FontWeight::SEMIBOLD)
+                                                        .child(name),
+                                                )
+                                                .child(
+                                                    div()
+                                                        .flex()
+                                                        .items_center()
+                                                        .gap(px(8.))
+                                                        .text_size(px(11.))
+                                                        .text_color(muted)
+                                                        .child(format!("表格 · {total} 条"))
+                                                        .child(div().flex().gap(px(4.)).child(
+                                                            div()
+                                                                .id(SharedString::from(format!(
+                                                                    "db-add-record-{}",
+                                                                    block_id.0
+                                                                )))
+                                                                .px(px(8.))
+                                                                .py(px(4.))
+                                                                .rounded(px(4.))
+                                                                .cursor_pointer()
+                                                                .text_color(accent)
+                                                                .hover(|button| {
+                                                                    button.bg(Palette::color(&p.bg)
+                                                                        .opacity(0.3))
+                                                                })
+                                                                .on_click(cx.listener(
+                                                                    move |this, _, window, cx| {
+                                                                        if this
+                                                                            .session
+                                                                            .add_database_record(
+                                                                                block_id,
+                                                                            )
+                                                                            .is_some()
+                                                                        {
+                                                                            this.schedule_save(
+                                                                                false, window, cx,
+                                                                            );
+                                                                            cx.notify();
+                                                                        }
+                                                                    },
+                                                                ))
+                                                                .child("＋ 新建记录"),
+                                                        ).child(
+                                                            div()
+                                                                .id(SharedString::from(format!("db-add-property-{}", block_id.0)))
+                                                                .px(px(8.))
+                                                                .py(px(4.))
+                                                                .rounded(px(4.))
+                                                                .cursor_pointer()
+                                                                .text_color(accent)
+                                                                .hover(|button| button.bg(Palette::color(&p.bg).opacity(0.3)))
+                                                                .on_click(cx.listener(move |this, _, window, cx| {
+                                                                    if this.session.add_database_property(block_id, "文本".into(), quire_core::core::database::PropertyKind::Text).is_some() {
+                                                                        this.schedule_save(false, window, cx);
+                                                                        cx.notify();
+                                                                    }
+                                                                }))
+                                                                .child("＋ 属性"),
+                                                        )),
+                                                ),
+                                        )
+                                        .child(header)
+                                        .child(rows)
+                                } else {
+                                    view.rounded(px(7.))
+                                        .border_1()
+                                        .border_color(Palette::color(&p.border))
+                                        .px(px(12.))
+                                        .py(px(10.))
+                                        .text_color(muted)
+                                        .child("数据库已删除或无法读取")
+                                }
                             })
                             .when(kind == BlockKind::Columns, |view| {
                                 view.flex_col()
