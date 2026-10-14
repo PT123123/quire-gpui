@@ -623,3 +623,10 @@ GPUI 应用已超出第一竖切，但离完整复刻仍有较大差距。用户
 
 - 移植 Win32 托盘与 RegisterHotKey 消息泵到 GPUI：主窗关闭时若托盘成功安装则隐藏并触发异步保存；托盘左键/菜单可唤回主窗，退出菜单走 GPUI shutdown flush；Alt+N 在窗口失焦或隐藏时也通过 UI 线程任务泵打开速记窗。主题菜单的明暗模式跟随当前主题。默认应用 Alt+M 仍关闭，与旧版一致。
 - 资源由 GPUI 应用持有到 shutdown，托盘退出移除图标、快捷键线程在释放时关闭。验证：Windows `cargo check -j 8`、12 项二进制测试、`cargo fmt` 与 `git diff --check` 通过；本轮未真人验证 Shell 托盘图标、托盘隐藏唤回、快捷键冲突或关机竞态。同步与 MCP 服务尚未接入。
+
+## 第九十一轮：MCP 本机服务与笔记/任务工具
+
+- 设置 → MCP 页可启停服务、查看本机 endpoint 与 Bearer token；服务绑定回环地址，启用状态、端口和令牌写入当前库设置，并在库目录生成 `mcp.json` 客户端指针，禁用时清除指针。桌面运行期间重启会按设置重新启动服务。
+- 完成 initialize / ping / tools/list / tools/call JSON-RPC 与 10 个笔记/任务工具；调用通过 shell event pump 回到唯一 UI 线程 Session 写入并立即 flush，不开启第二个 SQLite writer。任务日期/优先级先验证，更新保留未提供字段，删除只进回收站。日志最多 50 条，成功日志不持久化正文内容。
+- 隔离 ScratchDir 测试覆盖 MCP 工具创建、更新、列举、回收站/恢复、标签去重、任务无效日期不落半成品、更新字段保留与协议协商/错误响应/指针往返。`cargo check -j 8` 和 MCP 专项测试通过；全量测试、release 构建、真实 MCP 客户端连接/开关重启未验证。
+- 同步仍未接入 GPUI：core 提供网络引擎与合并算法，但全库 snapshot 导出/导入、稳定 ID 分配、数据库记录值和附件写回位于 Slint 桌面壳；这轮没有把设备发现伪装成同步完成。后续需把该壳层适配迁入 GPUI Session，并在隔离库做双端往返。

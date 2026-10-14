@@ -1,4 +1,6 @@
 mod input;
+mod mcp;
+mod mcp_tools;
 mod platform;
 mod view;
 

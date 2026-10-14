@@ -1138,6 +1138,11 @@ pub struct Workspace {
     closing: bool,
     smoke: bool,
     normal_window_bounds: Bounds<Pixels>,
+    mcp_event_tx: std::sync::mpsc::Sender<crate::platform::ShellEvent>,
+    mcp_server: Option<crate::mcp::McpServerHandle>,
+    mcp_port: u16,
+    mcp_token: String,
+    mcp_status: String,
 }
 
 impl Workspace {
@@ -1253,6 +1258,17 @@ impl Workspace {
         ] {
             input.update(cx, |input, _| input.text_color = Some(input_fg));
         }
+        let mcp_event_tx = platform_services.event_tx.clone();
+        let mcp_port = session
+            .setting("gpui.mcp.port")
+            .and_then(|value| value.parse::<u16>().ok())
+            .filter(|port| *port > 0)
+            .unwrap_or(crate::mcp::DEFAULT_PORT);
+        let mcp_token = session
+            .setting("gpui.mcp.token")
+            .map(str::to_owned)
+            .unwrap_or_else(crate::mcp::mint_token);
+        let mcp_enabled = session.setting("gpui.mcp.enabled") == Some("true");
         let mut this = Self {
             session,
             title_input,
@@ -1377,7 +1393,20 @@ impl Workspace {
             closing: false,
             smoke,
             normal_window_bounds: window.bounds(),
+            mcp_event_tx,
+            mcp_server: None,
+            mcp_port,
+            mcp_token,
+            mcp_status: if mcp_enabled {
+                "MCP 已启用"
+            } else {
+                "尚未启用"
+            }
+            .into(),
         };
+        if mcp_enabled {
+            this.start_mcp();
+        }
         let bounds_subscription = cx.observe_window_bounds(window, |this, window, _| {
             if !window.is_maximized() && !window.is_fullscreen() {
                 this.normal_window_bounds = window.bounds();
@@ -1763,7 +1792,7 @@ impl Workspace {
                         Err(std::sync::mpsc::TryRecvError::Empty) => break,
                         Err(std::sync::mpsc::TryRecvError::Disconnected) => return,
                     };
-                    if event == crate::platform::ShellEvent::Quit {
+                    if matches!(&event, crate::platform::ShellEvent::Quit) {
                         let _ = cx.update(|app| app.quit());
                         return;
                     }
@@ -5489,7 +5518,94 @@ impl Workspace {
             }
             crate::platform::ShellEvent::QuickNote => self.open_quick_note(cx),
             crate::platform::ShellEvent::Quit => cx.quit(),
+            crate::platform::ShellEvent::McpCall(job) => {
+                let crate::mcp_tools::McpJob::Call { name, args, reply } = job;
+                let result =
+                    crate::mcp_tools::execute(&mut self.session, &name, &args).and_then(|value| {
+                        self.session
+                            .persistence
+                            .force_flush()
+                            .map_err(|error| error.to_string())?;
+                        Ok(value)
+                    });
+                // Do not copy note/task contents into the persistent call log.
+                let message = match &result {
+                    Ok(_) => "调用成功".to_owned(),
+                    Err(error) => error.clone(),
+                };
+                self.push_mcp_log(&name, result.is_ok(), message);
+                let _ = reply.send(result);
+                cx.notify();
+            }
         }
+    }
+    fn start_mcp(&mut self) {
+        let call = crate::mcp_tools::call_sender(self.mcp_event_tx.clone());
+        match crate::mcp::McpServer::new(
+            self.mcp_port,
+            self.mcp_token.clone(),
+            crate::mcp_tools::tool_defs(),
+            call,
+        )
+        .spawn()
+        {
+            Ok(server) => {
+                if let Some(dir) = self.session.path.parent() {
+                    if let Err(error) =
+                        crate::mcp::write_pointer(dir, self.mcp_port, &self.mcp_token)
+                    {
+                        self.mcp_status = format!("已启动，但写入连接配置失败：{error}");
+                    } else {
+                        self.mcp_status =
+                            format!("已启用 · http://127.0.0.1:{}/mcp", self.mcp_port);
+                    }
+                }
+                self.mcp_server = Some(server);
+                self.session.set_setting("gpui.mcp.enabled", "true");
+                self.session
+                    .set_setting("gpui.mcp.port", self.mcp_port.to_string());
+                self.session
+                    .set_setting("gpui.mcp.token", self.mcp_token.clone());
+            }
+            Err(error) => {
+                self.mcp_status = format!("启动失败：{error}");
+                self.session.set_setting("gpui.mcp.enabled", "false");
+            }
+        }
+    }
+    fn stop_mcp(&mut self) {
+        self.mcp_server.take();
+        if let Some(dir) = self.session.path.parent() {
+            let _ = std::fs::remove_file(crate::mcp::pointer_path(dir));
+        }
+        self.session.set_setting("gpui.mcp.enabled", "false");
+        self.mcp_status = "尚未启用".into();
+    }
+    fn toggle_mcp(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.mcp_server.is_some() {
+            self.stop_mcp();
+        } else {
+            self.start_mcp();
+        }
+        self.schedule_save(true, window, cx);
+        cx.notify();
+    }
+    fn push_mcp_log(&mut self, tool: &str, ok: bool, message: String) {
+        let mut log: Vec<serde_json::Value> = self
+            .session
+            .setting("gpui.mcp.log")
+            .and_then(|value| serde_json::from_str(value).ok())
+            .unwrap_or_default();
+        log.push(serde_json::json!({
+            "at": crate::mcp::now_label(), "tool": tool, "ok": ok, "message": message
+        }));
+        if log.len() > 50 {
+            log.drain(..log.len() - 50);
+        }
+        self.session.set_setting(
+            "gpui.mcp.log",
+            serde_json::to_string(&log).unwrap_or_default(),
+        );
     }
     pub fn hide_to_tray(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.closing {
@@ -5696,6 +5812,15 @@ impl Render for Workspace {
         let muted = Palette::color(&p.muted);
         let accent = Palette::color(&p.accent);
         let elevated = Palette::color(&p.elevated);
+        let mcp_enabled = self.mcp_server.is_some();
+        let mcp_status = self.mcp_status.clone();
+        let mcp_endpoint = format!("http://127.0.0.1:{}/mcp", self.mcp_port);
+        let mcp_token = self.mcp_token.clone();
+        let mcp_logs: Vec<serde_json::Value> = self
+            .session
+            .setting("gpui.mcp.log")
+            .and_then(|value| serde_json::from_str(value).ok())
+            .unwrap_or_default();
         let backlinks_count = self
             .session
             .repo
@@ -6092,21 +6217,52 @@ impl Render for Workspace {
                             ),
                         ))
                         .when(self.settings_tab == 3, |dialog| dialog.child(
-                            div().flex().flex_col().gap(px(12.)).child(
-                                div().flex().items_center().gap(px(10.)).child(div().text_size(px(20.)).font_weight(FontWeight::SEMIBOLD).child("MCP")).child(div().text_size(px(11.)).text_color(muted).child("尚未启用")),
-                            ).child(
-                                div().h(px(1.)).bg(Palette::color(&p.border)),
-                            ).child(
-                                div().font_weight(FontWeight::SEMIBOLD).text_size(px(12.)).child("客户端配置"),
-                            ).child(
-                                div().text_size(px(12.)).text_color(muted).child("GPUI 版本暂未启动 MCP 服务。服务接入后可在此查看客户端配置、权限说明和调用记录。"),
-                            ).child(
-                                div().h(px(1.)).bg(Palette::color(&p.border)),
-                            ).child(
-                                div().font_weight(FontWeight::SEMIBOLD).text_size(px(12.)).child("调用日志 · 0 条记录"),
-                            ).child(
-                                div().flex_1().flex().items_center().justify_center().text_color(muted).child("尚无调用记录"),
-                            ),
+                            div().flex().flex_col().gap(px(10.))
+                                .child(div().flex().items_center().justify_between()
+                                    .child(div().flex().items_center().gap(px(10.))
+                                        .child(div().text_size(px(20.)).font_weight(FontWeight::SEMIBOLD).child("MCP"))
+                                        .child(div().text_size(px(11.)).text_color(muted).child(mcp_status.clone())))
+                                    .child(div().id("mcp-toggle").px(px(11.)).py(px(6.)).rounded(px(5.))
+                                        .bg(Palette::color(&p.accent)).text_color(Palette::color(&p.fg))
+                                        .cursor_pointer().text_size(px(11.))
+                                        .on_click(cx.listener(|this, _, window, cx| this.toggle_mcp(window, cx)))
+                                        .child(if mcp_enabled { "关闭服务" } else { "启用服务" })))
+                                .child(div().h(px(1.)).bg(Palette::color(&p.border)))
+                                .child(div().font_weight(FontWeight::SEMIBOLD).text_size(px(12.)).child("客户端连接信息"))
+                                .child(div().text_size(px(11.)).text_color(muted).child(format!("Endpoint  {mcp_endpoint}")))
+                                .child(div().text_size(px(11.)).text_color(muted).child(format!("Authorization: Bearer {mcp_token}")))
+                                .child(div().flex().gap(px(8.))
+                                    .child(div().id("mcp-copy-config").px(px(9.)).py(px(5.)).rounded(px(4.))
+                                        .border_1().border_color(Palette::color(&p.border)).cursor_pointer().text_size(px(10.))
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            let config = serde_json::json!({
+                                                "url": format!("http://127.0.0.1:{}/mcp", this.mcp_port),
+                                                "headers": {"Authorization": format!("Bearer {}", this.mcp_token)}
+                                            }).to_string();
+                                            cx.write_to_clipboard(ClipboardItem::new_string(config));
+                                            this.status = "MCP 连接配置已复制".into();
+                                            cx.notify();
+                                        }))
+                                        .child("复制连接配置"))
+                                    .child(div().id("mcp-copy-prompt").px(px(9.)).py(px(5.)).rounded(px(4.))
+                                        .border_1().border_color(Palette::color(&p.border)).cursor_pointer().text_size(px(10.))
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            cx.write_to_clipboard(ClipboardItem::new_string(crate::mcp_tools::agent_prompt(this.mcp_port)));
+                                            this.status = "MCP Agent 提示词已复制".into();
+                                            cx.notify();
+                                        }))
+                                        .child("复制 Agent 提示词")))
+                                .child(div().text_size(px(10.)).text_color(muted).child("服务仅监听本机 127.0.0.1；工具可以读取和修改笔记/任务，删除只进入回收站。令牌保存在当前库目录的 mcp.json。"))
+                                .child(div().h(px(1.)).bg(Palette::color(&p.border)))
+                                .child(div().font_weight(FontWeight::SEMIBOLD).text_size(px(12.)).child(format!("调用日志 · {} 条记录", mcp_logs.len())))
+                                .children(mcp_logs.iter().rev().take(6).map(|entry| {
+                                    let ok = entry.get("ok").and_then(serde_json::Value::as_bool).unwrap_or(false);
+                                    let tool = entry.get("tool").and_then(serde_json::Value::as_str).unwrap_or("tool");
+                                    let message = entry.get("message").and_then(serde_json::Value::as_str).unwrap_or("");
+                                    div().text_size(px(10.)).text_color(muted)
+                                        .child(format!("{}  {} · {}", if ok { "✓" } else { "!" }, tool, message.chars().take(72).collect::<String>()))
+                                }))
+                                .when(mcp_logs.is_empty(), |panel| panel.child(div().text_size(px(10.)).text_color(muted).child("尚无调用记录"))),
                         ))
                         .when(self.settings_tab == 4, |dialog| dialog.child(
                             div().flex().flex_col().gap(px(12.)).child(

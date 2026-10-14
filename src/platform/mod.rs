@@ -1,10 +1,11 @@
 use std::sync::mpsc::Sender;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug)]
 pub enum ShellEvent {
     ShowMain,
     QuickNote,
     Quit,
+    McpCall(crate::mcp_tools::McpJob),
 }
 
 pub type ServiceHandle = Box<dyn std::any::Any + Send>;
@@ -12,6 +13,7 @@ pub type ServiceHandle = Box<dyn std::any::Any + Send>;
 pub struct Services {
     pub handles: Vec<ServiceHandle>,
     pub tray_available: bool,
+    pub event_tx: Sender<ShellEvent>,
 }
 
 #[cfg(windows)]
@@ -29,6 +31,7 @@ mod tray;
 
 #[cfg(windows)]
 pub fn install(tx: Sender<ShellEvent>) -> Services {
+    let event_tx = tx.clone();
     let mut services: Vec<ServiceHandle> = Vec::new();
     let show = tx.clone();
     let tray_available = match tray::install(
@@ -73,6 +76,7 @@ pub fn install(tx: Sender<ShellEvent>) -> Services {
     Services {
         handles: services,
         tray_available,
+        event_tx,
     }
 }
 
@@ -81,6 +85,7 @@ pub fn install(_tx: Sender<ShellEvent>) -> Services {
     Services {
         handles: Vec::new(),
         tray_available: false,
+        event_tx: _tx,
     }
 }
 
