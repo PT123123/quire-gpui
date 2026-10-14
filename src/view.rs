@@ -1994,9 +1994,11 @@ impl Workspace {
                                 panic!("scrolling to the last block must mount its editor");
                             }
                             eprintln!(
-                                "SMOKE: virtual scroll-to-last passed; opening the real quick-note window"
+                                "SMOKE: virtual scroll-to-last passed; dispatching the platform quick-note event"
                             );
-                            this.open_quick_note(cx);
+                            this.mcp_event_tx
+                                .send(crate::platform::ShellEvent::QuickNote)
+                                .expect("quick-note event pump should still be available");
                             let quick_note_text = "速记窗口冒烟回归 #gpui-window-smoke".to_owned();
                             cx.spawn_in(window, async move |weak, cx| {
                                 cx.background_executor()

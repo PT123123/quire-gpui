@@ -755,7 +755,7 @@ GPUI 已覆盖主编辑器、整理区、独立速记与标签建议、Windows �
 
 - 扩展隔离库 release smoke：实际打开 GPUI 速记小窗，通过其 `TextInput` 编辑事件输入带标签正文，再调用窗口提交路径；检查 core Session 中正文和标签，并在窗口退出后由第二进程重开库读回。
 - smoke 揭露并修复速记窗口打开时的 GPUI 实体重入：窗口构造期间不再同步读取正在更新的 Workspace，标签建议改为打开前从当前 Session 取出并传给窗口。提交也在父 Workspace 更新回调结束后执行，避免子窗口回写父实体时重入。
-- release 隔离库 smoke、`--dump-state` 重开读回均通过。仍未验证真人桌面托盘菜单/关闭隐藏唤回、置顶边界及真实输入法；此前 MCP CLI 子进程回归继续通过。
+- release 隔离库 smoke、`--dump-state` 重开读回均通过。后续 smoke 入口改为向平台事件队列发送 `ShellEvent::QuickNote`，与 Windows 托盘和全局 Alt+N 使用相同分发路径；真人桌面托盘菜单/关闭隐藏唤回、置顶边界及真实输入法仍待验收；此前 MCP CLI 子进程回归继续通过。
 
 ## 第一百一十四轮：双隔离会话局域网同步回环
 
