@@ -5847,20 +5847,43 @@ impl Render for Workspace {
                     .min_h_0()
                     .child(
                         div()
-                            .w(px(240.))
+                            .w(px(260.))
                             .flex_shrink_0()
                             .h_full()
                             .bg(Palette::color(&p.elevated))
-                            .px(px(12.))
-                            .py(px(16.))
+                            .px(px(8.))
+                            .py(px(0.))
                             .flex()
                             .flex_col()
-                            .gap(px(12.))
-                            .child(div().font_weight(FontWeight::SEMIBOLD).child("Quire"))
+                            .gap(px(0.))
+                            .child(
+                                div()
+                                    .id("sidebar-workspace-header")
+                                    .h(px(36.))
+                                    .px(px(4.))
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(8.))
+                                    .child(
+                                        div()
+                                            .size(px(20.))
+                                            .rounded(px(6.))
+                                            .bg(accent)
+                                            .flex()
+                                            .items_center()
+                                            .justify_center()
+                                            .text_color(Palette::color(&p.bg))
+                                            .font_weight(FontWeight::BOLD)
+                                            .child("Q"),
+                                    )
+                                    .child(div().font_weight(FontWeight::SEMIBOLD).child("工作区"))
+                                    .child(div().flex_1())
+                                    .child(div().text_color(muted).child("⌄")),
+                            )
                             .child(
                                 div()
                                     .id("sidebar-organizer-notes")
-                                    .h(px(30.))
+                                    .h(px(28.))
                                     .px(px(8.))
                                     .flex()
                                     .items_center()
@@ -5889,7 +5912,7 @@ impl Render for Workspace {
                             .child(
                                 div()
                                     .id("sidebar-organizer-tasks")
-                                    .h(px(30.))
+                                    .h(px(28.))
                                     .px(px(8.))
                                     .flex()
                                     .items_center()
@@ -5918,7 +5941,7 @@ impl Render for Workspace {
                             .child(
                                 div()
                                     .id("sidebar-search")
-                                    .h(px(30.))
+                                    .h(px(28.))
                                     .px(px(8.))
                                     .flex()
                                     .items_center()
@@ -5934,7 +5957,7 @@ impl Render for Workspace {
                             .child(
                                 div()
                                     .id("sidebar-settings")
-                                    .h(px(30.))
+                                    .h(px(28.))
                                     .px(px(8.))
                                     .flex()
                                     .items_center()
@@ -5967,7 +5990,7 @@ impl Render for Workspace {
                                 div()
                                     .text_size(px(11.))
                                     .text_color(muted)
-                                    .mt(px(16.))
+                                    .mt(px(10.))
                                     .child("工作区"),
                             )
                             .child(
@@ -5976,19 +5999,6 @@ impl Render for Workspace {
                                     .flex_1()
                                     .h_full()
                                     .overflow_y_scroll()
-                                    .when(!recent_rows.is_empty(), |list| {
-                                        list.child(
-                                            div()
-                                                .h(px(24.))
-                                                .px(px(8.))
-                                                .flex()
-                                                .items_center()
-                                                .text_size(px(11.))
-                                                .text_color(muted)
-                                                .child("最近"),
-                                        )
-                                        .children(recent_rows)
-                                    })
                                     .when(!favorite_rows.is_empty(), |list| {
                                         list.child(
                                             div()
@@ -6001,6 +6011,19 @@ impl Render for Workspace {
                                                 .child("收藏"),
                                         )
                                         .children(favorite_rows)
+                                    })
+                                    .when(!recent_rows.is_empty(), |list| {
+                                        list.child(
+                                            div()
+                                                .h(px(24.))
+                                                .px(px(8.))
+                                                .flex()
+                                                .items_center()
+                                                .text_size(px(11.))
+                                                .text_color(muted)
+                                                .child("最近"),
+                                        )
+                                        .children(recent_rows)
                                     })
                                     .children(page_rows)
                                     .child(
@@ -6022,22 +6045,17 @@ impl Render for Workspace {
                                             .child("＋  新建页面"),
                                     ),
                             )
+                            .child(div().h(px(8.)))
+                            .child(div().h(px(1.)).bg(Palette::color(&p.border)))
                             .child(
                                 div()
-                                    .h(px(28.))
-                                    .px(px(8.))
+                                    .h(px(22.))
+                                    .px(px(28.))
                                     .flex()
                                     .items_center()
-                                    .rounded(px(5.))
-                                    .bg(rgba(0xffffff14))
-                                    .text_color(accent)
-                                    .child(self.session.page.title.clone()),
-                            )
-                            .child(
-                                div()
                                     .text_size(px(11.))
                                     .text_color(muted)
-                                    .child("GPUI · 开发预览"),
+                                    .child("0.1.0"),
                             ),
                     )
                     .child(page_content),
