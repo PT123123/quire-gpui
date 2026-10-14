@@ -60,6 +60,47 @@ pub fn execute(session: &mut Session, name: &str, args: &Value) -> Result<Value,
                 .collect::<Vec<_>>();
             Ok(json!({"pages": pages}))
         }
+        "search_pages" => {
+            let query = required_string(args, "query")?.trim();
+            if query.is_empty() {
+                return Err("搜索词不能为空".into());
+            }
+            let needle = query.to_lowercase();
+            let limit = args
+                .get("limit")
+                .and_then(Value::as_u64)
+                .unwrap_or(20)
+                .clamp(1, 100) as usize;
+            let mut matches = Vec::new();
+            for page in session.pages.iter().filter(|page| !page.template) {
+                let title_match = page.title.to_lowercase().contains(&needle);
+                let blocks = session
+                    .document
+                    .page_blocks(page.id)
+                    .iter()
+                    .filter(|block| block.text.to_lowercase().contains(&needle))
+                    .map(|block| {
+                        json!({
+                            "block_id": block.id.0,
+                            "kind": block.kind.as_str(),
+                            "text": block.text.chars().take(240).collect::<String>()
+                        })
+                    })
+                    .collect::<Vec<_>>();
+                if title_match || !blocks.is_empty() {
+                    matches.push(json!({
+                        "page_id": page.id.0,
+                        "title": page.title,
+                        "title_match": title_match,
+                        "blocks": blocks
+                    }));
+                    if matches.len() >= limit {
+                        break;
+                    }
+                }
+            }
+            Ok(json!({"query": query, "pages": matches}))
+        }
         "read_page" => {
             let id = PageId(integer(args, "page_id")?);
             let page = session
@@ -374,6 +415,14 @@ pub fn tool_defs() -> Vec<ToolDef> {
             input_schema: schema(json!({ "page_id": { "type": "integer" } }), &["page_id"]),
         },
         ToolDef {
+            name: "search_pages",
+            description: "按页面标题或块正文不区分大小写搜索普通页面，返回命中块与截断文本；limit 默认 20，最多 100 页。",
+            input_schema: schema(
+                json!({ "query": { "type": "string" }, "limit": { "type": "integer", "minimum": 1, "maximum": 100 } }),
+                &["query"],
+            ),
+        },
+        ToolDef {
             name: "create_page",
             description: "新建顶层页面，可用 Markdown 正文初始化内容。",
             input_schema: schema(
@@ -660,6 +709,14 @@ mod tests {
                 .any(|block| block.text == "Updated body")
         );
         assert!(session.select_page(current));
+        let search = execute(
+            &mut session,
+            "search_pages",
+            &json!({"query":"Updated body"}),
+        )
+        .unwrap();
+        assert_eq!(search["pages"][0]["page_id"], id);
+        assert_eq!(search["pages"][0]["blocks"][0]["text"], "Updated body");
         let complex = session.import_markdown("Complex page".into(), "Safe paragraph");
         assert!(session.select_page(complex));
         session.execute(quire_core::core::command::Command::AppendBlock {

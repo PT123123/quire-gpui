@@ -663,8 +663,14 @@ GPUI 已覆盖主编辑器、整理区、独立速记与标签建议、Windows �
 - 修复同步自动/手动/单设备队列发送失败时仍遗留“进行中”状态的问题；命令通道关闭后立即清除对应 pending 标记并展示需要重启应用的可见错误。自动轮询会显示排队设备数并在发送失败时触发界面刷新。
 - 验证：`cargo fmt --all`、`cargo check -j 8`、`cargo test -j 8`（47 项）、`cargo build --release -j 8 --target-dir target-release`、release `--help`、parity 生成及 `git diff --check` 均通过；未访问真实库。双机局域网互通、Shell 托盘唤回及外部 MCP 客户端连接仍需桌面实测。
 
-## 第九十七轮：MCP 页面读取与安全写入
+## 第九十七轮：MCP 页面搜索、读取与安全写入
 
 - MCP 新增 `list_pages`、`read_page`、`create_page`、`update_page`：Agent 可列出非模板页面、读取页面有序块、用 Markdown 新建顶层页面及修改标题/正文。正文替换只允许简单 Markdown 块，先校验 core 导出再导入可无损往返；遇到表格/数据库/附件/引用、层级、折叠或自定义颜色等复杂内容时拒绝整页覆盖，避免静默丢数据。锁定页面拒绝修改；改当前页后同步更新 GPUI 输入实体，IME 组合期间拒绝并发覆盖。
 - 工具仍通过唯一 UI Session 执行并由 MCP event pump flush。隔离库测试覆盖 Markdown 页面创建、页块读取、标题/正文更新、正文单步 undo/redo、重开持久化、当前页面选择保持、复杂页面拒绝覆盖及锁定页拒绝。
 - 旧版基线与 GPUI 扩展的差异已记入决策文档和计划。验证：`cargo fmt --all`、`cargo check -j 8`、`cargo test -j 8`（49 项）、`cargo build --release -j 8 --target-dir target-release` 与 `git diff --check` 通过；未访问真实库。真实 MCP 客户端仍需桌面连接验收。
+
+## 第九十八轮：MCP 页面搜索
+
+- 新增 `search_pages`，按页面标题和块正文进行不区分大小写的子串搜索，模板页不进入结果；返回命中页面、命中块 ID/类型和最多 240 字符的文本片段。结果数默认 20，限制在 1–100，空查询明确报错。
+- MCP 工具总数更新为 15。隔离库测试在正文更新后搜索匹配内容并验证页面与命中块；不修改选择状态或数据库。
+- 验证：`cargo fmt --all`、`cargo check -j 8`、`cargo test -j 8`（49 项）、`cargo build --release -j 8 --target-dir target-release` 和 `git diff --check` 通过；编译仅有 vendor GPUI 未来兼容提示及现存 dead-code 提示。
