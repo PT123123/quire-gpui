@@ -3598,7 +3598,7 @@ impl Render for Workspace {
                 .flex()
                 .items_center()
                 .justify_center()
-                .bg(Hsla::from(rgb(0x000000)).opacity(0.32))
+                .bg(Hsla::from(rgb(0x000000)).opacity(0x59 as f32 / 255.))
                 .child(
                     div()
                         .id("settings-dialog")
@@ -3611,7 +3611,13 @@ impl Render for Workspace {
                         .rounded(px(12.))
                         .border_1()
                         .border_color(Palette::color(&p.border))
-                        .bg(Palette::color(&p.elevated))
+                        .bg(Palette::color(&p.elevated2))
+                        .shadow(vec![BoxShadow {
+                            color: Hsla::from(rgb(0x000000)).opacity(0xa0 as f32 / 255.),
+                            offset: point(px(2.), px(3.)),
+                            blur_radius: px(0.),
+                            spread_radius: px(-2.),
+                        }])
                         .flex()
                         .flex_col()
                         .gap(px(10.))

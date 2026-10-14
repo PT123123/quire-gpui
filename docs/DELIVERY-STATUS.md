@@ -490,3 +490,9 @@ GPUI 应用已超出第一竖切，但离完整复刻仍有较大差距。用户
 - 将公开版 GPUI 0.2.2 源码 vendored 到 `vendor/gpui-0.2.2`，仅补 Windows 隐藏标题栏窗口：非最大化时客户区 inset 设为 0；最大化安全 inset 保持 GPUI 原逻辑。由于 inset=0 后 `DefWindowProc` 不再识别客户区内的 resize 边缘，在 GPUI Windows hit-test 中显式补回四边和四角原生 resize hit code，并让 resize 边缘优先于顶栏拖动区域。
 - 默认窗口目标从旧补偿尺寸 1264×791 改成基线外框 1280×800。真窗口抓图确认渐变与侧栏表面填满全部 1280×800 像素，没有桌面缝隙。
 - 验证：16 项库测试 + 3 项视图测试、`cargo check --target-dir target-check`、release 构建、`git diff --check` 通过。运行中窗口外框/客户区同为 1280×800；`WM_NCHITTEST` 四边/四角返回码依次为 11/10/12/15/13/14/16/17；使用 `SendInput` 从右边缘拖动 36px 后外框从 1280px 增至 1316px。测试仅使用 `%TEMP%\quire-gpui-sidebar-visual-20261014\fixture.db`。
+
+## 第六十五轮：设置表面层级与窗口模式可用性
+
+- 设置弹窗表面由 `bg-elev` 改为旧版 `surface-overlay = bg-elev2`；遮罩改用旧版 `#00000059`；补入旧版 `#000000a0` 的右下偏移投影。翡翠绿真窗口确认弹窗表面层级与参考更接近，尺寸和布局保持不变。
+- release 真窗口通过窗口最大化按钮完成最大化和还原；标题栏拖动区双击也能最大化/还原。最大化截图显示内容覆盖屏幕工作区，恢复后回到原 1280×800 外框尺寸。测试库为 `%TEMP%\quire-gpui-windowmode-20261014.db`，仅用于本轮。
+- 验证：16 项库测试 + 3 项视图测试、`cargo check --target-dir target-check`、release 构建、`cargo fmt` 与 `git diff --check` 通过。当前真人输入法验收仍沿用用户确认结果；本轮只核窗口行为和设置弹窗视觉。
