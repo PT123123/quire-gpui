@@ -559,6 +559,7 @@ pub struct Workspace {
     search_selected: usize,
     backlinks_open: bool,
     hovered_block: Option<BlockId>,
+    block_menu_open: Option<(BlockId, bool)>,
     hovered_page: Option<quire_core::core::types::PageId>,
     hovered_note: Option<quire_core::core::organizer::NoteId>,
     hovered_task: Option<quire_core::core::organizer::TaskId>,
@@ -754,6 +755,7 @@ impl Workspace {
             search_selected: 0,
             backlinks_open: false,
             hovered_block: None,
+            block_menu_open: None,
             hovered_page: None,
             hovered_note: None,
             hovered_task: None,
@@ -1468,12 +1470,13 @@ impl Workspace {
             }
             InputEvent::RemoveBlock => self.delete_block(id, window, cx),
             InputEvent::DismissSlash => {
+                let block_menu_closed = self.block_menu_open.take().is_some();
                 if self.find_open {
                     self.close_find(window, cx);
                 }
                 let slash_closed = self.slash_menu.take().is_some();
                 let mention_closed = self.mention_menu.take().is_some();
-                if slash_closed || mention_closed {
+                if block_menu_closed || slash_closed || mention_closed {
                     cx.notify();
                 }
             }
@@ -5787,9 +5790,134 @@ impl Render for Workspace {
                                     },
                                 ))
                         });
+                let block_context_popup = self
+                    .block_menu_open
+                    .filter(|(id, _)| *id == block_id)
+                    .map(|(_, turn_into)| {
+                        let rows = if turn_into {
+                            slash_items()
+                                .iter()
+                                .filter(|(_, _, target)| *target != kind)
+                                .map(|(label, _, target)| {
+                                    let target = *target;
+                                    div()
+                                        .id(SharedString::from(format!(
+                                            "block-menu-kind-{block_id:?}-{target:?}"
+                                        )))
+                                        .w_full()
+                                        .h(px(28.))
+                                        .px(px(9.))
+                                        .flex()
+                                        .items_center()
+                                        .rounded(px(4.))
+                                        .cursor_pointer()
+                                        .text_size(px(12.))
+                                        .text_color(text)
+                                        .hover(|item| item.bg(Palette::color(&p.bg).opacity(0.3)))
+                                        .on_click(cx.listener(move |this, _, window, cx| {
+                                            this.block_menu_open = None;
+                                            this.select_slash_kind(block_id, target, window, cx);
+                                        }))
+                                        .child(*label)
+                                        .into_any_element()
+                                })
+                                .collect::<Vec<_>>()
+                        } else {
+                            [("转换为…", 0), ("文字颜色", 1), ("背景颜色", 2), ("复制块", 3), ("删除", 4)]
+                                .into_iter()
+                                .map(|(label, action)| {
+                                    div()
+                                        .id(SharedString::from(format!(
+                                            "block-menu-action-{block_id:?}-{action}"
+                                        )))
+                                        .w_full()
+                                        .h(px(28.))
+                                        .px(px(9.))
+                                        .flex()
+                                        .items_center()
+                                        .rounded(px(4.))
+                                        .cursor_pointer()
+                                        .text_size(px(12.))
+                                        .text_color(if action == 4 {
+                                            Hsla::from(rgb(0xe5534b))
+                                        } else {
+                                            text
+                                        })
+                                        .hover(|item| item.bg(Palette::color(&p.bg).opacity(0.3)))
+                                        .on_click(cx.listener(move |this, _, window, cx| {
+                                            match action {
+                                                0 => this.block_menu_open = Some((block_id, true)),
+                                                1 => {
+                                                    this.block_menu_open = None;
+                                                    this.toggle_color_picker(block_id, false, cx);
+                                                }
+                                                2 => {
+                                                    this.block_menu_open = None;
+                                                    this.toggle_color_picker(block_id, true, cx);
+                                                }
+                                                3 => {
+                                                    this.block_menu_open = None;
+                                                    this.duplicate_block(block_id, window, cx);
+                                                }
+                                                4 => {
+                                                    this.block_menu_open = None;
+                                                    this.delete_block(block_id, window, cx);
+                                                }
+                                                _ => {}
+                                            }
+                                            cx.notify();
+                                        }))
+                                        .child(label.to_owned())
+                                        .into_any_element()
+                                })
+                                .collect::<Vec<_>>()
+                        };
+                        let mut rows = rows;
+                        if turn_into {
+                            rows.insert(
+                                0,
+                                div()
+                                    .id(SharedString::from(format!("block-menu-back-{block_id:?}")))
+                                    .w_full()
+                                    .h(px(28.))
+                                    .px(px(9.))
+                                    .flex()
+                                    .items_center()
+                                    .rounded(px(4.))
+                                    .cursor_pointer()
+                                    .text_size(px(12.))
+                                    .text_color(muted)
+                                    .hover(|item| item.bg(Palette::color(&p.bg).opacity(0.3)))
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        this.block_menu_open = Some((block_id, false));
+                                        cx.notify();
+                                    }))
+                                    .child("‹  返回")
+                                    .into_any_element(),
+                            );
+                        }
+                        div()
+                            .id(SharedString::from(format!("block-menu-{block_id:?}")))
+                            .absolute()
+                            .top(px(32.))
+                            .right(px(0.))
+                            .w(px(184.))
+                            .max_h(px(320.))
+                            .overflow_y_scroll()
+                            .p(px(4.))
+                            .flex()
+                            .flex_col()
+                            .gap(px(2.))
+                            .rounded(px(7.))
+                            .border_1()
+                            .border_color(Palette::color(&p.border))
+                            .bg(Palette::color(&p.elevated))
+                            .children(rows)
+                    });
                 div()
                     .id(("block", block.id.0))
                     .w_full()
+                    .relative()
                     .flex()
                     .on_hover(cx.listener(move |this, hovered, _, cx| {
                         if *hovered {
@@ -7142,10 +7270,35 @@ impl Render for Workspace {
                                             this.delete_block(block_id, window, cx)
                                         }))
                                         .child("×"),
-                                ),
+                                )
+                                .when(!self.session.page.locked, |actions| {
+                                    actions.child(
+                                        div()
+                                            .id(SharedString::from(format!(
+                                                "block-more-{block_id:?}"
+                                            )))
+                                            .px(px(3.))
+                                            .cursor_pointer()
+                                            .text_color(muted)
+                                            .hover(|button| button.text_color(accent))
+                                            .on_click(cx.listener(move |this, _, _, cx| {
+                                                this.block_menu_open = if this
+                                                    .block_menu_open
+                                                    .is_some_and(|(open_id, _)| open_id == block_id)
+                                                {
+                                                    None
+                                                } else {
+                                                    Some((block_id, false))
+                                                };
+                                                cx.notify();
+                                            }))
+                                            .child("⋮"),
+                                    )
+                                }),
                         )
                     })
                     .when_some(color_picker_view, |row, picker| row.child(picker))
+                    .when_some(block_context_popup, |row, popup| row.child(popup))
             })
             .collect::<Vec<_>>();
         let mut notes = (if self.organizer_trash {
