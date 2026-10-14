@@ -51,7 +51,7 @@ Slint 的 line factor 基于 natural line box，不能直接当作字高相乘�
 
 ## 动效
 
-duration-instant 80ms、fast 140ms、normal 220ms、slow 320ms。现有主题切换约 80ms，侧栏约 140ms，以具体 animate 定义为准。迁移每处属性、时长、easing、是否布局动画，不统一替换成 300ms。
+duration-instant 80ms、fast 140ms、normal 220ms、slow 320ms。侧栏宽度明确使用 `duration-normal`（220ms，`components/Sidebar.slint:83`）；其他过渡按具体 `animate` 定义核对，不能只按 token 名猜测。迁移每处属性、时长、easing、是否布局动画，不统一替换成 300ms。
 
 动画必须有可检查的中间帧；主题色和渐变端点同步过渡，不瞬间切背景再慢慢换字色。不要把 GPUI render 循环本身当作动画时钟。动画完成、无输入时无持续 notify/刷新。光标闪烁是独立输入反馈，测空闲性能时说明是否有焦点。
 

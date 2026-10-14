@@ -477,4 +477,4 @@ GPUI 应用已超出第一竖切，但离完整复刻仍有较大差距。用户
 
 - 固定入口去掉旧版不存在的笔记/任务计数与“设置 / 外观”副标题；笔记、任务、搜索、设置、工作区下拉使用从冻结 `Icons.slint` 矢量几何迁移的 GPUI 路径图标，固定入口保留 28px 行高、16px 图标槽与 13px 文字。设置行打开完整设置窗并选中外观页，底部版本号由 Cargo 包版本读取。
 - 依据旧版选中行行为修正笔记/任务文字与背景状态色；仍需真窗口对照图核验具体像素、左右留白、点击反馈和图标端帽。
-- 验证：`cargo check --target-dir target-check`、`cargo test --target-dir target-check`（16 项库测试 + 3 项视图测试）、`git diff --check` 通过。尝试从真窗口采图时系统捕获了前台的其他应用，因此该采图不作 GPUI 视觉验收；库仅使用 `%TEMP%\quire-gpui-sidebar-visual-20261014\fixture.db`。
+- 验证：`cargo check --target-dir target-check`、`cargo test --target-dir target-check`（16 项库测试 + 3 项视图测试）、release 构建、`git diff --check` 通过。尝试从真窗口采图时系统捕获了前台的其他应用，PrintWindow 也未输出窗口图像，因此该采图不作 GPUI 视觉验收；库仅使用 `%TEMP%\quire-gpui-sidebar-visual-20261014\fixture.db`。
