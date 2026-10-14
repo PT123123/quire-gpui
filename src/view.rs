@@ -15,6 +15,91 @@ use std::{
     time::Duration,
 };
 
+#[derive(Clone, Copy)]
+enum SidebarGlyph {
+    Search,
+    Settings,
+    Note,
+    TodoCheck,
+    ChevronDown,
+}
+
+fn sidebar_glyph(glyph: SidebarGlyph, color: Hsla) -> impl IntoElement {
+    canvas(
+        move |bounds, _, _| {
+            let origin = bounds.origin;
+            let size = bounds.size;
+            let sx = size.width / 24.;
+            let sy = size.height / 24.;
+            let point_at = |x: f32, y: f32| point(origin.x + sx * x, origin.y + sy * y);
+            let mut path = PathBuilder::stroke(px(1.8));
+            match glyph {
+                SidebarGlyph::Search => {
+                    path.move_to(point_at(11., 4.));
+                    path.arc_to(
+                        point(sx * 7., sy * 7.),
+                        px(0.),
+                        false,
+                        true,
+                        point_at(11., 18.),
+                    );
+                    path.arc_to(
+                        point(sx * 7., sy * 7.),
+                        px(0.),
+                        false,
+                        true,
+                        point_at(11., 4.),
+                    );
+                    path.move_to(point_at(16., 16.));
+                    path.line_to(point_at(20., 20.));
+                }
+                SidebarGlyph::Settings => {
+                    path.move_to(point_at(4., 8.));
+                    path.line_to(point_at(20., 8.));
+                    path.move_to(point_at(9., 5.));
+                    path.line_to(point_at(9., 11.));
+                    path.move_to(point_at(4., 16.));
+                    path.line_to(point_at(20., 16.));
+                    path.move_to(point_at(17., 13.));
+                    path.line_to(point_at(17., 19.));
+                }
+                SidebarGlyph::Note => {
+                    path.move_to(point_at(5., 3.));
+                    path.line_to(point_at(15., 3.));
+                    path.line_to(point_at(19., 7.));
+                    path.line_to(point_at(19., 21.));
+                    path.line_to(point_at(5., 21.));
+                    path.close();
+                    path.move_to(point_at(15., 3.));
+                    path.line_to(point_at(15., 7.));
+                    path.line_to(point_at(19., 7.));
+                    path.move_to(point_at(8.5, 12.));
+                    path.line_to(point_at(15.5, 12.));
+                    path.move_to(point_at(8.5, 16.));
+                    path.line_to(point_at(15.5, 16.));
+                }
+                SidebarGlyph::TodoCheck => {
+                    path = PathBuilder::stroke(px(2.6));
+                    path.move_to(point_at(4.5, 12.5));
+                    path.line_to(point_at(9.5, 17.));
+                    path.line_to(point_at(19.5, 6.5));
+                }
+                SidebarGlyph::ChevronDown => {
+                    path.move_to(point_at(5., 9.5));
+                    path.line_to(point_at(12., 16.5));
+                    path.line_to(point_at(19., 9.5));
+                }
+            }
+            path.build().expect("static sidebar glyph path")
+        },
+        move |bounds, path, window, _| {
+            let _ = bounds;
+            window.paint_path(path, color);
+        },
+    )
+    .size(px(16.))
+}
+
 actions!(
     workspace,
     [
@@ -7855,7 +7940,7 @@ impl Render for Workspace {
                                     )
                                     .child(div().font_weight(FontWeight::SEMIBOLD).child("工作区"))
                                     .child(div().flex_1())
-                                    .child(div().text_color(muted).child("⌄")),
+                                    .child(sidebar_glyph(SidebarGlyph::ChevronDown, muted)),
                             )
                             .child(
                                 div()
@@ -7867,24 +7952,37 @@ impl Render for Workspace {
                                     .rounded(px(5.))
                                     .cursor_pointer()
                                     .text_color(if self.organizer_open && !self.organizer_tasks {
-                                        accent
+                                        text
                                     } else {
-                                        muted
+                                        Palette::color(&p.fg).opacity(0.78)
                                     })
                                     .when(self.organizer_open && !self.organizer_tasks, |row| {
-                                        row.bg(Palette::color(&p.bg).opacity(0.3))
+                                        row.bg(Palette::color(&p.elevated2).opacity(0.55))
                                     })
-                                    .hover(|row| row.bg(Palette::color(&p.bg).opacity(0.3)))
+                                    .hover(|row| row.bg(Palette::color(&p.elevated2).opacity(0.45)))
                                     .on_click(cx.listener(|this, _, window, cx| {
                                         if !this.organizer_open {
                                             this.toggle_organizer(window, cx);
                                         }
                                         this.toggle_organizer_tab(false, window, cx);
                                     }))
-                                    .child(format!(
-                                        "▤  笔记  ·  {}",
-                                        self.session.organizer.live_notes().count()
-                                    )),
+                                    .child(
+                                        div()
+                                            .w(px(16.))
+                                            .h(px(16.))
+                                            .flex()
+                                            .items_center()
+                                            .justify_center()
+                                            .child(sidebar_glyph(
+                                                SidebarGlyph::Note,
+                                                if self.organizer_open && !self.organizer_tasks {
+                                                    text
+                                                } else {
+                                                    muted
+                                                },
+                                            )),
+                                    )
+                                    .child(div().text_size(px(13.)).child("笔记")),
                             )
                             .child(
                                 div()
@@ -7896,24 +7994,37 @@ impl Render for Workspace {
                                     .rounded(px(5.))
                                     .cursor_pointer()
                                     .text_color(if self.organizer_open && self.organizer_tasks {
-                                        accent
+                                        text
                                     } else {
-                                        muted
+                                        Palette::color(&p.fg).opacity(0.78)
                                     })
                                     .when(self.organizer_open && self.organizer_tasks, |row| {
-                                        row.bg(Palette::color(&p.bg).opacity(0.3))
+                                        row.bg(Palette::color(&p.elevated2).opacity(0.55))
                                     })
-                                    .hover(|row| row.bg(Palette::color(&p.bg).opacity(0.3)))
+                                    .hover(|row| row.bg(Palette::color(&p.elevated2).opacity(0.45)))
                                     .on_click(cx.listener(|this, _, window, cx| {
                                         if !this.organizer_open {
                                             this.toggle_organizer(window, cx);
                                         }
                                         this.toggle_organizer_tab(true, window, cx);
                                     }))
-                                    .child(format!(
-                                        "✓  任务  ·  {}",
-                                        self.session.organizer.live_tasks().count()
-                                    )),
+                                    .child(
+                                        div()
+                                            .w(px(16.))
+                                            .h(px(16.))
+                                            .flex()
+                                            .items_center()
+                                            .justify_center()
+                                            .child(sidebar_glyph(
+                                                SidebarGlyph::TodoCheck,
+                                                if self.organizer_open && self.organizer_tasks {
+                                                    text
+                                                } else {
+                                                    muted
+                                                },
+                                            )),
+                                    )
+                                    .child(div().text_size(px(13.)).child("任务")),
                             )
                             .child(
                                 div()
@@ -7929,7 +8040,20 @@ impl Render for Workspace {
                                     .on_click(cx.listener(|this, _, window, cx| {
                                         this.open_search(&SearchPages, window, cx);
                                     }))
-                                    .child("⌕  搜索                    Ctrl P"),
+                                    .child(
+                                        div()
+                                            .w(px(16.))
+                                            .h(px(16.))
+                                            .flex()
+                                            .items_center()
+                                            .justify_center()
+                                            .child(sidebar_glyph(SidebarGlyph::Search, muted)),
+                                    )
+                                    .child(div().text_size(px(13.)).child("搜索"))
+                                    .child(div().flex_1())
+                                    .child(
+                                        div().text_size(px(11.)).text_color(muted).child("Ctrl P"),
+                                    ),
                             )
                             .child(
                                 div()
@@ -7943,20 +8067,25 @@ impl Render for Workspace {
                                     .text_color(muted)
                                     .hover(|row| row.bg(Palette::color(&p.bg).opacity(0.3)))
                                     .on_click(cx.listener(|this, _, _, cx| {
-                                        this.theme_picker_open = !this.theme_picker_open;
+                                        this.theme_picker_open = true;
+                                        this.settings_tab = 0;
                                         this.search_query.clear();
-                                        let placeholder = if this.theme_picker_open {
-                                            "搜索设置…"
-                                        } else {
-                                            "搜索页面…"
-                                        };
                                         this.search_input.update(cx, |input, cx| {
-                                            input.placeholder = Some(placeholder.into());
+                                            input.placeholder = Some("搜索设置…".into());
                                             input.reset(String::new(), Vec::new(), 0, cx);
                                         });
                                         cx.notify();
                                     }))
-                                    .child("⚙  设置 / 外观"),
+                                    .child(
+                                        div()
+                                            .w(px(16.))
+                                            .h(px(16.))
+                                            .flex()
+                                            .items_center()
+                                            .justify_center()
+                                            .child(sidebar_glyph(SidebarGlyph::Settings, muted)),
+                                    )
+                                    .child(div().text_size(px(13.)).child("设置")),
                             )
                             .when_some(delete_confirmation, |sidebar, confirmation| {
                                 sidebar.child(confirmation)
@@ -8030,7 +8159,7 @@ impl Render for Workspace {
                                     .items_center()
                                     .text_size(px(11.))
                                     .text_color(muted)
-                                    .child("0.1.0"),
+                                    .child(env!("CARGO_PKG_VERSION")),
                             )
                             .child(
                                 div()

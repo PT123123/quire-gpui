@@ -472,3 +472,9 @@ GPUI 应用已超出第一竖切，但离完整复刻仍有较大差距。用户
 
 - 侧栏面板与顶栏连续底色轨道共同以旧版 `Theme.duration-normal` 的 220ms 宽度过渡展开或收起；收起过渡结束前继续挂载并裁剪侧栏内容，以保持完整滑出效果。
 - 验证：`cargo check --target-dir target-check`、`cargo test --target-dir target-check`（16 项库测试 + 3 项视图测试）及 `cargo fmt` 通过。还未录制真实窗口的中间帧，也未对照冻结的 `sidebar-toggle` 时序；代码完成不代表视觉动效验收完成。
+
+## 第六十二轮：固定侧栏入口视觉对齐
+
+- 固定入口去掉旧版不存在的笔记/任务计数与“设置 / 外观”副标题；笔记、任务、搜索、设置、工作区下拉使用从冻结 `Icons.slint` 矢量几何迁移的 GPUI 路径图标，固定入口保留 28px 行高、16px 图标槽与 13px 文字。设置行打开完整设置窗并选中外观页，底部版本号由 Cargo 包版本读取。
+- 依据旧版选中行行为修正笔记/任务文字与背景状态色；仍需真窗口对照图核验具体像素、左右留白、点击反馈和图标端帽。
+- 验证：`cargo check --target-dir target-check`、`cargo test --target-dir target-check`（16 项库测试 + 3 项视图测试）、`git diff --check` 通过。尝试从真窗口采图时系统捕获了前台的其他应用，因此该采图不作 GPUI 视觉验收；库仅使用 `%TEMP%\quire-gpui-sidebar-visual-20261014\fixture.db`。
