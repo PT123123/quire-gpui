@@ -5311,22 +5311,6 @@ impl Render for Workspace {
                                                         .flex()
                                                         .items_center()
                                                         .gap(px(6.))
-                    .child(
-                        div()
-                            .id("format-tools-toggle")
-                            .px(px(7.))
-                            .py(px(4.))
-                            .rounded(px(5.))
-                            .cursor_pointer()
-                            .text_color(if self.format_bar_open { accent } else { muted })
-                            .when(self.format_bar_open, |button| button.bg(Palette::color(&p.elevated)))
-                            .hover(|button| button.bg(Palette::color(&p.elevated)))
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.format_bar_open = !this.format_bar_open;
-                                cx.notify();
-                            }))
-                            .child("Aa"),
-                    )
                                                         .child(
                                                             div()
                                                                 .id(SharedString::from(format!("organizer-subtask-done-{id:?}-{subtask_id}")))
@@ -5605,6 +5589,24 @@ impl Render for Workspace {
                             .flex()
                             .items_center()
                             .gap(px(6.))
+                            .child(
+                                div()
+                                    .id("format-tools-toggle")
+                                    .px(px(7.))
+                                    .py(px(4.))
+                                    .rounded(px(5.))
+                                    .cursor_pointer()
+                                    .text_color(if self.format_bar_open { accent } else { muted })
+                                    .when(self.format_bar_open, |button| {
+                                        button.bg(Palette::color(&p.elevated))
+                                    })
+                                    .hover(|button| button.bg(Palette::color(&p.elevated)))
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.format_bar_open = !this.format_bar_open;
+                                        cx.notify();
+                                    }))
+                                    .child("Aa"),
+                            )
                             .child(
                                 div()
                                     .id("page-icon-picker")
