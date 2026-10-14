@@ -1022,9 +1022,11 @@ pub struct Workspace {
     database_formula_input: Entity<TextInput>,
     database_option_input: Entity<TextInput>,
     database_search_input: Entity<TextInput>,
+    database_relation_search_input: Entity<TextInput>,
     database_property_name_input: Entity<TextInput>,
     search_subscription: Option<Subscription>,
     database_search_subscription: Option<Subscription>,
+    database_relation_search_subscription: Option<Subscription>,
     database_property_name_subscription: Option<Subscription>,
     find_subscription: Option<Subscription>,
     note_title_subscription: Option<Subscription>,
@@ -1063,6 +1065,7 @@ pub struct Workspace {
     database_column_drag: Option<DatabaseColumnDrag>,
     database_search_open: Option<u64>,
     database_search_text: String,
+    database_relation_search_text: String,
     selected_database_record: Option<(u64, u64, u64)>,
     active_database_cell: Option<(u64, u64, u64, u64)>,
     active_database_formula: Option<(u64, u64, u64)>,
@@ -1202,6 +1205,8 @@ impl Workspace {
         });
         let database_search_input =
             cx.new(|cx| TextInput::new(String::new(), Vec::new(), 12., window, cx));
+        let database_relation_search_input =
+            cx.new(|cx| TextInput::new(String::new(), Vec::new(), 11., window, cx));
         let database_filter_value_input =
             cx.new(|cx| TextInput::new(String::new(), Vec::new(), 12., window, cx));
         database_filter_value_input.update(cx, |input, _| {
@@ -1211,6 +1216,9 @@ impl Workspace {
             cx.new(|cx| TextInput::new(String::new(), Vec::new(), 11., window, cx));
         database_search_input.update(cx, |input, _| {
             input.placeholder = Some("搜索此数据库…".into())
+        });
+        database_relation_search_input.update(cx, |input, _| {
+            input.placeholder = Some("搜索目标记录…".into())
         });
         let input_fg = Palette::color(&Palette::load(theme).fg);
         for input in [
@@ -1228,6 +1236,7 @@ impl Workspace {
             database_formula_input.clone(),
             database_option_input.clone(),
             database_search_input.clone(),
+            database_relation_search_input.clone(),
             database_property_name_input.clone(),
         ] {
             input.update(cx, |input, _| input.text_color = Some(input_fg));
@@ -1250,9 +1259,11 @@ impl Workspace {
             database_formula_input,
             database_option_input,
             database_search_input,
+            database_relation_search_input,
             database_property_name_input,
             search_subscription: None,
             database_search_subscription: None,
+            database_relation_search_subscription: None,
             database_property_name_subscription: None,
             find_subscription: None,
             note_title_subscription: None,
@@ -1287,6 +1298,7 @@ impl Workspace {
             database_column_drag: None,
             database_search_open: None,
             database_search_text: String::new(),
+            database_relation_search_text: String::new(),
             database_filter_panel: 0,
             database_filter_edit_row: None,
             database_filter_value_input,
@@ -1609,6 +1621,23 @@ impl Workspace {
                     cx.notify();
                 }
                 InputEvent::DismissSlash => this.close_database_search(window, cx),
+                _ => {}
+            },
+        ));
+        let database_relation_search_input = this.database_relation_search_input.clone();
+        this.database_relation_search_subscription = Some(cx.subscribe_in(
+            &database_relation_search_input,
+            window,
+            |this, _, event, window, cx| match event {
+                InputEvent::Edited { text, .. } => {
+                    this.database_relation_search_text = text.clone();
+                    cx.notify();
+                }
+                InputEvent::DismissSlash => {
+                    if let Some(key) = this.active_database_relation {
+                        this.toggle_database_relation_picker(key, window, cx);
+                    }
+                }
                 _ => {}
             },
         ));
@@ -3923,6 +3952,27 @@ impl Workspace {
             input.placeholder = Some("搜索此数据库…".into());
         });
         window.focus(&self.database_search_input.read(cx).focus);
+        cx.notify();
+    }
+    fn toggle_database_relation_picker(
+        &mut self,
+        key: (u64, u64, u64, u64),
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.active_database_relation == Some(key) {
+            self.active_database_relation = None;
+            self.database_relation_search_text.clear();
+            self.restore_focus(window, cx);
+        } else {
+            self.active_database_relation = Some(key);
+            self.database_relation_search_text.clear();
+            self.database_relation_search_input.update(cx, |input, cx| {
+                input.reset(String::new(), Vec::new(), 0, cx);
+                input.placeholder = Some("搜索目标记录…".into());
+            });
+            window.focus(&self.database_relation_search_input.read(cx).focus);
+        }
         cx.notify();
     }
     fn close_database_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -7902,9 +7952,8 @@ impl Render for Workspace {
                                                                                 this.selected_database_record = Some((cell_block, db_id.0, row.record));
                                                                                 cx.notify();
                                                                             } else if kind == quire_core::core::database::PropertyKind::Relation {
-                                                                                this.active_database_relation = if this.active_database_relation == Some((cell_block, db_id.0, row.record, property_id.0)) { None } else { Some((cell_block, db_id.0, row.record, property_id.0)) };
                                                                                 this.active_database_cell = None;
-                                                                                cx.notify();
+                                                                                this.toggle_database_relation_picker((cell_block, db_id.0, row.record, property_id.0), window, cx);
                                                                             } else {
                                                                             this.begin_database_cell_edit(
                                                                                 cell_block,
@@ -7939,11 +7988,13 @@ impl Render for Workspace {
                                                                     let relation = quire_core::core::database_relation::config_relation(&property.config);
                                                                     if let Some(target_db) = relation.target {
                                                                         let selected_ids = match _this.session.repo.cell(quire_core::core::database::RecordId(row.record), property.id) { Ok(quire_core::core::database::CellValue::Items(ids)) => ids, _ => Vec::new() };
-                                                                        let candidates = _this.session.repo.records_named(target_db, "", 40).unwrap_or_default();
+                                                                        let query = _this.database_relation_search_text.trim().to_owned();
+                                                                        let candidates = _this.session.repo.records_named(target_db, &query, 40).unwrap_or_default();
                                                                         let mut menu = div().id(SharedString::from(format!("db-relation-menu-{}-{}", row.record, property_id.0))).absolute().top(px(33.)).left(px(0.)).min_w(px(170.)).max_h(px(240.)).overflow_y_scroll().flex_col().gap(px(2.)).p(px(5.)).rounded(px(6.)).border_1().border_color(db_border).bg(elevated).shadow_lg();
-                                                                        menu = menu.child(div().text_size(px(10.)).text_color(muted).px(px(6.)).py(px(3.)).child(format!("{} · 显示前 40 条", _this.session.databases.database(target_db).map(|db| db.name.as_str()).unwrap_or("目标数据库"))));
+                                                                        menu = menu.child(div().text_size(px(10.)).text_color(muted).px(px(6.)).py(px(3.)).child(format!("{} · 搜索结果最多 40 条", _this.session.databases.database(target_db).map(|db| db.name.as_str()).unwrap_or("目标数据库"))));
+                                                                        menu = menu.child(div().w(px(218.)).h(px(28.)).px(px(5.)).rounded(px(4.)).border_1().border_color(db_border).child(_this.database_relation_search_input.clone()));
                                                                         menu = menu.child(div().id(SharedString::from(format!("db-relation-clear-{}-{property_id}", row.record))).px(px(7.)).py(px(5.)).rounded(px(4.)).text_size(px(11.)).text_color(muted).hover(|item| item.bg(db_hover)).cursor_pointer().on_click(_cx.listener(move |this, _, window, cx| this.clear_database_relation(cell_block, row.record, property_id.0, window, cx))).child("清除全部关联"));
-                                                                        if candidates.is_empty() { menu = menu.child(div().px(px(7.)).py(px(5.)).text_size(px(11.)).text_color(muted).child("目标数据库没有记录")); }
+                                                                        if candidates.is_empty() { menu = menu.child(div().px(px(7.)).py(px(5.)).text_size(px(11.)).text_color(muted).child(if query.is_empty() { "目标数据库没有记录" } else { "没有匹配的记录" })); }
                                                                         menu = menu.children(candidates.into_iter().map(|(target, title)| {
                                                                             let selected = selected_ids.iter().any(|id| id == &target.to_string());
                                                                             div().id(SharedString::from(format!("db-relation-choice-{}-{target}", property_id.0))).px(px(7.)).py(px(5.)).rounded(px(4.)).text_size(px(11.)).text_color(text).when(selected, |item| item.bg(accent.opacity(0.28))).hover(|item| item.bg(db_hover)).cursor_pointer().on_click(_cx.listener(move |this, _, window, cx| this.toggle_database_relation_target(cell_block, row.record, property_id.0, target, window, cx))).child(format!("{} {}", if selected { "☑" } else { "□" }, if title.is_empty() { "（无标题）".to_owned() } else { title }))
