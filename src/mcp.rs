@@ -611,5 +611,44 @@ mod tests {
         .unwrap();
         assert!(notification.is_none());
         server.stop();
+
+        // The settings UI's restart path stops the old listener before
+        // starting another server on the same configured port. Verify that
+        // shutdown releases the socket and that a fresh MCP session answers
+        // requests after the restart.
+        let rebound = TcpListener::bind(("127.0.0.1", port))
+            .expect("stopping MCP must release its loopback port");
+        drop(rebound);
+        let mut restarted = McpServer::new(
+            port,
+            "secret-rotated".into(),
+            vec![ToolDef {
+                name: "echo",
+                description: "echo input",
+                input_schema: json!({"type":"object"}),
+            }],
+            Arc::new(|_, _| Ok(json!({"restarted": true}))),
+        )
+        .spawn()
+        .expect("MCP must restart on its released port");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        let restarted_response = loop {
+            match TcpStream::connect(("127.0.0.1", port)) {
+                Ok(_) => {
+                    break post(
+                        port,
+                        Some("secret-rotated"),
+                        r#"{"jsonrpc":"2.0","id":3,"method":"ping","params":{}}"#,
+                    );
+                }
+                Err(_) if std::time::Instant::now() < deadline => {
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+                Err(error) => panic!("restarted MCP listener never bound: {error}"),
+            }
+        };
+        assert!(restarted_response.starts_with("HTTP/1.1 200 OK"));
+        assert!(restarted_response.contains("\"id\":3"));
+        restarted.stop();
     }
 }

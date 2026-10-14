@@ -767,3 +767,9 @@ GPUI 已覆盖主编辑器、整理区、独立速记与标签建议、Windows �
 
 - release `--smoke-test` 先经 `ShellEvent::QuickNote` 打开、编辑并提交速记，再走 `hide_to_tray` 隐藏主窗；随后通过平台 `ShellEvent::ShowMain` 唤回，并调用 Win32 `IsWindowVisible` 断言窗口确实恢复可见，最后正常保存退出。
 - 本轮 smoke 在新临时库 release 窗口通过；全量 dev 测试、`cargo check`、Release 构建、格式与 diff 检查通过。未验证右键菜单的 Shell 点选、Windows Explorer 重启后的真人托盘交互或多屏位置。
+
+## 第一百一十六轮：MCP 服务停止与同端口重启
+
+- 扩展隔离 loopback MCP 生命周期回归：鉴权失败、HTTP 工具调用和 stdio 转发后停止 listener，立即重新绑定相同端口，再以新 token 启动并成功处理 MCP `ping`。
+- 覆盖设置页启停/重启依赖的端口释放与新服务响应；没有使用固定端口或用户数据。
+- 验证：`cargo test` 全套、`cargo fmt --all -- --check`、`cargo check`、Release 构建及 `git diff --check` 通过。
