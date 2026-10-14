@@ -5845,7 +5845,7 @@ impl Workspace {
             .map(|tag| format!("#{tag} "))
             .unwrap_or_default();
         let options = WindowOptions {
-            window_bounds: Some(WindowBounds::centered(size(px(440.), px(270.)), cx)),
+            window_bounds: Some(WindowBounds::centered(size(px(560.), px(340.)), cx)),
             titlebar: None,
             window_min_size: Some(size(px(360.), px(220.))),
             kind: WindowKind::PopUp,
@@ -13496,6 +13496,7 @@ impl QuickNoteWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
+        crate::platform::set_window_always_on_top(window);
         let suggestions = owner.read(cx).session.organizer_tag_suggestions(&draft);
         let input = cx.new(|cx| TextInput::new(draft.clone(), Vec::new(), 15., window, cx));
         input.update(cx, |input, _| {
@@ -13643,7 +13644,7 @@ impl Render for QuickNoteWindow {
             .size_full()
             .flex()
             .flex_col()
-            .gap(px(12.))
+            .gap(px(8.))
             .p(px(18.))
             .text_color(foreground)
             .bg(linear_gradient(
@@ -13654,15 +13655,46 @@ impl Render for QuickNoteWindow {
             .color_space(ColorSpace::Srgb))
             .child(
                 div()
-                    .text_size(px(16.))
-                    .font_weight(FontWeight::BOLD)
-                    .child("速记"),
+                    .h(px(24.))
+                    .flex()
+                    .items_center()
+                    .gap(px(8.))
+                    .window_control_area(WindowControlArea::Drag)
+                    .child(div().w(px(4.)).h(px(14.)).rounded(px(2.)).bg(accent))
+                    .child(
+                        div()
+                            .flex_1()
+                            .text_size(px(14.))
+                            .font_weight(FontWeight::BOLD)
+                            .child("速记"),
+                    )
+                    .child(
+                        div()
+                            .id("quick-note-close")
+                            .w(px(24.))
+                            .h(px(24.))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .rounded(px(5.))
+                            .cursor_pointer()
+                            .text_color(muted)
+                            .hover(|button| button.bg(Palette::color(&palette.elevated)))
+                            .on_click(cx.listener(|this, _, window, cx| this.cancel(window, cx)))
+                            .child("×"),
+                    ),
+            )
+            .child(
+                div()
+                    .text_size(px(11.))
+                    .text_color(muted)
+                    .child("提示：# 输入标签，Ctrl+Enter 或 Alt+S 提交，Esc 取消"),
             )
             .child(
                 div()
                     .id("quick-note-input")
                     .flex_1()
-                    .min_h(px(120.))
+                    .min_h(px(56.))
                     .p(px(10.))
                     .rounded(px(8.))
                     .border_1()
@@ -13715,12 +13747,13 @@ impl Render for QuickNoteWindow {
                     .flex()
                     .items_center()
                     .justify_between()
-                    .child(
-                        div()
-                            .text_size(px(11.))
-                            .text_color(muted)
-                            .child("↑↓ 选择标签 · Enter/Tab 采用建议 · Ctrl+Enter 或 Alt+S 保存 · Esc 收起建议/取消"),
-                    )
+                    .child(div().text_size(px(11.)).text_color(muted).child(
+                        if self.draft.trim().is_empty() {
+                            "空草稿".to_owned()
+                        } else {
+                            format!("{} 字", self.draft.chars().count())
+                        },
+                    ))
                     .child(
                         div()
                             .flex()

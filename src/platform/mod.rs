@@ -114,3 +114,46 @@ pub fn set_main_window_visible(window: &gpui::Window, visible: bool) {
     #[cfg(not(windows))]
     let _ = (window, visible);
 }
+
+/// Keep the independent quick-note window above ordinary desktop windows.
+/// GPUI's popup window kind already uses the corresponding elevated level on
+/// macOS; its Windows backend creates a tool window but does not make it
+/// topmost, so we apply the native z-order there.
+pub fn set_window_always_on_top(window: &gpui::Window) {
+    #[cfg(windows)]
+    {
+        use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+        if let Ok(handle) = HasWindowHandle::window_handle(window)
+            && let RawWindowHandle::Win32(handle) = handle.as_raw()
+        {
+            const HWND_TOPMOST: isize = -1;
+            const SWP_NOSIZE: u32 = 0x0001;
+            const SWP_NOMOVE: u32 = 0x0002;
+            const SWP_NOACTIVATE: u32 = 0x0010;
+            unsafe extern "system" {
+                fn SetWindowPos(
+                    hwnd: isize,
+                    insert_after: isize,
+                    x: i32,
+                    y: i32,
+                    width: i32,
+                    height: i32,
+                    flags: u32,
+                ) -> i32;
+            }
+            unsafe {
+                SetWindowPos(
+                    handle.hwnd.get(),
+                    HWND_TOPMOST,
+                    0,
+                    0,
+                    0,
+                    0,
+                    SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+                );
+            }
+        }
+    }
+    #[cfg(not(windows))]
+    let _ = window;
+}
