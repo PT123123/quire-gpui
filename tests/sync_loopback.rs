@@ -4,6 +4,7 @@ use quire_core::services::sync::{
     server::SyncServer,
     transport,
 };
+use quire_core::{core::command::Command, core::types::AttachmentId};
 use quire_gpui::session::Session;
 use std::net::TcpListener;
 use std::sync::mpsc::{self, Receiver, Sender};
@@ -46,8 +47,12 @@ fn answer_job(session: &mut Session, job: Job) {
                 .send(session.attachments.keys().copied().collect())
                 .unwrap();
         }
-        Job::AttachmentBytes { reply, .. } => {
-            reply.send(Vec::new()).unwrap();
+        Job::AttachmentBytes { id, reply } => {
+            let bytes = session
+                .attachment_path(AttachmentId(id))
+                .and_then(|path| std::fs::read(path).ok())
+                .unwrap_or_default();
+            reply.send(bytes).unwrap();
         }
         Job::InboundPair { reply, .. } => {
             reply.send(true).unwrap();
@@ -103,8 +108,38 @@ fn two_isolated_sessions_exchange_changes_over_sync_http_and_reopen() -> anyhow:
     );
     let page_b = b.create_page(None);
     b.set_page_title("来自 B 的页面".into());
-    let block_b = b.blocks().first().unwrap().id;
-    b.replace_plain_page_block_text(page_b, block_b, "来自节点 B 的正文".into())?;
+    let database_block_b = b.blocks().first().unwrap().id;
+    let database_b = b
+        .make_database(database_block_b, "来自 B 的数据库".into())
+        .unwrap();
+    let record_b = b.add_database_record(database_block_b).unwrap();
+    let property_b = b
+        .add_database_property(
+            database_block_b,
+            "备注".into(),
+            quire_core::core::database::PropertyKind::Text,
+        )
+        .unwrap();
+    b.set_database_cell(database_block_b, record_b, property_b, "数据库单元同步")?;
+    b.execute(Command::AppendBlock {
+        kind: quire_core::core::types::BlockKind::Paragraph,
+        text: "来自节点 B 的正文".into(),
+    });
+    let block_b = b
+        .blocks()
+        .iter()
+        .find(|block| block.text == "来自节点 B 的正文")
+        .unwrap()
+        .id;
+    let attachment_fixture = scratch_b.path().join("sync-attachment.txt");
+    std::fs::write(&attachment_fixture, b"loopback attachment bytes")?;
+    let attachment_block_b = b.import_attachment(block_b, &attachment_fixture, false)?;
+    let attachment_b = b
+        .blocks()
+        .iter()
+        .find(|block| block.id == attachment_block_b)
+        .and_then(|block| block.attachment)
+        .expect("imported file block references its attachment");
 
     let (port_a, _jobs_a) = start_node(&mut a);
     let (port_b, jobs_b) = start_node(&mut b);
@@ -139,8 +174,38 @@ fn two_isolated_sessions_exchange_changes_over_sync_http_and_reopen() -> anyhow:
     assert_eq!(status, 200);
     let remote_b =
         SyncSnapshot::from_json(&String::from_utf8(snapshot_bytes)?).map_err(anyhow::Error::msg)?;
-    let merged_a = a.sync_apply_remote(&remote_b, &[], &peer_b)?;
+    let mut attachment_bytes = Vec::new();
+    for attachment in &remote_b.attachments {
+        let attachment_id = attachment.id;
+        let attachment_path = format!("/sync/attachment/{attachment_id}");
+        let (status, bytes) = request_while_pumping(&jobs_b_snapshot, &mut b, move |reply| {
+            let _ = reply.send(transport::http_get(
+                "127.0.0.1",
+                port_b,
+                &attachment_path,
+                Duration::from_secs(3),
+            ));
+        })
+        .map_err(anyhow::Error::msg)?;
+        assert_eq!(status, 200);
+        attachment_bytes.push((attachment_id, bytes));
+    }
+    let merged_a = a.sync_apply_remote(&remote_b, &attachment_bytes, &peer_b)?;
     assert!(a.pages.iter().any(|page| page.id == page_b));
+    assert!(
+        a.databases
+            .databases
+            .iter()
+            .any(|database| database.id == database_b)
+    );
+    assert_eq!(
+        a.repo.cell(record_b, property_b)?,
+        quire_core::core::database::CellValue::Text("数据库单元同步".into())
+    );
+    assert_eq!(
+        std::fs::read(a.attachment_path(attachment_b).unwrap())?,
+        b"loopback attachment bytes"
+    );
     assert!(
         a.document
             .page_blocks(page_b)
@@ -170,6 +235,16 @@ fn two_isolated_sessions_exchange_changes_over_sync_http_and_reopen() -> anyhow:
     );
     assert!(b.organizer.note(note_a).is_some());
     assert!(b.pages.iter().any(|page| page.title == "来自 B 的页面"));
+    assert!(
+        b.databases
+            .databases
+            .iter()
+            .any(|database| database.id == database_b)
+    );
+    assert_eq!(
+        b.repo.cell(record_b, property_b)?,
+        quire_core::core::database::CellValue::Text("数据库单元同步".into())
+    );
 
     // The first server is also a real protocol endpoint; GET its info after
     // the exchange to prove the two nodes kept distinct, stable identities.
@@ -201,6 +276,36 @@ fn two_isolated_sessions_exchange_changes_over_sync_http_and_reopen() -> anyhow:
             .page_blocks(page_b)
             .iter()
             .any(|block| block.text == "来自节点 B 的正文")
+    );
+    assert!(
+        reopened_a
+            .databases
+            .databases
+            .iter()
+            .any(|database| database.id == database_b)
+    );
+    assert_eq!(
+        reopened_a.repo.cell(record_b, property_b)?,
+        quire_core::core::database::CellValue::Text("数据库单元同步".into())
+    );
+    assert_eq!(
+        std::fs::read(reopened_a.attachment_path(attachment_b).unwrap())?,
+        b"loopback attachment bytes"
+    );
+    assert!(
+        reopened_b
+            .databases
+            .databases
+            .iter()
+            .any(|database| database.id == database_b)
+    );
+    assert_eq!(
+        reopened_b.repo.cell(record_b, property_b)?,
+        quire_core::core::database::CellValue::Text("数据库单元同步".into())
+    );
+    assert_eq!(
+        std::fs::read(reopened_b.attachment_path(attachment_b).unwrap())?,
+        b"loopback attachment bytes"
     );
     assert!(
         reopened_a
