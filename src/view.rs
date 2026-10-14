@@ -5962,7 +5962,7 @@ impl Render for Workspace {
                     .h_full()
                     .px(px(20.))
                     .py(px(20.))
-                    .when(!self.organizer_tasks && self.selected_note.is_none(), |pane| {
+                    .when(!self.organizer_tasks || self.selected_note.is_none(), |pane| {
                         pane.flex_none()
                             .w(px(0.))
                             .px(px(0.))
@@ -5970,7 +5970,7 @@ impl Render for Workspace {
                             .overflow_hidden()
                     })
                     .when(
-                        self.selected_note.is_some() || self.selected_task.is_some(),
+                        self.selected_task.is_some(),
                         |editor| {
                             editor
                                 .w_full()
@@ -6242,7 +6242,7 @@ impl Render for Workspace {
                         },
                     )
                     .when(
-                        self.selected_note.is_none() && self.selected_task.is_none(),
+                        self.selected_task.is_none(),
                         |empty| {
                             empty
                                 .w_full()
@@ -6335,6 +6335,66 @@ impl Render for Workspace {
                                     this.create_note(window, cx)
                                 }))
                                 .child("＋"),
+                        )
+                    })
+                    .when(self.selected_note.is_some() && !self.organizer_tasks, |card| {
+                        card.child(
+                            div()
+                                .id("organizer-note-detail-overlay")
+                                .absolute()
+                                .top(px(16.))
+                                .bottom(px(16.))
+                                .right(px(14.))
+                                .w(px(420.))
+                                .max_w(px(520.))
+                                .rounded(px(14.))
+                                .border_1()
+                                .border_color(Palette::color(&p.border))
+                                .bg(Palette::color(&p.elevated2))
+                                .shadow_lg()
+                                .px(px(16.))
+                                .py(px(14.))
+                                .flex()
+                                .flex_col()
+                                .gap(px(12.))
+                                .child(
+                                    div()
+                                        .flex()
+                                        .items_center()
+                                        .justify_between()
+                                        .child(div().flex_1().text_size(px(18.)).font_weight(FontWeight::SEMIBOLD).child(self.note_title_input.clone()))
+                                        .child(
+                                            div()
+                                                .id("organizer-note-detail-close")
+                                                .px(px(8.))
+                                                .py(px(4.))
+                                                .rounded(px(5.))
+                                                .cursor_pointer()
+                                                .text_color(muted)
+                                                .hover(|button| button.bg(Palette::color(&p.elevated)))
+                                                .on_click(cx.listener(|this, _, window, cx| this.reload_selected_note(window, cx)))
+                                                .child("×"),
+                                        ),
+                                )
+                                .child(
+                                    div()
+                                        .flex()
+                                        .items_center()
+                                        .gap(px(8.))
+                                        .text_color(muted)
+                                        .child("标签")
+                                        .child(
+                                            div()
+                                                .flex_1()
+                                                .h(px(30.))
+                                                .rounded(px(5.))
+                                                .border_1()
+                                                .border_color(Palette::color(&p.border))
+                                                .px(px(8.))
+                                                .child(self.organizer_tags_input.clone()),
+                                        ),
+                                )
+                                .child(div().id("organizer-note-body-scroll").flex_1().min_h_0().overflow_y_scroll().child(self.note_body_input.clone())),
                         )
                     }),
                 );
