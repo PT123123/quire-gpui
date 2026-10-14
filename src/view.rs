@@ -374,8 +374,10 @@ pub struct Workspace {
     selected_task_list: quire_core::core::organizer::ListId,
     selected_task_smart_view: Option<i32>,
     show_task_done: bool,
+    task_sort: i32,
     selected_note: Option<quire_core::core::organizer::NoteId>,
     selected_task: Option<quire_core::core::organizer::TaskId>,
+    selected_task_ids: HashSet<quire_core::core::organizer::TaskId>,
     note_title_draft: String,
     note_body_draft: String,
     task_due_draft: String,
@@ -470,8 +472,10 @@ impl Workspace {
             selected_task_list: quire_core::core::organizer::ListId::INBOX,
             selected_task_smart_view: Some(0),
             show_task_done: false,
+            task_sort: 0,
             selected_note: None,
             selected_task: None,
+            selected_task_ids: HashSet::new(),
             note_title_draft: String::new(),
             note_body_draft: String::new(),
             task_due_draft: String::new(),
@@ -1868,6 +1872,7 @@ impl Workspace {
         }
         self.commit_note_draft(window, cx);
         self.organizer_tasks = tasks;
+        self.selected_task_ids.clear();
         self.selected_note = None;
         self.selected_task = None;
         if tasks {
@@ -1928,6 +1933,7 @@ impl Workspace {
             }
         }
         self.commit_note_draft(window, cx);
+        self.selected_task_ids.clear();
         self.selected_task_smart_view = None;
         self.selected_task_list = list;
         self.selected_task = None;
@@ -1948,6 +1954,7 @@ impl Workspace {
             return;
         }
         self.commit_note_draft(window, cx);
+        self.selected_task_ids.clear();
         self.selected_task_smart_view = Some(view);
         self.selected_task_list = quire_core::core::organizer::ListId::INBOX;
         self.selected_task = None;
@@ -2019,6 +2026,39 @@ impl Workspace {
         } else {
             self.selected_task = None;
             self.reset_organizer_item_inputs(cx);
+        }
+    }
+    fn cycle_task_sort(&mut self, cx: &mut Context<Self>) {
+        self.task_sort = (self.task_sort + 1) % 3;
+        cx.notify();
+    }
+    fn toggle_task_multi_select(
+        &mut self,
+        id: quire_core::core::organizer::TaskId,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.selected_task_ids.remove(&id) {
+            self.selected_task_ids.insert(id);
+        }
+        cx.notify();
+    }
+    fn bulk_complete_tasks(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let ids = self.selected_task_ids.iter().copied().collect::<Vec<_>>();
+        if self.session.set_tasks_done(&ids, true) {
+            self.selected_task_ids.clear();
+            self.status = format!("已完成 {} 项任务（Ctrl+Z 可撤销）", ids.len());
+            self.schedule_save(true, window, cx);
+            cx.notify();
+        }
+    }
+    fn bulk_trash_tasks(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let ids = self.selected_task_ids.iter().copied().collect::<Vec<_>>();
+        if self.session.set_tasks_trashed(&ids, true) {
+            self.selected_task_ids.clear();
+            self.selected_task = None;
+            self.reset_organizer_item_inputs(cx);
+            self.status = format!("已移入回收站 {} 项任务（Ctrl+Z 可撤销）", ids.len());
+            self.schedule_save(true, window, cx);
         }
     }
     fn create_task_list(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -2119,6 +2159,7 @@ impl Workspace {
     fn toggle_organizer_trash(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.commit_note_draft(window, cx);
         self.organizer_trash = !self.organizer_trash;
+        self.selected_task_ids.clear();
         self.selected_note = None;
         self.selected_task = None;
         self.reset_organizer_item_inputs(cx);
@@ -2126,6 +2167,7 @@ impl Workspace {
     fn toggle_organizer_tag(&mut self, tag: String, window: &mut Window, cx: &mut Context<Self>) {
         self.commit_note_draft(window, cx);
         self.organizer_tag = (self.organizer_tag.as_deref() != Some(tag.as_str())).then_some(tag);
+        self.selected_task_ids.clear();
         self.selected_note = None;
         self.selected_task = None;
         self.reset_organizer_item_inputs(cx);
@@ -4518,7 +4560,22 @@ impl Render for Workspace {
         })
         .cloned()
         .collect::<Vec<_>>();
-        tasks.sort_by_key(|task| task.ord);
+        match self.task_sort {
+            1 => tasks.sort_by(|a, b| {
+                a.due
+                    .is_none()
+                    .cmp(&b.due.is_none())
+                    .then_with(|| a.due.cmp(&b.due))
+                    .then_with(|| a.ord.cmp(&b.ord))
+            }),
+            2 => tasks.sort_by(|a, b| {
+                b.priority
+                    .slot()
+                    .cmp(&a.priority.slot())
+                    .then_with(|| a.ord.cmp(&b.ord))
+            }),
+            _ => tasks.sort_by_key(|task| task.ord),
+        }
         let task_rows = tasks
             .into_iter()
             .map(|task| {
@@ -4548,6 +4605,36 @@ impl Render for Workspace {
                             .flex()
                             .items_center()
                             .gap(px(6.))
+                            .when(!self.organizer_trash, |row| {
+                                row.child(
+                                    div()
+                                        .id(SharedString::from(format!(
+                                            "organizer-task-select-{id:?}"
+                                        )))
+                                        .w(px(17.))
+                                        .h(px(17.))
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .rounded(px(3.))
+                                        .border_1()
+                                        .border_color(if self.selected_task_ids.contains(&id) {
+                                            accent
+                                        } else {
+                                            muted
+                                        })
+                                        .text_color(accent)
+                                        .cursor_pointer()
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            this.toggle_task_multi_select(id, cx)
+                                        }))
+                                        .child(if self.selected_task_ids.contains(&id) {
+                                            "✓"
+                                        } else {
+                                            ""
+                                        }),
+                                )
+                            })
                             .child(
                                 div()
                                     .id(SharedString::from(format!("organizer-task-done-{id:?}")))
@@ -4887,33 +4974,81 @@ impl Render for Workspace {
                                 .overflow_y_scroll()
                                 .children(task_list_buttons),
                         )
-                        .when(
-                            self.selected_task_smart_view != Some(4),
-                            |list| {
-                                list.child(
-                                    div()
-                                        .id("organizer-show-done-toggle")
-                                        .px(px(8.))
-                                        .py(px(5.))
-                                        .rounded(px(5.))
-                                        .cursor_pointer()
-                                        .text_color(if self.show_task_done {
-                                            accent
-                                        } else {
-                                            muted
-                                        })
-                                        .hover(|row| row.bg(Palette::color(&p.elevated)))
-                                        .on_click(cx.listener(|this, _, window, cx| {
-                                            this.toggle_show_task_done(window, cx)
-                                        }))
-                                        .child(if self.show_task_done {
-                                            "☑ 显示已完成"
-                                        } else {
-                                            "□ 显示已完成"
-                                        }),
-                                )
-                            },
+                        .when(self.selected_task_smart_view != Some(4), |list| {
+                            list.child(
+                                div()
+                                    .id("organizer-show-done-toggle")
+                                    .px(px(8.))
+                                    .py(px(5.))
+                                    .rounded(px(5.))
+                                    .cursor_pointer()
+                                    .text_color(if self.show_task_done { accent } else { muted })
+                                    .hover(|row| row.bg(Palette::color(&p.elevated)))
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.toggle_show_task_done(window, cx)
+                                    }))
+                                    .child(if self.show_task_done {
+                                        "☑ 显示已完成"
+                                    } else {
+                                        "□ 显示已完成"
+                                    }),
+                            )
+                        })
+                        .child(
+                            div()
+                                .id("organizer-task-sort-toggle")
+                                .px(px(8.))
+                                .py(px(5.))
+                                .rounded(px(5.))
+                                .cursor_pointer()
+                                .text_color(muted)
+                                .hover(|row| row.bg(Palette::color(&p.elevated)))
+                                .on_click(cx.listener(|this, _, _, cx| this.cycle_task_sort(cx)))
+                                .child(match self.task_sort {
+                                    1 => "排序：截止日期",
+                                    2 => "排序：优先级",
+                                    _ => "排序：手动顺序",
+                                }),
                         )
+                        .when(!self.selected_task_ids.is_empty(), |list| {
+                            list.child(
+                                div()
+                                    .flex()
+                                    .gap(px(5.))
+                                    .child(
+                                        div()
+                                            .id("organizer-bulk-complete")
+                                            .flex_1()
+                                            .px(px(6.))
+                                            .py(px(5.))
+                                            .rounded(px(4.))
+                                            .cursor_pointer()
+                                            .text_color(accent)
+                                            .hover(|button| button.bg(Palette::color(&p.elevated)))
+                                            .on_click(cx.listener(|this, _, window, cx| {
+                                                this.bulk_complete_tasks(window, cx)
+                                            }))
+                                            .child(format!(
+                                                "完成 {} 项",
+                                                self.selected_task_ids.len()
+                                            )),
+                                    )
+                                    .child(
+                                        div()
+                                            .id("organizer-bulk-trash")
+                                            .px(px(7.))
+                                            .py(px(5.))
+                                            .rounded(px(4.))
+                                            .cursor_pointer()
+                                            .text_color(muted)
+                                            .hover(|button| button.text_color(rgb(0xe5534b)))
+                                            .on_click(cx.listener(|this, _, window, cx| {
+                                                this.bulk_trash_tasks(window, cx)
+                                            }))
+                                            .child("移入回收站"),
+                                    ),
+                            )
+                        })
                     })
                     .when(!organizer_tag_buttons.is_empty(), |list| {
                         list.child(

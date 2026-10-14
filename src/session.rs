@@ -1029,6 +1029,65 @@ impl Session {
     pub fn set_task_tags(&mut self, id: TaskId, tags: Vec<String>) -> bool {
         self.update_task(id, |task| task.tags = tags)
     }
+    pub fn set_tasks_done(&mut self, ids: &[TaskId], done: bool) -> bool {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default();
+        let millis = now.as_millis().min(i64::MAX as u128) as i64;
+        let seconds = now.as_secs().min(i64::MAX as u64) as i64;
+        let commands = ids
+            .iter()
+            .filter_map(|id| {
+                let before = self.organizer.task(*id)?.clone();
+                let mut after = before.clone();
+                after.done = done;
+                after.completed_at = done.then_some(seconds);
+                after.edited = seconds;
+                after.rev = organizer::rev(millis, "quire-gpui");
+                Some(Command::UpdateTask {
+                    id: *id,
+                    before,
+                    after,
+                })
+            })
+            .collect::<Vec<_>>();
+        self.apply_organizer_batch(commands)
+    }
+    pub fn set_tasks_trashed(&mut self, ids: &[TaskId], trashed: bool) -> bool {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default();
+        let millis = now.as_millis().min(i64::MAX as u128) as i64;
+        let seconds = now.as_secs().min(i64::MAX as u64) as i64;
+        let commands = ids
+            .iter()
+            .filter_map(|id| {
+                let before = self.organizer.task(*id)?.clone();
+                let mut after = before.clone();
+                after.deleted_at = trashed.then_some(seconds);
+                after.rev = organizer::rev(millis, "quire-gpui");
+                Some(Command::UpdateTask {
+                    id: *id,
+                    before,
+                    after,
+                })
+            })
+            .collect::<Vec<_>>();
+        self.apply_organizer_batch(commands)
+    }
+    fn apply_organizer_batch(&mut self, commands: Vec<Command>) -> bool {
+        let Some(changes) = command::exec_all(
+            &mut self.document,
+            &mut self.history,
+            ORGANIZER_STACK,
+            commands,
+        ) else {
+            return false;
+        };
+        self.apply_organizer_changes(&changes);
+        self.persistence.record(changes);
+        true
+    }
     pub fn set_task_due(&mut self, id: TaskId, due: Option<String>) -> bool {
         if due
             .as_deref()
@@ -2011,10 +2070,24 @@ mod tests {
         let scratch = quire_core::testing::ScratchDir::new("gpui-organizer-task");
         let path = scratch.path().join("test.db");
         let task_id;
+        let bulk_task_id;
         let list_id;
         {
             let mut session = Session::open(&path)?;
             task_id = session.create_task("发布 GPUI 版".into());
+            bulk_task_id = session.create_task("检查安装包".into());
+            assert!(session.set_tasks_done(&[task_id, bulk_task_id], true));
+            assert!(session.organizer.task(task_id).unwrap().done);
+            assert!(session.organizer.task(bulk_task_id).unwrap().done);
+            assert!(session.undo_organizer());
+            assert!(!session.organizer.task(task_id).unwrap().done);
+            assert!(!session.organizer.task(bulk_task_id).unwrap().done);
+            assert!(session.set_tasks_trashed(&[task_id, bulk_task_id], true));
+            assert!(session.organizer.task(task_id).unwrap().is_trashed());
+            assert!(session.organizer.task(bulk_task_id).unwrap().is_trashed());
+            assert!(session.undo_organizer());
+            assert!(!session.organizer.task(task_id).unwrap().is_trashed());
+            assert!(!session.organizer.task(bulk_task_id).unwrap().is_trashed());
             assert_eq!(session.organizer.task(task_id).unwrap().list, ListId::INBOX);
             assert!(session.update_task_content(
                 task_id,
