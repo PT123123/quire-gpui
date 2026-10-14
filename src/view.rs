@@ -5221,6 +5221,7 @@ impl Render for Workspace {
                     .border_1()
                     .border_color(Palette::color(&p.border))
                     .bg(Palette::color(&p.elevated))
+                    .relative()
                     .overflow_hidden()
                     .child(
                         div()
@@ -5229,7 +5230,9 @@ impl Render for Workspace {
                     .min_w_0()
                     .flex_shrink_0()
                     .when(self.organizer_tasks, |column| {
-                        column.flex_none().w(px(400.))
+                        // Reset flex-1's zero basis so the task list retains its
+                        // intended 400px reference width inside the three-column card.
+                        column.flex_initial().w(px(400.)).flex_shrink_0()
                     })
                     .h_full()
                     .border_r_1()
@@ -5269,8 +5272,10 @@ impl Render for Workspace {
                                     })
                                     .child(if self.organizer_trash {
                                         "回收站"
-                                    } else {
+                                    } else if self.organizer_tasks {
                                         "＋"
+                                    } else {
+                                        ""
                                     }),
                             )
                             .when(self.organizer_tasks && !self.organizer_trash, |row| {
@@ -5382,11 +5387,15 @@ impl Render for Workspace {
                     .flex_1()
                     .min_w_0()
                     .h_full()
-                    .when(!self.organizer_tasks && self.selected_note.is_none(), |pane| {
-                        pane.flex_none().w(px(0.)).px(px(0.)).py(px(0.))
-                    })
                     .px(px(20.))
                     .py(px(20.))
+                    .when(!self.organizer_tasks && self.selected_note.is_none(), |pane| {
+                        pane.flex_none()
+                            .w(px(0.))
+                            .px(px(0.))
+                            .py(px(0.))
+                            .overflow_hidden()
+                    })
                     .when(
                         self.selected_note.is_some() || self.selected_task.is_some(),
                         |editor| {
@@ -5720,7 +5729,29 @@ impl Render for Workspace {
                             .child(
                                 div().id("organizer-trash-toggle").px(px(8.)).py(px(7.)).rounded(px(5.)).cursor_pointer().text_color(if self.organizer_trash { accent } else { muted }).when(self.organizer_trash, |row| row.bg(Palette::color(&p.elevated))).hover(|row| row.bg(Palette::color(&p.elevated))).on_click(cx.listener(|this, _, window, cx| this.toggle_organizer_trash(window, cx))).child(format!("回收站 · {}", self.session.organizer.trashed_notes().count() + self.session.organizer.trashed_tasks().count()))
                             ),
-                    ),
+                    )
+                    .when(!self.organizer_tasks && !self.organizer_trash, |card| {
+                        card.child(
+                            div()
+                                .id("organizer-create-note-floating")
+                                .absolute()
+                                .bottom(px(20.))
+                                .right(px(220.))
+                                .w(px(56.))
+                                .h(px(56.))
+                                .rounded(px(28.))
+                                .bg(accent)
+                                .text_color(rgb(0xffffff))
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .cursor_pointer()
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.create_note(window, cx)
+                                }))
+                                .child("＋"),
+                        )
+                    }),
                 );
         let page_content = if self.organizer_open {
             organizer_view
