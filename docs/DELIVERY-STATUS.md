@@ -744,3 +744,9 @@ GPUI 已覆盖主编辑器、整理区、独立速记与标签建议、Windows �
 - 页头、封面和反链面板从固定容器移入可变高虚拟列表首行，与正文统一滚动；保留同一内容宽度和顶部留白。正文列表的 viewport 容器补齐纵向 flex 布局，防止 `ListState` 实际高度为零。
 - 真实窗口 smoke 首次加入跳转至最后一块，暴露两件事：缺少 flex 会令 viewport 为 0；GPUI `ListState::scroll_to_reveal_item` 对尚未测量的 10k 行高度无法定位。现对未挂载目标按稳定列表索引 `scroll_to`，并在 smoke 中断言 viewport 非零、最后一行编辑器确已挂载。隔离库 100/10000 块窗口均通过跳转、输入、速记、保存与重开，10000 场景读回 10002 块和 1 条速记；这不是连续滚动性能或锚点基准。
 - `cargo fmt --check`、`cargo check -j 8`、`cargo test -j 8`（54 项）、release 构建和 release 10k 目标行挂载回归均通过；release 隔离库重开读回 10002 块及 1 条带标签速记。未访问真实用户库。连续滚动性能与滚动锚点仍未测。
+
+## 第一百一十二轮：MCP stdio 子进程端到端回归
+
+- 新增集成测试，实际启动 `quire-gpui --stdio --db <隔离路径>` 子进程，通过库目录旁的 `mcp.json` 读取 mock loopback 服务端口和 token，并验证 HTTP 鉴权头、中文 JSON-RPC 响应、notification 不输出响应及退出行为。
+- 测试使用不存在的临时数据库路径，确认 stdio 桥不创建/打开 SQLite；不启动桌面窗口、不触碰真实用户库，也不依赖外部 MCP 客户端。
+- 专项 `cargo test --test mcp_stdio_process` 通过。尚未真人配置 Claude Desktop / Codex 等客户端连接实际桌面服务，也未完成双机 LAN 往返与托盘菜单桌面验收。
