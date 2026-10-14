@@ -494,13 +494,18 @@ fn toc_headings(blocks: &[Block]) -> Vec<(BlockId, u8, String)> {
         .collect()
 }
 
+fn parse_mcp_port(value: &str) -> Option<u16> {
+    let port = value.trim().parse::<u16>().ok()?;
+    (port != 0).then_some(port)
+}
+
 #[cfg(test)]
 mod view_tests {
     use super::{
         capture_tags, database_filter_value_from_text, database_group_identity,
         database_group_label, database_property_kind_choices, evaluate_database_formula,
         evaluate_database_rollup, find_matches_in, link_target_range, order_database_groups,
-        parse_organizer_tags, toc_headings,
+        parse_mcp_port, parse_organizer_tags, toc_headings,
     };
     use quire_core::core::database::PropertyKind;
     use quire_core::core::database_view::FilterValue;
@@ -523,6 +528,15 @@ mod view_tests {
             ["工作/项目", "计划"]
         );
         assert!(capture_tags("普通文字 # 不是标签").is_empty());
+    }
+
+    #[test]
+    fn mcp_port_accepts_only_nonzero_u16_values() {
+        assert_eq!(parse_mcp_port(" 5880 "), Some(5880));
+        assert_eq!(parse_mcp_port("65535"), Some(65535));
+        assert_eq!(parse_mcp_port("0"), None);
+        assert_eq!(parse_mcp_port("65536"), None);
+        assert_eq!(parse_mcp_port("http"), None);
     }
 
     #[test]
@@ -5972,9 +5986,9 @@ impl Workspace {
         cx.notify();
     }
     fn apply_mcp_port(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let port = match self.mcp_port_draft.trim().parse::<u16>() {
-            Ok(port) if port != 0 => port,
-            _ => {
+        let port = match parse_mcp_port(&self.mcp_port_draft) {
+            Some(port) => port,
+            None => {
                 self.mcp_status = "端口必须是 1–65535 之间的整数".into();
                 cx.notify();
                 return;

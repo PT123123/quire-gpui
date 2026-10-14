@@ -647,4 +647,4 @@ GPUI 应用已超出第一竖切，但离完整复刻仍有较大差距。用户
 
 - MCP 设置现在允许编辑 1–65535 的本机端口。启用中应用端口会停掉旧 listener 并立即在新端口重启；未启用时只保存选择的端口，后续开启/程序重启使用该值。Endpoint、复制配置和 Agent 提示词均使用当前端口。
 - 端口占用时直接展示 listener bind 错误、服务保持关闭且不报告成功；输入非数字或 0 时拒绝应用并保留原端口。服务只监听 127.0.0.1。
-- `cargo fmt --all`、`cargo check -j 8`、`cargo test -j 8`（44 项）和 `cargo build --release -j 8 --target-dir target-release` 通过；release `--help` 正常。尚未真人用第二个进程占端口验证设置页错误呈现。
+- `cargo fmt --all`、`cargo check -j 8`、`cargo test -j 8`（45 项）和 `cargo build --release -j 8 --target-dir target-release` 通过；release `--help` 正常。新增端口解析边界测试。尚未真人用第二个进程占端口验证设置页错误呈现。
