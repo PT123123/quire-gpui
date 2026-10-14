@@ -2466,17 +2466,27 @@ fn is_database_change(change: &Change) -> bool {
     matches!(
         change,
         Change::DatabaseCreated(_)
+            | Change::DatabaseRenamed { .. }
             | Change::DatabaseDeleted { .. }
+            | Change::DatabaseTemplateSet { .. }
+            | Change::BlockDbRefSet { .. }
             | Change::RecordCreated(_)
+            | Change::RecordOrdSet { .. }
+            | Change::RecordPageSet { .. }
             | Change::RecordDeleted { .. }
             | Change::CellSet { .. }
             | Change::PropertyAdded(_)
             | Change::PropertyDeleted { .. }
             | Change::PropertyRenamed { .. }
             | Change::PropertyKindSet { .. }
+            | Change::PropertyOrdSet { .. }
+            | Change::PropertyConfigSet { .. }
             | Change::ViewAdded(_)
             | Change::ViewDeleted { .. }
             | Change::ViewRenamed { .. }
+            | Change::ViewLayoutSet { .. }
+            | Change::ViewDefinitionSet { .. }
+            | Change::ViewOrdSet { .. }
     )
 }
 
@@ -2484,6 +2494,56 @@ fn is_database_change(change: &Change) -> bool {
 mod tests {
     use super::*;
     use quire_core::core::database::CellValue;
+
+    #[test]
+    fn undoing_a_formula_config_flushes_before_reopening() -> Result<()> {
+        let scratch = quire_core::testing::ScratchDir::new("gpui-formula-undo-flush");
+        let path = scratch.path().join("test.db");
+        let formula_id;
+        {
+            let mut session = Session::open(&path)?;
+            let block = session.blocks()[0].id;
+            session
+                .make_database(block, "公式撤销".into())
+                .expect("database created");
+            formula_id = session
+                .add_database_property(
+                    block,
+                    "计算".into(),
+                    quire_core::core::database::PropertyKind::Text,
+                )
+                .expect("property created");
+            assert!(session.set_database_property_kind(
+                block,
+                formula_id,
+                quire_core::core::database::PropertyKind::Formula,
+            )?);
+            assert!(session.set_database_formula(block, formula_id, "1 + 2")?);
+            session.undo();
+            assert!(
+                quire_core::core::database_formula::config_formula(
+                    &session
+                        .databases
+                        .properties
+                        .iter()
+                        .find(|property| property.id == formula_id)
+                        .unwrap()
+                        .config
+                )
+                .is_none()
+            );
+        }
+        let reopened = Session::open(&path)?;
+        let property = reopened
+            .databases
+            .properties
+            .iter()
+            .find(|property| property.id == formula_id)
+            .unwrap();
+        assert!(quire_core::core::database_formula::config_formula(&property.config).is_none());
+        Ok(())
+    }
+
     #[test]
     fn unicode_typing_split_merge_undo_and_reopen_use_real_core_and_sqlite() -> Result<()> {
         let scratch = quire_core::testing::ScratchDir::new("gpui-roundtrip");
