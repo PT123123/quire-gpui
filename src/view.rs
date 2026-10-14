@@ -281,7 +281,12 @@ fn toc_headings(blocks: &[Block]) -> Vec<(BlockId, u8, String)> {
 
 #[cfg(test)]
 mod view_tests {
-    use super::{find_matches_in, link_target_range, parse_organizer_tags, toc_headings};
+    use super::{
+        find_matches_in, link_target_range, parse_organizer_tags, toc_headings,
+        without_filter_property,
+    };
+    use quire_core::core::database::{PropertyId, PropertyKind};
+    use quire_core::core::database_view::{FilterClause, FilterNode, FilterOp, FilterValue};
     use quire_core::core::types::{
         Block, BlockId, BlockKind, ColorKind, Lang, Mark, MarkKind, OrderKey, PageId,
     };
@@ -359,6 +364,39 @@ mod view_tests {
     }
 
     #[test]
+    fn replacing_title_filter_keeps_other_property_rules() {
+        let title_rule = FilterNode::Clause(FilterClause {
+            property: PropertyId(1),
+            kind: PropertyKind::Title,
+            op: FilterOp::IsEmpty,
+            value: FilterValue::Missing,
+        });
+        let text_rule = FilterNode::Clause(FilterClause {
+            property: PropertyId(2),
+            kind: PropertyKind::Text,
+            op: FilterOp::Contains,
+            value: FilterValue::Text("draft".into()),
+        });
+        let tree = FilterNode::All(vec![title_rule, text_rule.clone()]);
+        assert_eq!(
+            without_filter_property(tree, PropertyId(1)),
+            Some(text_rule)
+        );
+        assert_eq!(
+            without_filter_property(
+                FilterNode::Clause(FilterClause {
+                    property: PropertyId(1),
+                    kind: PropertyKind::Title,
+                    op: FilterOp::IsNotEmpty,
+                    value: FilterValue::Missing,
+                }),
+                PropertyId(1),
+            ),
+            None
+        );
+    }
+
+    #[test]
     fn toc_lists_headings_and_omits_folded_subtrees() {
         let blocks = [
             block(1, BlockKind::Toggle, "Section", None, true),
@@ -432,6 +470,42 @@ fn link_target_range(
                 && caret <= mark.end
         })
         .map(|mark| (mark.start, mark.end))
+}
+
+fn without_filter_property(
+    node: quire_core::core::database_view::FilterNode,
+    property: quire_core::core::database::PropertyId,
+) -> Option<quire_core::core::database_view::FilterNode> {
+    use quire_core::core::database_view::FilterNode;
+    match node {
+        FilterNode::Clause(clause) if clause.property == property => None,
+        FilterNode::Clause(clause) => Some(FilterNode::Clause(clause)),
+        FilterNode::All(children) => {
+            let children = children
+                .into_iter()
+                .filter_map(|child| without_filter_property(child, property))
+                .collect::<Vec<_>>();
+            match children.len() {
+                0 => None,
+                1 => children.into_iter().next(),
+                _ => Some(FilterNode::All(children)),
+            }
+        }
+        FilterNode::Any(children) => {
+            let children = children
+                .into_iter()
+                .filter_map(|child| without_filter_property(child, property))
+                .collect::<Vec<_>>();
+            match children.len() {
+                0 => None,
+                1 => children.into_iter().next(),
+                _ => Some(FilterNode::Any(children)),
+            }
+        }
+        FilterNode::Not(child) => {
+            without_filter_property(*child, property).map(|child| FilterNode::Not(Box::new(child)))
+        }
+    }
 }
 
 fn slash_items() -> &'static [(&'static str, &'static str, BlockKind)] {
@@ -620,6 +694,7 @@ pub struct Workspace {
     inputs: BTreeMap<u64, Entity<TextInput>>,
     selected_database_views: HashMap<u64, ViewId>,
     database_columns_open: Option<(u64, u64)>,
+    database_filter_open: Option<(u64, u64)>,
     database_property_kind_open: Option<(u64, u64)>,
     database_column_drag: Option<DatabaseColumnDrag>,
     database_search_open: Option<u64>,
@@ -816,6 +891,7 @@ impl Workspace {
             inputs: BTreeMap::new(),
             selected_database_views: HashMap::new(),
             database_columns_open: None,
+            database_filter_open: None,
             database_property_kind_open: None,
             database_column_drag: None,
             database_search_open: None,
@@ -2577,6 +2653,76 @@ impl Workspace {
             Ok(false) => {}
             Err(error) => {
                 self.status = format!("数据库排序保存失败：{error}");
+                self.error = true;
+                cx.notify();
+            }
+        }
+    }
+    fn set_database_title_filter(
+        &mut self,
+        block: BlockId,
+        db: quire_core::core::database::DatabaseId,
+        view_id: ViewId,
+        op: Option<quire_core::core::database_view::FilterOp>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.session.page.locked {
+            return;
+        }
+        let Some(view) = self
+            .session
+            .databases
+            .views
+            .iter()
+            .find(|view| view.id == view_id && view.db == db)
+        else {
+            return;
+        };
+        let title = self.session.databases.title_property(db);
+        let mut definition =
+            quire_core::core::database_view::ViewDefinition::parse(&view.definition);
+        let existing = definition
+            .rules(db, &self.session.databases)
+            .filter
+            .and_then(|filter| without_filter_property(filter, title?.id));
+        let title_filter = op.and_then(|op| {
+            let property = title?;
+            Some(quire_core::core::database_view::FilterNode::Clause(
+                quire_core::core::database_view::FilterClause {
+                    property: property.id,
+                    kind: property.kind,
+                    op,
+                    value: quire_core::core::database_view::FilterValue::Missing,
+                },
+            ))
+        });
+        let filter = match (existing, title_filter) {
+            (Some(existing), Some(title_filter)) => {
+                Some(quire_core::core::database_view::FilterNode::All(vec![
+                    existing,
+                    title_filter,
+                ]))
+            }
+            (Some(existing), None) => Some(existing),
+            (None, title_filter) => title_filter,
+        };
+        definition.set_filter(filter.as_ref());
+        match self
+            .session
+            .set_database_view_definition(block, view_id, definition.to_text())
+        {
+            Ok(true) => {
+                self.database_filter_open = None;
+                self.schedule_save(true, window, cx);
+                cx.notify();
+            }
+            Ok(false) => {
+                self.database_filter_open = None;
+                cx.notify();
+            }
+            Err(error) => {
+                self.status = format!("数据库筛选保存失败：{error}");
                 self.error = true;
                 cx.notify();
             }
@@ -6434,6 +6580,47 @@ impl Render for Workspace {
                                         self.database_columns_open
                                             == Some((block_id.0, view_id.0))
                                     });
+                                    let filter_open = selected_view.is_some_and(|view_id| {
+                                        self.database_filter_open == Some((block_id.0, view_id.0))
+                                    });
+                                    let filter_picker = filter_open.then(|| {
+                                        let options = [
+                                            ("名称有内容", Some(quire_core::core::database_view::FilterOp::IsNotEmpty)),
+                                            ("名称为空", Some(quire_core::core::database_view::FilterOp::IsEmpty)),
+                                            ("清除全部筛选", None),
+                                        ];
+                                        div()
+                                            .w_full()
+                                            .px(px(8.))
+                                            .py(px(6.))
+                                            .flex()
+                                            .gap(px(5.))
+                                            .border_b_1()
+                                            .border_color(db_border)
+                                            .children(options.into_iter().map(|(label, op)| {
+                                                let view_id = selected_view.expect("filter menu needs an active view");
+                                                div()
+                                                    .id(SharedString::from(format!(
+                                                        "db-title-filter-{}-{}-{}",
+                                                        block_id.0,
+                                                        view_id.0,
+                                                        label
+                                                    )))
+                                                    .px(px(8.))
+                                                    .py(px(5.))
+                                                    .rounded(px(4.))
+                                                    .text_size(px(11.))
+                                                    .text_color(text)
+                                                    .cursor_pointer()
+                                                    .hover(|item| item.bg(db_hover))
+                                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                                        this.set_database_title_filter(
+                                                            block_id, db_id, view_id, op, window, cx,
+                                                        );
+                                                    }))
+                                                    .child(label)
+                                            }))
+                                    });
                                     let column_picker = columns_open.then(|| {
                                         let mut picker = div()
                                             .w_full()
@@ -6737,6 +6924,34 @@ impl Render for Workspace {
                                                         .child(div().flex().gap(px(4.)).child({
                                                             let mut button = div()
                                                                 .id(SharedString::from(format!(
+                                                                    "db-filter-toggle-{}",
+                                                                    block_id.0
+                                                                )))
+                                                                .px(px(8.))
+                                                                .py(px(4.))
+                                                                .rounded(px(4.))
+                                                                .text_color(if filter_open { accent } else { muted })
+                                                                .hover(|button| button.bg(db_hover))
+                                                                .child(format!(
+                                                                    "筛选 {}",
+                                                                    view_filter.as_ref().map_or(0, |filter| filter.clause_count())
+                                                                ));
+                                                            if !self.session.page.locked {
+                                                                button = button.cursor_pointer().on_click(cx.listener(
+                                                                    move |this, _, _, cx| {
+                                                                        let key = selected_view.map(|view| (block_id.0, view.0));
+                                                                        this.database_filter_open = key.filter(|key| {
+                                                                            this.database_filter_open != Some(*key)
+                                                                        });
+                                                                        this.database_columns_open = None;
+                                                                        cx.notify();
+                                                                    },
+                                                                ));
+                                                            }
+                                                            button
+                                                        }).child({
+                                                            let mut button = div()
+                                                                .id(SharedString::from(format!(
                                                                     "db-columns-toggle-{}",
                                                                     block_id.0
                                                                 )))
@@ -6884,6 +7099,9 @@ impl Render for Workspace {
                                                 ),
                                         )
                                         .when_some(column_picker, |view, picker| {
+                                            view.child(picker)
+                                        })
+                                        .when_some(filter_picker, |view, picker| {
                                             view.child(picker)
                                         })
                                         .child(header)
