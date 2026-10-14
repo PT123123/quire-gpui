@@ -530,3 +530,8 @@ GPUI 应用已超出第一竖切，但离完整复刻仍有较大差距。用户
 - 列显隐通过 core `ViewDefinition::hide/show` 更新数据库视图定义，写入当前页面历史、支持撤销/重做并持久化；隔离 SQLite 回归覆盖隐藏完成列、撤销/重做恢复、可见投影排序与重启读回。
 - 更新 `db-columns-opened` 人工语义，并把新建视图的选中 ViewId 一并写入 GPUI settings。
 - 验证：16 项库测试 + 5 项二进制测试、`cargo check`、release 构建、`cargo fmt` 和 `git diff --check` 通过；当前环境无法打开原生窗口，字段选择器布局、点击反馈和动态列宽尚未真窗口验收。
+
+## 第七十二轮：数据库列宽拖动
+
+- 列头右侧 6px 把手支持鼠标拖动，拖动期间表头与虚拟行使用同一宽度预览；松开后把列宽按网格千分比写入活动视图定义，随窗口缩放保持比例，仍通过 core 页面历史支持撤销/重做。
+- 验证：`cargo fmt`、`cargo check --target-dir target-check`、16 项库测试 + 5 项二进制测试、release 构建及 `git diff --check` 通过；本会话当前没有原生应用窗口自动化接口，真实拖动手感与列宽重启恢复仍待窗口实测。

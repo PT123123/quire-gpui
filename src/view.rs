@@ -16,6 +16,18 @@ use std::{
 };
 
 #[derive(Clone, Copy)]
+struct DatabaseColumnDrag {
+    block: BlockId,
+    db: quire_core::core::database::DatabaseId,
+    view: ViewId,
+    property: quire_core::core::database::PropertyId,
+    start_x: f32,
+    start_width: f32,
+    grid_width: f32,
+    preview_width: f32,
+}
+
+#[derive(Clone, Copy)]
 enum SidebarGlyph {
     Search,
     Settings,
@@ -511,6 +523,7 @@ pub struct Workspace {
     inputs: BTreeMap<u64, Entity<TextInput>>,
     selected_database_views: HashMap<u64, ViewId>,
     database_columns_open: Option<(u64, u64)>,
+    database_column_drag: Option<DatabaseColumnDrag>,
     active_database_cell: Option<(u64, u64, u64, u64)>,
     subscriptions: Vec<Subscription>,
     palette: Palette,
@@ -684,6 +697,7 @@ impl Workspace {
             inputs: BTreeMap::new(),
             selected_database_views: HashMap::new(),
             database_columns_open: None,
+            database_column_drag: None,
             active_database_cell: None,
             subscriptions: Vec::new(),
             palette: Palette::load(&theme_choice),
@@ -2221,6 +2235,91 @@ impl Workspace {
                 cx.notify();
             }
         }
+    }
+    fn begin_database_column_drag(
+        &mut self,
+        block: BlockId,
+        db: quire_core::core::database::DatabaseId,
+        view: ViewId,
+        property: quire_core::core::database::PropertyId,
+        width: f32,
+        grid_width: f32,
+        event: &MouseDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.session.page.locked || grid_width <= 0.0 {
+            return;
+        }
+        let zoom = quire_gpui::ui_scale::get();
+        self.database_column_drag = Some(DatabaseColumnDrag {
+            block,
+            db,
+            view,
+            property,
+            start_x: f32::from(event.position.x) / zoom,
+            start_width: width,
+            grid_width,
+            preview_width: width,
+        });
+        cx.stop_propagation();
+        cx.notify();
+
+        let workspace = cx.entity();
+        window.on_mouse_event({
+            let workspace = workspace.clone();
+            move |event: &MouseMoveEvent, _, _, cx| {
+                if !event.dragging() {
+                    return;
+                }
+                workspace.update(cx, |this, cx| {
+                    if let Some(drag) = &mut this.database_column_drag {
+                        let zoom = quire_gpui::ui_scale::get();
+                        let x = f32::from(event.position.x) / zoom;
+                        drag.preview_width = (drag.start_width + x - drag.start_x)
+                            .clamp(drag.grid_width * 0.06, drag.grid_width * 1.06);
+                        cx.notify();
+                    }
+                });
+            }
+        });
+        window.on_mouse_event(move |event: &MouseUpEvent, _, window, cx| {
+            workspace.update(cx, |this, cx| {
+                let Some(mut drag) = this.database_column_drag.take() else {
+                    return;
+                };
+                let zoom = quire_gpui::ui_scale::get();
+                let x = f32::from(event.position.x) / zoom;
+                drag.preview_width = (drag.start_width + x - drag.start_x)
+                    .clamp(drag.grid_width * 0.06, drag.grid_width * 1.06);
+                let permille = ((drag.preview_width * 1000.0 / drag.grid_width).round() as u16)
+                    .clamp(60, 1060);
+                if let Some(view) = this
+                    .session
+                    .databases
+                    .views
+                    .iter()
+                    .find(|view| view.id == drag.view && view.db == drag.db)
+                {
+                    let mut definition =
+                        quire_core::core::database_view::ViewDefinition::parse(&view.definition);
+                    definition.set_width(drag.property, permille);
+                    match this.session.set_database_view_definition(
+                        drag.block,
+                        drag.view,
+                        definition.to_text(),
+                    ) {
+                        Ok(true) => this.schedule_save(true, window, cx),
+                        Ok(false) => {}
+                        Err(error) => {
+                            this.status = format!("数据库列宽保存失败：{error}");
+                            this.error = true;
+                        }
+                    }
+                }
+                cx.notify();
+            });
+        });
     }
     fn commit_database_cell(
         &mut self,
@@ -4788,6 +4887,47 @@ impl Render for Workspace {
                         let definition = quire_core::core::database_view::ViewDefinition::parse(
                             &active_view.definition,
                         );
+                        let grid_width = f32::from(database_width) / quire_gpui::ui_scale::get();
+                        let column_ids = std::iter::once(title)
+                            .chain(columns.iter().map(|property| property.id))
+                            .collect::<Vec<_>>();
+                        let fixed_width = column_ids
+                            .iter()
+                            .map(|property| definition.width(*property))
+                            .filter(|width| *width != 0)
+                            .map(|width| grid_width * f32::from(width) / 1000.0)
+                            .sum::<f32>();
+                        let auto_count = column_ids
+                            .iter()
+                            .filter(|property| definition.width(**property) == 0)
+                            .count();
+                        let auto_width = if auto_count == 0 {
+                            0.0
+                        } else {
+                            ((grid_width - fixed_width).max(0.0) / auto_count as f32)
+                                .max(grid_width * 0.06)
+                        };
+                        let mut column_widths = column_ids
+                            .iter()
+                            .map(|property| {
+                                let width = definition.width(*property);
+                                if width == 0 {
+                                    auto_width
+                                } else {
+                                    grid_width * f32::from(width) / 1000.0
+                                }
+                            })
+                            .collect::<Vec<_>>();
+                        if let Some(drag) = self.database_column_drag.filter(|drag| {
+                            drag.db == db_id && drag.view == active_view.id
+                        }) {
+                            if let Some(index) = column_ids
+                                .iter()
+                                .position(|property| *property == drag.property)
+                            {
+                                column_widths[index] = drag.preview_width;
+                            }
+                        }
                         let rules = definition.rules(db_id, &self.session.databases);
                         let repo = self.session.repo.clone();
                         let total = repo
@@ -4805,6 +4945,7 @@ impl Render for Workspace {
                             title,
                             columns,
                             all_columns,
+                            column_widths,
                             views,
                             selected_view,
                             rules.sorts,
@@ -5385,13 +5526,14 @@ impl Render for Workspace {
                                     .child(div().flex().gap(px(6.)).children(table_actions))
                             })
                             .when(kind == BlockKind::Database, |view| {
-                                if let Some((db_id, title, columns, all_columns, views, selected_view, view_sorts, view_filter, total, repo)) =
+                                if let Some((db_id, title, columns, all_columns, column_widths, views, selected_view, view_sorts, view_filter, total, repo)) =
                                     database_table
                                 {
                                     let db_border = Palette::color(&p.border);
                                     let db_hover = Palette::color(&p.bg).opacity(0.22);
                                     let db_checkbox_fg = Palette::color(&p.bg);
                                     let query_columns = columns.clone();
+                                    let row_column_widths = column_widths.clone();
                                     let cell_title_property = title;
                                     let cell_block = block_id.0;
                                     let mut header_columns = vec![(title, "名称".to_owned(), true)];
@@ -5406,9 +5548,9 @@ impl Render for Workspace {
                                         .h(px(34.))
                                         .border_b_1()
                                         .border_color(Palette::color(&p.border))
-                                        .children(header_columns.into_iter().map(
-                                            |(property, name, is_title)| {
-                                                let width = if is_title { 220. } else { 160. };
+                                        .children(header_columns.into_iter().enumerate().map(
+                                            |(index, (property, name, _is_title))| {
+                                                let width = column_widths[index];
                                                 let indicator = view_sorts
                                                     .iter()
                                                     .position(|sort| sort.property == property)
@@ -5426,7 +5568,7 @@ impl Render for Workspace {
                                                         db_id.0, property.0
                                                     )))
                                                     .w(px(width))
-                                                    .flex_1()
+                                                    .flex_shrink_0()
                                                     .min_w(px(width))
                                                     .h_full()
                                                     .px(px(10.))
@@ -5456,6 +5598,52 @@ impl Render for Workspace {
                                                                 );
                                                             },
                                                         ));
+                                                }
+                                                if let Some(view_id) = selected_view
+                                                    .filter(|_| !self.session.page.locked)
+                                                {
+                                                    let drag_block = block_id;
+                                                    let drag_db = db_id;
+                                                    let drag_property = property;
+                                                    let drag_grid = f32::from(database_width) / quire_gpui::ui_scale::get();
+                                                    cell = cell.child(
+                                                        div()
+                                                            .id(SharedString::from(format!(
+                                                                "db-resize-{}-{}",
+                                                                db_id.0, property.0
+                                                            )))
+                                                            .w(px(6.))
+                                                            .h_full()
+                                                            .flex_shrink_0()
+                                                            .cursor(CursorStyle::ResizeLeftRight)
+                                                            .hover(|handle| {
+                                                                handle.bg(accent.opacity(0.55))
+                                                            })
+                                                            .on_mouse_down(
+                                                                MouseButton::Left,
+                                                                cx.listener(
+                                                                    move |this,
+                                                                          event: &MouseDownEvent,
+                                                                          window,
+                                                                          cx| {
+                                                                        this.begin_database_column_drag(
+                                                                            drag_block,
+                                                                            drag_db,
+                                                                            view_id,
+                                                                            drag_property,
+                                                                            width,
+                                                                            drag_grid,
+                                                                            event,
+                                                                            window,
+                                                                            cx,
+                                                                        );
+                                                                    },
+                                                                ),
+                                                            )
+                                                            .on_click(cx.listener(
+                                                                |_, _, _, cx| cx.stop_propagation(),
+                                                            )),
+                                                    );
                                                 }
                                                 cell
                                             },
@@ -5538,6 +5726,7 @@ impl Render for Workspace {
                                                                     )
                                                                 });
                                                             let raw_value = value.clone();
+                                                            let width = row_column_widths[index];
                                                             let mut cell = div()
                                                                     .id(SharedString::from(
                                                                         format!(
@@ -5545,17 +5734,9 @@ impl Render for Workspace {
                                                                             db_id.0, row.record
                                                                         ),
                                                                     ))
-                                                                    .w(px(if index == 0 {
-                                                                        220.
-                                                                    } else {
-                                                                        160.
-                                                                    }))
-                                                                    .flex_1()
-                                                                    .min_w(px(if index == 0 {
-                                                                        220.
-                                                                    } else {
-                                                                        160.
-                                                                    }))
+                                                                    .w(px(width))
+                                                                    .flex_shrink_0()
+                                                                    .min_w(px(width))
                                                                     .h(px(36.))
                                                                     .px(px(10.))
                                                                     .flex()

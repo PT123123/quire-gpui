@@ -57,3 +57,4 @@ zoom-reset,已实现,未验证,一键恢复 100% 界面缩放。,将全局 px �
 "db-cell-changed","已实现","未验证","输入内容经 core database_property::parse_one 校验；Enter 或失焦用 SetDatabaseCell 写入并进入页面撤销栈，非法输入显示错误且不落库","文本、数字、日期、复选框、URL、邮箱、电话与已配置的 select/status 名称走 core typed cell 写入；多值关系/文件和计算列仍未接入编辑器"
 "db-cell-closed","已实现","未验证","Enter/失焦提交；Esc 放弃当前输入；非法失焦放弃错误草稿并保留旧值","撤销与重做沿用 core SetDatabaseCell 历史"
 "db-cell-toggled","已实现","未验证","checkbox 属性绘为勾选/未勾选控件，点击直接切换 typed Flag 并保存；锁定页面禁用","点击调用 core SetDatabaseCell，进入同一页面撤销栈；使用 16px 自绘圆角方框与主题强调色勾选；点击事件、命中范围仍待真人操作确认"
+db-column-resized,已实现,未验证,"拖动列头右侧 6px 把手可调整该视图的列宽；拖动中表头与可见行同步预览，松开后持久化；列宽按数据库网格千分比保存并随窗口宽度缩放","复用 core ViewDefinition::width/set_width；mousemove 只更新内存预览，mouseup 通过 SetDatabaseViewDefinition 写入单条可撤销历史并触发自动保存"
