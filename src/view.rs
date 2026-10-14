@@ -364,6 +364,7 @@ pub struct Workspace {
     palette: Palette,
     theme_picker_open: bool,
     icon_picker_open: bool,
+    format_bar_open: bool,
     link_editor_open: bool,
     color_picker: Option<(BlockId, bool)>,
     confirm_delete_page: Option<quire_core::core::types::PageId>,
@@ -485,6 +486,7 @@ impl Workspace {
             palette: Palette::load(theme),
             theme_picker_open: false,
             icon_picker_open: false,
+            format_bar_open: false,
             link_editor_open: false,
             color_picker: None,
             confirm_delete_page: None,
@@ -5309,6 +5311,22 @@ impl Render for Workspace {
                                                         .flex()
                                                         .items_center()
                                                         .gap(px(6.))
+                    .child(
+                        div()
+                            .id("format-tools-toggle")
+                            .px(px(7.))
+                            .py(px(4.))
+                            .rounded(px(5.))
+                            .cursor_pointer()
+                            .text_color(if self.format_bar_open { accent } else { muted })
+                            .when(self.format_bar_open, |button| button.bg(Palette::color(&p.elevated)))
+                            .hover(|button| button.bg(Palette::color(&p.elevated)))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.format_bar_open = !this.format_bar_open;
+                                cx.notify();
+                            }))
+                            .child("Aa"),
+                    )
                                                         .child(
                                                             div()
                                                                 .id(SharedString::from(format!("organizer-subtask-done-{id:?}-{subtask_id}")))
@@ -5763,7 +5781,7 @@ impl Render for Workspace {
                             ),
                     ),
             )
-            .when(!self.organizer_open, |root| {
+            .when(!self.organizer_open && self.format_bar_open, |root| {
                 root.child(
                     div()
                         .h(px(36.))
