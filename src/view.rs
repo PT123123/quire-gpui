@@ -2042,9 +2042,30 @@ impl Workspace {
                                     assert_eq!(saved_note.tags, ["gpui-window-smoke"]);
                                     this.session.persistence.force_flush().unwrap();
                                     eprintln!(
-                                        "SMOKE: quick-note window input, tag extraction, submit and save passed; not OS IME verification"
+                                        "SMOKE: quick-note window input, tag extraction, submit and save passed; testing tray hide/show"
                                     );
-                                    this.request_close(window, cx);
+                                    this.hide_to_tray(window, cx);
+                                    let show_event = this.mcp_event_tx.clone();
+                                    cx.spawn_in(window, async move |weak, cx| {
+                                        cx.background_executor()
+                                            .timer(Duration::from_millis(200))
+                                            .await;
+                                        show_event
+                                            .send(crate::platform::ShellEvent::ShowMain)
+                                            .expect("main-window event pump should still be available");
+                                        cx.background_executor()
+                                            .timer(Duration::from_millis(200))
+                                            .await;
+                                        let _ = weak.update_in(cx, |this, window, cx| {
+                                            assert!(
+                                                crate::platform::main_window_visible(window),
+                                                "tray ShowMain event must restore the hidden main window"
+                                            );
+                                            eprintln!("SMOKE: tray hide/show event path passed");
+                                            this.request_close(window, cx);
+                                        });
+                                    })
+                                    .detach();
                                 });
                             })
                             .detach();

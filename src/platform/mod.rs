@@ -119,6 +119,27 @@ pub fn set_main_window_visible(window: &gpui::Window, visible: bool) {
     let _ = (window, visible);
 }
 
+pub fn main_window_visible(window: &gpui::Window) -> bool {
+    #[cfg(windows)]
+    {
+        use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+        if let Ok(handle) = HasWindowHandle::window_handle(window)
+            && let RawWindowHandle::Win32(handle) = handle.as_raw()
+        {
+            unsafe extern "system" {
+                fn IsWindowVisible(hwnd: isize) -> i32;
+            }
+            return unsafe { IsWindowVisible(handle.hwnd.get()) != 0 };
+        }
+        false
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = window;
+        true
+    }
+}
+
 /// Keep the independent quick-note window above ordinary desktop windows.
 /// GPUI's popup window kind already uses the corresponding elevated level on
 /// macOS; its Windows backend creates a tool window but does not make it

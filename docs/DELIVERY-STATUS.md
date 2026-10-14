@@ -762,3 +762,8 @@ GPUI 已覆盖主编辑器、整理区、独立速记与标签建议、Windows �
 - 新增双节点集成回归：两个独立 `ScratchDir` Session 分别创建不同内容，使用两个动态 loopback TCP 端口运行 core `SyncServer`；通过正式 `/sync/info`、GET `/sync/snapshot`、GPUI `sync_apply_remote` 和 POST `/sync/snapshot` 完成拉取、合并、推送。
 - 验证 A 的 organizer 笔记到达 B，B 的页面与正文到达 A；两端分别强制 flush、关闭并重开库后再次确认内容及设备 shadow。测试没有启动 UDP 广播监听，不占用正式 5878/5879 端口，也不访问用户库。
 - `cargo test --test sync_loopback` 通过。仍需两台真实设备验证 UDP 发现、配对交互、防火墙/网络互通、附件跨端传输和不同版本拒绝提示；托盘点击路径仍待真实桌面验收。
+
+## 第一百一十五轮：托盘隐藏与主窗唤回隔离 smoke
+
+- release `--smoke-test` 先经 `ShellEvent::QuickNote` 打开、编辑并提交速记，再走 `hide_to_tray` 隐藏主窗；随后通过平台 `ShellEvent::ShowMain` 唤回，并调用 Win32 `IsWindowVisible` 断言窗口确实恢复可见，最后正常保存退出。
+- 本轮 smoke 在新临时库 release 窗口通过；全量 dev 测试、`cargo check`、Release 构建、格式与 diff 检查通过。未验证右键菜单的 Shell 点选、Windows Explorer 重启后的真人托盘交互或多屏位置。
