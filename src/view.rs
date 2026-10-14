@@ -928,6 +928,7 @@ pub struct Workspace {
     active_database_cell: Option<(u64, u64, u64, u64)>,
     active_database_formula: Option<(u64, u64, u64)>,
     active_database_option: Option<(u64, u64, u64)>,
+    active_database_choice: Option<(u64, u64, u64, u64)>,
     active_database_property_edit: Option<(u64, u64, u64)>,
     active_database_view_edit: Option<(u64, u64, u64)>,
     database_property_name_draft: String,
@@ -1154,6 +1155,7 @@ impl Workspace {
             active_database_cell: None,
             active_database_formula: None,
             active_database_option: None,
+            active_database_choice: None,
             active_database_property_edit: None,
             active_database_view_edit: None,
             database_property_name_draft: String::new(),
@@ -3840,6 +3842,42 @@ impl Workspace {
             }
         }
     }
+    fn set_database_choice(
+        &mut self,
+        block: u64,
+        record: u64,
+        property: u64,
+        value: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match self.session.set_database_property_option_cell(
+            BlockId(block),
+            quire_core::core::database::RecordId(record),
+            quire_core::core::database::PropertyId(property),
+            value.and_then(|value| value.parse::<u64>().ok()),
+        ) {
+            Ok(_) => {
+                self.active_database_choice = None;
+                self.selected_database_record = Some((
+                    block,
+                    self.session
+                        .document
+                        .block(BlockId(block))
+                        .and_then(|block| block.db_ref)
+                        .map_or(0, |db| db.0),
+                    record,
+                ));
+                self.schedule_save(true, window, cx);
+                cx.notify();
+            }
+            Err(error) => {
+                self.status = error.to_string();
+                self.error = true;
+                cx.notify();
+            }
+        }
+    }
     fn zoom_in(&mut self, _: &ZoomIn, window: &mut Window, cx: &mut Context<Self>) {
         self.set_ui_zoom(quire_gpui::ui_scale::step(self.ui_zoom, 1), window, cx);
     }
@@ -5152,6 +5190,7 @@ impl Render for Workspace {
         let text = Palette::color(&p.fg);
         let muted = Palette::color(&p.muted);
         let accent = Palette::color(&p.accent);
+        let elevated = Palette::color(&p.elevated);
         let backlinks_count = self
             .session
             .repo
@@ -7385,6 +7424,7 @@ impl Render for Workspace {
                                                             let cell_key =
                                                                 (cell_block, db_id.0, row.record, property_id.0);
                                                             let editing = _this.active_database_cell == Some(cell_key);
+                                                            let choice_open = _this.active_database_choice == Some(cell_key);
                                                             let input = _this.database_cell_input.clone();
                                                             let display_value = if kind
                                                                 == quire_core::core::database::PropertyKind::Formula
@@ -7467,6 +7507,7 @@ impl Render for Workspace {
                                                                     .border_color(db_border)
                                                                     .text_size(px(12.))
                                                                     .text_color(text)
+                                                                    .relative()
                                                                     .when(editing, |cell| {
                                                                         cell.child(input.clone())
                                                                     })
@@ -7518,6 +7559,12 @@ impl Render for Workspace {
                                                                                     db_id.0,
                                                                                     row.record,
                                                                                 ));
+                                                                            if matches!(kind, quire_core::core::database::PropertyKind::Select | quire_core::core::database::PropertyKind::Status) {
+                                                                                this.active_database_choice = if this.active_database_choice == Some((cell_block, db_id.0, row.record, property_id.0)) { None } else { Some((cell_block, db_id.0, row.record, property_id.0)) };
+                                                                                this.active_database_cell = None;
+                                                                                this.selected_database_record = Some((cell_block, db_id.0, row.record));
+                                                                                cx.notify();
+                                                                            } else {
                                                                             this.begin_database_cell_edit(
                                                                                 cell_block,
                                                                                 db_id.0,
@@ -7527,8 +7574,23 @@ impl Render for Workspace {
                                                                                 window,
                                                                                 cx,
                                                                             );
+                                                                            }
                                                                         },
                                                                     ));
+                                                                }
+                                                            }
+                                                            if choice_open {
+                                                                if let Some(property) = _this.session.databases.properties.iter().find(|property| property.id == quire_core::core::database::PropertyId(property_id.0)) {
+                                                                    let options = quire_core::core::database_property::PropertyOptions::from_config(&property.config);
+                                                                    let selected = _this.session.repo.cell(quire_core::core::database::RecordId(row.record), property.id).ok().map(|value| value.display()).unwrap_or_default();
+                                                                    let mut menu = div().id(SharedString::from(format!("db-choice-menu-{}-{}", row.record, property_id.0))).absolute().top(px(33.)).left(px(0.)).min_w(px(140.)).max_h(px(220.)).overflow_y_scroll().flex_col().gap(px(2.)).p(px(5.)).rounded(px(6.)).border_1().border_color(db_border).bg(elevated).shadow_lg();
+                                                                    menu = menu.child(div().id(SharedString::from(format!("db-choice-clear-{}-{}", row.record, property_id.0))).px(px(7.)).py(px(5.)).rounded(px(4.)).text_size(px(11.)).text_color(muted).hover(|item| item.bg(db_hover)).cursor_pointer().on_click(_cx.listener(move |this, _, window, cx| this.set_database_choice(cell_block, row.record, property_id.0, None, window, cx))).child("清除"));
+                                                                    menu = menu.children(options.iter().map(|option| {
+                                                                        let option_id = option.id.0.to_string();
+                                                                        let selected_here = selected == option.id.to_string();
+                                                                        div().id(SharedString::from(format!("db-choice-{}-{}-{}", row.record, property_id.0, option.id.0))).px(px(7.)).py(px(5.)).rounded(px(4.)).text_size(px(11.)).text_color(text).when(selected_here, |item| item.bg(accent.opacity(0.28))).hover(|item| item.bg(db_hover)).cursor_pointer().on_click(_cx.listener(move |this, _, window, cx| this.set_database_choice(cell_block, row.record, property_id.0, Some(option_id.clone()), window, cx))).child(option.name.clone())
+                                                                    }));
+                                                                    cell = cell.child(menu);
                                                                 }
                                                             }
                                                             cell

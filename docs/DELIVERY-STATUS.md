@@ -583,3 +583,8 @@ GPUI 应用已超出第一竖切，但离完整复刻仍有较大差距。用户
 
 - 多选类型现在可配置选项：在列管理器选择 Select/Status/MultiSelect 类型后可添加新选项，名称去空格并避免重复；选项配置通过 core `PropertyConfigSet` 进入撤销历史并落盘。多选单元格支持用英文或中文逗号输入多个已配置选项，复用 core `parse_many` 与 `SetDatabaseCell`，展示沿用属性选项名称。
 - 新增隔离 SQLite 集成回归，覆盖选项配置、重复选项、两项多选值、undo/redo、关闭后重开恢复。验证：19 项库测试 + 10 项二进制测试和 dev `cargo check` 通过；release 构建待完成。原生窗口自动化不可用，多选编辑焦点/逗号输入实测待人工验收；文件与关联字段仍只读。
+
+## 第八十二轮：数据库单选与状态选项
+
+- 单选与状态单元格点击后弹出选项菜单，显示当前选择并提供清除；选项写入由 core `PropertyOptions` 校验 ID，走 `SetDatabaseCell` 撤销历史及立即持久化。避免手输内部 ID，菜单选择不会改变 schema。
+- 新增隔离 SQLite 回归，覆盖按选项 ID 写入与 undo 清空。验证：20 项库测试 + 10 项二进制测试和 dev `cargo check` 通过；release 构建待完成。原生窗口自动化不可用，菜单遮挡/定位与键盘关闭仍待人工验收。

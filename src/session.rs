@@ -842,6 +842,60 @@ impl Session {
         self.persistence.force_flush()?;
         Ok(true)
     }
+    pub fn set_database_property_option_cell(
+        &mut self,
+        block: BlockId,
+        record: RecordId,
+        property: PropertyId,
+        option_id: Option<u64>,
+    ) -> Result<bool> {
+        if self.page.locked {
+            return Ok(false);
+        }
+        let Some(definition) = self.session_database_property(block, property).cloned() else {
+            return Ok(false);
+        };
+        if !matches!(
+            definition.kind,
+            quire_core::core::database::PropertyKind::Select
+                | quire_core::core::database::PropertyKind::Status
+        ) {
+            bail!("此列不是单选或状态类型");
+        }
+        let to = match option_id {
+            Some(id) => {
+                let options = quire_core::core::database_property::PropertyOptions::from_config(
+                    &definition.config,
+                );
+                let option = options
+                    .get(quire_core::core::database_property::OptionId(id))
+                    .ok_or_else(|| anyhow::anyhow!("该选项不存在"))?;
+                quire_core::core::database::CellValue::Text(option.id.to_string())
+            }
+            None => quire_core::core::database::CellValue::Empty,
+        };
+        let from = self.repo.cell(record, property)?;
+        if from == to {
+            return Ok(false);
+        }
+        let Some(entry) = command::plan(
+            &mut self.document,
+            self.page.id,
+            Command::SetDatabaseCell {
+                block,
+                record,
+                property,
+                from,
+                to,
+            },
+        ) else {
+            return Ok(false);
+        };
+        self.apply_entry(entry);
+        self.persistence.force_flush()?;
+        self.refresh_databases();
+        Ok(true)
+    }
     pub fn set_database_cell_many(
         &mut self,
         block: BlockId,
@@ -2796,6 +2850,61 @@ mod tests {
             reopened.repo.cell(record, property)?,
             CellValue::Items(values.iter().map(|option| option.id.to_string()).collect())
         );
+        Ok(())
+    }
+
+    #[test]
+    fn select_option_cell_writes_and_undoes_option_id() -> Result<()> {
+        use quire_core::core::database::PropertyKind;
+
+        let scratch = quire_core::testing::ScratchDir::new("gpui-database-select-option");
+        let path = scratch.path().join("test.db");
+        let mut session = Session::open(&path)?;
+        let block = session.blocks()[0].id;
+        let db = session
+            .make_database(block, "单选测试".into())
+            .expect("database created");
+        let property = session
+            .add_database_property(block, "状态".into(), PropertyKind::Select)
+            .expect("property created");
+        session.add_database_property_option(block, property, "进行中")?;
+        let record = session.add_database_record(block).expect("record created");
+        let option_id = quire_core::core::database_property::PropertyOptions::from_config(
+            &session
+                .databases
+                .properties
+                .iter()
+                .find(|definition| definition.id == property)
+                .unwrap()
+                .config,
+        )
+        .iter()
+        .next()
+        .unwrap()
+        .id
+        .0;
+        assert!(session.set_database_property_option_cell(
+            block,
+            record,
+            property,
+            Some(option_id)
+        )?);
+        assert_eq!(
+            session.repo.cell(record, property)?,
+            quire_core::core::database::CellValue::Text(option_id.to_string())
+        );
+        session.undo();
+        assert_eq!(
+            session.repo.cell(record, property)?,
+            quire_core::core::database::CellValue::Empty
+        );
+        assert!(session.set_database_property_option_cell(
+            block,
+            record,
+            property,
+            Some(option_id)
+        )?);
+        assert_eq!(session.databases.database(db).unwrap().id, db);
         Ok(())
     }
 
