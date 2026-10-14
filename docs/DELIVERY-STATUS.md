@@ -792,3 +792,9 @@ GPUI 已覆盖主编辑器、整理区、独立速记与标签建议、Windows �
 - 同一 release 窗口流程继续验证速记输入事件、标签解析、提交落库以及主窗口托盘隐藏/唤回。另在隔离库里持久化启用 MCP、随机选取空闲 loopback 端口并启动桌面内服务；实际 HTTP 客户端带 Bearer token 调用 `create_note`，请求经 shell/UI 事件泵进入唯一 Session，响应成功后确认笔记与两个标签均在内存态和重开数据库中存在。真实单库 1000 合成块场景通过，退出后 `--dump-state` 读回 MCP 创建的笔记和两条速记。没有读取真实用户库。
 - 因 MCP 启动会在数据库旁写入 `mcp.json`，`--smoke-test` 现会在启动前拒绝覆盖已有同目录指针；回归确认拒绝时不创建数据库。测试应使用独立临时目录。
 - 验证：`cargo fmt --all -- --check`、`cargo check -j 8`、全量 `cargo test -j 8`（58 项）、`cargo build --release -j 8` 与隔离 release smoke 通过。GPUI vendor 现存两个 float fallback 警告与业务变更无关。
+
+## 第一百二十轮：统一同步目标筛选
+
+- 手动“同步全部”和自动轮询原先各自复制了在线设备筛选条件；现共用 `sync_targets`，保证两条路径都只选择最近 60 秒有广播且不在途的设备，不改变旧版新鲜度门限。
+- 新增边界回归：恰好 60 秒的设备纳入，61 秒设备排除，已在途设备排除。没有启动固定端口 LAN Engine，也没有访问真实库；双 Session loopback 数据交换回归由前轮覆盖。
+- 验证：`cargo fmt --all -- --check`、`cargo test -j 8`、`cargo check -j 8`、`git diff --check` 通过。

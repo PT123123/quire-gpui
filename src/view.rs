@@ -549,6 +549,17 @@ fn parse_mcp_port(value: &str) -> Option<u16> {
     (port != 0).then_some(port)
 }
 
+fn sync_targets(
+    peers: Vec<quire_core::services::sync::engine::PeerRecord>,
+    now: u64,
+    pending: &HashSet<String>,
+) -> Vec<quire_core::services::sync::engine::PeerRecord> {
+    peers
+        .into_iter()
+        .filter(|peer| now.saturating_sub(peer.last_seen) <= 60 && !pending.contains(&peer.id))
+        .collect()
+}
+
 #[cfg(test)]
 mod view_tests {
     use super::{
@@ -556,7 +567,7 @@ mod view_tests {
         database_group_identity, database_group_label, database_property_kind_choices,
         evaluate_database_formula, evaluate_database_rollup, find_matches_in, link_target_range,
         order_database_groups, organizer_tag_matches_path, organizer_tags_exclude, palette_matches,
-        parse_mcp_port, parse_organizer_tags, toc_headings,
+        parse_mcp_port, parse_organizer_tags, sync_targets, toc_headings,
     };
     use quire_core::core::database::PropertyKind;
     use quire_core::core::database_view::FilterValue;
@@ -618,6 +629,32 @@ mod view_tests {
         assert_eq!(parse_mcp_port("0"), None);
         assert_eq!(parse_mcp_port("65536"), None);
         assert_eq!(parse_mcp_port("http"), None);
+    }
+
+    #[test]
+    fn sync_target_selection_includes_fresh_boundary_and_skips_stale_or_in_flight_peers() {
+        use quire_core::services::sync::engine::PeerRecord;
+
+        let now = 1_000;
+        let peer = |id: &str, age| PeerRecord {
+            id: id.into(),
+            name: id.into(),
+            kind: "windows".into(),
+            ip: "127.0.0.1".into(),
+            port: 5878,
+            paired: true,
+            last_seen: now - age,
+            last_sync: String::new(),
+        };
+        let peers = vec![peer("boundary", 60), peer("stale", 61), peer("pending", 1)];
+        let selected = sync_targets(peers, now, &["pending".to_owned()].into());
+        assert_eq!(
+            selected
+                .iter()
+                .map(|peer| peer.id.as_str())
+                .collect::<Vec<_>>(),
+            ["boundary"]
+        );
     }
 
     #[test]
@@ -6704,14 +6741,7 @@ impl Workspace {
     }
     fn sync_now_all(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let now = quire_core::services::sync::engine::now_unix();
-        let peers = self
-            .session
-            .sync_peers()
-            .into_iter()
-            .filter(|peer| {
-                now.saturating_sub(peer.last_seen) <= 60 && !self.sync_pending.contains(&peer.id)
-            })
-            .collect::<Vec<_>>();
+        let peers = sync_targets(self.session.sync_peers(), now, &self.sync_pending);
         if peers.is_empty() {
             self.sync_status = if self.sync_pending.is_empty() {
                 "暂未发现在线设备".into()
@@ -6808,14 +6838,7 @@ impl Workspace {
         }
         self.sync_last_auto = std::time::Instant::now();
         let now = quire_core::services::sync::engine::now_unix();
-        let peers = self
-            .session
-            .sync_peers()
-            .into_iter()
-            .filter(|peer| {
-                now.saturating_sub(peer.last_seen) <= 60 && !self.sync_pending.contains(&peer.id)
-            })
-            .collect::<Vec<_>>();
+        let peers = sync_targets(self.session.sync_peers(), now, &self.sync_pending);
         let mut queued = 0usize;
         let mut changed = false;
         for peer in peers {
