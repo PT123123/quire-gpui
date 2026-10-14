@@ -750,3 +750,9 @@ GPUI 已覆盖主编辑器、整理区、独立速记与标签建议、Windows �
 - 新增集成测试，实际启动 `quire-gpui --stdio --db <隔离路径>` 子进程，通过库目录旁的 `mcp.json` 读取 mock loopback 服务端口和 token，并验证 HTTP 鉴权头、中文 JSON-RPC 响应、notification 不输出响应及退出行为。
 - 测试使用不存在的临时数据库路径，确认 stdio 桥不创建/打开 SQLite；不启动桌面窗口、不触碰真实用户库，也不依赖外部 MCP 客户端。
 - 专项 `cargo test --test mcp_stdio_process` 通过。尚未真人配置 Claude Desktop / Codex 等客户端连接实际桌面服务，也未完成双机 LAN 往返与托盘菜单桌面验收。
+
+## 第一百一十三轮：速记窗口真实提交冒烟与重入修复
+
+- 扩展隔离库 release smoke：实际打开 GPUI 速记小窗，通过其 `TextInput` 编辑事件输入带标签正文，再调用窗口提交路径；检查 core Session 中正文和标签，并在窗口退出后由第二进程重开库读回。
+- smoke 揭露并修复速记窗口打开时的 GPUI 实体重入：窗口构造期间不再同步读取正在更新的 Workspace，标签建议改为打开前从当前 Session 取出并传给窗口。提交也在父 Workspace 更新回调结束后执行，避免子窗口回写父实体时重入。
+- release 隔离库 smoke、`--dump-state` 重开读回均通过。仍未验证真人桌面托盘菜单/关闭隐藏唤回、置顶边界及真实输入法；此前 MCP CLI 子进程回归继续通过。

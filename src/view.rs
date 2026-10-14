@@ -1994,9 +1994,58 @@ impl Workspace {
                                 panic!("scrolling to the last block must mount its editor");
                             }
                             eprintln!(
-                                "SMOKE: virtual scroll-to-last, block input, and quick note callbacks passed; not OS IME verification"
+                                "SMOKE: virtual scroll-to-last passed; opening the real quick-note window"
                             );
-                            this.request_close(window, cx);
+                            this.open_quick_note(cx);
+                            let quick_note_text = "速记窗口冒烟回归 #gpui-window-smoke".to_owned();
+                            cx.spawn_in(window, async move |weak, cx| {
+                                cx.background_executor()
+                                    .timer(Duration::from_millis(200))
+                                    .await;
+                                let note_text = quick_note_text.clone();
+                                let _ = weak.update_in(cx, |this, _, cx| {
+                                    let handle = this
+                                        .quick_note_window
+                                        .expect("quick-note window should open in smoke mode");
+                                    handle
+                                        .update(cx, |note, popup, cx| {
+                                            note.input.update(cx, |input, cx| {
+                                                input.replace_text_in_range(
+                                                    None, &note_text, popup, cx,
+                                                );
+                                            });
+                                        })
+                                        .expect("quick-note window should remain available");
+                                });
+                                cx.background_executor()
+                                    .timer(Duration::from_millis(200))
+                                    .await;
+                                let handle = weak
+                                    .update_in(cx, |this, _, _| this.quick_note_window)
+                                    .ok()
+                                    .flatten()
+                                    .expect("quick-note window should remain open");
+                                let _ = handle
+                                    .update(cx, |note, popup, cx| note.submit(popup, cx));
+                                cx.background_executor()
+                                    .timer(Duration::from_millis(200))
+                                    .await;
+                                let _ = weak.update_in(cx, |this, window, cx| {
+                                    let saved_note = this
+                                        .session
+                                        .organizer
+                                        .live_notes()
+                                        .find(|note| note.body == quick_note_text)
+                                        .expect("quick-note window must save through the session");
+                                    assert_eq!(saved_note.tags, ["gpui-window-smoke"]);
+                                    this.session.persistence.force_flush().unwrap();
+                                    eprintln!(
+                                        "SMOKE: quick-note window input, tag extraction, submit and save passed; not OS IME verification"
+                                    );
+                                    this.request_close(window, cx);
+                                });
+                            })
+                            .detach();
                         });
                     })
                     .detach();
@@ -6077,6 +6126,7 @@ impl Workspace {
             .as_ref()
             .map(|tag| format!("#{tag} "))
             .unwrap_or_default();
+        let suggestions = self.session.organizer_tag_suggestions(&draft);
         let options = WindowOptions {
             window_bounds: Some(WindowBounds::centered(size(px(560.), px(340.)), cx)),
             titlebar: None,
@@ -6085,7 +6135,7 @@ impl Workspace {
             ..Default::default()
         };
         let opened = cx.open_window(options, move |window, cx| {
-            cx.new(|cx| QuickNoteWindow::new(owner, theme, draft, window, cx))
+            cx.new(|cx| QuickNoteWindow::new(owner, theme, draft, suggestions, window, cx))
         });
         match opened {
             Ok(handle) => self.quick_note_window = Some(handle),
@@ -13807,11 +13857,11 @@ impl QuickNoteWindow {
         owner: Entity<Workspace>,
         palette: Palette,
         draft: String,
+        suggestions: Vec<String>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
         crate::platform::set_window_always_on_top(window);
-        let suggestions = owner.read(cx).session.organizer_tag_suggestions(&draft);
         let input = cx.new(|cx| TextInput::new(draft.clone(), Vec::new(), 15., window, cx));
         input.update(cx, |input, _| {
             input.placeholder = Some("写下速记…（#标签会加入笔记标签）".into())
