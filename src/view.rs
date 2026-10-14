@@ -3455,6 +3455,7 @@ impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let sidebar_transition = self.sidebar_transition;
         let p = self.palette.clone();
+        let maximized = window.is_maximized();
         let database_width = (window.bounds().size.width - px(356.))
             .min(px(760.))
             .max(px(200.));
@@ -7670,6 +7671,8 @@ impl Render for Workspace {
                                     .items_center()
                                     .justify_center()
                                     .text_color(muted)
+                                    .cursor_pointer()
+                                    .hover(|button| button.bg(Palette::color(&p.elevated)))
                                     .window_control_area(WindowControlArea::Min)
                                     .child("−"),
                             )
@@ -7682,8 +7685,49 @@ impl Render for Workspace {
                                     .items_center()
                                     .justify_center()
                                     .text_color(muted)
+                                    .cursor_pointer()
+                                    .hover(|button| button.bg(Palette::color(&p.elevated)))
                                     .window_control_area(WindowControlArea::Max)
-                                    .child("□"),
+                                    .child({
+                                        let icon = div()
+                                            .relative()
+                                            .w(px(14.))
+                                            .h(px(14.))
+                                            .flex()
+                                            .items_center()
+                                            .justify_center();
+                                        if maximized {
+                                            icon.child(
+                                                div()
+                                                    .absolute()
+                                                    .top(px(0.))
+                                                    .right(px(0.))
+                                                    .w(px(10.))
+                                                    .h(px(10.))
+                                                    .border_1()
+                                                    .border_color(muted),
+                                            )
+                                            .child(
+                                                div()
+                                                    .absolute()
+                                                    .left(px(0.))
+                                                    .bottom(px(0.))
+                                                    .w(px(10.))
+                                                    .h(px(10.))
+                                                    .bg(Palette::color(&p.elevated))
+                                                    .border_1()
+                                                    .border_color(muted),
+                                            )
+                                        } else {
+                                            icon.child(
+                                                div()
+                                                    .w(px(11.))
+                                                    .h(px(11.))
+                                                    .border_1()
+                                                    .border_color(muted),
+                                            )
+                                        }
+                                    }),
                             )
                             .child(
                                 div()
