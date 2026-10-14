@@ -116,6 +116,7 @@ actions!(
     workspace,
     [
         Save,
+        QuickNote,
         NewPage,
         Undo,
         Redo,
@@ -496,10 +497,10 @@ fn toc_headings(blocks: &[Block]) -> Vec<(BlockId, u8, String)> {
 #[cfg(test)]
 mod view_tests {
     use super::{
-        database_filter_value_from_text, database_group_identity, database_group_label,
-        database_property_kind_choices, evaluate_database_formula, evaluate_database_rollup,
-        find_matches_in, link_target_range, order_database_groups, parse_organizer_tags,
-        toc_headings,
+        capture_tags, database_filter_value_from_text, database_group_identity,
+        database_group_label, database_property_kind_choices, evaluate_database_formula,
+        evaluate_database_rollup, find_matches_in, link_target_range, order_database_groups,
+        parse_organizer_tags, toc_headings,
     };
     use quire_core::core::database::PropertyKind;
     use quire_core::core::database_view::FilterValue;
@@ -513,6 +514,15 @@ mod view_tests {
             parse_organizer_tags(" 设计,复刻， 设计 ,,桌面端 "),
             ["设计", "复刻", "桌面端"]
         );
+    }
+
+    #[test]
+    fn quick_capture_extracts_reference_hash_tags_without_changing_body() {
+        assert_eq!(
+            capture_tags("记一下 #工作/项目，#工作/项目 #2026 #计划。"),
+            ["工作/项目", "计划"]
+        );
+        assert!(capture_tags("普通文字 # 不是标签").is_empty());
     }
 
     #[test]
@@ -5403,6 +5413,46 @@ impl Workspace {
         self.session.end_typing();
         self.schedule_save(true, window, cx);
     }
+    fn quick_note(&mut self, _: &QuickNote, _window: &mut Window, cx: &mut Context<Self>) {
+        let owner = cx.entity();
+        let theme = self.palette.clone();
+        let options = WindowOptions {
+            window_bounds: Some(WindowBounds::centered(size(px(440.), px(270.)), cx)),
+            titlebar: None,
+            window_min_size: Some(size(px(360.), px(220.))),
+            kind: WindowKind::PopUp,
+            ..Default::default()
+        };
+        let opened = cx.open_window(options, move |window, cx| {
+            cx.new(|cx| QuickNoteWindow::new(owner, theme, window, cx))
+        });
+        if let Err(error) = opened {
+            self.status = format!("无法打开速记窗口：{error}");
+            self.error = true;
+            cx.notify();
+        }
+    }
+    fn save_quick_note(&mut self, text: String, cx: &mut Context<Self>) -> bool {
+        let text = text.trim();
+        if text.is_empty() {
+            return false;
+        }
+        let tags = capture_tags(text);
+        let id = self.session.create_note();
+        self.session
+            .update_note_editor(id, String::new(), text.to_owned(), tags);
+        if let Err(error) = self.session.persistence.force_flush() {
+            self.status = format!("速记保存失败：{error}");
+            self.error = true;
+            cx.notify();
+            return false;
+        } else {
+            self.status = "速记已保存".into();
+            self.error = false;
+        }
+        cx.notify();
+        true
+    }
     fn undo(&mut self, _: &Undo, window: &mut Window, cx: &mut Context<Self>) {
         if self.composing(cx) {
             return;
@@ -5545,6 +5595,25 @@ impl Workspace {
         })
         .detach();
     }
+}
+
+fn capture_tags(text: &str) -> Vec<String> {
+    let mut tags = Vec::new();
+    for token in text.split([' ', '\n', '\t', '，', ',', '、']) {
+        let Some(tag) = token.strip_prefix('#') else {
+            continue;
+        };
+        let tag = tag.trim_end_matches([
+            '.', '。', '!', '！', '?', '？', ')', '）', ':', '：', ';', '；',
+        ]);
+        if !tag.is_empty()
+            && !tag.chars().all(|ch| ch.is_ascii_digit())
+            && !tags.iter().any(|known| known == tag)
+        {
+            tags.push(tag.to_owned());
+        }
+    }
+    tags
 }
 
 impl Render for Workspace {
@@ -11154,6 +11223,7 @@ impl Render for Workspace {
             )
             .color_space(ColorSpace::Srgb))
             .on_action(cx.listener(Self::save))
+            .on_action(cx.listener(Self::quick_note))
             .on_action(cx.listener(Self::new_page_action))
             .on_action(cx.listener(Self::undo))
             .on_action(cx.listener(Self::redo))
@@ -12007,9 +12077,154 @@ impl Render for Workspace {
     }
 }
 
+struct QuickNoteWindow {
+    owner: Entity<Workspace>,
+    input: Entity<TextInput>,
+    draft: String,
+    palette: Palette,
+    subscription: Option<Subscription>,
+}
+
+impl QuickNoteWindow {
+    fn new(
+        owner: Entity<Workspace>,
+        palette: Palette,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let input = cx.new(|cx| TextInput::new(String::new(), Vec::new(), 15., window, cx));
+        input.update(cx, |input, _| {
+            input.placeholder = Some("写下速记…（#标签会加入笔记标签）".into())
+        });
+        let mut this = Self {
+            owner,
+            input: input.clone(),
+            draft: String::new(),
+            palette,
+            subscription: None,
+        };
+        this.subscription = Some(cx.subscribe(&input, |this, entity, event, cx| match event {
+            InputEvent::Edited { text, .. } => {
+                this.draft = text.clone();
+                cx.notify();
+            }
+            InputEvent::Split(_) => entity.update(cx, |input, cx| input.insert_newline(cx)),
+            _ => {}
+        }));
+        window.focus(&input.read(cx).focus);
+        this
+    }
+    fn submit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.draft.trim().is_empty() {
+            return;
+        }
+        let text = self.draft.clone();
+        let saved = self
+            .owner
+            .update(cx, |workspace, cx| workspace.save_quick_note(text, cx));
+        if saved {
+            window.remove_window();
+        }
+    }
+    fn save_action(&mut self, _: &Save, window: &mut Window, cx: &mut Context<Self>) {
+        self.submit(window, cx);
+    }
+    fn cancel(&mut self, window: &mut Window, _: &mut Context<Self>) {
+        window.remove_window();
+    }
+}
+
+impl Render for QuickNoteWindow {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let palette = self.palette.clone();
+        let foreground = Palette::color(&palette.fg);
+        let muted = Palette::color(&palette.muted);
+        let accent = Palette::color(&palette.accent);
+        div()
+            .key_context("QuireQuickNote")
+            .size_full()
+            .flex()
+            .flex_col()
+            .gap(px(12.))
+            .p(px(18.))
+            .text_color(foreground)
+            .bg(linear_gradient(
+                180.,
+                linear_color_stop(Palette::color(&palette.bg), 0.),
+                linear_color_stop(Palette::color(&palette.grad2), 1.),
+            )
+            .color_space(ColorSpace::Srgb))
+            .child(
+                div()
+                    .text_size(px(16.))
+                    .font_weight(FontWeight::BOLD)
+                    .child("速记"),
+            )
+            .child(
+                div()
+                    .id("quick-note-input")
+                    .flex_1()
+                    .min_h(px(120.))
+                    .p(px(10.))
+                    .rounded(px(8.))
+                    .border_1()
+                    .border_color(Palette::color(&palette.border))
+                    .bg(Palette::color(&palette.elevated))
+                    .child(self.input.clone()),
+            )
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .child(
+                        div()
+                            .text_size(px(11.))
+                            .text_color(muted)
+                            .child("Enter 换行 · Ctrl+Enter 保存到笔记收集箱"),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .gap(px(8.))
+                            .child(
+                                div()
+                                    .id("quick-note-cancel")
+                                    .px(px(12.))
+                                    .py(px(7.))
+                                    .rounded(px(6.))
+                                    .text_color(muted)
+                                    .cursor_pointer()
+                                    .on_click(
+                                        cx.listener(|this, _, window, cx| this.cancel(window, cx)),
+                                    )
+                                    .child("取消"),
+                            )
+                            .child(
+                                div()
+                                    .id("quick-note-submit")
+                                    .px(px(14.))
+                                    .py(px(7.))
+                                    .rounded(px(6.))
+                                    .bg(accent)
+                                    .text_color(Palette::color(&palette.bg))
+                                    .cursor_pointer()
+                                    .on_click(
+                                        cx.listener(|this, _, window, cx| this.submit(window, cx)),
+                                    )
+                                    .child("保存速记"),
+                            ),
+                    ),
+            )
+            .on_action(cx.listener(Self::save_action))
+    }
+}
+
 pub fn bind_keys(cx: &mut App) {
     cx.bind_keys([
         KeyBinding::new("ctrl-s", Save, Some("Quire")),
+        KeyBinding::new("ctrl-enter", Save, Some("QuireQuickNote")),
+        KeyBinding::new("alt-n", QuickNote, Some("Quire")),
         KeyBinding::new("ctrl-n", NewPage, Some("Quire")),
         KeyBinding::new("ctrl-z", Undo, Some("Quire")),
         KeyBinding::new("ctrl-shift-z", Redo, Some("Quire")),
