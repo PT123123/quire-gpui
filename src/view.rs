@@ -1152,6 +1152,8 @@ pub struct Workspace {
     sync_last_auto: std::time::Instant,
     sync_pending: HashSet<String>,
     restart_on_quit: Arc<std::sync::atomic::AtomicBool>,
+    set_hotkey: Arc<dyn Fn(u8, bool) -> Result<(), String> + Send + Sync>,
+    hotkey_notice: String,
 }
 
 impl Workspace {
@@ -1277,6 +1279,17 @@ impl Workspace {
             input.update(cx, |input, _| input.text_color = Some(input_fg));
         }
         let mcp_event_tx = platform_services.event_tx.clone();
+        let set_hotkey = platform_services.set_hotkey.clone();
+        let hotkey_alt_n = session.setting("gpui.hotkey.alt-n").unwrap_or("true") == "true";
+        let hotkey_alt_m = session.setting("gpui.hotkey.alt-m").unwrap_or("false") == "true";
+        for (id, enabled) in [
+            (crate::platform::HOTKEY_ALT_N, hotkey_alt_n),
+            (crate::platform::HOTKEY_ALT_M, hotkey_alt_m),
+        ] {
+            if let Err(error) = set_hotkey(id, enabled) {
+                eprintln!("Quire GPUI: persisted global hotkey {id} could not be applied: {error}");
+            }
+        }
         let mcp_port = session
             .setting("gpui.mcp.port")
             .and_then(|value| value.parse::<u16>().ok())
@@ -1436,6 +1449,8 @@ impl Workspace {
             sync_last_auto: std::time::Instant::now(),
             sync_pending: HashSet::new(),
             restart_on_quit: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            set_hotkey,
+            hotkey_notice: "Alt+N 默认开启；Alt+M 默认关闭".into(),
         };
         if mcp_enabled {
             this.start_mcp();
@@ -1888,6 +1903,14 @@ impl Workspace {
             }
         })
         .detach();
+        if this
+            .session
+            .setting("gpui.quick-note-on-start")
+            .unwrap_or("false")
+            == "true"
+        {
+            this.open_quick_note(cx);
+        }
         this
     }
     fn sync_inputs(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -5796,6 +5819,48 @@ impl Workspace {
         self.sync_status = format!("设备名称已设为「{name}」；保存后将重启以更新局域网广播");
         self.request_close(window, cx);
     }
+    fn toggle_global_hotkey(
+        &mut self,
+        id: u8,
+        setting: &'static str,
+        default: bool,
+        label: &'static str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let enabled = self
+            .session
+            .setting(setting)
+            .map(|value| value == "true")
+            .unwrap_or(default);
+        let next = !enabled;
+        match (self.set_hotkey)(id, next) {
+            Ok(()) => {
+                self.session.set_setting(setting, next.to_string());
+                self.hotkey_notice = format!("{label}已{}", if next { "开启" } else { "关闭" });
+                self.schedule_save(false, window, cx);
+            }
+            Err(error) => {
+                self.hotkey_notice = format!("{label}设置失败：{error}");
+                cx.notify();
+            }
+        }
+    }
+    fn toggle_quick_note_on_start(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let enabled = self
+            .session
+            .setting("gpui.quick-note-on-start")
+            .unwrap_or("false")
+            == "true";
+        let next = !enabled;
+        self.session
+            .set_setting("gpui.quick-note-on-start", next.to_string());
+        self.hotkey_notice = format!(
+            "启动时自动弹出速记{}",
+            if next { "已开启" } else { "已关闭" }
+        );
+        self.schedule_save(false, window, cx);
+    }
     fn sync_auto_tick(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
         let (automatic, interval) = self.session.sync_config();
         if !automatic || self.sync_last_auto.elapsed().as_secs() < interval {
@@ -6118,6 +6183,14 @@ impl Render for Workspace {
         let mcp_status = self.mcp_status.clone();
         let mcp_endpoint = format!("http://127.0.0.1:{}/mcp", self.mcp_port);
         let mcp_token = self.mcp_token.clone();
+        let hotkey_alt_n = self.session.setting("gpui.hotkey.alt-n").unwrap_or("true") == "true";
+        let hotkey_alt_m = self.session.setting("gpui.hotkey.alt-m").unwrap_or("false") == "true";
+        let quick_note_on_start = self
+            .session
+            .setting("gpui.quick-note-on-start")
+            .unwrap_or("false")
+            == "true";
+        let hotkey_notice = self.hotkey_notice.clone();
         let mcp_logs: Vec<serde_json::Value> = self
             .session
             .setting("gpui.mcp.log")
@@ -6511,13 +6584,35 @@ impl Render for Workspace {
                             div().flex().flex_col().gap(px(14.)).child(
                                 div().text_size(px(12.)).text_color(muted).child("通用 · 当前工作区"),
                             ).child(
-                                div().flex().justify_between().items_center().child("启动时自动弹出新建笔记输入框").child("○"),
+                                div().flex().justify_between().items_center()
+                                    .child("启动时自动弹出新建笔记输入框")
+                                    .child(div().id("quick-note-on-start").px(px(8.)).py(px(4.)).rounded(px(4.))
+                                        .border_1().border_color(Palette::color(&p.border)).cursor_pointer()
+                                        .text_color(if quick_note_on_start { accent } else { muted })
+                                        .on_click(cx.listener(|this, _, window, cx| this.toggle_quick_note_on_start(window, cx)))
+                                        .child(if quick_note_on_start { "● 已开启" } else { "○ 已关闭" })),
                             ).child(
-                                div().flex().justify_between().items_center().child("全局 Alt+N 速记（不打开主界面）").child("○"),
+                                div().flex().justify_between().items_center()
+                                    .child("全局 Alt+N 速记（不打开主界面）")
+                                    .child(div().id("hotkey-alt-n").px(px(8.)).py(px(4.)).rounded(px(4.))
+                                        .border_1().border_color(Palette::color(&p.border)).cursor_pointer()
+                                        .text_color(if hotkey_alt_n { accent } else { muted })
+                                        .on_click(cx.listener(|this, _, window, cx| this.toggle_global_hotkey(
+                                            crate::platform::HOTKEY_ALT_N, "gpui.hotkey.alt-n", true, "Alt+N", window, cx
+                                        )))
+                                        .child(if hotkey_alt_n { "● 已开启" } else { "○ 已关闭" })),
                             ).child(
-                                div().flex().justify_between().items_center().child("全局 Alt+M 显示主界面").child("○"),
+                                div().flex().justify_between().items_center()
+                                    .child("全局 Alt+M 显示主界面")
+                                    .child(div().id("hotkey-alt-m").px(px(8.)).py(px(4.)).rounded(px(4.))
+                                        .border_1().border_color(Palette::color(&p.border)).cursor_pointer()
+                                        .text_color(if hotkey_alt_m { accent } else { muted })
+                                        .on_click(cx.listener(|this, _, window, cx| this.toggle_global_hotkey(
+                                            crate::platform::HOTKEY_ALT_M, "gpui.hotkey.alt-m", false, "Alt+M", window, cx
+                                        )))
+                                        .child(if hotkey_alt_m { "● 已开启" } else { "○ 已关闭" })),
                             ).child(
-                                div().text_size(px(11.)).text_color(muted).child("快捷键、同步服务和数据目录选项将在对应模块接入后启用。"),
+                                div().text_size(px(11.)).text_color(muted).child(hotkey_notice),
                             ),
                         ))
                         .when(self.settings_tab == 2, |dialog| dialog.child(

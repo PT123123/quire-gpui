@@ -8,11 +8,14 @@ pub enum ShellEvent {
 }
 
 pub type ServiceHandle = Box<dyn std::any::Any + Send>;
+pub const HOTKEY_ALT_N: u8 = 1;
+pub const HOTKEY_ALT_M: u8 = 2;
 
 pub struct Services {
     pub handles: Vec<ServiceHandle>,
     pub tray_available: bool,
     pub event_tx: Sender<ShellEvent>,
+    pub set_hotkey: std::sync::Arc<dyn Fn(u8, bool) -> Result<(), String> + Send + Sync>,
 }
 
 #[cfg(windows)]
@@ -53,6 +56,8 @@ pub fn install(tx: Sender<ShellEvent>) -> Services {
             false
         }
     };
+    let mut set_hotkey: std::sync::Arc<dyn Fn(u8, bool) -> Result<(), String> + Send + Sync> =
+        std::sync::Arc::new(|_, _| Err("global hotkeys are unavailable".into()));
     match hotkeys::install(
         Box::new({
             let quick = tx.clone();
@@ -65,9 +70,9 @@ pub fn install(tx: Sender<ShellEvent>) -> Services {
         }),
     ) {
         Ok(hotkeys) => {
-            if let Err(error) = hotkeys.set_enabled(hotkeys::ALT_N, true) {
-                eprintln!("Quire GPUI: global Alt+N unavailable: {error}");
-            }
+            let hotkeys = std::sync::Arc::new(hotkeys);
+            let control = hotkeys.clone();
+            set_hotkey = std::sync::Arc::new(move |id, on| control.set_enabled(id, on));
             services.push(Box::new(hotkeys));
         }
         Err(error) => eprintln!("Quire GPUI: global hotkeys unavailable: {error}"),
@@ -76,6 +81,7 @@ pub fn install(tx: Sender<ShellEvent>) -> Services {
         handles: services,
         tray_available,
         event_tx,
+        set_hotkey,
     }
 }
 
@@ -85,6 +91,7 @@ pub fn install(_tx: Sender<ShellEvent>) -> Services {
         handles: Vec::new(),
         tray_available: false,
         event_tx: _tx,
+        set_hotkey: std::sync::Arc::new(|_, _| Err("global hotkeys are Windows-only".into())),
     }
 }
 

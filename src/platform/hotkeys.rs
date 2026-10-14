@@ -19,9 +19,9 @@
 // their own.
 
 /// The two ids the settings toggles and the registration share.
-pub const ALT_N: u8 = 1;
+pub const ALT_N: u8 = super::HOTKEY_ALT_N;
 #[allow(dead_code)]
-pub const ALT_M: u8 = 2;
+pub const ALT_M: u8 = super::HOTKEY_ALT_M;
 
 pub struct Hotkeys {
     hwnd: isize,
