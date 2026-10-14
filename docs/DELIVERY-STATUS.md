@@ -303,3 +303,10 @@ GPUI 应用已超出第一竖切，但离完整复刻仍有较大差距。用户
 - 任务创建/更新/完成/删除均走 core `CreateTask` / `UpdateTask` 与 organizer 独立 history stack，flush 后由 core SQLite repository 持久化；PARITY sidecar 补充对应笔记/任务行为。
 - 新增隔离 SQLite 测试覆盖 inbox 创建、标题备注修改、完成时间、撤销、软删除/恢复及重启读取。
 - 验证：16 项测试通过；`cargo build --release -j 8 --target-dir target-check` 通过；独立临时库 UI smoke 通过并重启读回；parity 生成器复跑成功且 sidecar 保留 28 个手工语义项。未做真人逐项 UI 验收。整理区仍未完成（无列表/清单/标签/智能视图/平铺/批量/托盘速记等）。
+
+## 第三十四轮：任务清单创建与移动
+
+- 任务页现有收集箱和用户清单筛选；可新建清单、从任务详情将任务移入收集箱/其他清单，也可删除清单。
+- 删除清单使用 core 单一 `DeleteTaskList` 命令，在同一个可撤销步骤中把该清单的任务（含回收站行）移入收集箱；清单恢复时任务归属也恢复。新增清单色值按 core 十色调色板轮转。
+- 新增隔离库测试覆盖清单创建、移动任务、撤销/重做、删除带任务清单、撤销恢复及 flush/reopen；PARITY sidecar 补录清单创建、筛选和任务移动行为。
+- 验证：16 项测试通过；`cargo build --release -j 8 --target-dir target-check` 通过；独立临时库 UI smoke 通过并用 `--dump-state` 重启读回；PARITY 生成器复跑成功，sidecar 合并 31 条人工语义。未做真人逐项 UI 验收。清单重命名/改色、智能视图、优先级/截止日期编辑、回收站与延迟删除条仍缺。

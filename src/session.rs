@@ -7,11 +7,12 @@ use quire_core::{
         history::History,
         organizer::{
             self, ListId, Note, NoteId, OrganizerCatalog, Priority, Repeat, Subtask, Task, TaskId,
+            TaskList,
         },
         persistence::{Change, Repository},
         types::{
-            Attachment, AttachmentId, Block, BlockId, BlockKind, Mark, ORGANIZER_STACK, OrderKey,
-            Page, PageFont, PageId,
+            Attachment, AttachmentId, Block, BlockId, BlockKind, ColorKind, Mark, ORGANIZER_STACK,
+            OrderKey, Page, PageFont, PageId,
         },
     },
     services::attachment_store::AttachmentStore,
@@ -835,6 +836,9 @@ impl Session {
         true
     }
     pub fn create_task(&mut self, title: String) -> TaskId {
+        self.create_task_in(ListId::INBOX, title)
+    }
+    pub fn create_task_in(&mut self, list: ListId, title: String) -> TaskId {
         let id = TaskId(
             self.organizer
                 .tasks
@@ -850,15 +854,11 @@ impl Session {
             .unwrap_or_default();
         let millis = now.as_millis().min(i64::MAX as u128) as i64;
         let seconds = now.as_secs().min(i64::MAX as u64) as i64;
-        let last_order = self
-            .organizer
-            .tasks_in(ListId::INBOX)
-            .map(|task| task.ord)
-            .max();
+        let last_order = self.organizer.tasks_in(list).map(|task| task.ord).max();
         let task = Task {
             id,
             uuid: organizer::new_uuid(),
-            list: ListId::INBOX,
+            list,
             title,
             notes: String::new(),
             priority: Priority::None,
@@ -884,6 +884,75 @@ impl Session {
             self.apply_organizer_entry(entry);
         }
         id
+    }
+    pub fn create_task_list(&mut self, name: String) -> ListId {
+        let id = ListId(
+            self.organizer
+                .lists
+                .iter()
+                .map(|list| list.id.0)
+                .max()
+                .unwrap_or(0)
+                .saturating_add(1)
+                .max(1),
+        );
+        let previous = self.organizer.lists.iter().map(|list| list.ord).max();
+        let list = TaskList {
+            id,
+            name,
+            color: ColorKind::ALL[id.0 as usize % ColorKind::ALL.len()],
+            ord: OrderKey::between(previous, None).unwrap_or(OrderKey(
+                previous.unwrap_or(OrderKey::FIRST).0.saturating_add(1),
+            )),
+        };
+        if let Some(entry) = command::plan(
+            &mut self.document,
+            ORGANIZER_STACK,
+            Command::CreateTaskList { list },
+        ) {
+            self.apply_organizer_entry(entry);
+        }
+        id
+    }
+    pub fn set_task_list(&mut self, id: TaskId, list: ListId) -> bool {
+        self.update_task(id, |task| task.list = list)
+    }
+    pub fn delete_task_list(&mut self, id: ListId) -> Option<usize> {
+        let list = self.organizer.list(id)?.clone();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default();
+        let seconds = now.as_secs().min(i64::MAX as u64) as i64;
+        let millis = now.as_millis().min(i64::MAX as u128) as i64;
+        let mut tasks = self.organizer.tasks_in(id).cloned().collect::<Vec<_>>();
+        tasks.sort_by_key(|task| task.ord);
+        let mut previous = self
+            .organizer
+            .tasks_in(ListId::INBOX)
+            .map(|task| task.ord)
+            .max();
+        let moved = tasks
+            .into_iter()
+            .map(|before| {
+                let mut after = before.clone();
+                after.list = ListId::INBOX;
+                after.edited = seconds;
+                after.rev = organizer::rev(millis, "quire-gpui");
+                after.ord = OrderKey::between(previous, None).unwrap_or(OrderKey(
+                    previous.unwrap_or(OrderKey::FIRST).0.saturating_add(1),
+                ));
+                previous = Some(after.ord);
+                (before, after)
+            })
+            .collect::<Vec<_>>();
+        let count = moved.len();
+        let entry = command::plan(
+            &mut self.document,
+            ORGANIZER_STACK,
+            Command::DeleteTaskList { list, moved },
+        )?;
+        self.apply_organizer_entry(entry);
+        Some(count)
     }
     pub fn update_task_content(&mut self, id: TaskId, title: String, notes: String) -> bool {
         self.update_task(id, |task| {
@@ -963,6 +1032,17 @@ impl Session {
                     }
                 }
                 Change::TaskDeleted { id } => self.organizer.tasks.retain(|task| task.id != *id),
+                Change::TaskListAdded(list) => self.organizer.lists.push(list.clone()),
+                Change::TaskListUpdated(list) => {
+                    if let Some(existing) =
+                        self.organizer.lists.iter_mut().find(|l| l.id == list.id)
+                    {
+                        *existing = list.clone();
+                    }
+                }
+                Change::TaskListDeleted { id } => {
+                    self.organizer.lists.retain(|list| list.id != *id)
+                }
                 _ => {}
             }
         }
@@ -1850,6 +1930,7 @@ mod tests {
         let scratch = quire_core::testing::ScratchDir::new("gpui-organizer-task");
         let path = scratch.path().join("test.db");
         let task_id;
+        let list_id;
         {
             let mut session = Session::open(&path)?;
             task_id = session.create_task("发布 GPUI 版".into());
@@ -1874,6 +1955,18 @@ mod tests {
             assert!(session.organizer.task(task_id).unwrap().is_trashed());
             assert!(session.undo_organizer());
             assert!(!session.organizer.task(task_id).unwrap().is_trashed());
+            list_id = session.create_task_list("工作".into());
+            assert!(session.set_task_list(task_id, list_id));
+            assert_eq!(session.organizer.task(task_id).unwrap().list, list_id);
+            assert!(session.undo_organizer());
+            assert_eq!(session.organizer.task(task_id).unwrap().list, ListId::INBOX);
+            assert!(session.redo_organizer());
+            assert_eq!(session.delete_task_list(list_id), Some(1));
+            assert!(session.organizer.list(list_id).is_none());
+            assert_eq!(session.organizer.task(task_id).unwrap().list, ListId::INBOX);
+            assert!(session.undo_organizer());
+            assert_eq!(session.organizer.list(list_id).unwrap().name, "工作");
+            assert_eq!(session.organizer.task(task_id).unwrap().list, list_id);
             session.persistence.force_flush()?;
         }
         let reopened = Session::open(&path)?;
@@ -1882,6 +1975,8 @@ mod tests {
         assert_eq!(task.notes, "检查安装包和回退说明");
         assert!(!task.done);
         assert!(!task.is_trashed());
+        assert_eq!(task.list, list_id);
+        assert_eq!(reopened.organizer.list(list_id).unwrap().name, "工作");
         Ok(())
     }
 

@@ -307,6 +307,7 @@ pub struct Workspace {
     mention_selection: usize,
     organizer_open: bool,
     organizer_tasks: bool,
+    selected_task_list: quire_core::core::organizer::ListId,
     selected_note: Option<quire_core::core::organizer::NoteId>,
     selected_task: Option<quire_core::core::organizer::TaskId>,
     note_title_draft: String,
@@ -383,6 +384,7 @@ impl Workspace {
             mention_selection: 0,
             organizer_open: false,
             organizer_tasks: false,
+            selected_task_list: quire_core::core::organizer::ListId::INBOX,
             selected_note: None,
             selected_task: None,
             note_title_draft: String::new(),
@@ -1661,7 +1663,9 @@ impl Workspace {
     }
     fn create_task(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.commit_note_draft(window, cx);
-        let id = self.session.create_task("新任务".into());
+        let id = self
+            .session
+            .create_task_in(self.selected_task_list, "新任务".into());
         self.organizer_open = true;
         self.organizer_tasks = true;
         self.selected_note = None;
@@ -1711,6 +1715,74 @@ impl Workspace {
         };
         if self.session.set_task_done(id, !task.done) {
             self.schedule_save(true, window, cx);
+        }
+    }
+    fn select_task_list(
+        &mut self,
+        list: quire_core::core::organizer::ListId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.selected_task_list == list {
+            return;
+        }
+        self.commit_note_draft(window, cx);
+        self.selected_task_list = list;
+        self.selected_task = None;
+        let first_task = self
+            .session
+            .organizer
+            .live_tasks()
+            .find(|task| task.list == list)
+            .map(|task| task.id);
+        if let Some(id) = first_task {
+            self.select_task(id, window, cx);
+        } else {
+            self.note_title_draft.clear();
+            self.note_body_draft.clear();
+            self.note_title_input.update(cx, |input, cx| {
+                input.reset(String::new(), Vec::new(), 0, cx);
+            });
+            self.note_body_input.update(cx, |input, cx| {
+                input.reset(String::new(), Vec::new(), 0, cx);
+            });
+            cx.notify();
+        }
+    }
+    fn create_task_list(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let number = self.session.organizer.lists.len() + 1;
+        let id = self.session.create_task_list(format!("清单 {number}"));
+        self.selected_task_list = id;
+        self.selected_task = None;
+        self.schedule_save(true, window, cx);
+    }
+    fn delete_task_list(
+        &mut self,
+        list: quire_core::core::organizer::ListId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(count) = self.session.delete_task_list(list) else {
+            return;
+        };
+        if self.selected_task_list == list {
+            self.selected_task_list = quire_core::core::organizer::ListId::INBOX;
+        }
+        self.status = format!("清单已删除，{count} 项任务已移至收集箱（Ctrl+Z 可撤销）");
+        self.schedule_save(true, window, cx);
+    }
+    fn move_task_to_list(
+        &mut self,
+        task: quire_core::core::organizer::TaskId,
+        list: quire_core::core::organizer::ListId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.commit_note_draft(window, cx);
+        if self.session.set_task_list(task, list) {
+            self.selected_task_list = list;
+            self.schedule_save(true, window, cx);
+            cx.notify();
         }
     }
     fn trash_task(
@@ -4098,6 +4170,7 @@ impl Render for Workspace {
             .session
             .organizer
             .live_tasks()
+            .filter(|task| task.list == self.selected_task_list)
             .cloned()
             .collect::<Vec<_>>();
         tasks.sort_by_key(|task| task.ord);
@@ -4170,11 +4243,102 @@ impl Render for Workspace {
             })
             .collect::<Vec<_>>();
         let task_summary = self.selected_task.and_then(|id| {
-            self.session
-                .organizer
-                .task(id)
-                .map(|task| (id, task.done, task.priority.label(), task.due.clone()))
+            self.session.organizer.task(id).map(|task| {
+                let list_name = self
+                    .session
+                    .organizer
+                    .list(task.list)
+                    .map(|list| list.name.clone())
+                    .unwrap_or_else(|| "收集箱".into());
+                (
+                    id,
+                    task.done,
+                    task.priority.label(),
+                    task.due.clone(),
+                    task.list,
+                    list_name,
+                )
+            })
         });
+        let mut task_lists = self.session.organizer.lists.clone();
+        task_lists.sort_by_key(|list| list.ord);
+        let mut task_list_buttons = vec![
+            div()
+                .id("organizer-list-inbox")
+                .px(px(8.))
+                .py(px(5.))
+                .rounded(px(5.))
+                .cursor_pointer()
+                .text_color(if self.selected_task_list.is_inbox() {
+                    accent
+                } else {
+                    muted
+                })
+                .when(self.selected_task_list.is_inbox(), |chip| {
+                    chip.bg(Palette::color(&p.elevated))
+                })
+                .on_click(cx.listener(|this, _, window, cx| {
+                    this.select_task_list(quire_core::core::organizer::ListId::INBOX, window, cx)
+                }))
+                .child(format!(
+                    "收集箱 · {}",
+                    self.session
+                        .organizer
+                        .live_tasks()
+                        .filter(|task| task.list.is_inbox())
+                        .count()
+                )),
+        ];
+        task_list_buttons.extend(task_lists.into_iter().map(|list| {
+            let id = list.id;
+            let count = self
+                .session
+                .organizer
+                .live_tasks()
+                .filter(|task| task.list == id)
+                .count();
+            div()
+                .id(SharedString::from(format!("organizer-list-row-{id:?}")))
+                .flex()
+                .items_center()
+                .gap(px(3.))
+                .child(
+                    div()
+                        .id(SharedString::from(format!("organizer-list-{id:?}")))
+                        .flex_1()
+                        .min_w_0()
+                        .px(px(8.))
+                        .py(px(5.))
+                        .rounded(px(5.))
+                        .cursor_pointer()
+                        .text_color(if self.selected_task_list == id {
+                            accent
+                        } else {
+                            muted
+                        })
+                        .when(self.selected_task_list == id, |chip| {
+                            chip.bg(Palette::color(&p.elevated))
+                        })
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.select_task_list(id, window, cx)
+                        }))
+                        .child(format!("{} · {count}", list.name)),
+                )
+                .child(
+                    div()
+                        .id(SharedString::from(format!("organizer-list-delete-{id:?}")))
+                        .px(px(5.))
+                        .py(px(4.))
+                        .rounded(px(4.))
+                        .cursor_pointer()
+                        .text_color(muted)
+                        .hover(|button| button.text_color(rgb(0xe5534b)))
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.delete_task_list(id, window, cx)
+                        }))
+                        .child("×"),
+                )
+        }));
         let organizer_view = div()
             .id("organizer-main")
             .flex()
@@ -4261,8 +4425,37 @@ impl Render for Workspace {
                                         }
                                     }))
                                     .child("＋"),
-                            ),
+                            )
+                            .when(self.organizer_tasks, |row| {
+                                row.child(
+                                    div()
+                                        .id("organizer-create-task-list")
+                                        .px(px(7.))
+                                        .py(px(4.))
+                                        .rounded(px(4.))
+                                        .cursor_pointer()
+                                        .text_color(muted)
+                                        .hover(|button| button.bg(Palette::color(&p.elevated)))
+                                        .on_click(cx.listener(|this, _, window, cx| {
+                                            this.create_task_list(window, cx)
+                                        }))
+                                        .child("＋清单"),
+                                )
+                            }),
                     )
+                    .when(self.organizer_tasks, |list| {
+                        list.child(
+                            div()
+                                .id("organizer-task-list-selector")
+                                .max_h(px(120.))
+                                .flex_shrink_0()
+                                .flex()
+                                .flex_col()
+                                .gap(px(4.))
+                                .overflow_y_scroll()
+                                .children(task_list_buttons),
+                        )
+                    })
                     .child(
                         div()
                             .id("organizer-notes-scroll")
@@ -4290,43 +4483,94 @@ impl Render for Workspace {
                                 .flex()
                                 .flex_col()
                                 .gap(px(18.))
-                                .when_some(task_summary, |pane, (id, done, priority, due)| {
-                                    pane.child(
-                                        div()
-                                            .flex()
-                                            .items_center()
-                                            .gap(px(10.))
-                                            .text_color(muted)
-                                            .child(format!(
-                                                "{} · 优先级 {} · 截止 {}",
-                                                if done { "已完成" } else { "待完成" },
-                                                priority,
-                                                due.as_deref().unwrap_or("未设置")
-                                            ))
-                                            .child(
-                                                div()
-                                                    .id("organizer-task-toggle-done")
-                                                    .px(px(8.))
-                                                    .py(px(4.))
-                                                    .rounded(px(4.))
-                                                    .cursor_pointer()
-                                                    .text_color(accent)
-                                                    .hover(|button| {
-                                                        button.bg(Palette::color(&p.elevated))
-                                                    })
-                                                    .on_click(cx.listener(
-                                                        move |this, _, window, cx| {
-                                                            this.toggle_task_done(id, window, cx)
-                                                        },
+                                .when_some(
+                                    task_summary,
+                                    |pane, (id, done, priority, due, list_id, list_name)| {
+                                        pane.child(
+                                            div()
+                                                .flex()
+                                                .items_center()
+                                                .gap(px(10.))
+                                                .text_color(muted)
+                                                .child(format!(
+                                                    "{} · {} · 优先级 {} · 截止 {}",
+                                                    if done { "已完成" } else { "待完成" },
+                                                    list_name,
+                                                    priority,
+                                                    due.as_deref().unwrap_or("未设置")
+                                                ))
+                                                .child(
+                                                    div()
+                                                        .id("organizer-task-toggle-done")
+                                                        .px(px(8.))
+                                                        .py(px(4.))
+                                                        .rounded(px(4.))
+                                                        .cursor_pointer()
+                                                        .text_color(accent)
+                                                        .hover(|button| {
+                                                            button.bg(Palette::color(&p.elevated))
+                                                        })
+                                                        .on_click(cx.listener(
+                                                            move |this, _, window, cx| {
+                                                                this.toggle_task_done(
+                                                                    id, window, cx,
+                                                                )
+                                                            },
+                                                        ))
+                                                        .child(if done {
+                                                            "重新打开"
+                                                        } else {
+                                                            "标记完成"
+                                                        }),
+                                                ),
+                                        )
+                                        .child(
+                                            div()
+                                                .flex()
+                                                .items_center()
+                                                .gap(px(5.))
+                                                .text_color(muted)
+                                                .child("移至")
+                                                .children(
+                                                    std::iter::once((
+                                                        quire_core::core::organizer::ListId::INBOX,
+                                                        "收集箱".to_owned(),
                                                     ))
-                                                    .child(if done {
-                                                        "重新打开"
-                                                    } else {
-                                                        "标记完成"
-                                                    }),
-                                            ),
-                                    )
-                                })
+                                                    .chain(
+                                                        self.session.organizer.lists.iter().map(
+                                                            |list| (list.id, list.name.clone()),
+                                                        ),
+                                                    )
+                                                    .filter(|(target, _)| *target != list_id)
+                                                    .map(|(target, label)| {
+                                                        div()
+                                                            .id(SharedString::from(format!(
+                                                                "organizer-move-task-{}-{target:?}",
+                                                                id.0
+                                                            )))
+                                                            .px(px(7.))
+                                                            .py(px(3.))
+                                                            .rounded(px(4.))
+                                                            .cursor_pointer()
+                                                            .text_color(accent)
+                                                            .hover(|button| {
+                                                                button
+                                                                    .bg(Palette::color(&p.elevated))
+                                                            })
+                                                            .on_click(cx.listener(
+                                                                move |this, _, window, cx| {
+                                                                    this.move_task_to_list(
+                                                                        id, target, window, cx,
+                                                                    )
+                                                                },
+                                                            ))
+                                                            .child(label)
+                                                    })
+                                                    .collect::<Vec<_>>(),
+                                                ),
+                                        )
+                                    },
+                                )
                                 .child(
                                     div()
                                         .text_size(px(30.))
