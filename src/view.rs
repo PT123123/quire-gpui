@@ -1955,10 +1955,51 @@ impl Workspace {
                     if saved_note.tags != ["gpui-smoke"] {
                         panic!("quick note tag extraction mismatch: {:?}", saved_note.tags);
                     }
+                    let last_block = this
+                        .session
+                        .blocks()
+                        .last()
+                        .expect("smoke page must have a block")
+                        .id;
+                    this.focus(last_block, 0, window, cx);
                     eprintln!(
-                        "SMOKE: block input and quick note callbacks -> core state OK; not OS IME verification"
+                        "SMOKE scroll requested: offset={:?}, viewport={:?}",
+                        this.document_list.logical_scroll_top(),
+                        this.document_list.viewport_bounds()
                     );
-                    this.request_close(window, cx);
+                    cx.spawn_in(window, async move |weak, cx| {
+                        cx.background_executor()
+                            .timer(Duration::from_millis(800))
+                            .await;
+                        let _ = weak.update_in(cx, |this, window, cx| {
+                            assert!(
+                                this.document_list.viewport_bounds().size.height > px(0.),
+                                "document virtual list must have a nonzero viewport"
+                            );
+                            let mounted = this.inputs.contains_key(&last_block.0);
+                            if !mounted {
+                                let last_index = this
+                                    .document_list_ids
+                                    .iter()
+                                    .position(|id| *id == last_block);
+                                eprintln!(
+                                    "SMOKE virtual scroll diagnostic: mounted={mounted}, last_index={last_index:?}, list_count={}, visible={:?}, input_count={}, active={:?}, offset={:?}, viewport={:?}",
+                                    this.document_list.item_count(),
+                                    this.document_visible_range,
+                                    this.inputs.len(),
+                                    this.active,
+                                    this.document_list.logical_scroll_top(),
+                                    this.document_list.viewport_bounds()
+                                );
+                                panic!("scrolling to the last block must mount its editor");
+                            }
+                            eprintln!(
+                                "SMOKE: virtual scroll-to-last, block input, and quick note callbacks passed; not OS IME verification"
+                            );
+                            this.request_close(window, cx);
+                        });
+                    })
+                    .detach();
                 });
             })
             .detach();
@@ -5852,7 +5893,10 @@ impl Workspace {
             .position(|candidate| *candidate == id)
         {
             self.set_active_block(id, cx);
-            self.document_list.scroll_to_reveal_item(index + 1);
+            self.document_list.scroll_to(ListOffset {
+                item_ix: index + 1,
+                offset_in_item: px(0.),
+            });
             cx.notify();
             let entity = cx.entity();
             window.on_next_frame(move |window, app| {
@@ -6777,6 +6821,137 @@ fn capture_tag_replacement(draft: &str, caret: usize, tag: &str) -> Option<(Stri
 }
 
 impl Workspace {
+    fn render_document_header(
+        &mut self,
+        cx: &mut Context<Self>,
+        text: Hsla,
+        muted: Hsla,
+        p: &Palette,
+    ) -> AnyElement {
+        let page_id = self.session.page.id;
+        let backlinks_count = self.session.repo.reference_count(page_id).unwrap_or(0);
+        let backlink_rows = if self.backlinks_open {
+            self.session
+                .repo
+                .references(page_id, 500)
+                .unwrap_or_default()
+                .into_iter()
+                .map(|reference| {
+                    let source_page = reference.page;
+                    let block_id = reference.block;
+                    let page_title = self
+                        .session
+                        .pages
+                        .iter()
+                        .find(|page| page.id == source_page)
+                        .map(|page| page.title.clone())
+                        .unwrap_or_else(|| "已删除页面".into());
+                    let preview = if reference.text.trim().is_empty() {
+                        "页面引用".to_owned()
+                    } else {
+                        reference.text
+                    };
+                    div()
+                        .id(SharedString::from(format!(
+                            "backlink-{source_page:?}-{block_id:?}"
+                        )))
+                        .w_full()
+                        .px(px(9.))
+                        .py(px(6.))
+                        .rounded(px(5.))
+                        .cursor_pointer()
+                        .hover(|row| row.bg(Palette::color(&p.bg).opacity(0.28)))
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.activate_page(source_page, window, cx);
+                            this.focus(block_id, 0, window, cx);
+                            this.backlinks_open = false;
+                            cx.notify();
+                        }))
+                        .child(div().text_size(px(11.)).text_color(muted).child(page_title))
+                        .child(div().text_color(text).child(preview))
+                })
+                .collect::<Vec<_>>()
+        } else {
+            Vec::new()
+        };
+        let backlinks_empty = backlink_rows.is_empty();
+        let cover_path = self
+            .session
+            .page
+            .cover
+            .and_then(|cover| self.session.attachment_display_path(cover));
+        div()
+            .w_full()
+            .max_w(px(if self.session.page.full_width {
+                1120.
+            } else {
+                760.
+            }))
+            .mx_auto()
+            .pt(px(72.))
+            .pb(px(16.))
+            .flex()
+            .flex_col()
+            .when_some(cover_path, |page, path| {
+                page.child(
+                    img(path)
+                        .w_full()
+                        .h(px(180.))
+                        .object_fit(ObjectFit::Cover)
+                        .rounded(px(8.))
+                        .mb(px(16.)),
+                )
+            })
+            .child(
+                div()
+                    .text_size(px(38.))
+                    .font_weight(FontWeight::BOLD)
+                    .mb(px(16.))
+                    .child(self.title_input.clone()),
+            )
+            .when(self.session.page.locked, |d| {
+                d.child(div().text_color(muted).mb(px(12.)).child("此页面已锁定"))
+            })
+            .when(self.backlinks_open, |d| {
+                d.child(
+                    div()
+                        .id("page-backlinks-panel")
+                        .w_full()
+                        .max_h(px(220.))
+                        .overflow_y_scroll()
+                        .mb(px(12.))
+                        .rounded(px(6.))
+                        .border_1()
+                        .border_color(Palette::color(&p.border))
+                        .bg(Palette::color(&p.elevated))
+                        .px(px(8.))
+                        .py(px(6.))
+                        .flex()
+                        .flex_col()
+                        .gap(px(2.))
+                        .child(
+                            div()
+                                .px(px(9.))
+                                .py(px(4.))
+                                .text_size(px(11.))
+                                .text_color(muted)
+                                .child(format!("引用此页面的内容 · {backlinks_count}")),
+                        )
+                        .when(backlinks_empty, |panel| {
+                            panel.child(
+                                div()
+                                    .px(px(9.))
+                                    .py(px(7.))
+                                    .text_color(muted)
+                                    .child("暂无反向链接"),
+                            )
+                        })
+                        .children(backlink_rows),
+                )
+            })
+            .into_any_element()
+    }
+
     fn render_document_block(
         &mut self,
         index: usize,
@@ -9817,51 +9992,6 @@ impl Render for Workspace {
             .repo
             .reference_count(self.session.page.id)
             .unwrap_or(0);
-        let backlink_rows = if self.backlinks_open {
-            self.session
-                .repo
-                .references(self.session.page.id, 500)
-                .unwrap_or_default()
-                .into_iter()
-                .map(|reference| {
-                    let page_id = reference.page;
-                    let block_id = reference.block;
-                    let page_title = self
-                        .session
-                        .pages
-                        .iter()
-                        .find(|page| page.id == page_id)
-                        .map(|page| page.title.clone())
-                        .unwrap_or_else(|| "已删除页面".into());
-                    let preview = if reference.text.trim().is_empty() {
-                        "页面引用".to_owned()
-                    } else {
-                        reference.text
-                    };
-                    div()
-                        .id(SharedString::from(format!(
-                            "backlink-{page_id:?}-{block_id:?}"
-                        )))
-                        .w_full()
-                        .px(px(9.))
-                        .py(px(6.))
-                        .rounded(px(5.))
-                        .cursor_pointer()
-                        .hover(|row| row.bg(Palette::color(&p.bg).opacity(0.28)))
-                        .on_click(cx.listener(move |this, _, window, cx| {
-                            this.activate_page(page_id, window, cx);
-                            this.focus(block_id, 0, window, cx);
-                            this.backlinks_open = false;
-                            cx.notify();
-                        }))
-                        .child(div().text_size(px(11.)).text_color(muted).child(page_title))
-                        .child(div().text_color(text).child(preview))
-                })
-                .collect::<Vec<_>>()
-        } else {
-            Vec::new()
-        };
-        let backlinks_empty = backlink_rows.is_empty();
         let sync_sources = self
             .session
             .pages
@@ -9901,11 +10031,6 @@ impl Render for Workspace {
             .filter(|page| page.id != self.session.page.id && !page.template)
             .map(|page| (page.id, page.title.clone()))
             .collect::<Vec<_>>();
-        let cover_path = self
-            .session
-            .page
-            .cover
-            .and_then(|cover| self.session.attachment_display_path(cover));
         let theme_options = if self.theme_picker_open {
             let palettes: Vec<Palette> =
                 serde_json::from_str(include_str!("palettes.json")).expect("checked-in palettes");
@@ -12722,7 +12847,13 @@ impl Render for Workspace {
             self.document_list.clone(),
             move |list_index, window, app| {
                 if list_index == 0 {
-                    return div().h(px(0.)).into_any_element();
+                    let weak = row_weak.clone();
+                    let palette = row_palette.clone();
+                    return weak
+                        .update(app, |this, cx| {
+                            this.render_document_header(cx, row_text, row_muted, &palette)
+                        })
+                        .unwrap_or_else(|_| div().into_any_element());
                 }
                 if list_index > document_ids.len() {
                     return div().h(px(128.)).into_any_element();
@@ -12772,82 +12903,13 @@ impl Render for Workspace {
                 .flex_col()
                 .child(
                     div()
-                        .w_full()
-                        .max_w(px(if self.session.page.full_width {
-                            1120.
-                        } else {
-                            760.
-                        }))
-                        .mx_auto()
-                        .pt(px(72.))
-                        .pb(px(16.))
-                        .flex()
-                        .flex_col()
-                        .when_some(cover_path, |page, path| {
-                            page.child(
-                                img(path)
-                                    .w_full()
-                                    .h(px(180.))
-                                    .object_fit(ObjectFit::Cover)
-                                    .rounded(px(8.))
-                                    .mb(px(16.)),
-                            )
-                        })
-                        .child(
-                            div()
-                                .text_size(px(38.))
-                                .font_weight(FontWeight::BOLD)
-                                .mb(px(16.))
-                                .child(self.title_input.clone()),
-                        )
-                        .when(self.session.page.locked, |d| {
-                            d.child(div().text_color(muted).mb(px(12.)).child("此页面已锁定"))
-                        })
-                        .when(self.backlinks_open, |d| {
-                            d.child(
-                                div()
-                                    .id("page-backlinks-panel")
-                                    .w_full()
-                                    .max_h(px(220.))
-                                    .overflow_y_scroll()
-                                    .mb(px(12.))
-                                    .rounded(px(6.))
-                                    .border_1()
-                                    .border_color(Palette::color(&p.border))
-                                    .bg(Palette::color(&p.elevated))
-                                    .px(px(8.))
-                                    .py(px(6.))
-                                    .flex()
-                                    .flex_col()
-                                    .gap(px(2.))
-                                    .child(
-                                        div()
-                                            .px(px(9.))
-                                            .py(px(4.))
-                                            .text_size(px(11.))
-                                            .text_color(muted)
-                                            .child(format!("引用此页面的内容 · {backlinks_count}")),
-                                    )
-                                    .when(backlinks_empty, |panel| {
-                                        panel.child(
-                                            div()
-                                                .px(px(9.))
-                                                .py(px(7.))
-                                                .text_color(muted)
-                                                .child("暂无反向链接"),
-                                        )
-                                    })
-                                    .children(backlink_rows),
-                            )
-                        }),
-                )
-                .child(
-                    div()
                         .id("document-list-scroll")
                         .flex_1()
                         .min_h_0()
                         .min_w_0()
                         .px(px(48.))
+                        .flex()
+                        .flex_col()
                         .child(document_rows.flex_1().min_h_0()),
                 )
         };
