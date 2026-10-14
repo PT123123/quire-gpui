@@ -118,6 +118,7 @@ actions!(
     [
         Save,
         QuickNote,
+        OpenCommandPalette,
         NewPage,
         Undo,
         Redo,
@@ -130,6 +131,44 @@ actions!(
         ZoomReset
     ]
 );
+
+#[derive(Clone, Copy)]
+enum PaletteCommand {
+    NewPage,
+    SearchPages,
+    ToggleSidebar,
+    ToggleTheme,
+    Settings,
+    OpenNotes,
+    OpenTasks,
+    RenamePage,
+    DuplicatePage,
+    DeletePage,
+    ExportMarkdown,
+    ImportMarkdown,
+    CopyMarkdown,
+    OpenPage(quire_core::core::types::PageId),
+}
+
+struct PaletteItem {
+    name: String,
+    hint: &'static str,
+    section: &'static str,
+    icon: &'static str,
+    action: PaletteCommand,
+}
+
+fn palette_matches(query: &str, name: &str, section: &str) -> bool {
+    let query = query.trim().to_lowercase();
+    if query.is_empty() {
+        return true;
+    }
+    let name = name.to_lowercase();
+    let section = section.to_lowercase();
+    query
+        .split_whitespace()
+        .all(|term| name.contains(term) || section.contains(term))
+}
 
 fn find_matches_in(text: &str, query: &str) -> Vec<Range<usize>> {
     if query.is_empty() || query.len() > text.len() {
@@ -516,8 +555,8 @@ mod view_tests {
         capture_tag_replacement, capture_tags, database_filter_value_from_text,
         database_group_identity, database_group_label, database_property_kind_choices,
         evaluate_database_formula, evaluate_database_rollup, find_matches_in, link_target_range,
-        order_database_groups, organizer_tag_matches_path, organizer_tags_exclude, parse_mcp_port,
-        parse_organizer_tags, toc_headings,
+        order_database_groups, organizer_tag_matches_path, organizer_tags_exclude, palette_matches,
+        parse_mcp_port, parse_organizer_tags, toc_headings,
     };
     use quire_core::core::database::PropertyKind;
     use quire_core::core::database_view::FilterValue;
@@ -579,6 +618,14 @@ mod view_tests {
         assert_eq!(parse_mcp_port("0"), None);
         assert_eq!(parse_mcp_port("65536"), None);
         assert_eq!(parse_mcp_port("http"), None);
+    }
+
+    #[test]
+    fn command_palette_filters_names_and_sections_without_losing_chinese_matches() {
+        assert!(palette_matches(" 设 置 ", "设置", "导航"));
+        assert!(palette_matches("跳转", "项目计划", "跳转到页面"));
+        assert!(!palette_matches("附件", "设置", "导航"));
+        assert!(palette_matches("", "任意命令", "界面"));
     }
 
     #[test]
@@ -1115,6 +1162,9 @@ pub struct Workspace {
     find_open: bool,
     search_open: bool,
     search_selected: usize,
+    command_palette_open: bool,
+    command_palette_query: String,
+    command_palette_selected: usize,
     backlinks_open: bool,
     hovered_block: Option<BlockId>,
     block_menu_open: Option<(BlockId, bool)>,
@@ -1440,6 +1490,9 @@ impl Workspace {
             find_open: false,
             search_open: false,
             search_selected: 0,
+            command_palette_open: false,
+            command_palette_query: String::new(),
+            command_palette_selected: 0,
             backlinks_open: false,
             hovered_block: None,
             block_menu_open: None,
@@ -1810,11 +1863,27 @@ impl Workspace {
             window,
             |this, _, event, window, cx| match event {
                 InputEvent::Edited { text, .. } => {
-                    this.search_query = text.clone();
-                    this.search_selected = 0;
+                    if this.command_palette_open {
+                        this.command_palette_query = text.clone();
+                        this.command_palette_selected = 0;
+                    } else {
+                        this.search_query = text.clone();
+                        this.search_selected = 0;
+                    }
                     cx.notify();
                 }
                 InputEvent::Navigate(direction) => {
+                    if this.command_palette_open {
+                        let count = this.palette_items().len().min(8);
+                        if count > 0 {
+                            this.command_palette_selected = (this.command_palette_selected as i32
+                                + direction)
+                                .clamp(0, count as i32 - 1)
+                                as usize;
+                            cx.notify();
+                        }
+                        return;
+                    }
                     let count = this.search_result_ids().len();
                     if count > 0 {
                         this.search_selected = (this.search_selected as i32 + direction)
@@ -1823,9 +1892,17 @@ impl Workspace {
                         cx.notify();
                     }
                 }
-                InputEvent::Split(_) => this.open_selected_search_result(window, cx),
+                InputEvent::Split(_) => {
+                    if this.command_palette_open {
+                        this.invoke_palette_command(window, cx);
+                    } else {
+                        this.open_selected_search_result(window, cx);
+                    }
+                }
                 InputEvent::DismissSlash => {
-                    if this.theme_picker_open {
+                    if this.command_palette_open {
+                        this.close_command_palette(window, cx);
+                    } else if this.theme_picker_open {
                         this.close_settings(window, cx);
                     } else {
                         this.close_search(window, cx);
@@ -1923,9 +2000,27 @@ impl Workspace {
         if smoke {
             cx.spawn_in(window, async move |weak, cx| {
                 cx.background_executor()
-                    .timer(Duration::from_millis(1000))
+                    .timer(Duration::from_millis(400))
                     .await;
-                let _ = weak.update_in(cx, |this, window, cx| this.smoke_input(window, cx));
+                let _ = weak.update_in(cx, |this, window, cx| {
+                    this.open_command_palette(window, cx);
+                    this.search_input.update(cx, |input, cx| {
+                        input.replace_text_in_range(None, "设置", window, cx);
+                    });
+                });
+                cx.background_executor()
+                    .timer(Duration::from_millis(150))
+                    .await;
+                let _ = weak.update_in(cx, |this, window, cx| {
+                    assert!(this.command_palette_open);
+                    assert_eq!(this.command_palette_query, "设置");
+                    assert_eq!(this.palette_items().len(), 1);
+                    this.invoke_palette_command(window, cx);
+                    assert!(this.theme_picker_open);
+                    this.close_settings(window, cx);
+                    eprintln!("SMOKE: Ctrl+K command palette filtering and settings action passed");
+                    this.smoke_input(window, cx);
+                });
                 cx.background_executor()
                     .timer(Duration::from_millis(800))
                     .await;
@@ -5739,6 +5834,221 @@ impl Workspace {
             .map(|page| page.id)
             .collect()
     }
+    fn palette_items(&self) -> Vec<PaletteItem> {
+        let mut items = vec![
+            PaletteItem {
+                name: "新建页面".into(),
+                hint: "Ctrl+N",
+                section: "编辑",
+                icon: "+",
+                action: PaletteCommand::NewPage,
+            },
+            PaletteItem {
+                name: "搜索页面…".into(),
+                hint: "Ctrl+P",
+                section: "导航",
+                icon: "⌕",
+                action: PaletteCommand::SearchPages,
+            },
+            PaletteItem {
+                name: "切换侧边栏".into(),
+                hint: "",
+                section: "界面",
+                icon: "▤",
+                action: PaletteCommand::ToggleSidebar,
+            },
+            PaletteItem {
+                name: "切换深色模式".into(),
+                hint: "",
+                section: "界面",
+                icon: "◐",
+                action: PaletteCommand::ToggleTheme,
+            },
+            PaletteItem {
+                name: "设置".into(),
+                hint: "",
+                section: "导航",
+                icon: "⚙",
+                action: PaletteCommand::Settings,
+            },
+            PaletteItem {
+                name: "打开笔记".into(),
+                hint: "",
+                section: "导航",
+                icon: "▧",
+                action: PaletteCommand::OpenNotes,
+            },
+            PaletteItem {
+                name: "打开任务".into(),
+                hint: "",
+                section: "导航",
+                icon: "✓",
+                action: PaletteCommand::OpenTasks,
+            },
+            PaletteItem {
+                name: "重命名页面".into(),
+                hint: "F2",
+                section: "页面",
+                icon: "✎",
+                action: PaletteCommand::RenamePage,
+            },
+            PaletteItem {
+                name: "复制页面".into(),
+                hint: "",
+                section: "页面",
+                icon: "⧉",
+                action: PaletteCommand::DuplicatePage,
+            },
+            PaletteItem {
+                name: "删除页面".into(),
+                hint: "",
+                section: "页面",
+                icon: "⌫",
+                action: PaletteCommand::DeletePage,
+            },
+            PaletteItem {
+                name: "导出页面为 Markdown…".into(),
+                hint: "",
+                section: "页面",
+                icon: "⇧",
+                action: PaletteCommand::ExportMarkdown,
+            },
+            PaletteItem {
+                name: "导入 Markdown…".into(),
+                hint: "",
+                section: "页面",
+                icon: "⇩",
+                action: PaletteCommand::ImportMarkdown,
+            },
+            PaletteItem {
+                name: "复制页面为 Markdown".into(),
+                hint: "",
+                section: "页面",
+                icon: "⧉",
+                action: PaletteCommand::CopyMarkdown,
+            },
+        ];
+        let mut pages = self
+            .session
+            .pages
+            .iter()
+            .filter(|page| !page.template)
+            .collect::<Vec<_>>();
+        pages.sort_by_key(|page| (page.parent, page.order));
+        items.extend(pages.into_iter().map(|page| PaletteItem {
+            name: page.title.clone(),
+            hint: "",
+            section: "跳转到页面",
+            icon: "▤",
+            action: PaletteCommand::OpenPage(page.id),
+        }));
+        items
+            .into_iter()
+            .filter(|item| palette_matches(&self.command_palette_query, &item.name, item.section))
+            .collect()
+    }
+    fn open_command_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.search_open {
+            self.search_open = false;
+        }
+        self.theme_picker_open = false;
+        self.icon_picker_open = false;
+        self.command_palette_open = true;
+        self.command_palette_query.clear();
+        self.command_palette_selected = 0;
+        self.search_query.clear();
+        self.search_input.update(cx, |input, cx| {
+            input.placeholder = Some("输入命令…".into());
+            input.reset(String::new(), Vec::new(), 0, cx);
+        });
+        window.focus(&self.search_input.read(cx).focus);
+        cx.notify();
+    }
+    fn close_command_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.command_palette_open = false;
+        self.command_palette_query.clear();
+        self.command_palette_selected = 0;
+        let placeholder = if self.organizer_open {
+            if self.organizer_tasks {
+                "搜索任务…"
+            } else {
+                "搜索笔记…"
+            }
+        } else {
+            "搜索页面…"
+        };
+        self.search_input.update(cx, |input, cx| {
+            input.placeholder = Some(placeholder.into());
+            input.reset(String::new(), Vec::new(), 0, cx);
+        });
+        self.restore_focus(window, cx);
+        cx.notify();
+    }
+    fn invoke_palette_command(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(action) = self
+            .palette_items()
+            .get(self.command_palette_selected)
+            .map(|item| item.action)
+        else {
+            return;
+        };
+        self.close_command_palette(window, cx);
+        match action {
+            PaletteCommand::NewPage => self.add_page(window, cx),
+            PaletteCommand::SearchPages => self.open_search(&SearchPages, window, cx),
+            PaletteCommand::ToggleSidebar => self.toggle_sidebar(cx),
+            PaletteCommand::ToggleTheme => {
+                let next = if self.palette.id == "light" {
+                    "midnight"
+                } else {
+                    "light"
+                };
+                self.select_theme(next, window, cx);
+            }
+            PaletteCommand::Settings => {
+                self.settings_tab = 0;
+                self.toggle_theme_picker(window, cx);
+            }
+            PaletteCommand::OpenNotes | PaletteCommand::OpenTasks => {
+                self.commit_note_draft(window, cx);
+                self.organizer_open = true;
+                self.organizer_tasks = matches!(action, PaletteCommand::OpenTasks);
+                self.selected_note = None;
+                self.selected_task = None;
+                self.search_query.clear();
+                let placeholder = if self.organizer_tasks {
+                    "搜索任务…"
+                } else {
+                    "搜索笔记…"
+                };
+                self.search_input.update(cx, |input, cx| {
+                    input.placeholder = Some(placeholder.into());
+                    input.reset(String::new(), Vec::new(), 0, cx);
+                });
+                cx.notify();
+            }
+            PaletteCommand::RenamePage => {
+                if !self.session.page.locked {
+                    window.focus(&self.title_input.read(cx).focus);
+                }
+            }
+            PaletteCommand::DuplicatePage => self.duplicate_page(self.session.page.id, window, cx),
+            PaletteCommand::DeletePage => {
+                self.request_delete_page(self.session.page.id, cx);
+            }
+            PaletteCommand::ExportMarkdown => self.export_markdown(cx),
+            PaletteCommand::ImportMarkdown => self.import_markdown(window, cx),
+            PaletteCommand::CopyMarkdown => {
+                let markdown =
+                    quire_core::services::export_service::export_page(self.session.blocks());
+                cx.write_to_clipboard(ClipboardItem::new_string(markdown));
+                self.status = "页面 Markdown 已复制".into();
+                self.error = false;
+                cx.notify();
+            }
+            PaletteCommand::OpenPage(page_id) => self.activate_page(page_id, window, cx),
+        }
+    }
     fn open_search(&mut self, _: &SearchPages, window: &mut Window, cx: &mut Context<Self>) {
         self.search_open = true;
         self.search_query.clear();
@@ -6128,6 +6438,14 @@ impl Workspace {
     }
     fn quick_note(&mut self, _: &QuickNote, _window: &mut Window, cx: &mut Context<Self>) {
         self.open_quick_note(cx);
+    }
+    fn open_palette_action(
+        &mut self,
+        _: &OpenCommandPalette,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_command_palette(window, cx);
     }
     fn open_quick_note(&mut self, cx: &mut Context<Self>) {
         if let Some(handle) = self.quick_note_window {
@@ -11120,6 +11438,135 @@ impl Render for Workspace {
                             .child("↑↓ 选择 · Enter 打开 · Esc 关闭"),
                     ),
             );
+        let command_items = self.palette_items();
+        let command_rows = command_items
+            .iter()
+            .take(8)
+            .enumerate()
+            .map(|(index, item)| {
+                div()
+                    .id(SharedString::from(format!("command-palette-row-{index}")))
+                    .w_full()
+                    .h(px(36.))
+                    .px(px(8.))
+                    .flex()
+                    .items_center()
+                    .gap(px(9.))
+                    .rounded(px(5.))
+                    .cursor_pointer()
+                    .when(index == self.command_palette_selected, |row| {
+                        row.bg(Palette::color(&p.bg).opacity(0.48))
+                    })
+                    .hover(|row| row.bg(Palette::color(&p.bg).opacity(0.48)))
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.command_palette_selected = index;
+                        this.invoke_palette_command(window, cx);
+                    }))
+                    .child(
+                        div()
+                            .w(px(18.))
+                            .text_center()
+                            .text_color(muted)
+                            .child(item.icon),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .text_size(px(13.))
+                            .text_color(text)
+                            .child(item.name.clone()),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(10.))
+                            .text_color(muted)
+                            .child(item.section),
+                    )
+                    .when(!item.hint.is_empty(), |row| {
+                        row.child(
+                            div()
+                                .text_size(px(10.))
+                                .font_family("monospace")
+                                .text_color(muted)
+                                .child(item.hint),
+                        )
+                    })
+            })
+            .collect::<Vec<_>>();
+        let command_overlay = div()
+            .id("command-palette-overlay")
+            .absolute()
+            .top_0()
+            .right_0()
+            .bottom_0()
+            .left_0()
+            .flex()
+            .justify_center()
+            .items_start()
+            .bg(Hsla::from(rgb(0x000000)).opacity(0.18))
+            .on_click(cx.listener(|this, _, window, cx| this.close_command_palette(window, cx)))
+            .child(
+                div()
+                    .id("command-palette-panel")
+                    .mt(px(96.))
+                    .w(px(560.))
+                    .max_w(window.bounds().size.width - px(24.))
+                    .p(px(8.))
+                    .rounded(px(10.))
+                    .border_1()
+                    .border_color(Palette::color(&p.border))
+                    .bg(Palette::color(&p.elevated))
+                    .shadow_lg()
+                    .on_click(cx.listener(|_, _, _, cx| cx.stop_propagation()))
+                    .flex()
+                    .flex_col()
+                    .child(
+                        div()
+                            .h(px(40.))
+                            .px(px(6.))
+                            .flex()
+                            .items_center()
+                            .gap(px(9.))
+                            .border_b_1()
+                            .border_color(Palette::color(&p.border))
+                            .text_color(muted)
+                            .child("⌕")
+                            .child(div().flex_1().min_w_0().child(self.search_input.clone())),
+                    )
+                    .child(
+                        div()
+                            .id("command-palette-list")
+                            .max_h(px(288.))
+                            .overflow_y_scroll()
+                            .py(px(4.))
+                            .flex()
+                            .flex_col()
+                            .children(command_rows),
+                    )
+                    .when(command_items.is_empty(), |panel| {
+                        panel.child(
+                            div()
+                                .h(px(42.))
+                                .px(px(8.))
+                                .flex()
+                                .items_center()
+                                .text_size(px(12.))
+                                .text_color(muted)
+                                .child("没有匹配的命令或页面。"),
+                        )
+                    })
+                    .child(
+                        div()
+                            .h(px(26.))
+                            .px(px(4.))
+                            .flex()
+                            .items_end()
+                            .text_size(px(10.))
+                            .text_color(muted)
+                            .child("↑↓ 选择 · Enter 打开 · Esc 关闭"),
+                    ),
+            );
         let delete_confirmation =
             self.confirm_delete_page.and_then(|id| {
                 self.session
@@ -13011,6 +13458,7 @@ impl Render for Workspace {
             .color_space(ColorSpace::Srgb))
             .on_action(cx.listener(Self::save))
             .on_action(cx.listener(Self::quick_note))
+            .on_action(cx.listener(Self::open_palette_action))
             .on_action(cx.listener(Self::new_page_action))
             .on_action(cx.listener(Self::undo))
             .on_action(cx.listener(Self::redo))
@@ -13860,6 +14308,9 @@ impl Render for Workspace {
                 )
             })
             .when(self.search_open, |root| root.child(search_overlay))
+            .when(self.command_palette_open, |root| {
+                root.child(command_overlay)
+            })
             .when_some(settings_overlay, |root, overlay| root.child(overlay))
     }
 }
@@ -14184,6 +14635,7 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("ctrl-enter", Save, Some("QuireQuickNote")),
         KeyBinding::new("alt-s", Save, Some("QuireQuickNote")),
         KeyBinding::new("alt-n", QuickNote, Some("Quire")),
+        KeyBinding::new("ctrl-k", OpenCommandPalette, Some("Quire")),
         KeyBinding::new("ctrl-n", NewPage, Some("Quire")),
         KeyBinding::new("ctrl-z", Undo, Some("Quire")),
         KeyBinding::new("ctrl-shift-z", Redo, Some("Quire")),

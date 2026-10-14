@@ -779,3 +779,9 @@ GPUI 已覆盖主编辑器、整理区、独立速记与标签建议、Windows �
 - `mcp.json` 的端口不再通过截断转换；0、超过 65535 的端口、空令牌及无效 JSON 都会被 stdio 桥拒绝。
 - 本机 MCP HTTP listener 将请求体限制为 1 MiB，超限立即返回 413，不按声明长度分配内存或等待上传。
 - 隔离回归覆盖指针边界与超大请求；验证：全量测试、格式检查、`cargo check`、Release 构建及 `git diff --check` 通过。
+
+## 第一百一十八轮：Ctrl+K 命令面板
+
+- 接入与 Slint 对齐的 Ctrl+K 快捷入口、键盘过滤/上下选择/Enter 执行、点击执行及 Escape/遮罩关闭；面板列出可执行命令和非模板页面，页面项可直接切换。
+- 连接已有的新建页、页面搜索、侧栏、主题、设置、笔记/任务入口、重命名、复制、删除确认、Markdown 导入/导出/复制操作；仍缺页面历史前进/后退和浏览器打开 HTML 命令，页面内查找也未完成。
+- 中英文过滤规则回归通过；Release smoke 实际打开 Ctrl+K 面板、输入“设置”、确认过滤仅剩该命令、运行后打开设置再关闭。全量 `cargo test`（58 项）、`cargo check -j 8`、Release 构建、`cargo fmt --all`、`git diff --check` 和隔离 Release smoke 通过。
