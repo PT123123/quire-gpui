@@ -550,6 +550,58 @@ impl Session {
         let _ = self.persistence.force_flush();
         Some(id)
     }
+    pub fn rename_database_view(
+        &mut self,
+        block: BlockId,
+        view_id: ViewId,
+        name: &str,
+    ) -> Result<bool> {
+        if self.page.locked {
+            return Ok(false);
+        }
+        let Some(db) = self.document.block(block).and_then(|block| block.db_ref) else {
+            return Ok(false);
+        };
+        let Some(current) = self
+            .databases
+            .views
+            .iter()
+            .find(|view| view.id == view_id && view.db == db)
+            .cloned()
+        else {
+            bail!("该视图不属于此数据库");
+        };
+        let name = name.trim();
+        if name.is_empty() {
+            bail!("视图名称不能为空");
+        }
+        if current.name == name {
+            return Ok(false);
+        }
+        let Some(entry) = command::plan(
+            &mut self.document,
+            self.page.id,
+            Command::RenameDatabaseView {
+                block,
+                view: view_id,
+                from: current.name,
+                to: name.to_owned(),
+            },
+        ) else {
+            return Ok(false);
+        };
+        self.apply_entry(entry);
+        if let Some(view) = self
+            .databases
+            .views
+            .iter_mut()
+            .find(|view| view.id == view_id)
+        {
+            view.name = name.to_owned();
+        }
+        self.persistence.force_flush()?;
+        Ok(true)
+    }
     pub fn set_database_view_definition(
         &mut self,
         block: BlockId,
@@ -2335,6 +2387,7 @@ fn is_database_change(change: &Change) -> bool {
             | Change::PropertyKindSet { .. }
             | Change::ViewAdded(_)
             | Change::ViewDeleted { .. }
+            | Change::ViewRenamed { .. }
     )
 }
 
@@ -2436,6 +2489,29 @@ mod tests {
             assert_eq!(session.databases.views_of(db).count(), 1);
             session.redo();
             assert_eq!(session.databases.views_of(db).count(), 2);
+            assert!(session.rename_database_view(block, view_id, "任务清单")?);
+            assert_eq!(
+                session
+                    .databases
+                    .views
+                    .iter()
+                    .find(|view| view.id == view_id)
+                    .unwrap()
+                    .name,
+                "任务清单"
+            );
+            session.undo();
+            assert_eq!(
+                session
+                    .databases
+                    .views
+                    .iter()
+                    .find(|view| view.id == view_id)
+                    .unwrap()
+                    .name,
+                "表格 2"
+            );
+            session.redo();
             let mut definition = quire_core::core::database_view::ViewDefinition::new();
             definition.set_sorts(&[quire_core::core::database::SortSpec::of(
                 session.databases.title_property(db).unwrap(),
@@ -2650,6 +2726,12 @@ mod tests {
             quire_core::core::database::PropertyKind::Number
         );
         assert_eq!(reopened.databases.views_of(db).count(), 2);
+        assert!(
+            reopened
+                .databases
+                .views_of(db)
+                .any(|view| view.name == "任务清单")
+        );
         assert_eq!(reopened.repo.record_count(db)?, 2);
         assert!(
             reopened

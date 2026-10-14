@@ -572,6 +572,7 @@ pub struct Workspace {
     selected_database_record: Option<(u64, u64, u64)>,
     active_database_cell: Option<(u64, u64, u64, u64)>,
     active_database_property_edit: Option<(u64, u64, u64)>,
+    active_database_view_edit: Option<(u64, u64, u64)>,
     database_property_name_draft: String,
     database_header_click_seq: u64,
     subscriptions: Vec<Subscription>,
@@ -766,6 +767,7 @@ impl Workspace {
             selected_database_record: None,
             active_database_cell: None,
             active_database_property_edit: None,
+            active_database_view_edit: None,
             database_property_name_draft: String::new(),
             database_header_click_seq: 0,
             subscriptions: Vec::new(),
@@ -1031,8 +1033,20 @@ impl Workspace {
                     this.database_property_name_draft = text.clone();
                     cx.notify();
                 }
-                InputEvent::Split(_) => this.commit_database_property_name(true, window, cx),
-                InputEvent::Blurred => this.commit_database_property_name(false, window, cx),
+                InputEvent::Split(_) => {
+                    if this.active_database_view_edit.is_some() {
+                        this.commit_database_view_name(true, window, cx)
+                    } else {
+                        this.commit_database_property_name(true, window, cx)
+                    }
+                }
+                InputEvent::Blurred => {
+                    if this.active_database_view_edit.is_some() {
+                        this.commit_database_view_name(false, window, cx)
+                    } else {
+                        this.commit_database_property_name(false, window, cx)
+                    }
+                }
                 InputEvent::DismissSlash => this.cancel_database_property_name(window, cx),
                 _ => {}
             },
@@ -2244,6 +2258,7 @@ impl Workspace {
         if self.session.page.locked {
             return;
         }
+        self.active_database_view_edit = None;
         self.active_database_property_edit = Some((block, db, property));
         self.database_property_name_draft = name.clone();
         let caret = name.len();
@@ -2253,11 +2268,34 @@ impl Workspace {
         cx.notify();
     }
     fn cancel_database_property_name(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.active_database_property_edit.take().is_some() {
+        if self.active_database_property_edit.take().is_some()
+            || self.active_database_view_edit.take().is_some()
+        {
             self.database_property_name_draft.clear();
             self.focus_first(window, cx);
             cx.notify();
         }
+    }
+    fn begin_database_view_name_edit(
+        &mut self,
+        block: u64,
+        db: u64,
+        view: u64,
+        name: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.session.page.locked {
+            return;
+        }
+        self.active_database_property_edit = None;
+        self.active_database_view_edit = Some((block, db, view));
+        self.database_property_name_draft = name.clone();
+        let caret = name.len();
+        self.database_property_name_input
+            .update(cx, |input, cx| input.reset(name, Vec::new(), caret, cx));
+        window.focus(&self.database_property_name_input.read(cx).focus);
+        cx.notify();
     }
     fn commit_database_property_name(
         &mut self,
@@ -2265,6 +2303,10 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.active_database_view_edit.is_some() {
+            self.commit_database_view_name(restore_focus, window, cx);
+            return;
+        }
         let Some((block, _db, property)) = self.active_database_property_edit else {
             return;
         };
@@ -2293,6 +2335,54 @@ impl Workspace {
             &name,
         ) {
             Ok(true) => self.schedule_save(true, window, cx),
+            Ok(false) => {}
+            Err(error) => {
+                self.status = error.to_string();
+                self.error = true;
+            }
+        }
+        self.database_property_name_draft.clear();
+        if restore_focus {
+            self.focus_first(window, cx);
+        }
+        cx.notify();
+    }
+    fn commit_database_view_name(
+        &mut self,
+        restore_focus: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some((block, _db, view)) = self.active_database_view_edit else {
+            return;
+        };
+        let name = self
+            .database_property_name_input
+            .read(cx)
+            .buffer
+            .committed()
+            .to_owned();
+        if name.trim().is_empty() {
+            if restore_focus {
+                self.status = "视图名称不能为空".into();
+                self.error = true;
+                window.focus(&self.database_property_name_input.read(cx).focus);
+            } else {
+                self.active_database_view_edit = None;
+                self.database_property_name_draft.clear();
+            }
+            cx.notify();
+            return;
+        }
+        self.active_database_view_edit = None;
+        match self
+            .session
+            .rename_database_view(BlockId(block), ViewId(view), &name)
+        {
+            Ok(true) => {
+                self.error = false;
+                self.schedule_save(true, window, cx);
+            }
             Ok(false) => {}
             Err(error) => {
                 self.status = error.to_string();
@@ -6276,7 +6366,11 @@ impl Render for Workspace {
                                                 .gap(px(5.))
                                                 .children(views.iter().map(|view| {
                                                     let view_id = view.id;
+                                                    let name = view.name.clone();
+                                                    let edit_name = name.clone();
                                                     let selected = Some(view_id) == selected_view;
+                                                    let editing_name = self.active_database_view_edit
+                                                        == Some((block_id.0, db_id.0, view_id.0));
                                                     div()
                                                         .id(SharedString::from(format!("db-view-{}-{}", db_id.0, view_id.0)))
                                                         .px(px(7.))
@@ -6286,15 +6380,36 @@ impl Render for Workspace {
                                                         .text_size(px(11.))
                                                         .text_color(if selected { Palette::color(&p.fg) } else { muted })
                                                         .when(selected, |tab| tab.bg(Palette::color(&p.accent).opacity(0.82)))
-                                                        .on_click(cx.listener(move |this, _, window, cx| {
-                                                            this.selected_database_views.insert(db_id.0, view_id);
-                                                            this.session.set_setting(
-                                                                format!("gpui.database-view.{}", db_id.0),
-                                                                view_id.0.to_string(),
-                                                            );
-                                                            this.schedule_save(false, window, cx);
+                                                        .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
+                                                            if event.click_count() >= 2 {
+                                                                this.begin_database_view_name_edit(
+                                                                    block_id.0,
+                                                                    db_id.0,
+                                                                    view_id.0,
+                                                                    edit_name.clone(),
+                                                                    window,
+                                                                    cx,
+                                                                );
+                                                            } else if event.click_count() == 1 {
+                                                                this.selected_database_views.insert(db_id.0, view_id);
+                                                                this.session.set_setting(
+                                                                    format!("gpui.database-view.{}", db_id.0),
+                                                                    view_id.0.to_string(),
+                                                                );
+                                                                this.schedule_save(false, window, cx);
+                                                            }
                                                         }))
-                                                        .child(view.name.clone())
+                                                        .child(if editing_name {
+                                                            div()
+                                                                .min_w(px(50.))
+                                                                .max_w(px(130.))
+                                                                .child(self.database_property_name_input.clone())
+                                                                .into_any_element()
+                                                        } else {
+                                                            div()
+                                                                .child(name.clone())
+                                                                .into_any_element()
+                                                        })
                                                 }))
                                                 .child(
                                                     div()
