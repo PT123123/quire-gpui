@@ -34,6 +34,7 @@ use serde_json::{Value, json};
 /// of that order would fail the *sync* bind while the MCP page still looked
 /// healthy. 5880 is next free: 5877 LAN share, 5878 sync, 5879 discovery.
 pub const DEFAULT_PORT: u16 = 5880;
+const MAX_HTTP_BODY_BYTES: usize = 1024 * 1024;
 
 pub fn now_label() -> String {
     let secs = std::time::SystemTime::now()
@@ -336,6 +337,14 @@ impl McpServer {
                 "{\"error\":\"POST only\"}",
             );
         }
+        if content_length > MAX_HTTP_BODY_BYTES {
+            return respond(
+                &stream,
+                413,
+                "application/json",
+                "{\"error\":\"request body too large\"}",
+            );
+        }
         let mut body = vec![0u8; content_length];
         reader.read_exact(&mut body)?;
         let body = String::from_utf8_lossy(&body).to_string();
@@ -371,6 +380,7 @@ fn respond(mut stream: &TcpStream, code: u16, ctype: &str, body: &str) -> std::i
         200 => "OK",
         202 => "Accepted",
         401 => "Unauthorized",
+        413 => "Payload Too Large",
         404 => "Not Found",
         405 => "Method Not Allowed",
         _ => "Internal Server Error",
@@ -404,8 +414,14 @@ pub fn write_pointer(dir: &Path, port: u16, token: &str) -> std::io::Result<()> 
 pub fn read_pointer(dir: &Path) -> Option<(u16, String)> {
     let text = std::fs::read_to_string(pointer_path(dir)).ok()?;
     let v: Value = serde_json::from_str(&text).ok()?;
-    let port = v.get("port")?.as_u64()? as u16;
+    let port = u16::try_from(v.get("port")?.as_u64()?).ok()?;
+    if port == 0 {
+        return None;
+    }
     let token = v.get("token")?.as_str()?.to_string();
+    if token.is_empty() {
+        return None;
+    }
     Some((port, token))
 }
 
@@ -539,6 +555,20 @@ mod tests {
     }
 
     #[test]
+    fn http_pointer_rejects_invalid_ports_and_empty_tokens() {
+        let scratch = quire_core::testing::ScratchDir::new("gpui-mcp-invalid-pointer");
+        for pointer in [
+            r#"{"port":0,"token":"secret"}"#,
+            r#"{"port":70000,"token":"secret"}"#,
+            r#"{"port":5880,"token":""}"#,
+            "not json",
+        ] {
+            std::fs::write(pointer_path(scratch.path()), pointer).unwrap();
+            assert_eq!(read_pointer(scratch.path()), None, "accepted {pointer}");
+        }
+    }
+
+    #[test]
     fn loopback_http_requires_token_and_dispatches_tools() {
         fn post(port: u16, token: Option<&str>, body: &str) -> String {
             let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
@@ -584,6 +614,16 @@ mod tests {
             }
         };
         assert!(unauthorized.starts_with("HTTP/1.1 401 Unauthorized"));
+        let mut oversized = TcpStream::connect(("127.0.0.1", port)).unwrap();
+        write!(
+            oversized,
+            "POST /mcp HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer secret\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            MAX_HTTP_BODY_BYTES + 1
+        )
+        .unwrap();
+        let mut oversized_response = String::new();
+        oversized.read_to_string(&mut oversized_response).unwrap();
+        assert!(oversized_response.starts_with("HTTP/1.1 413 Payload Too Large"));
         let response = post(
             port,
             Some("secret"),

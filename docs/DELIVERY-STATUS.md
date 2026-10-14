@@ -773,3 +773,9 @@ GPUI 已覆盖主编辑器、整理区、独立速记与标签建议、Windows �
 - 扩展隔离 loopback MCP 生命周期回归：鉴权失败、HTTP 工具调用和 stdio 转发后停止 listener，立即重新绑定相同端口，再以新 token 启动并成功处理 MCP `ping`。
 - 覆盖设置页启停/重启依赖的端口释放与新服务响应；没有使用固定端口或用户数据。
 - 验证：`cargo test` 全套、`cargo fmt --all -- --check`、`cargo check`、Release 构建及 `git diff --check` 通过。
+
+## 第一百一十七轮：MCP 指针与请求边界校验
+
+- `mcp.json` 的端口不再通过截断转换；0、超过 65535 的端口、空令牌及无效 JSON 都会被 stdio 桥拒绝。
+- 本机 MCP HTTP listener 将请求体限制为 1 MiB，超限立即返回 413，不按声明长度分配内存或等待上传。
+- 隔离回归覆盖指针边界与超大请求；验证：全量测试、格式检查、`cargo check`、Release 构建及 `git diff --check` 通过。
