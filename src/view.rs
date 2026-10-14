@@ -7446,7 +7446,7 @@ impl Render for Workspace {
                             rail.w(px(from))
                                 .with_animation(
                                     ("sidebar-rail", key),
-                                    Animation::new(Duration::from_millis(180)),
+                                    Animation::new(Duration::from_millis(220)),
                                     move |rail, progress| rail.w(px(from + (to - from) * progress)),
                                 )
                                 .into_any_element()
@@ -8099,7 +8099,7 @@ impl Render for Workspace {
                         if let Some((key, from, to)) = sidebar_transition {
                             body.child(sidebar.with_animation(
                                 ("sidebar-panel", key),
-                                Animation::new(Duration::from_millis(180)),
+                                Animation::new(Duration::from_millis(220)),
                                 move |sidebar, progress| {
                                     sidebar.w(px(from + (to - from) * progress))
                                 },
