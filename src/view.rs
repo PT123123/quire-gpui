@@ -8182,6 +8182,23 @@ impl Render for Workspace {
                                                     }
                                                     picker = picker.child(formula_editor);
                                                 }
+                                                if matches!(property_kind, quire_core::core::database::PropertyKind::Number | quire_core::core::database::PropertyKind::Date | quire_core::core::database::PropertyKind::CreatedTime | quire_core::core::database::PropertyKind::LastEditedTime) {
+                                                    let formats: &[(&str, &str)] = match property_kind {
+                                                        quire_core::core::database::PropertyKind::Number => &[("plain", "数字"), ("integer", "整数"), ("percent", "百分比")],
+                                                        _ => &[("date", "日期"), ("datetime", "日期与时间")],
+                                                    };
+                                                    let selected_format = quire_core::core::database_property::json::Json::parse(&property.config).ok().and_then(|config| config.get("format").and_then(quire_core::core::database_property::json::Json::as_str).map(str::to_owned)).unwrap_or_else(|| if matches!(property_kind, quire_core::core::database::PropertyKind::CreatedTime | quire_core::core::database::PropertyKind::LastEditedTime) { "datetime".into() } else if property_kind == quire_core::core::database::PropertyKind::Number { "plain".into() } else { "date".into() });
+                                                    picker = picker.child(div().id(SharedString::from(format!("db-format-editor-{}-{property_id}", db_id.0))).w_full().flex().items_center().flex_wrap().gap(px(5.)).border_t_1().border_color(db_border).px(px(5.)).py(px(5.)).child(div().text_size(px(11.)).text_color(muted).child("显示格式：")).children(formats.iter().map(|(format, label)| {
+                                                        let selected = selected_format == *format;
+                                                        let format = (*format).to_owned();
+                                                        div().id(SharedString::from(format!("db-format-{}-{}", property_id, format))).px(px(7.)).py(px(4.)).rounded(px(4.)).text_size(px(11.)).text_color(if selected { text } else { muted }).when(selected, |item| item.bg(accent.opacity(0.32))).when(!selected && !self.session.page.locked, |item| item.cursor_pointer().hover(|item| item.bg(db_hover))).on_click(cx.listener(move |this, _, window, cx| {
+                                                            match this.session.set_database_property_format(block_id, quire_core::core::database::PropertyId(property_id), &format) {
+                                                                Ok(_) => { this.schedule_save(true, window, cx); cx.notify(); }
+                                                                Err(error) => { this.status = error.to_string(); this.error = true; cx.notify(); }
+                                                            }
+                                                        })).child(*label)
+                                                    })));
+                                                }
                                                 if matches!(property_kind, quire_core::core::database::PropertyKind::Select | quire_core::core::database::PropertyKind::Status | quire_core::core::database::PropertyKind::MultiSelect) {
                                                     let options = quire_core::core::database_property::PropertyOptions::from_config(&property.config);
                                                     let editing = self.active_database_option == Some((block_id.0, db_id.0, property_id));

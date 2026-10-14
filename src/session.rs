@@ -515,6 +515,73 @@ impl Session {
         self.persistence.force_flush()?;
         Ok(true)
     }
+    pub fn set_database_property_format(
+        &mut self,
+        block: BlockId,
+        property: PropertyId,
+        format: &str,
+    ) -> Result<bool> {
+        if self.page.locked {
+            return Ok(false);
+        }
+        let Some(current) = self.session_database_property(block, property).cloned() else {
+            return Ok(false);
+        };
+        if !matches!(
+            (current.kind, format),
+            (
+                quire_core::core::database::PropertyKind::Number,
+                "plain" | "integer" | "percent"
+            ) | (
+                quire_core::core::database::PropertyKind::Date,
+                "date" | "datetime"
+            ) | (
+                quire_core::core::database::PropertyKind::CreatedTime
+                    | quire_core::core::database::PropertyKind::LastEditedTime,
+                "date" | "datetime"
+            )
+        ) {
+            bail!("该格式不适用于此列类型");
+        }
+        let mut config = quire_core::core::database_property::json::Json::parse(&current.config)
+            .unwrap_or_else(
+                |_| quire_core::core::database_property::json::Json::Object(Vec::new()),
+            );
+        let fields = match &mut config {
+            quire_core::core::database_property::json::Json::Object(fields) => fields,
+            _ => bail!("列配置不是对象"),
+        };
+        let value = quire_core::core::database_property::json::Json::Text(format.to_owned());
+        if let Some((_, old)) = fields.iter_mut().find(|(key, _)| key == "format") {
+            if *old == value {
+                return Ok(false);
+            }
+            *old = value;
+        } else {
+            fields.push(("format".into(), value));
+        }
+        let config = config.to_text();
+        self.apply_entry(Entry {
+            apply: vec![Change::PropertyConfigSet {
+                id: property,
+                config: config.clone(),
+            }],
+            revert: vec![Change::PropertyConfigSet {
+                id: property,
+                config: current.config,
+            }],
+        });
+        if let Some(definition) = self
+            .databases
+            .properties
+            .iter_mut()
+            .find(|definition| definition.id == property)
+        {
+            definition.config = config;
+        }
+        self.persistence.force_flush()?;
+        Ok(true)
+    }
     pub fn set_database_formula(
         &mut self,
         block: BlockId,
@@ -2905,6 +2972,69 @@ mod tests {
             Some(option_id)
         )?);
         assert_eq!(session.databases.database(db).unwrap().id, db);
+        Ok(())
+    }
+
+    #[test]
+    fn database_property_format_is_undoable_and_persists() -> Result<()> {
+        use quire_core::core::database::PropertyKind;
+
+        let scratch = quire_core::testing::ScratchDir::new("gpui-database-format");
+        let path = scratch.path().join("test.db");
+        let (block, property);
+        {
+            let mut session = Session::open(&path)?;
+            block = session.blocks()[0].id;
+            session
+                .make_database(block, "格式测试".into())
+                .expect("database created");
+            property = session
+                .add_database_property(block, "完成度".into(), PropertyKind::Number)
+                .expect("property created");
+            assert!(session.set_database_property_format(block, property, "percent")?);
+            assert_eq!(
+                quire_core::core::database_property::NumberFormat::from_config(
+                    &session
+                        .databases
+                        .properties
+                        .iter()
+                        .find(|candidate| candidate.id == property)
+                        .unwrap()
+                        .config
+                ),
+                quire_core::core::database_property::NumberFormat::Percent
+            );
+            session.undo();
+            assert_eq!(
+                quire_core::core::database_property::NumberFormat::from_config(
+                    &session
+                        .databases
+                        .properties
+                        .iter()
+                        .find(|candidate| candidate.id == property)
+                        .unwrap()
+                        .config
+                ),
+                quire_core::core::database_property::NumberFormat::Plain
+            );
+            session.redo();
+        }
+        let mut reopened = Session::open(&path)?;
+        let definition = reopened
+            .databases
+            .properties
+            .iter()
+            .find(|candidate| candidate.id == property)
+            .unwrap();
+        assert_eq!(
+            quire_core::core::database_property::NumberFormat::from_config(&definition.config),
+            quire_core::core::database_property::NumberFormat::Percent
+        );
+        assert!(
+            reopened
+                .set_database_property_format(block, property, "date")
+                .is_err()
+        );
         Ok(())
     }
 
