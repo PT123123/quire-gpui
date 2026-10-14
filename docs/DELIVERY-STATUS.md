@@ -467,3 +467,8 @@ GPUI 应用已超出第一竖切，但离完整复刻仍有较大差距。用户
 - 数据库行的标题、text、number、date、checkbox、url、email、phone、select、status 可单击编辑；使用 core 属性 parser 校验后由 `SetDatabaseCell` 写入。Enter 或失焦提交，Esc 放弃；无效值不会写库。checkbox 绘成勾选状态并可单击切换。所有写入进入当前页面 core 撤销栈并持久化；虚拟行仍只按 uniform_list 可见范围读取。
 - 扩展 `db-cell-activated/changed/closed/toggled` 的人工语义追踪，明确哪些属性仍未接入。
 - 验证：隔离 SQLite 测试覆盖标题、文本、checkbox typed value 的读取/窗口绘制、撤销/重做和重开读回；16 项库测试 + 3 项视图测试、`cargo check`、`cargo fmt --check`、`git diff --check` 通过。release 窗口截图确认 checkbox 方框 16px、圆角与 jade 强调色/行间距；还需真窗口操作确认鼠标点击切换、输入焦点和非法值错误态。所有库均在测试 ScratchDir 或 `%TEMP%`，未访问正式用户库。
+
+## 第六十一轮：侧栏展开/折叠动效
+
+- 侧栏面板与顶栏连续底色轨道共同以 180ms 宽度过渡展开或收起；收起过渡结束前继续挂载并裁剪侧栏内容，以保持完整滑出效果。
+- 验证：`cargo check --target-dir target-check`、`cargo test --target-dir target-check`（16 项库测试 + 3 项视图测试）及 `cargo fmt` 通过。还未录制真实窗口的中间帧，也未对照冻结的 `sidebar-toggle` 时序；代码完成不代表视觉动效验收完成。

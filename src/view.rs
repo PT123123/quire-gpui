@@ -444,6 +444,8 @@ pub struct Workspace {
     mention_selection: usize,
     organizer_open: bool,
     sidebar_open: bool,
+    sidebar_transition: Option<(u64, f32, f32)>,
+    sidebar_transition_seq: u64,
     sidebar_width: f32,
     sidebar_resizing: bool,
     sidebar_drag_offset: f32,
@@ -613,6 +615,8 @@ impl Workspace {
             mention_selection: 0,
             organizer_open: false,
             sidebar_open: true,
+            sidebar_transition: None,
+            sidebar_transition_seq: 0,
             sidebar_width,
             sidebar_resizing: false,
             sidebar_drag_offset: 0.,
@@ -2723,6 +2727,22 @@ impl Workspace {
         self.icon_picker_open = false;
         cx.notify();
     }
+    fn toggle_sidebar(&mut self, cx: &mut Context<Self>) {
+        let from = if self.sidebar_open {
+            self.sidebar_width
+        } else {
+            0.
+        };
+        self.sidebar_open = !self.sidebar_open;
+        let to = if self.sidebar_open {
+            self.sidebar_width
+        } else {
+            0.
+        };
+        self.sidebar_transition_seq = self.sidebar_transition_seq.wrapping_add(1);
+        self.sidebar_transition = Some((self.sidebar_transition_seq, from, to));
+        cx.notify();
+    }
     fn toggle_icon_picker(&mut self, cx: &mut Context<Self>) {
         self.icon_picker_open = !self.icon_picker_open;
         self.theme_picker_open = false;
@@ -3290,6 +3310,7 @@ impl Workspace {
 
 impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let sidebar_transition = self.sidebar_transition;
         let p = self.palette.clone();
         let database_width = (window.bounds().size.width - px(356.))
             .min(px(760.))
@@ -7413,19 +7434,31 @@ impl Render for Workspace {
                     .items_center()
                     // The reference titlebar's rail-colored strip joins the
                     // sidebar into one continuous surface.
-                    .child(
-                        div()
+                    .child({
+                        let rail = div()
+                            .id("sidebar-rail")
                             .absolute()
                             .left_0()
                             .top_0()
-                            .w(if self.sidebar_open {
-                                px(self.sidebar_width)
-                            } else {
-                                px(0.)
-                            })
                             .h(px(40.))
-                            .bg(Palette::color(&p.elevated)),
-                    )
+                            .bg(Palette::color(&p.elevated));
+                        if let Some((key, from, to)) = sidebar_transition {
+                            rail.w(px(from))
+                                .with_animation(
+                                    ("sidebar-rail", key),
+                                    Animation::new(Duration::from_millis(180)),
+                                    move |rail, progress| rail.w(px(from + (to - from) * progress)),
+                                )
+                                .into_any_element()
+                        } else {
+                            rail.w(px(if self.sidebar_open {
+                                self.sidebar_width
+                            } else {
+                                0.
+                            }))
+                            .into_any_element()
+                        }
+                    })
                     .child(
                         div()
                             .id("sidebar-toggle")
@@ -7439,8 +7472,7 @@ impl Render for Workspace {
                             .text_color(muted)
                             .hover(|button| button.bg(Palette::color(&p.elevated)))
                             .on_click(cx.listener(|this, _, _, cx| {
-                                this.sidebar_open = !this.sidebar_open;
-                                cx.notify();
+                                this.toggle_sidebar(cx);
                             }))
                             .child("◫"),
                     )
@@ -7787,294 +7819,294 @@ impl Render for Workspace {
                     .flex()
                     .flex_1()
                     .min_h_0()
-                    .when(self.sidebar_open, |body| {
-                        body.child(
-                            div()
-                                .relative()
-                                .w(px(self.sidebar_width))
-                                .flex_shrink_0()
-                                .h_full()
-                                .bg(Palette::color(&p.elevated))
-                                .px(px(8.))
-                                .py(px(0.))
-                                .flex()
-                                .flex_col()
-                                .gap(px(0.))
-                                .child(
-                                    div()
-                                        .id("sidebar-workspace-header")
-                                        .h(px(36.))
-                                        .px(px(4.))
-                                        .flex()
-                                        .items_center()
-                                        .gap(px(8.))
-                                        .child(
+                    .when(self.sidebar_open || sidebar_transition.is_some(), |body| {
+                        let sidebar = div()
+                            .id("sidebar-panel")
+                            .relative()
+                            .w(px(self.sidebar_width))
+                            .flex_shrink_0()
+                            .h_full()
+                            .overflow_hidden()
+                            .bg(Palette::color(&p.elevated))
+                            .px(px(8.))
+                            .py(px(0.))
+                            .flex()
+                            .flex_col()
+                            .gap(px(0.))
+                            .child(
+                                div()
+                                    .id("sidebar-workspace-header")
+                                    .h(px(36.))
+                                    .px(px(4.))
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(8.))
+                                    .child(
+                                        div()
+                                            .size(px(20.))
+                                            .rounded(px(6.))
+                                            .bg(accent)
+                                            .flex()
+                                            .items_center()
+                                            .justify_center()
+                                            .text_color(Palette::color(&p.bg))
+                                            .font_weight(FontWeight::BOLD)
+                                            .child("Q"),
+                                    )
+                                    .child(div().font_weight(FontWeight::SEMIBOLD).child("工作区"))
+                                    .child(div().flex_1())
+                                    .child(div().text_color(muted).child("⌄")),
+                            )
+                            .child(
+                                div()
+                                    .id("sidebar-organizer-notes")
+                                    .h(px(28.))
+                                    .px(px(8.))
+                                    .flex()
+                                    .items_center()
+                                    .rounded(px(5.))
+                                    .cursor_pointer()
+                                    .text_color(if self.organizer_open && !self.organizer_tasks {
+                                        accent
+                                    } else {
+                                        muted
+                                    })
+                                    .when(self.organizer_open && !self.organizer_tasks, |row| {
+                                        row.bg(Palette::color(&p.bg).opacity(0.3))
+                                    })
+                                    .hover(|row| row.bg(Palette::color(&p.bg).opacity(0.3)))
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        if !this.organizer_open {
+                                            this.toggle_organizer(window, cx);
+                                        }
+                                        this.toggle_organizer_tab(false, window, cx);
+                                    }))
+                                    .child(format!(
+                                        "▤  笔记  ·  {}",
+                                        self.session.organizer.live_notes().count()
+                                    )),
+                            )
+                            .child(
+                                div()
+                                    .id("sidebar-organizer-tasks")
+                                    .h(px(28.))
+                                    .px(px(8.))
+                                    .flex()
+                                    .items_center()
+                                    .rounded(px(5.))
+                                    .cursor_pointer()
+                                    .text_color(if self.organizer_open && self.organizer_tasks {
+                                        accent
+                                    } else {
+                                        muted
+                                    })
+                                    .when(self.organizer_open && self.organizer_tasks, |row| {
+                                        row.bg(Palette::color(&p.bg).opacity(0.3))
+                                    })
+                                    .hover(|row| row.bg(Palette::color(&p.bg).opacity(0.3)))
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        if !this.organizer_open {
+                                            this.toggle_organizer(window, cx);
+                                        }
+                                        this.toggle_organizer_tab(true, window, cx);
+                                    }))
+                                    .child(format!(
+                                        "✓  任务  ·  {}",
+                                        self.session.organizer.live_tasks().count()
+                                    )),
+                            )
+                            .child(
+                                div()
+                                    .id("sidebar-search")
+                                    .h(px(28.))
+                                    .px(px(8.))
+                                    .flex()
+                                    .items_center()
+                                    .rounded(px(5.))
+                                    .cursor_pointer()
+                                    .text_color(muted)
+                                    .hover(|row| row.bg(Palette::color(&p.bg).opacity(0.3)))
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.open_search(&SearchPages, window, cx);
+                                    }))
+                                    .child("⌕  搜索                    Ctrl P"),
+                            )
+                            .child(
+                                div()
+                                    .id("sidebar-settings")
+                                    .h(px(28.))
+                                    .px(px(8.))
+                                    .flex()
+                                    .items_center()
+                                    .rounded(px(5.))
+                                    .cursor_pointer()
+                                    .text_color(muted)
+                                    .hover(|row| row.bg(Palette::color(&p.bg).opacity(0.3)))
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.theme_picker_open = !this.theme_picker_open;
+                                        this.search_query.clear();
+                                        let placeholder = if this.theme_picker_open {
+                                            "搜索设置…"
+                                        } else {
+                                            "搜索页面…"
+                                        };
+                                        this.search_input.update(cx, |input, cx| {
+                                            input.placeholder = Some(placeholder.into());
+                                            input.reset(String::new(), Vec::new(), 0, cx);
+                                        });
+                                        cx.notify();
+                                    }))
+                                    .child("⚙  设置 / 外观"),
+                            )
+                            .when_some(delete_confirmation, |sidebar, confirmation| {
+                                sidebar.child(confirmation)
+                            })
+                            .child(
+                                div()
+                                    .text_size(px(11.))
+                                    .text_color(muted)
+                                    .mt(px(10.))
+                                    .child("工作区"),
+                            )
+                            .child(
+                                div()
+                                    .id("page-list-scroll")
+                                    .flex_1()
+                                    .h_full()
+                                    .overflow_y_scroll()
+                                    .when(!favorite_rows.is_empty(), |list| {
+                                        list.child(
                                             div()
-                                                .size(px(20.))
-                                                .rounded(px(6.))
-                                                .bg(accent)
-                                                .flex()
-                                                .items_center()
-                                                .justify_center()
-                                                .text_color(Palette::color(&p.bg))
-                                                .font_weight(FontWeight::BOLD)
-                                                .child("Q"),
-                                        )
-                                        .child(
-                                            div().font_weight(FontWeight::SEMIBOLD).child("工作区"),
-                                        )
-                                        .child(div().flex_1())
-                                        .child(div().text_color(muted).child("⌄")),
-                                )
-                                .child(
-                                    div()
-                                        .id("sidebar-organizer-notes")
-                                        .h(px(28.))
-                                        .px(px(8.))
-                                        .flex()
-                                        .items_center()
-                                        .rounded(px(5.))
-                                        .cursor_pointer()
-                                        .text_color(
-                                            if self.organizer_open && !self.organizer_tasks {
-                                                accent
-                                            } else {
-                                                muted
-                                            },
-                                        )
-                                        .when(self.organizer_open && !self.organizer_tasks, |row| {
-                                            row.bg(Palette::color(&p.bg).opacity(0.3))
-                                        })
-                                        .hover(|row| row.bg(Palette::color(&p.bg).opacity(0.3)))
-                                        .on_click(cx.listener(|this, _, window, cx| {
-                                            if !this.organizer_open {
-                                                this.toggle_organizer(window, cx);
-                                            }
-                                            this.toggle_organizer_tab(false, window, cx);
-                                        }))
-                                        .child(format!(
-                                            "▤  笔记  ·  {}",
-                                            self.session.organizer.live_notes().count()
-                                        )),
-                                )
-                                .child(
-                                    div()
-                                        .id("sidebar-organizer-tasks")
-                                        .h(px(28.))
-                                        .px(px(8.))
-                                        .flex()
-                                        .items_center()
-                                        .rounded(px(5.))
-                                        .cursor_pointer()
-                                        .text_color(
-                                            if self.organizer_open && self.organizer_tasks {
-                                                accent
-                                            } else {
-                                                muted
-                                            },
-                                        )
-                                        .when(self.organizer_open && self.organizer_tasks, |row| {
-                                            row.bg(Palette::color(&p.bg).opacity(0.3))
-                                        })
-                                        .hover(|row| row.bg(Palette::color(&p.bg).opacity(0.3)))
-                                        .on_click(cx.listener(|this, _, window, cx| {
-                                            if !this.organizer_open {
-                                                this.toggle_organizer(window, cx);
-                                            }
-                                            this.toggle_organizer_tab(true, window, cx);
-                                        }))
-                                        .child(format!(
-                                            "✓  任务  ·  {}",
-                                            self.session.organizer.live_tasks().count()
-                                        )),
-                                )
-                                .child(
-                                    div()
-                                        .id("sidebar-search")
-                                        .h(px(28.))
-                                        .px(px(8.))
-                                        .flex()
-                                        .items_center()
-                                        .rounded(px(5.))
-                                        .cursor_pointer()
-                                        .text_color(muted)
-                                        .hover(|row| row.bg(Palette::color(&p.bg).opacity(0.3)))
-                                        .on_click(cx.listener(|this, _, window, cx| {
-                                            this.open_search(&SearchPages, window, cx);
-                                        }))
-                                        .child("⌕  搜索                    Ctrl P"),
-                                )
-                                .child(
-                                    div()
-                                        .id("sidebar-settings")
-                                        .h(px(28.))
-                                        .px(px(8.))
-                                        .flex()
-                                        .items_center()
-                                        .rounded(px(5.))
-                                        .cursor_pointer()
-                                        .text_color(muted)
-                                        .hover(|row| row.bg(Palette::color(&p.bg).opacity(0.3)))
-                                        .on_click(cx.listener(|this, _, _, cx| {
-                                            this.theme_picker_open = !this.theme_picker_open;
-                                            this.search_query.clear();
-                                            let placeholder = if this.theme_picker_open {
-                                                "搜索设置…"
-                                            } else {
-                                                "搜索页面…"
-                                            };
-                                            this.search_input.update(cx, |input, cx| {
-                                                input.placeholder = Some(placeholder.into());
-                                                input.reset(String::new(), Vec::new(), 0, cx);
-                                            });
-                                            cx.notify();
-                                        }))
-                                        .child("⚙  设置 / 外观"),
-                                )
-                                .when_some(delete_confirmation, |sidebar, confirmation| {
-                                    sidebar.child(confirmation)
-                                })
-                                .child(
-                                    div()
-                                        .text_size(px(11.))
-                                        .text_color(muted)
-                                        .mt(px(10.))
-                                        .child("工作区"),
-                                )
-                                .child(
-                                    div()
-                                        .id("page-list-scroll")
-                                        .flex_1()
-                                        .h_full()
-                                        .overflow_y_scroll()
-                                        .when(!favorite_rows.is_empty(), |list| {
-                                            list.child(
-                                                div()
-                                                    .h(px(24.))
-                                                    .px(px(8.))
-                                                    .flex()
-                                                    .items_center()
-                                                    .text_size(px(11.))
-                                                    .text_color(muted)
-                                                    .child("收藏"),
-                                            )
-                                            .children(favorite_rows)
-                                        })
-                                        .when(!recent_rows.is_empty(), |list| {
-                                            list.child(
-                                                div()
-                                                    .h(px(24.))
-                                                    .px(px(8.))
-                                                    .flex()
-                                                    .items_center()
-                                                    .text_size(px(11.))
-                                                    .text_color(muted)
-                                                    .child("最近"),
-                                            )
-                                            .children(recent_rows)
-                                        })
-                                        .children(page_rows)
-                                        .child(
-                                            div()
-                                                .id("add-page")
-                                                .h(px(30.))
+                                                .h(px(24.))
                                                 .px(px(8.))
                                                 .flex()
                                                 .items_center()
-                                                .rounded(px(5.))
-                                                .cursor_pointer()
+                                                .text_size(px(11.))
                                                 .text_color(muted)
-                                                .hover(|row| {
-                                                    row.bg(Palette::color(&p.bg).opacity(0.24))
-                                                })
-                                                .on_click(cx.listener(|this, _, window, cx| {
-                                                    this.add_page(window, cx)
-                                                }))
-                                                .child("＋  新建页面"),
-                                        ),
-                                )
-                                .child(div().h(px(8.)))
-                                .child(div().h(px(1.)).bg(Palette::color(&p.border)))
-                                .child(
-                                    div()
-                                        .h(px(22.))
-                                        .px(px(28.))
-                                        .flex()
-                                        .items_center()
-                                        .text_size(px(11.))
-                                        .text_color(muted)
-                                        .child("0.1.0"),
-                                )
-                                .child(
-                                    div()
-                                        .id("sidebar-resize-handle")
-                                        .absolute()
-                                        .top_0()
-                                        .right_0()
-                                        .bottom_0()
-                                        .w(px(6.))
-                                        .cursor(CursorStyle::ResizeLeftRight)
-                                        .hover(|handle| {
-                                            handle.bg(Palette::color(&p.border).opacity(0.8))
-                                        })
-                                        .when(self.sidebar_resizing, |handle| {
-                                            handle.bg(Palette::color(&p.border).opacity(0.8))
-                                        })
-                                        .on_mouse_down(
-                                            MouseButton::Left,
-                                            cx.listener(
-                                                |this, event: &MouseDownEvent, window, cx| {
-                                                    let zoom = quire_gpui::ui_scale::get();
-                                                    this.sidebar_drag_offset = this.sidebar_width
-                                                        - f32::from(event.position.x) / zoom;
-                                                    this.sidebar_resizing = true;
-                                                    cx.notify();
-                                                    let workspace = cx.entity();
-                                                    window.on_mouse_event({
-                                                        let workspace = workspace.clone();
-                                                        move |event: &MouseMoveEvent, _, _, cx| {
-                                                            if !event.dragging() {
-                                                                return;
-                                                            }
-                                                            workspace.update(cx, |this, cx| {
-                                                                if this.sidebar_resizing {
-                                                                    let zoom =
-                                                                        quire_gpui::ui_scale::get();
-                                                                    this.sidebar_width = (f32::from(
-                                                                        event.position.x,
-                                                                    ) / zoom
-                                                                        + this.sidebar_drag_offset)
-                                                                        .clamp(200., 480.);
-                                                                    cx.notify();
-                                                                }
-                                                            });
+                                                .child("收藏"),
+                                        )
+                                        .children(favorite_rows)
+                                    })
+                                    .when(!recent_rows.is_empty(), |list| {
+                                        list.child(
+                                            div()
+                                                .h(px(24.))
+                                                .px(px(8.))
+                                                .flex()
+                                                .items_center()
+                                                .text_size(px(11.))
+                                                .text_color(muted)
+                                                .child("最近"),
+                                        )
+                                        .children(recent_rows)
+                                    })
+                                    .children(page_rows)
+                                    .child(
+                                        div()
+                                            .id("add-page")
+                                            .h(px(30.))
+                                            .px(px(8.))
+                                            .flex()
+                                            .items_center()
+                                            .rounded(px(5.))
+                                            .cursor_pointer()
+                                            .text_color(muted)
+                                            .hover(|row| {
+                                                row.bg(Palette::color(&p.bg).opacity(0.24))
+                                            })
+                                            .on_click(cx.listener(|this, _, window, cx| {
+                                                this.add_page(window, cx)
+                                            }))
+                                            .child("＋  新建页面"),
+                                    ),
+                            )
+                            .child(div().h(px(8.)))
+                            .child(div().h(px(1.)).bg(Palette::color(&p.border)))
+                            .child(
+                                div()
+                                    .h(px(22.))
+                                    .px(px(28.))
+                                    .flex()
+                                    .items_center()
+                                    .text_size(px(11.))
+                                    .text_color(muted)
+                                    .child("0.1.0"),
+                            )
+                            .child(
+                                div()
+                                    .id("sidebar-resize-handle")
+                                    .absolute()
+                                    .top_0()
+                                    .right_0()
+                                    .bottom_0()
+                                    .w(px(6.))
+                                    .cursor(CursorStyle::ResizeLeftRight)
+                                    .hover(|handle| {
+                                        handle.bg(Palette::color(&p.border).opacity(0.8))
+                                    })
+                                    .when(self.sidebar_resizing, |handle| {
+                                        handle.bg(Palette::color(&p.border).opacity(0.8))
+                                    })
+                                    .on_mouse_down(
+                                        MouseButton::Left,
+                                        cx.listener(|this, event: &MouseDownEvent, window, cx| {
+                                            let zoom = quire_gpui::ui_scale::get();
+                                            this.sidebar_drag_offset = this.sidebar_width
+                                                - f32::from(event.position.x) / zoom;
+                                            this.sidebar_resizing = true;
+                                            cx.notify();
+                                            let workspace = cx.entity();
+                                            window.on_mouse_event({
+                                                let workspace = workspace.clone();
+                                                move |event: &MouseMoveEvent, _, _, cx| {
+                                                    if !event.dragging() {
+                                                        return;
+                                                    }
+                                                    workspace.update(cx, |this, cx| {
+                                                        if this.sidebar_resizing {
+                                                            let zoom = quire_gpui::ui_scale::get();
+                                                            this.sidebar_width =
+                                                                (f32::from(event.position.x)
+                                                                    / zoom
+                                                                    + this.sidebar_drag_offset)
+                                                                    .clamp(200., 480.);
+                                                            cx.notify();
                                                         }
                                                     });
-                                                    window.on_mouse_event({
-                                                        move |_: &MouseUpEvent, _, window, cx| {
-                                                            workspace.update(cx, |this, cx| {
-                                                                if this.sidebar_resizing {
-                                                                    this.sidebar_resizing = false;
-                                                                    this.session.set_setting(
-                                                                        "gpui.sidebar-width",
-                                                                        format!(
-                                                                            "{:.1}",
-                                                                            this.sidebar_width
-                                                                        ),
-                                                                    );
-                                                                    this.schedule_save(
-                                                                        true, window, cx,
-                                                                    );
-                                                                    cx.notify();
-                                                                }
-                                                            });
+                                                }
+                                            });
+                                            window.on_mouse_event({
+                                                move |_: &MouseUpEvent, _, window, cx| {
+                                                    workspace.update(cx, |this, cx| {
+                                                        if this.sidebar_resizing {
+                                                            this.sidebar_resizing = false;
+                                                            this.session.set_setting(
+                                                                "gpui.sidebar-width",
+                                                                format!(
+                                                                    "{:.1}",
+                                                                    this.sidebar_width
+                                                                ),
+                                                            );
+                                                            this.schedule_save(true, window, cx);
+                                                            cx.notify();
                                                         }
                                                     });
-                                                },
-                                            ),
-                                        ),
-                                ),
-                        )
+                                                }
+                                            });
+                                        }),
+                                    ),
+                            );
+                        if let Some((key, from, to)) = sidebar_transition {
+                            body.child(sidebar.with_animation(
+                                ("sidebar-panel", key),
+                                Animation::new(Duration::from_millis(180)),
+                                move |sidebar, progress| {
+                                    sidebar.w(px(from + (to - from) * progress))
+                                },
+                            ))
+                        } else {
+                            body.child(sidebar)
+                        }
                     })
                     .child(page_content),
             )
