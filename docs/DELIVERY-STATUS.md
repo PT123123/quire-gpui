@@ -1487,3 +1487,10 @@
 - 单文件重编 GPUI 约快 12.2 倍，峰值 Private Bytes 低约 69.8%；可执行文件小约 32.7%。窗口出现时间 GPUI 空白慢约 65ms、10k 慢约 53ms。10k 场景 GPUI 峰值 Private Bytes 高约 64.0 MiB（64%），空闲 CPU 读数也较高。样本只有两次，不代表跨机器结论；运行时 10k 输入不完全等价：GPUI 从隔离 SQLite 读取持久化块，Slint 通过 `--blocks 10000` 在内存中生成块。测量未覆盖键入延迟、滚动帧率、GPU 专用内存和冷构建。
 - 一次初始 GPUI warm 调用发现默认 `target/release` 落后于隔离 smoke 使用的 `target-release`，其 45.05s 实为增量重编，未纳入 warm 结果；之后重编样本完成后重新测得有效 no-op warm。首次 Slint 10k 参数绑定把宽度误传为 10000px，该样本已丢弃；本表只含正确的 1600×900 重测结果。
 - 原始 JSON、stdout/stderr 日志和隔离运行库位于 `%TEMP%\quire-final-perf-2026-10-16-final`。GPUI 默认 Release 文件和隔离 Release 文件均对应 `c742cfa`；Slint 工作树内容未改且 Git 状态干净。测量后只更新计划与交付文档。
+
+## 第二百三十六轮：旧版与 GPUI 的隔离库往返兼容抽验（2026-10-16）
+
+- 使用旧版 Release `quire.exe`（`quire-desktop` commit `911246743cf79c43c96b38dfd39dffac3fb4d53c`）在 `%TEMP%\quire-gpui-legacy-roundtrip-ec1496b-20261016-retry\legacy.db` 建立新测试库；GPUI `Session::open` 读出旧库并导入一页含中文、标题、粗体/斜体、项目符号和已完成待办的 Markdown，强制 flush；随后旧版以 `--dump-state --auto-exit 2` 打开并正常退出，最后 GPUI Release `--dump-state` 再读，确认该页（ID 124）及四个块的类型和中文内容仍在，页面总数为 25。过程中只访问这一随机隔离测试库。
+- 结果：基本页面与常见块内容完成旧版 → GPUI 写入 → 旧版启动/保存 → GPUI 读回的同库往返。旧版日志记录 `pages=25`；最终 GPUI JSON 精确保留标题、正文文本及 heading/bullet/todo 类型。未对附件文件哈希、数据库 schema/记录、整理区数据、同步 snapshot 或旧 MCP 客户端做跨版本往返，所以 P7 的附件/协议兼容门仍保持未完成；不将本次抽验扩写成全量兼容通过。
+- 证据日志与测试库保留于上述 `%TEMP%` 目录。首个尝试因 PowerShell 重定向提前关闭 stderr 而使旧版在写诊断时 panic，该目录不是有效样本；最终结论仅使用 `-retry` 目录中退出码为 0 的两次旧版启动及 GPUI JSON 读回。Slint 源码工作树保持干净。
+- 复验：`cargo fmt --all -- --check` 通过；`cargo test --locked -j 8` 通过（106 项：54 库、50 二进制、MCP stdio 与 sync loopback 集成）。有两条 GPUI vendor float 类型未来兼容警告和 MCP `serve` dead-code 警告，未影响测试；本轮没有生产 Rust 源码改动。
