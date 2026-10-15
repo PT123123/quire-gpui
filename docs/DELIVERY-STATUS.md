@@ -1089,3 +1089,9 @@
 - 设置弹窗现在遵循旧版搜索语义：空查询显示所选 tab；非空查询隐藏 tab 条，按区段关键词跨 tab 显示匹配区域。通用设置与快捷键清单逐行筛选；主题与缩放分别按中文/英文关键词过滤；快捷键行将名称、按键和同义词一起纳入匹配。
 - 新增大小写无关子串、跨区、Alt+N/Ctrl+F 命中和不匹配测试。计划状态改为实际完成度；快捷键清单内容、设置入口/各主题外观对照仍未全部验收。无真实用户库访问，无 Slint/core/参考树修改。
 - 验证：`cargo fmt --all` 与 `cargo test --locked` 通过（80 项：41 库 + 37 二进制 + 1 stdio 集成 + 1 双 Session 同步集成）；之前相同实现的 `cargo check --locked` 通过。最终提交前继续跑 check、release build、diff 检查与隔离 GUI smoke。
+
+## 第一百七十三轮：MCP 任务子任务读取兼容
+
+- 对照旧版与 GPUI 的 `list_tasks` 工具，发现 GPUI 返回字段漏掉旧版已有的 `subtasks` 数组。现每项任务都返回子任务 `id`、`title`、`done`，工具描述同步说明字段。
+- 新增隔离 Session 回归：创建任务与子任务、标记完成，再从 MCP `list_tasks` 响应验证三字段。无 Slint/core/参考树改动；不访问真实用户库。
+- 验证：`cargo fmt --all -- --check`、`cargo test --locked`（82 项：41 库 + 39 二进制 + 1 stdio + 1 sync loopback）、`cargo check --locked`、`cargo build --release --locked`、`git diff --check` 均通过；全新 `%TEMP%` SQLite 的 Release GUI smoke（1000 块）通过，覆盖 MCP 16 工具发现/鉴权写入、速记、托盘隐藏唤回、最大化还原及虚拟滚动。新增子任务 JSON 字段由隔离工具单测验证。没有访问真实用户库，Slint/core/冻结参考树未修改。

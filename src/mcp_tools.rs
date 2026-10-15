@@ -290,7 +290,10 @@ pub fn execute(session: &mut Session, name: &str, args: &Value) -> Result<Value,
                     json!({
                         "task_id": t.id.0, "list_id": t.list.0, "title": t.title, "notes": t.notes,
                         "due": t.due, "priority": t.priority.as_str(), "done": t.done,
-                        "tags": t.tags, "trashed": t.is_trashed()
+                        "tags": t.tags, "trashed": t.is_trashed(),
+                        "subtasks": t.subtasks.iter().map(|item| json!({
+                            "id": item.id, "title": item.title, "done": item.done
+                        })).collect::<Vec<_>>()
                     })
                 })
                 .collect::<Vec<_>>();
@@ -529,7 +532,7 @@ pub fn tool_defs() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "list_tasks",
-            description: "列出整理器的任务（含回收站的，用 include_trashed 控制）。返回清单 id、标题、备注、截止日、优先级、完成状态。",
+            description: "列出整理器的任务（含回收站的，用 include_trashed 控制）。返回清单 id、标题、备注、截止日、优先级、完成状态及子任务 id/标题/完成状态。",
             input_schema: schema(json!({ "include_trashed": { "type": "boolean" } }), &[]),
         },
         ToolDef {
@@ -732,6 +735,32 @@ mod tests {
             .unwrap_err()
             .contains("等待撤销删除")
         );
+    }
+
+    #[test]
+    fn list_tasks_preserves_subtask_details_for_mcp_clients() {
+        let (_scratch, mut session) = session();
+        let created = execute(
+            &mut session,
+            "create_task",
+            &json!({"title": "Release", "notes": "ship", "priority": "high"}),
+        )
+        .unwrap();
+        let task_id = TaskId(created["task_id"].as_u64().unwrap());
+        assert!(session.add_subtask(task_id, "Build installer".into()));
+        let subtask_id = session.organizer.task(task_id).unwrap().subtasks[0].id;
+        assert!(session.set_subtask_done(task_id, subtask_id, true));
+
+        let listed = execute(&mut session, "list_tasks", &json!({})).unwrap();
+        let task = listed["tasks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|task| task["task_id"] == task_id.0)
+            .unwrap();
+        assert_eq!(task["subtasks"][0]["id"], subtask_id);
+        assert_eq!(task["subtasks"][0]["title"], "Build installer");
+        assert_eq!(task["subtasks"][0]["done"], true);
     }
 
     #[test]
