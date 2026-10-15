@@ -13,7 +13,7 @@
 ## P0 — 参考冻结与依赖验证
 
 - [x] 阅读全部交接文档，核对快照 manifest 与旧版工作区差异。113 个文件 SHA-256 全量重算一致；`git_status_short` 与 `../quire-desktop` 当前 10 个脏文件逐行一致；本地 `quire-core` HEAD 正是 pin 的 `db0e95f`（2026-10-14 复核）。
-- [~] 从组件、UIState 回调、controller、state、core 服务建立完整功能矩阵。`docs/PARITY.csv` 含 246 callback，`PARITY-SEMANTICS.csv` 已为全部回调记录实现/适用状态、验证情况与语义；`PARITY-STATE.csv` 记录 261 properties，场景目录含 188 场景 / 44 个 .slint。尚未完成的是 core 全部 50 个 Command 与 GPUI UI/MCP 入口的逐项反向交叉，以及 225 条回调的人工界面验收；不能把状态标记当成真人验收。
+- [~] 从组件、UIState 回调、controller、state、core 服务建立完整功能矩阵。`docs/PARITY.csv` 含 246 callback，`PARITY-SEMANTICS.csv` 已为全部回调记录实现/适用状态、验证情况与语义；`PARITY-STATE.csv` 记录 261 properties，场景目录含 188 场景 / 44 个 .slint。core 50 个 Command 已逐一反向核对至 GPUI 实现入口或 Session 封装并修复发现的附件转换、数据库链接、模板撤销和折叠撤销缺口；225 条 callback 的人工界面验收仍待完成，不能把代码/隔离测试标记当成真人验收。
 - [~] 以官方资料核对 GPUI 与 GPUI Kit/组件库组合。一手事实已核验并写入 `docs/ADR-001-GPUI-STACK.md`。官方最小窗和输入示例在本机成功编译运行；GPUI 应用也已打开真实窗口。剩余窗口、DPI、IME 定位等探针仍按 ADR 逐项验收。
 - [~] Rust 1.98.0 通过 `rust-toolchain.toml` 固定，GPUI 0.2.2、core revision 和 `Cargo.lock` 已钉；dev/release 均可构建。MSVC/SDK 环境可用（SDK 10.0.26100，fxc 10.0.26100.7705）；完整安装与多机复现尚未验。
 - [~] 确定独立应用标识、开发数据目录、日志目录和测试库策略。core 侧事实已查清（`APP_DIR_NAME="Quire"`、`--db` 压倒一切、`--portable`、legacy 迁移），**已定（2026-10-14）：独立数据目录 + 保留旧版并存**，见 `docs/13-DECISIONS-NEEDED.md` 第 4 条。
