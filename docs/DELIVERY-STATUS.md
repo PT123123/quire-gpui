@@ -1325,3 +1325,9 @@
 - 补上旧版 `Ctrl+Shift+L` 浅/深主题切换快捷键；GPUI 按现有 palette 命令同一规则，从 light 切到 midnight，其余主题切到 light，并通过 `select_theme` 持久化。`Ctrl+Shift+L` 现在也出现在 GPUI key binding 表。
 - 最大化/还原已有原生窗口控件、隔离 Release GUI smoke 验证及正常窗口 bounds 观察/退出保存，回填 F030 为已实现/已验证；F024 记为已实现/未验证。
 - `cargo fmt --all -- --check`、`cargo test --locked`（98 项）、`cargo build --release --locked`、`git diff --check` 通过。生成矩阵 246 callbacks / 261 properties / 188 scenes，语义 sidecar 合并 212 个回调。快捷键真人按键仍未单独 GUI 验证，未访问真实用户库或修改 Slint/core/冻结参考树。
+
+## 第二百一十八轮：笔记 Escape 关闭与整理区回调复核
+
+- 笔记详情标题/正文输入框现在响应 Escape 关闭详情；输入组件在 IME 组合期间先取消组合，不会误关闭笔记。关闭仍先提交当前草稿。其余 Escape 路径未改变。
+- 对照 GPUI 整理区现有路径，回填笔记选择/关闭/转待办、标签排除/清筛选、回收站切换、任务创建/选择/取消多选、列表快速添加和看板按清单添加。记录已知差异：回收站切换会清空当前详情，旧版保留选择；看板按列添加使用“新任务”默认标题。
+- `cargo fmt --all -- --check`、`cargo test --locked`（98 项）和 `git diff --check` 通过；生成矩阵仍为 246 callbacks / 261 properties / 188 scenes，语义 sidecar 合并 223 个回调。菜单 callback F166 与 organizer 命令面板仍留待逐类核对；未访问真实用户库或修改 Slint/core/冻结参考树。

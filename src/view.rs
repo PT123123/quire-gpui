@@ -2822,6 +2822,7 @@ impl Workspace {
                     cx.notify();
                 }
                 InputEvent::Blurred => this.commit_note_draft(window, cx),
+                InputEvent::DismissSlash => this.close_selected_note(window, cx),
                 InputEvent::Split(_) => window.focus(&this.note_body_input.read(cx).focus),
                 _ => {}
             },
@@ -2837,6 +2838,7 @@ impl Workspace {
                     cx.notify();
                 }
                 InputEvent::Blurred => this.commit_note_draft(window, cx),
+                InputEvent::DismissSlash => this.close_selected_note(window, cx),
                 InputEvent::Split(_) => this.note_body_input.update(cx, |input, cx| {
                     input.insert_newline(cx);
                 }),
