@@ -40,7 +40,9 @@ actions!(
         RemoveBlock,
         DuplicateBlock,
         MoveBlockUp,
-        MoveBlockDown
+        MoveBlockDown,
+        DocumentStart,
+        DocumentEnd
     ]
 );
 
@@ -59,6 +61,7 @@ pub enum InputEvent {
     RemoveBlock,
     DuplicateBlock,
     MoveBlock(i32),
+    NavigateDocument(bool),
     DismissSlash,
     ActivateLink(String),
 }
@@ -354,6 +357,16 @@ impl TextInput {
     fn move_block_down(&mut self, _: &MoveBlockDown, _: &mut Window, cx: &mut Context<Self>) {
         if !self.buffer.composing() {
             cx.emit(InputEvent::MoveBlock(1));
+        }
+    }
+    fn document_start(&mut self, _: &DocumentStart, _: &mut Window, cx: &mut Context<Self>) {
+        if !self.buffer.composing() {
+            cx.emit(InputEvent::NavigateDocument(false));
+        }
+    }
+    fn document_end(&mut self, _: &DocumentEnd, _: &mut Window, cx: &mut Context<Self>) {
+        if !self.buffer.composing() {
+            cx.emit(InputEvent::NavigateDocument(true));
         }
     }
     fn mouse_down(&mut self, event: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
@@ -901,6 +914,8 @@ impl Render for TextInput {
             .on_action(cx.listener(Self::duplicate_block))
             .on_action(cx.listener(Self::move_block_up))
             .on_action(cx.listener(Self::move_block_down))
+            .on_action(cx.listener(Self::document_start))
+            .on_action(cx.listener(Self::document_end))
             .on_mouse_down(MouseButton::Left, cx.listener(Self::mouse_down))
             .on_mouse_move(cx.listener(Self::mouse_move))
             .on_mouse_up(MouseButton::Left, cx.listener(Self::mouse_up))
@@ -940,5 +955,7 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("ctrl-shift-backspace", RemoveBlock, context),
         KeyBinding::new("ctrl-shift-up", MoveBlockUp, context),
         KeyBinding::new("ctrl-shift-down", MoveBlockDown, context),
+        KeyBinding::new("ctrl-home", DocumentStart, context),
+        KeyBinding::new("ctrl-end", DocumentEnd, context),
     ]);
 }

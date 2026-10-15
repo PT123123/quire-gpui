@@ -4965,6 +4965,25 @@ impl Workspace {
                     }
                 }
             }
+            InputEvent::NavigateDocument(to_end) => {
+                let target = if *to_end {
+                    self.session
+                        .blocks()
+                        .iter()
+                        .rev()
+                        .find(|block| self.session.editable(block.id))
+                } else {
+                    self.session
+                        .blocks()
+                        .iter()
+                        .find(|block| self.session.editable(block.id))
+                };
+                if let Some(block) = target {
+                    let id = block.id;
+                    let caret = if *to_end { block.text.len() } else { 0 };
+                    self.focus(id, caret, window, cx);
+                }
+            }
             InputEvent::Focused => {
                 self.session.end_typing();
                 self.set_active_block(id, cx);

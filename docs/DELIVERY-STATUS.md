@@ -1419,3 +1419,8 @@
 - 人工语义 sidecar 已补充快捷键说明，重跑 `tools/extract-parity.mjs` 后矩阵保持 246 callbacks / 261 properties / 188 scenes。快捷键真人按键验收仍未做。
 - `cargo fmt --all -- --check`、`cargo test --locked -j 8`（102 项：50 library + 50 binary + 1 MCP stdio + 1 sync loopback）、`cargo check --locked -j 8` 与 `cargo build --release --locked -j 8` 通过。Release GUI smoke 在全新隔离 SQLite 和 1000 个合成块下通过，托盘/速记、MCP 16 工具、数据库视图、最大化还原和虚拟滚动路径继续通过。
 - 本次改动会影响最终应用二进制；GPUI/Slint 性能数据需在剩余实现收尾后再按同脚本复测。未访问真实用户库，未修改 Slint/core/冻结参考树。
+## 第二百二十九轮：编辑器文档首尾快捷导航
+
+- 编辑器新增 `Ctrl+Home` / `Ctrl+End`，分别跳到当前页面首个可编辑块的起始处、末个可编辑块的末尾；跳转跳过不可编辑容器，并沿用虚拟列表 focus/scroll 路径。输入法组合期间不发出文档导航事件。
+- 验证：`cargo fmt --all`、`cargo check --locked -j 8`、全量 `cargo test --locked -j 8`（102 项：50 库 + 50 二进制 + MCP stdio + sync loopback）通过。完整真人快捷键和 IME 场景仍待桌面回归；本轮未运行性能评测。
+
