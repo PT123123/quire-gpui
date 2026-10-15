@@ -1012,3 +1012,9 @@
 
 - 对照旧版 `controller::import_lan_pages` 发现 GPUI 拉取成功后停留在最后导入页，改变了用户原先正在阅读的页面。现记录导入前的 `PageId`，所有页导入后恢复原选择再刷盘；导入内容仍作为新根页面创建。
 - 更新 loopback + ScratchDir 导入测试，在验证标题和正文落库的同时断言当前页 ID 未变化。`cargo test -j 8 lan_pull_imports_pages_from_a_loopback_share`、`cargo check -j 8`、`cargo fmt --all -- --check` 和 `git diff --check` 通过；完整测试和 Release smoke 的最近结果见第 158 轮，本轮只改动该导航行为及其回归断言。
+
+## 第一百六十轮：速记、托盘、MCP 与整理区多选收尾
+
+- 任务批量完成或移入回收站后立即退出多选模式，清空选中项并回到正常列表状态；整理区烟测断言批量完成后已退出模式，并验证 core undo 可恢复任务状态。同步核对速记、托盘、MCP 的现有集成路径：速记使用唯一 UI Session 并立即保存，托盘事件由主线程协调隐藏/唤回，MCP 请求经 HTTP → UI 线程 → Session → force-flush，处理后通知工作区刷新。
+- 全量 `cargo test -j 8`（70 项）、`cargo check -j 8`、`cargo build --release -j 8`、格式检查、`git diff --check` 通过。新建临时 SQLite 的 Release 窗口 smoke 覆盖 MCP 16 工具目录与鉴权写入、速记输入/标签/提交、托盘隐藏/唤回、最大化/还原、笔记全选批量删除/撤销、任务选择批量完成/撤销与 1000 块虚拟滚动。
+- 该 smoke 通过事件/状态路径验证，不等同真人点击托盘菜单、真实外部 MCP 客户端长连或两台设备网络同步；这些仍需桌面环境验收。未访问真实用户数据库或修改 Slint 参考树。
