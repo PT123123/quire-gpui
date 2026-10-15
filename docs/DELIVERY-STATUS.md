@@ -1387,9 +1387,9 @@
 
 ## 第二百二十七轮：正文块拖动目标反馈与矩阵更正
 
-- 正文块拖动经过同页合法目标时，目标行上缘现在显示当前主题强调色落点线；core 落点校验与此前的“放到目标行之前”语义保持不变。前/后半行决定落点仍属待补差异，真人鼠标拖动未验收。
+- 正文块拖动经过同页目标行时，上半区选择行前落点、下半区选择行后落点，并在对应边缘显示当前主题强调色落点线；core 落点校验仍负责拒绝跨越子树的非法位置。隔离 Session 新增行后落点的撤销/重做与顺序验证；真实鼠标命中和线条呈现未做桌面验收。
 - 复核整理区功能边界后更正计划：旧版没有笔记拖放排序入口，因此不再把它列为 GPUI 待实现功能。更新人工 parity sidecar 并重跑生成器，矩阵仍为 246 callbacks / 261 properties / 188 scenes。
-- `cargo fmt --all -- --check`、`cargo check --locked`、`cargo test --locked`（103 项）与 `cargo build --release --locked` 通过。全新临时目录 Release GUI smoke（1000 个合成块）通过，覆盖 JSON 指令、速记、托盘隐藏/唤回、MCP 16 工具、数据库视图、最大化/还原与虚拟滚动；测试库位于 `%TEMP%` 并与用户数据隔离。此前对照测量仍是基线，最终代码收尾后按用户要求再做性能复测。
+- `cargo fmt --all -- --check`、`cargo check --locked`、`cargo test --locked -j 8`（102 项：50 library + 50 binary + 1 MCP stdio + 1 sync loopback）与 `cargo build --release --locked -j 8` 通过；拖放 Session 测试增加了“放到行后”顺序、撤销与重开检查。全新临时目录 Release GUI smoke（1000 个合成块）通过，覆盖 JSON 指令、速记、托盘隐藏/唤回、MCP 16 工具、数据库视图、最大化/还原与虚拟滚动；测试库位于 `%TEMP%` 并与用户数据隔离。此前对照测量仍是基线，最终代码收尾后按用户要求再做性能复测。
 - 未访问真实用户库，未修改 Slint、core 或冻结参考树。
 
 ## 第二百二十六轮：GPUI 与 Slint 性能基线

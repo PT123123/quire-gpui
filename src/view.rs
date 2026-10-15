@@ -11989,6 +11989,7 @@ impl Workspace {
         sync_sources: &[(quire_core::core::types::PageId, String, BlockId, String)],
         page_candidates: &[(quire_core::core::types::PageId, String)],
     ) -> AnyElement {
+        let editor_block_drag_active = cx.has_active_drag();
         let block_index = self
             .session
             .blocks()
@@ -12338,7 +12339,6 @@ impl Workspace {
                 .any(|child| child.parent == Some(block_id));
         let block_drop_page = self.session.page.id;
         let block_drop_enabled = !self.session.page.locked && !self.closing;
-        let block_drop_accent = Palette::color(&self.palette.accent);
         let mention_options = if let Some((_, at, _)) = self
             .mention_menu
             .clone()
@@ -12961,13 +12961,6 @@ impl Workspace {
                             && value
                                 .downcast_ref::<EditorBlockDrag>()
                                 .is_some_and(|drag| drag.page == block_drop_page)
-                    })
-                    .drag_over::<EditorBlockDrag>(move |style, drag, _, _| {
-                        if drag.page == block_drop_page {
-                            style.border_t_2().border_color(block_drop_accent)
-                        } else {
-                            style
-                        }
                     })
                     .on_drop(cx.listener(
                         move |this, drag: &EditorBlockDrag, window, cx| {
@@ -16690,6 +16683,67 @@ impl Workspace {
                     })
                     .when_some(color_picker_view, |row, picker| row.child(picker))
                     .when_some(block_context_popup, |row, popup| row.child(popup))
+                    .when(editor_block_drag_active, |row| {
+                        let page = block_drop_page;
+                        let enabled = block_drop_enabled;
+                        let before = block_index;
+                        let after = block_index.saturating_add(1);
+                        let line = accent;
+                        row.child(
+                            div()
+                                .id(SharedString::from(format!("block-drop-before-{block_id:?}")))
+                                .absolute()
+                                .top(px(0.))
+                                .left(px(0.))
+                                .w_full()
+                                .h(relative(0.5))
+                                .can_drop(move |value, _, _| {
+                                    enabled
+                                        && value
+                                            .downcast_ref::<EditorBlockDrag>()
+                                            .is_some_and(|drag| drag.page == page)
+                                })
+                                .drag_over::<EditorBlockDrag>(move |style, drag, _, _| {
+                                    if drag.page == page {
+                                        style.border_t_2().border_color(line)
+                                    } else {
+                                        style
+                                    }
+                                })
+                                .on_drop(cx.listener(move |this, drag: &EditorBlockDrag, window, cx| {
+                                    if drag.page == this.session.page.id {
+                                        this.move_block_to_index(drag.block, before, window, cx);
+                                    }
+                                })),
+                        )
+                        .child(
+                            div()
+                                .id(SharedString::from(format!("block-drop-after-{block_id:?}")))
+                                .absolute()
+                                .bottom(px(0.))
+                                .left(px(0.))
+                                .w_full()
+                                .h(relative(0.5))
+                                .can_drop(move |value, _, _| {
+                                    enabled
+                                        && value
+                                            .downcast_ref::<EditorBlockDrag>()
+                                            .is_some_and(|drag| drag.page == page)
+                                })
+                                .drag_over::<EditorBlockDrag>(move |style, drag, _, _| {
+                                    if drag.page == page {
+                                        style.border_b_2().border_color(line)
+                                    } else {
+                                        style
+                                    }
+                                })
+                                .on_drop(cx.listener(move |this, drag: &EditorBlockDrag, window, cx| {
+                                    if drag.page == this.session.page.id {
+                                        this.move_block_to_index(drag.block, after, window, cx);
+                                    }
+                                })),
+                        )
+                    })
             .into_any_element()
     }
 }

@@ -9052,7 +9052,25 @@ mod tests {
                 .collect::<Vec<_>>();
             let dragged = *original_order.last().unwrap();
             assert!(session.can_move_block_to(dragged, 0));
+            let after_dragged = original_order[0];
+            assert!(session.can_move_block_to(after_dragged, 2));
             assert!(!session.can_move_block_to(dragged, usize::MAX));
+
+            // The lower half of the second row targets the flat slot after it.
+            session.execute(Command::MoveBlockTo {
+                id: after_dragged,
+                index: 2,
+            });
+            assert_eq!(session.blocks()[1].id, after_dragged);
+            session.undo();
+            assert_eq!(
+                session
+                    .blocks()
+                    .iter()
+                    .map(|block| block.id)
+                    .collect::<Vec<_>>(),
+                original_order
+            );
 
             session.execute(Command::MoveBlockTo {
                 id: dragged,
