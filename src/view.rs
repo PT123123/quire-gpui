@@ -2805,6 +2805,23 @@ impl Workspace {
                     }));
                     eprintln!("SMOKE: organizer note multi-select, select-all and undoable batch trash passed");
 
+                    let restore_notes = [this.session.create_note(), this.session.create_note()];
+                    assert!(this.session.set_notes_trashed(&restore_notes, true));
+                    this.organizer_trash = true;
+                    this.note_multi_select = true;
+                    this.selected_note_ids.extend(restore_notes);
+                    this.bulk_restore_notes(&restore_notes, window, cx);
+                    assert!(restore_notes.iter().all(|id| {
+                        this.session.organizer.note(*id).is_some_and(|note| !note.is_trashed())
+                    }));
+                    assert!(this.session.undo_organizer());
+                    assert!(restore_notes.iter().all(|id| {
+                        this.session.organizer.note(*id).is_some_and(|note| note.is_trashed())
+                    }));
+                    assert!(this.session.redo_organizer());
+                    this.organizer_trash = false;
+                    eprintln!("SMOKE: organizer note multi-select restore and single-step undo/redo passed");
+
                     this.organizer_tasks = true;
                     let selected_task = this.session.create_task("多选任务 smoke".into());
                     this.toggle_task_multi_select_mode(window, cx);
@@ -2834,6 +2851,26 @@ impl Workspace {
                     );
                     assert!(this.session.redo_organizer());
                     eprintln!("SMOKE: organizer task multi-select move and single-step undo/redo passed");
+
+                    let restore_tasks = [
+                        this.session.create_task("恢复任务 A".into()),
+                        this.session.create_task("恢复任务 B".into()),
+                    ];
+                    assert!(this.session.set_tasks_trashed(&restore_tasks, true));
+                    this.organizer_trash = true;
+                    this.selected_task_ids.extend(restore_tasks);
+                    this.task_multi_select = true;
+                    this.bulk_restore_tasks(&restore_tasks, window, cx);
+                    assert!(restore_tasks.iter().all(|id| {
+                        this.session.organizer.task(*id).is_some_and(|task| !task.is_trashed())
+                    }));
+                    assert!(this.session.undo_organizer());
+                    assert!(restore_tasks.iter().all(|id| {
+                        this.session.organizer.task(*id).is_some_and(|task| task.is_trashed())
+                    }));
+                    assert!(this.session.redo_organizer());
+                    this.organizer_trash = false;
+                    eprintln!("SMOKE: organizer task multi-select restore and single-step undo/redo passed");
 
                     this.organizer_trash = true;
                     this.organizer_tasks = false;
@@ -6722,7 +6759,7 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.note_multi_select && !self.organizer_trash {
+        if self.note_multi_select {
             self.toggle_note_multi_select_item(id, cx);
             return;
         }
@@ -6845,13 +6882,33 @@ impl Workspace {
             cx,
         );
     }
+    fn bulk_restore_notes(
+        &mut self,
+        visible: &[quire_core::core::organizer::NoteId],
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let ids = visible
+            .iter()
+            .copied()
+            .filter(|id| self.selected_note_ids.contains(id))
+            .collect::<Vec<_>>();
+        if self.session.set_notes_trashed(&ids, false) {
+            self.selected_note_ids.clear();
+            self.note_multi_select = false;
+            self.status = format!("已恢复 {} 条笔记", ids.len());
+            self.error = false;
+            self.schedule_save(true, window, cx);
+        }
+        cx.notify();
+    }
     fn select_task(
         &mut self,
         id: quire_core::core::organizer::TaskId,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.task_multi_select && !self.organizer_trash {
+        if self.task_multi_select {
             self.toggle_task_multi_select(id, cx);
             return;
         }
@@ -7260,6 +7317,26 @@ impl Workspace {
             self.task_multi_select = false;
             self.task_bulk_move_open = false;
             self.status = format!("已移动 {} 项任务（Ctrl+Z 可撤销）", ids.len());
+            self.error = false;
+            self.schedule_save(true, window, cx);
+        }
+        cx.notify();
+    }
+    fn bulk_restore_tasks(
+        &mut self,
+        visible: &[quire_core::core::organizer::TaskId],
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let ids = visible
+            .iter()
+            .copied()
+            .filter(|id| self.selected_task_ids.contains(id))
+            .collect::<Vec<_>>();
+        if self.session.set_tasks_trashed(&ids, false) {
+            self.selected_task_ids.clear();
+            self.task_multi_select = false;
+            self.status = format!("已恢复 {} 项任务", ids.len());
             self.error = false;
             self.schedule_save(true, window, cx);
         }
@@ -16248,7 +16325,7 @@ impl Render for Workspace {
                             .justify_between()
                             .text_size(px(11.))
                             .text_color(muted)
-                            .when(self.note_multi_select && !self.organizer_trash, |meta| {
+                            .when(self.note_multi_select, |meta| {
                                 meta.child(
                                     div()
                                         .w(px(16.))
@@ -16529,7 +16606,7 @@ impl Render for Workspace {
                             .flex()
                             .items_center()
                             .gap(px(6.))
-                            .when(!self.organizer_trash && self.task_multi_select, |row| {
+                            .when(self.task_multi_select, |row| {
                                 row.child(
                                     div()
                                         .id(SharedString::from(format!(
@@ -16555,7 +16632,7 @@ impl Render for Workspace {
                                         }),
                                 )
                             })
-                            .when(!self.task_multi_select || self.organizer_trash, |row| {
+                            .when(!self.task_multi_select, |row| {
                                 row.child(
                                     div()
                                         .id(SharedString::from(format!(
@@ -17413,8 +17490,7 @@ impl Render for Workspace {
                                         }))
                                         .child(if self.organizer_trash { "返回笔记" } else { "回收站" }),
                                 )
-                                .when(!self.organizer_trash, |toolbar| {
-                                    toolbar.child(
+                                .child(
                                         div()
                                             .id("organizer-note-multiselect-toggle")
                                             .px(px(8.))
@@ -17427,8 +17503,7 @@ impl Render for Workspace {
                                                 this.toggle_note_multi_select(window, cx)
                                             }))
                                             .child(if self.note_multi_select { "取消多选" } else { "多选" }),
-                                    )
-                                }),
+                                    ),
                         )
                     })
                     .when(!self.organizer_tasks && self.note_multi_select, |list| {
@@ -17454,19 +17529,29 @@ impl Render for Workspace {
                                     .child(if all_selected { "取消全选" } else { "全选" }))
                                 .when(selected_count > 0, |bar| {
                                     let copy_ids = visible_note_ids.clone();
-                                    bar.child(div().id("organizer-note-bulk-copy").px(px(7.)).py(px(4.))
+                                    let bar = bar.child(div().id("organizer-note-bulk-copy").px(px(7.)).py(px(4.))
                                         .rounded(px(4.)).cursor_pointer().text_size(px(10.)).text_color(accent)
                                         .on_click(cx.listener(move |this, _, _, cx| {
                                             this.bulk_copy_notes(&copy_ids, cx)
                                         }))
-                                        .child("复制"))
-                                        .child(div().id("organizer-note-bulk-trash").px(px(7.)).py(px(4.))
+                                        .child("复制"));
+                                    if self.organizer_trash {
+                                        let restore_ids = visible_note_ids.clone();
+                                        bar.child(div().id("organizer-note-bulk-restore").px(px(7.)).py(px(4.))
+                                            .rounded(px(4.)).cursor_pointer().text_size(px(10.)).text_color(accent)
+                                            .on_click(cx.listener(move |this, _, window, cx| {
+                                                this.bulk_restore_notes(&restore_ids, window, cx)
+                                            }))
+                                            .child("恢复所选"))
+                                    } else {
+                                        bar.child(div().id("organizer-note-bulk-trash").px(px(7.)).py(px(4.))
                                             .rounded(px(4.)).cursor_pointer().text_size(px(10.))
                                             .text_color(rgb(0xe5534b))
                                             .on_click(cx.listener(|this, _, window, cx| {
                                                 this.bulk_trash_notes(window, cx)
                                             }))
                                             .child("删除"))
+                                    }
                                 }),
                         )
                     })
@@ -17641,7 +17726,58 @@ impl Render for Workspace {
                             }
                         })
                     })
-                                .when_some(
+                    .when(self.organizer_tasks && self.organizer_trash, |list| {
+                        let ids = visible_task_ids.clone();
+                        list.child(
+                            div()
+                                .id("organizer-task-trash-multiselect")
+                                .w_full()
+                                .flex()
+                                .items_center()
+                                .gap(px(6.))
+                                .child(
+                                    div()
+                                        .id("organizer-task-trash-multiselect-toggle")
+                                        .px(px(7.))
+                                        .py(px(5.))
+                                        .rounded(px(4.))
+                                        .cursor_pointer()
+                                        .text_color(if self.task_multi_select { accent } else { muted })
+                                        .on_click(cx.listener(|this, _, window, cx| {
+                                            this.toggle_task_multi_select_mode(window, cx)
+                                        }))
+                                        .child(if self.task_multi_select { "取消多选" } else { "多选恢复" }),
+                                )
+                                .when(self.task_multi_select, |bar| {
+                                    let all_selected = !ids.is_empty()
+                                        && ids.iter().all(|id| self.selected_task_ids.contains(id));
+                                    let selected_count = self.selected_task_ids.len();
+                                    let select_ids = ids.clone();
+                                    bar.child(div().flex_1().text_size(px(11.)).text_color(muted)
+                                        .child(format!("已选 {selected_count} 项")))
+                                        .child(div().id("organizer-task-trash-select-all").px(px(7.)).py(px(5.)).rounded(px(4.))
+                                            .cursor_pointer().text_color(muted)
+                                            .on_click(cx.listener(move |this, _, _, cx| {
+                                                if all_selected {
+                                                    this.selected_task_ids.clear();
+                                                } else {
+                                                    this.selected_task_ids = select_ids.iter().copied().collect();
+                                                }
+                                                cx.notify();
+                                            }))
+                                            .child(if all_selected { "取消全选" } else { "全选" }))
+                                        .when(selected_count > 0, |bar| {
+                                            bar.child(div().id("organizer-task-trash-restore-selected").px(px(7.)).py(px(5.)).rounded(px(4.))
+                                                .cursor_pointer().text_color(accent)
+                                                .on_click(cx.listener(move |this, _, window, cx| {
+                                                    this.bulk_restore_tasks(&ids, window, cx)
+                                                }))
+                                                .child("恢复所选"))
+                                        })
+                                }),
+                        )
+                    })
+                    .when_some(
                                     self.session
                                         .pending_organizer_delete()
                                         .map(|pending| pending.message.clone()),

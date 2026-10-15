@@ -1127,3 +1127,8 @@
 - GPUI 整理区原先只能在单任务详情中更改清单，多选工具栏没有批量移动入口。新增“移至清单”操作，可把选中的可见任务按当前列表顺序移到收集箱或任意现存清单；采用 core UpdateTask 命令批次作为一个 organizer undo 项，重开后持久化。
 - Session 隔离测试覆盖重复 ID 去重、多项目标清单更新、单步撤销/重做及 SQLite 重开读回。隔离 Release GUI smoke 通过 Workspace 多选处理器验证两项批量移动及撤销/重做。未访问真实用户库，未改 Slint/core/冻结参考树。
 - 验证：`cargo fmt --all -- --check`、`cargo test --locked`（85 项：42 库 + 41 二进制 + 1 stdio + 1 sync loopback）、`cargo check --locked`、`cargo build --release --locked`、`git diff --check` 均通过。全新 `%TEMP%` 隔离 SQLite 的 Release GUI smoke（1000 块）实际启动窗口，并通过任务多选批量移动/单步撤销重做，以及既有速记、托盘、MCP、窗口最大化还原和虚拟滚动路径。
+
+## 第一百八十轮：整理区回收站多选恢复
+
+- 回收站此前只有逐项恢复入口，多选模式只对活动项目开放。现在笔记/任务回收站都可开启多选、全选当前可见项，并一次性恢复所选记录；GPUI 使用现有 core organizer 批量状态变更，因此整个恢复操作可单步撤销/重做。
+- 隔离 Release GUI smoke 覆盖笔记与任务的双项恢复和 undo/redo。验证：`cargo fmt --all -- --check`、`cargo test --locked`（85 项：42 库 + 41 二进制 + 1 stdio + 1 sync loopback）、`cargo check --locked`、`cargo build --release --locked` 与 `git diff --check` 通过；全新 `%TEMP%` 隔离 SQLite Release GUI smoke（1000 块）通过，并覆盖整理区批量恢复、批量移动、速记、托盘、MCP、窗口最大化/还原和虚拟滚动。没有访问真实用户库，未改 Slint/core/冻结参考树。
