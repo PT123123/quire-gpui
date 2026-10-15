@@ -8682,6 +8682,23 @@ impl Workspace {
         }
         cx.notify();
     }
+    fn reclaim_attachments(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.commit_note_draft(window, cx);
+        match self
+            .session
+            .reclaim_attachments(self.block_clipboard.as_deref())
+        {
+            Ok(message) => {
+                self.status = message;
+                self.error = false;
+            }
+            Err(error) => {
+                self.status = format!("清理附件失败：{error}");
+                self.error = true;
+            }
+        }
+        cx.notify();
+    }
     fn toggle_sidebar(&mut self, cx: &mut Context<Self>) {
         let from = if self.sidebar_open {
             self.sidebar_width
@@ -16186,8 +16203,17 @@ impl Render for Workspace {
                                                 .hover(|button| button.bg(Palette::color(&p.bg).opacity(0.35)))
                                                 .on_click(cx.listener(|this, _, window, cx| this.backup_now(window, cx)))
                                                 .child("立即备份"),
+                                            div()
+                                                .id("settings-reclaim-attachments")
+                                                .px(px(10.)).py(px(6.)).rounded(px(5.))
+                                                .border_1().border_color(Palette::color(&p.border))
+                                                .cursor_pointer().text_size(px(11.))
+                                                .hover(|button| button.bg(Palette::color(&p.bg).opacity(0.35)))
+                                                .on_click(cx.listener(|this, _, window, cx| this.reclaim_attachments(window, cx)))
+                                                .child("清理未使用附件"),
                                         ]),
                                     )
+                                    .child(div().text_size(px(10.)).text_color(muted).child("只删除未被页面、封面、撤销记录、版本或复制块引用的附件。"))
                             }),
                         ))
                         .child(div().flex_1())

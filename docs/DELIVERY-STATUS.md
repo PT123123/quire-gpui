@@ -1191,3 +1191,8 @@
 
 - 对照旧版设置存储区域，GPUI 关于页补出当前数据库路径、“打开数据目录”和“立即备份”。文件管理器操作交给平台默认工具，内存模式隐藏磁盘操作；备份先提交当前笔记草稿并 flush 写入队列，再调用 core repository 快照，状态栏报告结果。F136/F137 已更新为已实现/未验证。
 - Release GUI smoke 在隔离临时数据库调用同一备份处理路径，并断言最新 `.bak1` 存在。`cargo fmt --all -- --check`、`cargo test --locked`（91 项）、`cargo check --locked`、`cargo build --release --locked` 和 `git diff --check` 均通过；GUI smoke 退出码 0，且隔离库备份文件存在。文件管理器真人点击尚未验收；真实用户库未访问，Slint/core/冻结参考树未修改。
+
+## 第一百九十二轮：设置页安全清理附件
+
+- 补上旧版 F138。清理前 flush 持久化队列，并将所有页面块、封面、撤销/重做历史、`version-files/` 元数据及编辑器内部复制块都视为活引用；仅对确认孤立的附件先删除 SQLite 行，再删除原图和缩略图。内存模式返回无需清理，文件删除失败会计入提示。关于页提供入口并说明保留规则。
+- 隔离 SQLite/附件目录回归验证孤立附件行和原图被删除，页面封面、版本快照和内部复制块引用均保留；未访问用户库。全量 `cargo test --locked`（92 项：45 库 + 45 二进制 + 1 stdio + 1 sync loopback）、`cargo check --locked`、`cargo build --release --locked`、`cargo fmt --all -- --check` 和 `git diff --check` 通过。新建唯一临时目录的 Release GUI smoke 通过，继续覆盖 1000 块虚拟滚动、MCP、速记、托盘、最大化/还原及既有功能。清理入口真人点击仍待桌面验收。

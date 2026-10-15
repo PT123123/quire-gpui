@@ -800,6 +800,85 @@ impl Session {
     pub fn blocks(&self) -> &[Block] {
         self.document.page_blocks(self.page.id)
     }
+
+    /// Remove attachment records and files that cannot be reached from the
+    /// current document, page covers, undo/redo history, named versions, or
+    /// the editor's internal copied-block buffer.
+    pub fn reclaim_attachments(&mut self, clipboard: Option<&[Block]>) -> Result<String> {
+        if self.repo.path().is_none() {
+            return Ok("运行于内存模式 — 无需清理".into());
+        }
+
+        // Flush before scanning so an earlier queued AttachmentAdded cannot
+        // recreate a row after its files have been removed.
+        self.persistence.force_flush()?;
+
+        let mut live: BTreeSet<i64> = self
+            .document
+            .all_blocks()
+            .filter_map(|block| block.attachment)
+            .map(|id| id.as_u64() as i64)
+            .collect();
+        live.extend(self.history.referenced_attachments());
+        live.extend(
+            self.pages
+                .iter()
+                .filter_map(|page| page.cover)
+                .map(|id| id.as_u64() as i64),
+        );
+        if let Some(blocks) = clipboard {
+            live.extend(
+                blocks
+                    .iter()
+                    .filter_map(|block| block.attachment)
+                    .map(|id| id.as_u64() as i64),
+            );
+        }
+
+        // Version databases live outside the main attachment table, so their
+        // attachment references are mirrored in metadata.
+        let persisted = self.repo.load()?;
+        for (key, value) in &persisted.meta {
+            if key.starts_with(quire_core::storage::versions::KEY_FILES) {
+                live.extend(quire_core::storage::versions::parse_ids(value));
+            }
+        }
+
+        let doomed: Vec<Attachment> = self
+            .attachments
+            .values()
+            .filter(|attachment| !live.contains(&(attachment.id.as_u64() as i64)))
+            .cloned()
+            .collect();
+        if doomed.is_empty() {
+            return Ok("没有可移除的未使用附件".into());
+        }
+
+        let changes: Vec<Change> = doomed
+            .iter()
+            .map(|attachment| Change::AttachmentDeleted { id: attachment.id })
+            .collect();
+        self.repo.apply(&changes)?;
+
+        let mut freed = 0i64;
+        let mut stuck = Vec::new();
+        for attachment in &doomed {
+            stuck.extend(self.attachment_store.remove(attachment));
+            self.attachments.remove(&attachment.id.as_u64());
+            freed += attachment.bytes.max(0);
+        }
+
+        let mut notice = format!(
+            "已移除 {} 个未使用的附件（{}）",
+            doomed.len(),
+            quire_core::services::attachment_store::format_size(freed),
+        );
+        if !stuck.is_empty() {
+            notice.push_str(&format!("，但有 {} 个文件无法删除", stuck.len()));
+        }
+        Ok(notice)
+    }
+
     pub fn page_versions(&self, page: PageId) -> &[(i64, String)] {
         self.page_versions
             .get(&page.0)
@@ -5627,6 +5706,103 @@ mod tests {
         assert!(notice.contains("修改可能丢失"));
         assert_eq!(recovered.page.title, "Recovered content");
         assert!(path.with_extension("db.corrupt").exists());
+        Ok(())
+    }
+
+    #[test]
+    fn reclaim_removes_orphans_and_preserves_page_cover_attachments() -> Result<()> {
+        let scratch = quire_core::testing::ScratchDir::new("gpui-reclaim-attachments");
+        let path = scratch.path().join("test.db");
+        let mut session = Session::open(&path)?;
+        let png = include_bytes!("../vendor/gpui-0.2.2/examples/image/app-icon.png");
+
+        let orphan_id = AttachmentId(session.next_attachment_id);
+        session.next_attachment_id += 1;
+        let orphan = session
+            .attachment_store
+            .import_bytes(orphan_id, "orphan", png)
+            .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+        session
+            .repo
+            .apply(&[Change::AttachmentAdded(orphan.clone())])?;
+        session
+            .attachments
+            .insert(orphan_id.as_u64(), orphan.clone());
+
+        let cover_id = AttachmentId(session.next_attachment_id);
+        let cover = session
+            .attachment_store
+            .import_bytes(cover_id, "cover", png)
+            .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+        session.repo.apply(&[
+            Change::AttachmentAdded(cover.clone()),
+            Change::PageCoverSet {
+                id: session.page.id,
+                cover: Some(cover_id),
+            },
+        ])?;
+        session.attachments.insert(cover_id.as_u64(), cover.clone());
+        session
+            .pages
+            .iter_mut()
+            .find(|page| page.id == session.page.id)
+            .unwrap()
+            .cover = Some(cover_id);
+        session.page.cover = Some(cover_id);
+
+        let version_id = AttachmentId(cover_id.as_u64() + 1);
+        let version_attachment = session
+            .attachment_store
+            .import_bytes(version_id, "version", png)
+            .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+        let clipboard_id = AttachmentId(version_id.as_u64() + 1);
+        let clipboard_attachment = session
+            .attachment_store
+            .import_bytes(clipboard_id, "clipboard", png)
+            .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+        session.repo.apply(&[
+            Change::AttachmentAdded(version_attachment.clone()),
+            Change::AttachmentAdded(clipboard_attachment.clone()),
+            Change::MetaSet {
+                key: quire_core::storage::versions::files_key(session.page.id.0 as i64, 42),
+                value: version_id.as_u64().to_string(),
+            },
+        ])?;
+        session
+            .attachments
+            .insert(version_id.as_u64(), version_attachment.clone());
+        session
+            .attachments
+            .insert(clipboard_id.as_u64(), clipboard_attachment.clone());
+        let mut copied_block = session.blocks()[0].clone();
+        copied_block.attachment = Some(clipboard_id);
+
+        let notice = session.reclaim_attachments(Some(&[copied_block]))?;
+        assert!(notice.contains("已移除 1 个未使用的附件"));
+        assert!(!session.attachment_store.stored_path(&orphan).exists());
+        assert!(session.attachment_store.stored_path(&cover).exists());
+        assert!(
+            session
+                .attachment_store
+                .stored_path(&version_attachment)
+                .exists()
+        );
+        assert!(
+            session
+                .attachment_store
+                .stored_path(&clipboard_attachment)
+                .exists()
+        );
+        let remaining: BTreeSet<_> = session
+            .repo
+            .load_attachments()?
+            .into_iter()
+            .map(|a| a.id)
+            .collect();
+        assert!(!remaining.contains(&orphan_id));
+        assert!(remaining.contains(&cover_id));
+        assert!(remaining.contains(&version_id));
+        assert!(remaining.contains(&clipboard_id));
         Ok(())
     }
 
