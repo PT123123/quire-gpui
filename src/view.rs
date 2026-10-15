@@ -2058,6 +2058,8 @@ pub struct Workspace {
     organizer_capture_selected: usize,
     organizer_capture_suggestions_hidden: bool,
     sidebar_open: bool,
+    favorites_collapsed: bool,
+    recents_collapsed: bool,
     sidebar_transition: Option<(u64, f32, f32)>,
     sidebar_transition_seq: u64,
     sidebar_width: f32,
@@ -2480,6 +2482,8 @@ impl Workspace {
             organizer_capture_selected: 0,
             organizer_capture_suggestions_hidden: false,
             sidebar_open: true,
+            favorites_collapsed: false,
+            recents_collapsed: false,
             sidebar_transition: None,
             sidebar_transition_seq: 0,
             sidebar_width,
@@ -16830,6 +16834,8 @@ impl Render for Workspace {
                     .child(title)
             })
             .collect::<Vec<_>>();
+        let favorites_collapsed = self.favorites_collapsed;
+        let recents_collapsed = self.recents_collapsed;
         let search_result_rows = self
             .search_result_ids()
             .into_iter()
@@ -20868,28 +20874,40 @@ impl Render for Workspace {
                                     .when(!favorite_rows.is_empty(), |list| {
                                         list.child(
                                             div()
+                                                .id("sidebar-favorites-toggle")
                                                 .h(px(24.))
                                                 .px(px(8.))
                                                 .flex()
                                                 .items_center()
+                                                .cursor_pointer()
                                                 .text_size(px(11.))
                                                 .text_color(muted)
-                                                .child("收藏"),
+                                                .on_click(cx.listener(|this, _, _, cx| {
+                                                    this.favorites_collapsed = !this.favorites_collapsed;
+                                                    cx.notify();
+                                                }))
+                                                .child(if favorites_collapsed { "▸ 收藏" } else { "▾ 收藏" }),
                                         )
-                                        .children(favorite_rows)
+                                        .when(!favorites_collapsed, |list| list.children(favorite_rows))
                                     })
                                     .when(!recent_rows.is_empty(), |list| {
                                         list.child(
                                             div()
+                                                .id("sidebar-recents-toggle")
                                                 .h(px(24.))
                                                 .px(px(8.))
                                                 .flex()
                                                 .items_center()
+                                                .cursor_pointer()
                                                 .text_size(px(11.))
                                                 .text_color(muted)
-                                                .child("最近"),
+                                                .on_click(cx.listener(|this, _, _, cx| {
+                                                    this.recents_collapsed = !this.recents_collapsed;
+                                                    cx.notify();
+                                                }))
+                                                .child(if recents_collapsed { "▸ 最近" } else { "▾ 最近" }),
                                         )
-                                        .children(recent_rows)
+                                        .when(!recents_collapsed, |list| list.children(recent_rows))
                                     })
                                     .children(page_rows)
                                     .child(
