@@ -8370,9 +8370,47 @@ fn smoke_mcp_create_note(port: u16, token: &str) -> Result<String, String> {
             "MCP server discovery did not advertise 2026-07-28: {discover}"
         ));
     }
-    let body = serde_json::json!({
+    let tool_list = serde_json::json!({
         "jsonrpc": "2.0",
         "id": 1,
+        "method": "tools/list",
+        "params": {
+            "_meta": {
+                "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+                "io.modelcontextprotocol/clientCapabilities": {},
+                "io.modelcontextprotocol/clientInfo": {
+                    "name": "quire-gpui-smoke",
+                    "version": "0.1.0"
+                }
+            }
+        }
+    })
+    .to_string();
+    let listed = smoke_mcp_post(port, token, &tool_list)?;
+    let listed: serde_json::Value = serde_json::from_str(
+        listed
+            .split_once("\r\n\r\n")
+            .map(|(_, body)| body)
+            .unwrap_or(&listed),
+    )
+    .map_err(|error| format!("parse MCP tools/list response: {error}"))?;
+    let tools = listed
+        .pointer("/result/tools")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| format!("MCP tools/list response has no tools array: {listed}"))?;
+    let expected_tools = crate::mcp_tools::tool_defs().len();
+    if tools.len() != expected_tools {
+        return Err(format!(
+            "MCP tools/list returned {} tools; expected {expected_tools}",
+            tools.len()
+        ));
+    }
+    eprintln!(
+        "SMOKE: MCP Streamable HTTP discovery and tools/list returned {expected_tools} tools"
+    );
+    let body = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 2,
         "method": "tools/call",
         "params": {
             "name": "create_note",

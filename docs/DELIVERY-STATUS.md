@@ -916,3 +916,8 @@ GPUI 已覆盖主编辑器、整理区、独立速记与标签建议、Windows �
 
 - 布局选择新增 Timeline，使用当前月份的日期轴绘制横向日刻度和记录泳道；默认按起始 Date 列排序，视图定义可分别指定开始/结束 Date 属性。若配置结束列，查询包含起止区间与当前月相交的记录，条形跨日宽度按日期计算，跨月起止裁切到月网格边缘；没有结束日期时显示单日点。记录行通过 `uniform_list` 可见窗口读取，继续组合当前过滤、搜索和排序，点击泳道可选中记录。月导航与 Calendar 共用当前月份状态。
 - 隔离 Release smoke 使用临时库内的日期样本（含 9 月开始、10 月结束的跨月任务），从 Calendar 切换到 Timeline 并断言月份筛选结果恰为 3 条，从而验证跨月区间被纳入，然后恢复看板；完整 MCP、速记、托盘、窗口状态和千块虚拟滚动也通过。`cargo test -j 8`（67 项）与 Release 构建通过。起止日期菜单真人点选、两台实体设备同步尚未做桌面验收；Form/Chart 和看板拖放未实现。隔离 smoke 在测试末尾主动退出，避免托盘隐藏策略遗留后台测试进程。
+
+## 第一百四十二轮：MCP 工具目录与隔离 smoke 生命周期
+
+- 现代 MCP 桌面 smoke 现在先走 `server/discover`，再通过 Streamable HTTP `tools/list` 断言全部 16 个工具可见，最后调用 `create_note` 并验证数据经 UI 线程进入唯一活动 Session；原有 Bearer 鉴权、stdio 子进程和 MCP 单元覆盖保持。
+- 隔离 Release smoke 关闭主窗口时现在走测试专用退出路径，触发正常保存并结束 GPUI 进程；正式运行关闭主窗口仍按托盘可用性隐藏或退出。验证：`cargo test -j 8`（67 项）、`cargo fmt --all -- --check`、`git diff --check`、Release build 与新临时库 `--smoke-test --smoke-blocks 1000` 全通过；smoke 同时覆盖速记保存/复用、托盘隐藏唤回、MCP 默认启动、16 工具目录和写入、双窗口最大化/还原以及长文档虚拟滚动。
