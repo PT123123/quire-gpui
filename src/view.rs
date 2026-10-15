@@ -11719,6 +11719,7 @@ impl Workspace {
                             )
                     })
                     .collect::<Vec<_>>();
+                let is_empty = lines.is_empty();
                 div()
                     .flex_1()
                     .min_w_0()
@@ -11731,6 +11732,25 @@ impl Workspace {
                     .border_1()
                     .border_color(Palette::color(&p.border))
                     .children(lines)
+                    .when(is_empty, |column| {
+                        column.child(
+                            div()
+                                .id(SharedString::from(format!("columns-fill-{}", column_id.0)))
+                                .flex_1()
+                                .min_h(px(42.))
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .cursor_pointer()
+                                .text_size(px(11.))
+                                .text_color(muted)
+                                .hover(|button| button.text_color(accent))
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    this.add_column_block(column_id, window, cx)
+                                }))
+                                .child("空列 · 点击添加段落"),
+                        )
+                    })
                     .child(
                         div()
                             .id(SharedString::from(format!(

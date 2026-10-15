@@ -1221,3 +1221,8 @@
 
 - 补齐旧版 F048：页面没有内容块时显示居中空状态；点击正文区域会创建首个段落并聚焦，标题按 Enter 也会进入正文。锁定的空页面不会创建块，而会明确提示解锁。此前 GPUI 页面打开时通常自动种一个段落，因此该分支主要覆盖无块状态和特殊导入页面。
 - F048 标记为已实现/未验证。`cargo test --locked`（94 项：46 库 + 46 二进制 + 1 stdio + 1 sync loopback）、`cargo check --locked`、Release 构建、格式和 diff 检查全通过。隔离临时 SQLite 的 Release GUI smoke 退出码 0，覆盖速记、托盘、MCP、最大化/还原和 1000 块长文虚拟滚动；该 smoke 没有触发空白页面分支，真人点击尚未验收。没有访问真实用户库或修改 Slint/core。
+
+## 第一百九十八轮：分栏空列点击与矩阵回填
+
+- GPUI 空列之前只能点小型“＋ 添加内容”按钮；现在空列本身显示“空列 · 点击添加段落”入口，创建后自动聚焦新块。同步回填 F068/F069/F070：加列上限三列、删除最右侧列并由 core 把内容并入相邻列、空列点击填入段落；均保留未真人验收状态。
+- `cargo test --locked`（94 项：46 库 + 46 二进制 + 1 stdio + 1 sync loopback）、`cargo check --locked`、Release 构建、格式与 diff 检查全部通过。唯一临时 SQLite 的 Release GUI smoke 退出码 0，涵盖速记、托盘、MCP、最大化/还原及 1000 块虚拟滚动；没有访问真实用户库或修改 Slint/core。
