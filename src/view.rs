@@ -2136,6 +2136,21 @@ impl Workspace {
                     this.navigate_page_history(false, window, cx);
                     assert_eq!(this.session.page.id, original_page);
                     eprintln!("SMOKE: page history back/forward and branch reset passed");
+                    crate::platform::set_main_window_maximized(window, true);
+                });
+                cx.background_executor()
+                    .timer(Duration::from_millis(150))
+                    .await;
+                let _ = weak.update_in(cx, |_, window, _| {
+                    assert!(window.is_maximized(), "native maximize control must maximize the main window");
+                    crate::platform::set_main_window_maximized(window, false);
+                });
+                cx.background_executor()
+                    .timer(Duration::from_millis(150))
+                    .await;
+                let _ = weak.update_in(cx, |_, window, _| {
+                    assert!(!window.is_maximized(), "native restore control must return to windowed mode");
+                    eprintln!("SMOKE: maximize and windowed restore passed");
                 });
                 cx.background_executor()
                     .timer(Duration::from_millis(150))

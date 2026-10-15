@@ -120,6 +120,31 @@ pub fn set_main_window_visible(window: &gpui::Window, visible: bool) {
     let _ = (window, visible);
 }
 
+/// Drive the native maximize/restore state, primarily for the isolated desktop smoke path.
+pub fn set_main_window_maximized(window: &gpui::Window, maximized: bool) {
+    #[cfg(windows)]
+    {
+        use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+        if let Ok(handle) = HasWindowHandle::window_handle(window)
+            && let RawWindowHandle::Win32(handle) = handle.as_raw()
+        {
+            const SW_RESTORE: i32 = 9;
+            const SW_MAXIMIZE: i32 = 3;
+            unsafe extern "system" {
+                fn ShowWindow(hwnd: isize, command: i32) -> i32;
+            }
+            unsafe {
+                ShowWindow(
+                    handle.hwnd.get(),
+                    if maximized { SW_MAXIMIZE } else { SW_RESTORE },
+                );
+            }
+        }
+    }
+    #[cfg(not(windows))]
+    let _ = (window, maximized);
+}
+
 pub fn main_window_visible(window: &gpui::Window) -> bool {
     #[cfg(windows)]
     {
