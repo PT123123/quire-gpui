@@ -1121,3 +1121,9 @@
 - 修复 `create_task` 对负数 `list_id` 的错误回退：此前 `as_u64` 失败后会静默使用收集箱，可能把请求写入错误清单。现在显式参数必须是非负整数且对应现存清单，缺省仍使用收集箱；工具 schema 增加 `minimum: 0`。`list_id` 类型或数值无效时在任何写入前返回错误。
 - 隔离回归覆盖负数、错误类型拒绝且任务数不变，以及缺省收集箱行为。未访问真实用户库，未改 Slint/core/冻结参考树。
 - 验证：定向 `cargo test --locked` create_task_rejects_invalid_explicit_list_id_without_falling_back_to_inbox 通过；`cargo fmt --all -- --check`、全量 `cargo test --locked`（84 项：41 库 + 41 二进制 + 1 stdio + 1 sync loopback）、`cargo check --locked`、`cargo build --release --locked` 与 `git diff --check` 均通过。
+
+## 第一百七十九轮：整理区任务批量移动
+
+- GPUI 整理区原先只能在单任务详情中更改清单，多选工具栏没有批量移动入口。新增“移至清单”操作，可把选中的可见任务按当前列表顺序移到收集箱或任意现存清单；采用 core UpdateTask 命令批次作为一个 organizer undo 项，重开后持久化。
+- Session 隔离测试覆盖重复 ID 去重、多项目标清单更新、单步撤销/重做及 SQLite 重开读回。隔离 Release GUI smoke 通过 Workspace 多选处理器验证两项批量移动及撤销/重做。未访问真实用户库，未改 Slint/core/冻结参考树。
+- 验证：`cargo fmt --all -- --check`、`cargo test --locked`（85 项：42 库 + 41 二进制 + 1 stdio + 1 sync loopback）、`cargo check --locked`、`cargo build --release --locked`、`git diff --check` 均通过。全新 `%TEMP%` 隔离 SQLite 的 Release GUI smoke（1000 块）实际启动窗口，并通过任务多选批量移动/单步撤销重做，以及既有速记、托盘、MCP、窗口最大化还原和虚拟滚动路径。

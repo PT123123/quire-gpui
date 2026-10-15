@@ -1720,6 +1720,7 @@ pub struct Workspace {
     note_multi_select: bool,
     selected_note_ids: HashSet<quire_core::core::organizer::NoteId>,
     task_multi_select: bool,
+    task_bulk_move_open: bool,
     selected_note: Option<quire_core::core::organizer::NoteId>,
     selected_task: Option<quire_core::core::organizer::TaskId>,
     selected_task_ids: HashSet<quire_core::core::organizer::TaskId>,
@@ -2118,6 +2119,7 @@ impl Workspace {
             note_multi_select: false,
             selected_note_ids: HashSet::new(),
             task_multi_select: false,
+            task_bulk_move_open: false,
             selected_note: None,
             selected_task: None,
             selected_task_ids: HashSet::new(),
@@ -2814,6 +2816,24 @@ impl Workspace {
                     assert!(!this.session.organizer.task(selected_task).unwrap().done);
                     assert!(!this.task_multi_select);
                     eprintln!("SMOKE: organizer task row selection and batch completion undo passed");
+
+                    let move_target = this.session.create_task_list("批量移动目标".into());
+                    let move_a = this.session.create_task("批量移动 A".into());
+                    let move_b = this.session.create_task("批量移动 B".into());
+                    this.selected_task_ids.extend([move_a, move_b]);
+                    this.task_multi_select = true;
+                    this.task_bulk_move_open = true;
+                    this.bulk_move_tasks(&[move_a, move_b], move_target, window, cx);
+                    assert_eq!(this.session.organizer.task(move_a).unwrap().list, move_target);
+                    assert_eq!(this.session.organizer.task(move_b).unwrap().list, move_target);
+                    assert!(!this.task_bulk_move_open);
+                    assert!(this.session.undo_organizer());
+                    assert_eq!(
+                        this.session.organizer.task(move_a).unwrap().list,
+                        quire_core::core::organizer::ListId::INBOX
+                    );
+                    assert!(this.session.redo_organizer());
+                    eprintln!("SMOKE: organizer task multi-select move and single-step undo/redo passed");
 
                     this.organizer_trash = true;
                     this.organizer_tasks = false;
@@ -7163,6 +7183,7 @@ impl Workspace {
     fn toggle_task_multi_select_mode(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.commit_note_draft(window, cx);
         self.task_multi_select = !self.task_multi_select;
+        self.task_bulk_move_open = false;
         self.selected_task_ids.clear();
         if self.task_multi_select {
             self.selected_task = None;
@@ -7221,6 +7242,28 @@ impl Workspace {
             self.schedule_save(true, window, cx);
             cx.notify();
         }
+    }
+    fn bulk_move_tasks(
+        &mut self,
+        visible: &[quire_core::core::organizer::TaskId],
+        list: quire_core::core::organizer::ListId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let ids = visible
+            .iter()
+            .copied()
+            .filter(|id| self.selected_task_ids.contains(id))
+            .collect::<Vec<_>>();
+        if self.session.set_tasks_list(&ids, list) {
+            self.selected_task_ids.clear();
+            self.task_multi_select = false;
+            self.task_bulk_move_open = false;
+            self.status = format!("已移动 {} 项任务（Ctrl+Z 可撤销）", ids.len());
+            self.error = false;
+            self.schedule_save(true, window, cx);
+        }
+        cx.notify();
     }
     fn bulk_trash_tasks(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let ids = self.selected_task_ids.iter().copied().collect::<Vec<_>>();
@@ -17467,7 +17510,7 @@ impl Render for Workspace {
                             let copy_ids = visible_task_ids.clone();
                             let all_selected = !all_ids.is_empty()
                                 && all_ids.iter().all(|id| self.selected_task_ids.contains(id));
-                            list.child(
+                            let list = list.child(
                                 div()
                                     .flex()
                                     .gap(px(5.))
@@ -17520,7 +17563,82 @@ impl Render for Workspace {
                                             }))
                                             .child("移入回收站"),
                                     ),
+                            );
+                            let targets = std::iter::once((
+                                quire_core::core::organizer::ListId::INBOX,
+                                "收集箱".to_owned(),
+                            ))
+                            .chain(
+                                self.session
+                                    .organizer
+                                    .lists
+                                    .iter()
+                                    .map(|list| (list.id, list.name.clone())),
                             )
+                            .collect::<Vec<_>>();
+                            let list = list.child(
+                                div()
+                                    .id("organizer-task-bulk-move-toggle")
+                                    .w_full()
+                                    .px(px(7.))
+                                    .py(px(5.))
+                                    .rounded(px(4.))
+                                    .cursor_pointer()
+                                    .text_size(px(10.))
+                                    .text_color(accent)
+                                    .hover(|button| button.bg(Palette::color(&p.elevated)))
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.task_bulk_move_open = !this.task_bulk_move_open;
+                                        cx.notify();
+                                    }))
+                                    .child(if self.task_bulk_move_open {
+                                        "取消移动"
+                                    } else {
+                                        "移至清单…"
+                                    }),
+                            );
+                            if self.task_bulk_move_open {
+                                list.child(
+                                    div()
+                                        .id("organizer-task-bulk-move-targets")
+                                        .w_full()
+                                        .flex()
+                                        .flex_wrap()
+                                        .gap(px(4.))
+                                        .children(targets.into_iter().map(|(target, label)| {
+                                            let move_ids = visible_task_ids.clone();
+                                            div()
+                                                .id(SharedString::from(format!(
+                                                    "organizer-task-bulk-move-target-{}",
+                                                    target.0
+                                                )))
+                                                .px(px(7.))
+                                                .py(px(4.))
+                                                .rounded(px(4.))
+                                                .cursor_pointer()
+                                                .text_size(px(10.))
+                                                .text_color(if target == self.selected_task_list {
+                                                    muted
+                                                } else {
+                                                    text
+                                                })
+                                                .hover(|button| {
+                                                    button.bg(Palette::color(&p.elevated))
+                                                })
+                                                .on_click(cx.listener(move |this, _, window, cx| {
+                                                    this.bulk_move_tasks(
+                                                        &move_ids,
+                                                        target,
+                                                        window,
+                                                        cx,
+                                                    )
+                                                }))
+                                                .child(label)
+                                        })),
+                                )
+                            } else {
+                                list
+                            }
                         })
                     })
                                 .when_some(

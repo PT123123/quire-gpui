@@ -4458,6 +4458,42 @@ impl Session {
             .collect::<Vec<_>>();
         self.apply_organizer_batch(commands)
     }
+    pub fn set_tasks_list(&mut self, ids: &[TaskId], list: ListId) -> bool {
+        if list != ListId::INBOX && self.organizer.list(list).is_none() {
+            return false;
+        }
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default();
+        let millis = now.as_millis().min(i64::MAX as u128) as i64;
+        let seconds = now.as_secs().min(i64::MAX as u64) as i64;
+        let mut previous = self.organizer.tasks_in(list).map(|task| task.ord).max();
+        let mut seen = std::collections::HashSet::new();
+        let commands = ids
+            .iter()
+            .filter(|id| seen.insert(**id))
+            .filter_map(|id| {
+                let before = self.organizer.task(*id)?.clone();
+                if before.is_trashed() || before.list == list {
+                    return None;
+                }
+                let mut after = before.clone();
+                after.list = list;
+                after.edited = seconds;
+                after.rev = organizer::rev(millis, "quire-gpui");
+                after.ord = OrderKey::between(previous, None).unwrap_or(OrderKey(
+                    previous.unwrap_or(OrderKey::FIRST).0.saturating_add(1),
+                ));
+                previous = Some(after.ord);
+                Some(Command::UpdateTask {
+                    id: *id,
+                    before,
+                    after,
+                })
+            })
+            .collect::<Vec<_>>();
+        self.apply_organizer_batch(commands)
+    }
     pub fn set_tasks_trashed(&mut self, ids: &[TaskId], trashed: bool) -> bool {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -7316,6 +7352,31 @@ mod tests {
             reopened.organizer.list(list_id).unwrap().color,
             ColorKind::Blue
         );
+        Ok(())
+    }
+
+    #[test]
+    fn bulk_task_move_is_atomic_undoable_and_persistent() -> Result<()> {
+        let scratch = quire_core::testing::ScratchDir::new("gpui-organizer-bulk-move");
+        let path = scratch.path().join("test.db");
+        let (first, second, destination);
+        {
+            let mut session = Session::open(&path)?;
+            first = session.create_task("第一项".into());
+            second = session.create_task("第二项".into());
+            destination = session.create_task_list("工作".into());
+            assert!(session.set_tasks_list(&[first, second, first], destination));
+            assert_eq!(session.organizer.task(first).unwrap().list, destination);
+            assert_eq!(session.organizer.task(second).unwrap().list, destination);
+            assert!(session.undo_organizer());
+            assert_eq!(session.organizer.task(first).unwrap().list, ListId::INBOX);
+            assert_eq!(session.organizer.task(second).unwrap().list, ListId::INBOX);
+            assert!(session.redo_organizer());
+            session.persistence.force_flush()?;
+        }
+        let reopened = Session::open(&path)?;
+        assert_eq!(reopened.organizer.task(first).unwrap().list, destination);
+        assert_eq!(reopened.organizer.task(second).unwrap().list, destination);
         Ok(())
     }
 
