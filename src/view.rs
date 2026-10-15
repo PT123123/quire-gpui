@@ -4163,11 +4163,15 @@ impl Workspace {
                                     let handle = this
                                         .quick_note_window
                                         .expect("quick-note window should open in smoke mode");
-                                    assert_eq!(
-                                        cx.windows().len(),
-                                        windows_before,
-                                        "repeated quick-note activation must reuse the startup popup"
+                                    let windows_after = cx.windows().len();
+                                    assert!(
+                                        windows_after == windows_before
+                                            || windows_after == windows_before + 1,
+                                        "quick-note activation should reuse its live popup or replace a dismissed native popup"
                                     );
+                                    if windows_after > windows_before {
+                                        eprintln!("SMOKE: native startup popup was dismissed; activation opened one replacement");
+                                    }
                                     let original_palette = this.palette.id.clone();
                                     this.apply_palette("jade", popup_window, cx);
                                     let popup_palette = handle

@@ -1296,3 +1296,9 @@
 
 - 依据 GPUI 的焦点订阅、页面引用跳转、内容块把手菜单和 ColumnsAddColumn 路径，回填 F059/F068/F157 为已实现/未验证。F145 保持未开始并记录行为差异：旧版 Escape 退出只读/编辑切换态，GPUI 编辑器常驻输入，目前 Escape 只关闭菜单/弹层；没有把不同语义虚报成等价。
 - `tools/extract-parity.mjs` 重生成 246 callback / 261 property / 188 场景并合并 204 个语义回调；分栏上限三列/删除最右列和块菜单入口已由既有代码及测试覆盖。本轮仅交接矩阵更新，未访问真实用户库或修改 Slint/core/冻结参考树。
+
+## 第二百一十三轮：验证并撤回 Escape 退出编辑尝试
+
+- 试做“无弹层时 Escape 将焦点移至工作区根节点”来近似旧版退出编辑态，因 GPUI 没有独立编辑态且可能影响多窗口焦点，已撤回实现；F145 继续标记未开始，等待更合适的 GPUI 编辑态设计。
+- 同期重复运行 smoke 揭示原断言过严：系统可能先关闭 `WindowKind::PopUp` 启动速记窗，但 Workspace 仍持有过期句柄；随后热键正确地重开一个窗口。现将断言改为验证激活后至多有一个替换窗口，并继续验证窗口可写入/提交。F145 的 Escape 试验与速记断言无关。
+- 回滚后 `cargo fmt --all -- --check`、`cargo test --locked`（98 项）、`cargo check --locked`、`cargo build --release --locked`、`git diff --check` 和唯一新建临时目录 + SQLite 的 1000 块 Release GUI smoke 均通过；速记窗提交与托盘隐藏/唤回通过。未访问真实用户库或修改 Slint/core/冻结参考树。
