@@ -3,6 +3,7 @@ use gpui::{AnimationExt, prelude::*, *};
 use quire_core::core::{
     command::Command,
     database::ViewId,
+    organizer::NoteId,
     organizer::{OrganizerCatalog, Priority, Repeat, Task as OrganizerTask},
     types::{Block, BlockId, BlockKind, ColorKind, Lang, Mark, MarkKind},
 };
@@ -2461,7 +2462,8 @@ impl Workspace {
                         });
                         let _ = weak.update_in(cx, |this, window, cx| {
                     let note_text = "速记冒烟回归 #gpui-smoke";
-                    if !this.save_quick_note(note_text.to_owned(), cx) {
+                    let mut pending_note = None;
+                    if !this.save_quick_note(note_text.to_owned(), &mut pending_note, cx) {
                         panic!("quick note smoke save failed");
                     }
                     let saved_note = this
@@ -2473,6 +2475,16 @@ impl Workspace {
                     if saved_note.tags != ["gpui-smoke"] {
                         panic!("quick note tag extraction mismatch: {:?}", saved_note.tags);
                     }
+                    let note_count = this.session.organizer.live_notes().count();
+                    let mut retry_pending = Some(saved_note.id);
+                    if !this.save_quick_note(note_text.to_owned(), &mut retry_pending, cx) {
+                        panic!("quick note retry with its pending id failed");
+                    }
+                    assert_eq!(
+                        this.session.organizer.live_notes().count(),
+                        note_count,
+                        "retrying a pending quick-note save must not create a duplicate"
+                    );
                     let last_block = this
                         .session
                         .blocks()
@@ -7968,13 +7980,25 @@ impl Workspace {
         self.schedule_save(true, window, cx);
         crate::platform::set_main_window_visible(window, false);
     }
-    fn save_quick_note(&mut self, text: String, cx: &mut Context<Self>) -> bool {
+    fn save_quick_note(
+        &mut self,
+        text: String,
+        pending_note: &mut Option<NoteId>,
+        cx: &mut Context<Self>,
+    ) -> bool {
         let text = text.trim();
         if text.is_empty() {
             return false;
         }
         let tags = capture_tags(text);
-        let id = self.session.create_note();
+        let id = match *pending_note {
+            Some(id) => id,
+            None => {
+                let id = self.session.create_note();
+                *pending_note = Some(id);
+                id
+            }
+        };
         self.session
             .update_note_editor(id, String::new(), text.to_owned(), tags);
         let flush_lock = self.flush_lock.clone();
@@ -7987,6 +8011,7 @@ impl Workspace {
         } else {
             self.status = "速记已保存".into();
             self.error = false;
+            *pending_note = None;
         }
         cx.notify();
         true
@@ -15806,6 +15831,7 @@ struct QuickNoteWindow {
     owner: Entity<Workspace>,
     input: Entity<TextInput>,
     draft: String,
+    pending_note: Option<NoteId>,
     suggestions: Vec<String>,
     selected_suggestion: usize,
     suggestions_hidden: bool,
@@ -15832,6 +15858,7 @@ impl QuickNoteWindow {
             owner,
             input: input.clone(),
             draft,
+            pending_note: None,
             suggestions,
             selected_suggestion: 0,
             suggestions_hidden: false,
@@ -15937,9 +15964,11 @@ impl QuickNoteWindow {
             return;
         }
         let text = self.draft.clone();
-        let saved = self
-            .owner
-            .update(cx, |workspace, cx| workspace.save_quick_note(text, cx));
+        let mut pending_note = self.pending_note;
+        let saved = self.owner.update(cx, |workspace, cx| {
+            workspace.save_quick_note(text, &mut pending_note, cx)
+        });
+        self.pending_note = pending_note;
         if saved {
             window.remove_window();
         }
