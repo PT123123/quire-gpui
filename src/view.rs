@@ -846,6 +846,15 @@ fn sync_peer_is_recent(last_seen: u64, now: u64) -> bool {
     now.saturating_sub(last_seen) <= 60
 }
 
+fn slash_query(text: &str, insert_mode: bool) -> String {
+    let query = if insert_mode {
+        text
+    } else {
+        text.strip_prefix('/').unwrap_or("")
+    };
+    query.to_lowercase()
+}
+
 #[cfg(test)]
 mod view_tests {
     use super::{
@@ -854,8 +863,8 @@ mod view_tests {
         evaluate_database_formula, evaluate_database_rollup, find_matches_in, link_target_range,
         order_database_groups, organizer_tag_matches_path, organizer_tag_tree_rows,
         organizer_tags_exclude, palette_matches, parse_mcp_port, parse_organizer_tags,
-        push_history, sync_peer_is_recent, sync_targets, system_palette_id_for_appearance,
-        toc_headings,
+        push_history, slash_query, sync_peer_is_recent, sync_targets,
+        system_palette_id_for_appearance, toc_headings,
     };
     use gpui::WindowAppearance;
     use quire_core::core::database::PropertyKind;
@@ -991,6 +1000,14 @@ mod view_tests {
         );
         assert!(sync_peer_is_recent(now - 60, now));
         assert!(!sync_peer_is_recent(now - 61, now));
+    }
+
+    #[test]
+    fn slash_insert_menu_filters_the_whole_line_while_conversion_ignores_the_prefix() {
+        assert_eq!(slash_query("/标题", false), "标题");
+        assert_eq!(slash_query("标题", true), "标题");
+        assert_eq!(slash_query("/标题", true), "/标题");
+        assert_eq!(slash_query("Heading", true), "heading");
     }
 
     #[test]
@@ -1620,6 +1637,7 @@ pub struct Workspace {
     confirm_delete_page: Option<quire_core::core::types::PageId>,
     slash_menu: Option<BlockId>,
     slash_selection: usize,
+    slash_insert_mode: Option<BlockId>,
     mention_menu: Option<(BlockId, usize, String)>,
     mention_selection: usize,
     organizer_open: bool,
@@ -2016,6 +2034,7 @@ impl Workspace {
             confirm_delete_page: None,
             slash_menu: None,
             slash_selection: 0,
+            slash_insert_mode: None,
             mention_menu: None,
             mention_selection: 0,
             organizer_open: false,
@@ -2794,6 +2813,50 @@ impl Workspace {
                     this.sync_inputs(window, cx);
                     assert_eq!(this.session.blocks().len(), original_block_count);
                     eprintln!("SMOKE: template palette insertion and one-step undo/redo passed");
+                    let original_block_count = this.session.blocks().len();
+                    let anchor = this.session.blocks()[0].id;
+                    this.insert_block_after_and_open_menu(anchor, window, cx);
+                    let inserted = this
+                        .slash_menu
+                        .expect("block plus should open the insertion menu");
+                    assert_eq!(this.slash_insert_mode, Some(inserted));
+                    assert_eq!(this.session.blocks().len(), original_block_count + 1);
+                    this.input_event(
+                        inserted,
+                        &InputEvent::Edited {
+                            text: "h2".into(),
+                            boundary: false,
+                        },
+                        window,
+                        cx,
+                    );
+                    let matches = slash_items()
+                        .iter()
+                        .filter(|(label, keywords, _)| {
+                            let query = slash_query(
+                                &this.session.document.block(inserted).unwrap().text,
+                                true,
+                            );
+                            label.to_lowercase().contains(&query) || keywords.contains(&query)
+                        })
+                        .collect::<Vec<_>>();
+                    assert_eq!(matches.len(), 1);
+                    this.input_event(
+                        inserted,
+                        &InputEvent::Split(2),
+                        window,
+                        cx,
+                    );
+                    assert_eq!(
+                        this.session.document.block(inserted).unwrap().kind,
+                        BlockKind::Heading2
+                    );
+                    assert_eq!(this.slash_insert_mode, None);
+                    this.session.undo();
+                    this.session.undo();
+                    this.sync_inputs(window, cx);
+                    assert_eq!(this.session.blocks().len(), original_block_count);
+                    eprintln!("SMOKE: block plus insertion menu filtering, selection and undo passed");
                     let original_page = this.session.page.id;
                     this.add_page(window, cx);
                     let created_page = this.session.page.id;
@@ -3553,16 +3616,20 @@ impl Workspace {
         }
         match event {
             InputEvent::Edited { text, boundary } => {
-                let shortcut = match text.as_str() {
-                    "# " => Some(BlockKind::Heading1),
-                    "## " => Some(BlockKind::Heading2),
-                    "### " => Some(BlockKind::Heading3),
-                    "- " | "* " => Some(BlockKind::Bullet),
-                    "1. " => Some(BlockKind::Numbered),
-                    "[] " => Some(BlockKind::Todo),
-                    "> " => Some(BlockKind::Quote),
-                    "``` " => Some(BlockKind::Code),
-                    _ => None,
+                let shortcut = if self.slash_insert_mode == Some(id) {
+                    None
+                } else {
+                    match text.as_str() {
+                        "# " => Some(BlockKind::Heading1),
+                        "## " => Some(BlockKind::Heading2),
+                        "### " => Some(BlockKind::Heading3),
+                        "- " | "* " => Some(BlockKind::Bullet),
+                        "1. " => Some(BlockKind::Numbered),
+                        "[] " => Some(BlockKind::Todo),
+                        "> " => Some(BlockKind::Quote),
+                        "``` " => Some(BlockKind::Code),
+                        _ => None,
+                    }
                 };
                 self.active = Some(id);
                 if let Some(kind) = shortcut {
@@ -3574,10 +3641,15 @@ impl Workspace {
                     self.session.replace(id, text.clone(), *boundary);
                     self.invalidate_document_block(id);
                 }
-                self.slash_menu = (text.starts_with('/')
-                    && !text[1..].chars().any(char::is_whitespace))
-                .then_some(id);
-                self.slash_selection = 0;
+                if self.slash_insert_mode == Some(id) {
+                    self.slash_menu = Some(id);
+                    self.slash_selection = 0;
+                } else {
+                    self.slash_menu = (text.starts_with('/')
+                        && !text[1..].chars().any(char::is_whitespace))
+                    .then_some(id);
+                    self.slash_selection = 0;
+                }
                 self.mention_menu = self.inputs.get(&id.0).and_then(|input| {
                     let input = input.read(cx);
                     let caret = input.buffer.caret();
@@ -3633,9 +3705,8 @@ impl Workspace {
                         .session
                         .document
                         .block(id)
-                        .and_then(|block| block.text.strip_prefix('/'))
-                        .unwrap_or("")
-                        .to_lowercase();
+                        .map(|block| slash_query(&block.text, self.slash_insert_mode == Some(id)))
+                        .unwrap_or_default();
                     let matches = slash_items()
                         .iter()
                         .filter(|(label, keywords, _)| {
@@ -3706,9 +3777,8 @@ impl Workspace {
                         .session
                         .document
                         .block(id)
-                        .and_then(|block| block.text.strip_prefix('/'))
-                        .unwrap_or("")
-                        .to_lowercase();
+                        .map(|block| slash_query(&block.text, self.slash_insert_mode == Some(id)))
+                        .unwrap_or_default();
                     let count = slash_items()
                         .iter()
                         .filter(|(label, keywords, _)| {
@@ -3774,6 +3844,10 @@ impl Workspace {
             InputEvent::Focused => {
                 self.session.end_typing();
                 self.set_active_block(id, cx);
+                if self.slash_menu.is_some_and(|menu_id| menu_id != id) {
+                    self.slash_menu = None;
+                    self.slash_insert_mode = None;
+                }
                 if self
                     .database_filter_open
                     .is_some_and(|(filter_block, _)| filter_block != id.0)
@@ -3855,6 +3929,7 @@ impl Workspace {
                     self.close_find(window, cx);
                 }
                 let slash_closed = self.slash_menu.take().is_some();
+                self.slash_insert_mode = None;
                 let mention_closed = self.mention_menu.take().is_some();
                 if block_menu_closed
                     || filter_menu_closed
@@ -4387,6 +4462,7 @@ impl Workspace {
             return;
         }
         self.slash_menu = None;
+        self.slash_insert_mode = None;
         if kind == BlockKind::Database {
             self.session.replace(id, String::new(), false);
             self.session.make_database(id, "新数据库".into());
@@ -4396,6 +4472,45 @@ impl Workspace {
         self.sync_inputs(window, cx);
         self.active = Some(self.first_child_editor(id, kind).unwrap_or(id));
         self.restore_focus(window, cx);
+        self.schedule_save(false, window, cx);
+    }
+    fn insert_block_after_and_open_menu(
+        &mut self,
+        id: BlockId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.composing(cx) || self.session.page.locked {
+            return;
+        }
+        let existing = self
+            .session
+            .blocks()
+            .iter()
+            .map(|block| block.id)
+            .collect::<HashSet<_>>();
+        self.session.execute(Command::InsertBlockAfter {
+            id,
+            kind: BlockKind::Paragraph,
+            text: String::new(),
+        });
+        let Some(inserted) = self
+            .session
+            .blocks()
+            .iter()
+            .find(|block| !existing.contains(&block.id))
+            .map(|block| block.id)
+        else {
+            return;
+        };
+        self.invalidate_document_block(id);
+        self.slash_menu = Some(inserted);
+        self.slash_insert_mode = Some(inserted);
+        self.slash_selection = 0;
+        self.mention_menu = None;
+        self.active = Some(inserted);
+        self.sync_inputs(window, cx);
+        self.focus(inserted, 0, window, cx);
         self.schedule_save(false, window, cx);
     }
     fn mention_matches(&self) -> Vec<quire_core::core::types::Page> {
@@ -10078,7 +10193,7 @@ impl Workspace {
         } else {
             Vec::new()
         };
-        let slash_query = block.text.strip_prefix('/').unwrap_or("").to_lowercase();
+        let slash_query = slash_query(&block.text, self.slash_insert_mode == Some(block_id));
         let slash_options = if self.slash_menu == Some(block_id) {
             slash_items()
                 .iter()
@@ -14026,6 +14141,24 @@ impl Workspace {
                                 .flex()
                                 .items_center()
                                 .gap(px(2.))
+                                .when(!self.session.page.locked, |actions| {
+                                    actions.child(
+                                        div()
+                                            .id(SharedString::from(format!(
+                                                "insert-block-after-{block_id:?}"
+                                            )))
+                                            .px(px(3.))
+                                            .cursor_pointer()
+                                            .text_color(muted)
+                                            .hover(|button| button.text_color(accent))
+                                            .on_click(cx.listener(move |this, _, window, cx| {
+                                                this.insert_block_after_and_open_menu(
+                                                    block_id, window, cx,
+                                                )
+                                            }))
+                                            .child("＋"),
+                                    )
+                                })
                                 .child(
                                     div()
                                         .id(SharedString::from(format!(

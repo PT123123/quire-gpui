@@ -1047,3 +1047,9 @@
 - 修复同步列表中陈旧 peer 仍可点击“同步”的问题。单设备按钮现在与全部/自动同步共用 60 秒最近广播规则，列表标记“离线”，点击时还会再检查一次以覆盖列表渲染后的设备过期竞态。补充边界测试；MCP 设置页说明更新为实际支持的页面、简单块、笔记与任务范围，并明确复杂块编辑会安全拒绝。
 - 本轮尚未覆盖：真人托盘菜单/全局热键点验，真实两机网络和防火墙路径，MCP 客户端长连接及宿主重启后的自动恢复；这些需要用户桌面与网络环境，loopback/隔离 smoke 不替代实机验收。
 - 验证：`cargo fmt --all -- --check`、`cargo test -j 8`（74 项）、`cargo check -j 8`、`cargo build --release -j 8`、`git diff --check` 通过；全新随机临时目录 SQLite 的 Release GUI smoke 通过，包含 1000 块虚拟滚动、速记提交、托盘隐藏/唤回以及 MCP 服务工具目录与 Bearer 写入。首次 smoke 指向已有 MCP 指针的临时父目录时被安全拒绝，随后改用全新目录成功。未访问默认用户库或修改 Slint/core。
+
+## 第一百六十六轮：块手柄“+”插入菜单
+
+- 块 hover 操作新增“＋”：通过 core `InsertBlockAfter` 插入空段落并打开类型菜单。插入模式用整行文本过滤，支持上下键和 Enter 选择；Escape 关闭菜单但保留段落。普通 `/` 转换仍按前缀过滤。聚焦其他块时收起菜单，已锁定页面不提供插入入口。
+- 隔离 Release GUI smoke 覆盖插入段落、输入 `h2` 过滤并以 Enter 转成 Heading2，连续两次 undo 恢复原文档块数；独立查询单测验证 slash 与插入模式的过滤差异。`PLAN.md` 和 `PARITY-SEMANTICS.csv` 已更新；手柄真实鼠标命中、菜单定位和参考视觉仍未做真人验收。
+- 验证：`cargo fmt --all -- --check`、`cargo test -j 8`（75 项）、`cargo check -j 8`、`cargo build --release -j 8`、`git diff --check` 和新建随机临时 SQLite 的 Release GUI smoke（1000 块）通过。未访问默认用户库或修改 Slint/core。
