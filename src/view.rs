@@ -2888,7 +2888,11 @@ impl Workspace {
                 }
                 InputEvent::Split(_) => {
                     this.title_edit_original = None;
-                    this.focus_first(window, cx);
+                    if this.session.blocks().is_empty() {
+                        this.start_empty_page(window, cx);
+                    } else {
+                        this.focus_first(window, cx);
+                    }
                 }
                 InputEvent::Blurred => this.title_edit_original = None,
                 _ => {}
@@ -5206,6 +5210,28 @@ impl Workspace {
             }
         }
         true
+    }
+    fn start_empty_page(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.session.page.locked {
+            self.status = "此页面已锁定 — … → 解锁页面后可编辑。".into();
+            cx.notify();
+            return;
+        }
+        if !self.session.blocks().is_empty() {
+            self.focus_first(window, cx);
+            return;
+        }
+        self.session.execute(Command::AppendBlock {
+            kind: BlockKind::Paragraph,
+            text: String::new(),
+        });
+        let Some(id) = self.session.blocks().last().map(|block| block.id) else {
+            return;
+        };
+        self.sync_inputs(window, cx);
+        self.focus(id, 0, window, cx);
+        self.status = "页面已就绪".into();
+        self.schedule_save(false, window, cx);
     }
     fn add_columns_column(&mut self, id: BlockId, window: &mut Window, cx: &mut Context<Self>) {
         if self.session.page.locked {
@@ -19921,6 +19947,7 @@ impl Render for Workspace {
             .iter()
             .map(|(_, id)| *id)
             .collect::<Vec<_>>();
+        let empty_page = document_ids.is_empty();
         self.sync_document_list_ids(&document_ids);
         let scroll_weak = cx.entity().downgrade();
         self.document_list.set_scroll_handler(move |event, _, app| {
@@ -19956,7 +19983,35 @@ impl Render for Workspace {
                     let palette = row_palette.clone();
                     return weak
                         .update(app, |this, cx| {
-                            this.render_document_header(cx, row_text, row_muted, &palette)
+                            let header = this.render_document_header(cx, row_text, row_muted, &palette);
+                            if empty_page {
+                                let click = cx.listener(|this, _, window, cx| {
+                                    this.start_empty_page(window, cx);
+                                });
+                                div()
+                                    .flex()
+                                    .flex_col()
+                                    .size_full()
+                                    .child(header)
+                                    .child(
+                                        div()
+                                            .id("empty-page-start")
+                                            .flex_1()
+                                            .min_h(px(360.))
+                                            .flex()
+                                            .flex_col()
+                                            .items_center()
+                                            .justify_center()
+                                            .gap(px(10.))
+                                            .cursor_pointer()
+                                            .on_click(click)
+                                            .child(div().text_size(px(25.)).text_color(row_text).child("此页面为空"))
+                                            .child(div().text_size(px(13.)).text_color(row_muted).child("点击这里开始写作，或在上方标题中按 Enter。")),
+                                    )
+                                    .into_any_element()
+                            } else {
+                                header
+                            }
                         })
                         .unwrap_or_else(|_| div().into_any_element());
                 }
