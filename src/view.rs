@@ -330,7 +330,8 @@ actions!(
         NavigateForward,
         ZoomIn,
         ZoomOut,
-        ZoomReset
+        ZoomReset,
+        ToggleTheme
     ]
 );
 
@@ -9920,6 +9921,19 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         self.navigate_page_history(true, window, cx);
+    }
+    fn toggle_theme_action(
+        &mut self,
+        _: &ToggleTheme,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let next = if self.palette.id == "light" {
+            "midnight"
+        } else {
+            "light"
+        };
+        self.select_theme(next, window, cx);
     }
     fn new_page_action(&mut self, _: &NewPage, window: &mut Window, cx: &mut Context<Self>) {
         self.add_page(window, cx);
@@ -20699,6 +20713,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::open_search))
             .on_action(cx.listener(Self::navigate_back_action))
             .on_action(cx.listener(Self::navigate_forward_action))
+            .on_action(cx.listener(Self::toggle_theme_action))
             .on_action(cx.listener(Self::zoom_in))
             .on_action(cx.listener(Self::zoom_out))
             .on_action(cx.listener(Self::zoom_reset))
@@ -22414,5 +22429,6 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("ctrl-=", ZoomIn, Some("Quire")),
         KeyBinding::new("ctrl--", ZoomOut, Some("Quire")),
         KeyBinding::new("ctrl-0", ZoomReset, Some("Quire")),
+        KeyBinding::new("ctrl-shift-l", ToggleTheme, Some("Quire")),
     ]);
 }

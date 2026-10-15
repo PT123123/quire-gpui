@@ -24,6 +24,8 @@ outdent-list,已实现,未验证,Shift+Tab 只对 core 允许的嵌套列表项�
 todo-toggled,已实现,未验证,待办标记由行首复选框点击；视觉仍待与旧版对照,调用 core ToggleTodoChecked 切换当前块完成状态并保存
 page-create-requested,已实现,未验证,支持侧栏根页面和子页面加号；暂无跨层级移动和模板创建,新建页面写入 core PageCreated，创建首个段落并切换到该页
 set-theme,已实现,未验证,外观页包含系统跟随与 12 套渐变主题，按 4 列卡片排列；选择后立即切换并写入独立 GPUI 设置。系统模式读取 Windows AppsUseLightTheme，其他平台回退到 midnight。,主题选择状态与实际 palette 分离保存；“跟随系统”启动/选择时按系统浅色设置选择 light 或 midnight。系统主题变化后需重启应用才会刷新。
+toggle-theme,已实现,未验证,Ctrl+Shift+L 在 light 与 midnight 之间切换；命令面板也提供同一操作,遵循旧版语义：从 light 切到 midnight，其他 palette（含 system）切到 light；切换写入 GPUI 主题设置
+window-maximized-changed,已实现,已验证,GPUI 使用原生最大化/还原窗口控制；最大化期间持续保留最近的窗口化尺寸/位置，关闭时只保存正常窗口几何,隔离 Release GUI smoke 已最大化并恢复窗口；窗口几何观察器跳过最大化/全屏 bounds，避免把屏幕尺寸当作窗口化尺寸
 table-row-added,已实现,未验证,普通表格工具区支持追加行；用户操作尚未逐项回归,调用 core TableAddRow，新增单元格并同步输入控件后保存
 table-row-removed,已实现,未验证,普通表格工具区支持删除末行；至少保留一行,调用 core TableDeleteRow，重建输入控件并保存，沿用 core 撤销
 table-column-added,已实现,未验证,普通表格工具区支持追加列；用户操作尚未逐项回归,调用 core TableAddColumn，新增单元格并同步输入控件后保存

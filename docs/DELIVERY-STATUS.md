@@ -1319,3 +1319,9 @@
 
 - 对照旧版 Dialog 的确认/取消 controller 与 GPUI 页面树内嵌确认区，将 F173/F174 校准为已实现/未验证：确认删除目标页及其所有子页，取消不改数据。GPUI 的确认区内嵌侧栏而非独立模态框，语义保留在矩阵。
 - 同时复核旧版通用菜单回调 F166：它将页面、笔记、任务、清单、模板等多类动作编码进同一 action id；GPUI 按页面树/整理区/固定入口拆成多套菜单，因此继续保留未开始，待逐类对照，避免宽泛宣称完整覆盖。生成器输出 246 callbacks / 261 properties / 188 scenes，语义 sidecar 合并 210 个回调。仅文档更新，代码验证沿用上一轮通过项。
+
+## 第二百一十七轮：主题快捷键与最大化状态回填
+
+- 补上旧版 `Ctrl+Shift+L` 浅/深主题切换快捷键；GPUI 按现有 palette 命令同一规则，从 light 切到 midnight，其余主题切到 light，并通过 `select_theme` 持久化。`Ctrl+Shift+L` 现在也出现在 GPUI key binding 表。
+- 最大化/还原已有原生窗口控件、隔离 Release GUI smoke 验证及正常窗口 bounds 观察/退出保存，回填 F030 为已实现/已验证；F024 记为已实现/未验证。
+- `cargo fmt --all -- --check`、`cargo test --locked`（98 项）、`cargo build --release --locked`、`git diff --check` 通过。生成矩阵 246 callbacks / 261 properties / 188 scenes，语义 sidecar 合并 212 个回调。快捷键真人按键仍未单独 GUI 验证，未访问真实用户库或修改 Slint/core/冻结参考树。
