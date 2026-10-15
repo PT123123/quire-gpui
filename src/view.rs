@@ -10638,7 +10638,14 @@ impl Workspace {
                                                                 if let Some(property) = _this.session.databases.properties.iter().find(|property| property.id == quire_core::core::database::PropertyId(property_id.0)) {
                                                                     let options = quire_core::core::database_property::PropertyOptions::from_config(&property.config);
                                                                     let selected = _this.session.repo.cell(quire_core::core::database::RecordId(row.record), property.id).ok().map(|value| value.display()).unwrap_or_default();
-                                                                    let mut menu = div().id(SharedString::from(format!("db-choice-menu-{}-{}", row.record, property_id.0))).absolute().top(px(33.)).left(px(0.)).min_w(px(140.)).max_h(px(220.)).overflow_y_scroll().flex_col().gap(px(2.)).p(px(5.)).rounded(px(6.)).border_1().border_color(db_border).bg(elevated).shadow_lg();
+                                                                    let mut menu = div().id(SharedString::from(format!("db-choice-menu-{}-{}", row.record, property_id.0))).on_mouse_down_out(_cx.listener(move |_, _, window, cx| {
+                                                                        cx.defer_in(window, move |this, _, cx| {
+                                                                            if this.active_database_choice == Some(cell_key) {
+                                                                                this.active_database_choice = None;
+                                                                                cx.notify();
+                                                                            }
+                                                                        });
+                                                                    })).absolute().top(px(33.)).left(px(0.)).min_w(px(140.)).max_h(px(220.)).overflow_y_scroll().flex_col().gap(px(2.)).p(px(5.)).rounded(px(6.)).border_1().border_color(db_border).bg(elevated).shadow_lg();
                                                                     menu = menu.child(div().id(SharedString::from(format!("db-choice-clear-{}-{}", row.record, property_id.0))).px(px(7.)).py(px(5.)).rounded(px(4.)).text_size(px(11.)).text_color(muted).hover(|item| item.bg(db_hover)).cursor_pointer().on_click(_cx.listener(move |this, _, window, cx| this.set_database_choice(cell_block, row.record, property_id.0, None, window, cx))).child("清除"));
                                                                     menu = menu.children(options.iter().map(|option| {
                                                                         let option_id = option.id.0.to_string();
@@ -10655,7 +10662,14 @@ impl Workspace {
                                                                         let selected_ids = match _this.session.repo.cell(quire_core::core::database::RecordId(row.record), property.id) { Ok(quire_core::core::database::CellValue::Items(ids)) => ids, _ => Vec::new() };
                                                                         let query = _this.database_relation_search_text.trim().to_owned();
                                                                         let candidates = _this.session.repo.records_named(target_db, &query, 40).unwrap_or_default();
-                                                                        let mut menu = div().id(SharedString::from(format!("db-relation-menu-{}-{}", row.record, property_id.0))).absolute().top(px(33.)).left(px(0.)).min_w(px(170.)).max_h(px(240.)).overflow_y_scroll().flex_col().gap(px(2.)).p(px(5.)).rounded(px(6.)).border_1().border_color(db_border).bg(elevated).shadow_lg();
+                                                                        let mut menu = div().id(SharedString::from(format!("db-relation-menu-{}-{}", row.record, property_id.0))).on_mouse_down_out(_cx.listener(move |_, _, window, cx| {
+                                                                            cx.defer_in(window, move |this, _, cx| {
+                                                                                if this.active_database_relation == Some(cell_key) {
+                                                                                    this.active_database_relation = None;
+                                                                                    cx.notify();
+                                                                                }
+                                                                            });
+                                                                        })).absolute().top(px(33.)).left(px(0.)).min_w(px(170.)).max_h(px(240.)).overflow_y_scroll().flex_col().gap(px(2.)).p(px(5.)).rounded(px(6.)).border_1().border_color(db_border).bg(elevated).shadow_lg();
                                                                         menu = menu.child(div().text_size(px(10.)).text_color(muted).px(px(6.)).py(px(3.)).child(format!("{} · 搜索结果最多 40 条", _this.session.databases.database(target_db).map(|db| db.name.as_str()).unwrap_or("目标数据库"))));
                                                                         menu = menu.child(div().w(px(218.)).h(px(28.)).px(px(5.)).rounded(px(4.)).border_1().border_color(db_border).child(_this.database_relation_search_input.clone()));
                                                                         menu = menu.child(div().id(SharedString::from(format!("db-relation-clear-{}-{property_id}", row.record))).px(px(7.)).py(px(5.)).rounded(px(4.)).text_size(px(11.)).text_color(muted).hover(|item| item.bg(db_hover)).cursor_pointer().on_click(_cx.listener(move |this, _, window, cx| this.clear_database_relation(cell_block, row.record, property_id.0, window, cx))).child("清除全部关联"));
@@ -10670,7 +10684,14 @@ impl Workspace {
                                                             }
                                                             if relation_open && kind == quire_core::core::database::PropertyKind::Files {
                                                                 let ids = match _this.session.repo.cell(quire_core::core::database::RecordId(row.record), quire_core::core::database::PropertyId(property_id.0)) { Ok(quire_core::core::database::CellValue::Items(ids)) => ids, _ => Vec::new() };
-                                                                let mut menu = div().id(SharedString::from(format!("db-files-menu-{}-{}", row.record, property_id.0))).absolute().top(px(33.)).left(px(0.)).min_w(px(180.)).max_h(px(240.)).overflow_y_scroll().flex_col().gap(px(2.)).p(px(5.)).rounded(px(6.)).border_1().border_color(db_border).bg(elevated).shadow_lg();
+                                                                let mut menu = div().id(SharedString::from(format!("db-files-menu-{}-{}", row.record, property_id.0))).on_mouse_down_out(_cx.listener(move |_, _, window, cx| {
+                                                                    cx.defer_in(window, move |this, _, cx| {
+                                                                        if this.active_database_relation == Some(cell_key) {
+                                                                            this.active_database_relation = None;
+                                                                            cx.notify();
+                                                                        }
+                                                                    });
+                                                                })).absolute().top(px(33.)).left(px(0.)).min_w(px(180.)).max_h(px(240.)).overflow_y_scroll().flex_col().gap(px(2.)).p(px(5.)).rounded(px(6.)).border_1().border_color(db_border).bg(elevated).shadow_lg();
                                                                 menu = menu.child(div().id(SharedString::from(format!("db-files-add-{}-{}", row.record, property_id.0))).px(px(7.)).py(px(5.)).rounded(px(4.)).text_size(px(11.)).text_color(accent).hover(|item| item.bg(db_hover)).cursor_pointer().on_click(_cx.listener(move |this, _, window, cx| this.pick_database_file(cell_block, row.record, property_id.0, window, cx))).child("＋ 添加文件…"));
                                                                 for file_id in ids.iter().filter_map(|id| id.parse::<u64>().ok()) {
                                                                     let name = database_attachments.get(&file_id).map(|attachment| attachment.name.clone()).unwrap_or_else(|| "附件不可用".into());
@@ -11861,7 +11882,15 @@ impl Workspace {
                                                                             if choice_open {
                                                                                 let options = quire_core::core::database_property::PropertyOptions::from_config(&property_config);
                                                                                 let selected = this.session.repo.cell(quire_core::core::database::RecordId(record), quire_core::core::database::PropertyId(property_id)).ok().map(|value| value.display()).unwrap_or_default();
-                                                                                let mut menu = div().id(SharedString::from(format!("db-board-choice-menu-{}-{record}-{property_id}", card_db.0))).absolute().top(px(14.)).left(px(0.)).min_w(px(132.)).max_h(px(160.)).overflow_y_scroll().flex_col().gap(px(2.)).p(px(4.)).rounded(px(5.)).border_1().border_color(db_border).bg(Palette::color(&this.palette.elevated)).shadow_lg();
+                                                                                let choice_key = (card_block.0, card_db.0, record, property_id);
+                                                                                let mut menu = div().id(SharedString::from(format!("db-board-choice-menu-{}-{record}-{property_id}", card_db.0))).on_mouse_down_out(cx.listener(move |_, _, window, cx| {
+                                                                                    cx.defer_in(window, move |this, _, cx| {
+                                                                                        if this.active_database_choice == Some(choice_key) {
+                                                                                            this.active_database_choice = None;
+                                                                                            cx.notify();
+                                                                                        }
+                                                                                    });
+                                                                                })).absolute().top(px(14.)).left(px(0.)).min_w(px(132.)).max_h(px(160.)).overflow_y_scroll().flex_col().gap(px(2.)).p(px(4.)).rounded(px(5.)).border_1().border_color(db_border).bg(Palette::color(&this.palette.elevated)).shadow_lg();
                                                                                 menu = menu.child(div().id(SharedString::from(format!("db-board-choice-clear-{}-{record}-{property_id}", card_db.0))).px(px(6.)).py(px(4.)).rounded(px(3.)).text_size(px(10.)).text_color(Palette::color(&this.palette.muted)).hover(|item| item.bg(db_hover)).cursor_pointer().on_click(cx.listener(move |this, _, window, cx| this.set_database_choice(card_block.0, record, property_id, None, window, cx))).child("清除"));
                                                                                 menu = menu.children(options.iter().map(|option| {
                                                                                     let option_id = option.id.0.to_string();
@@ -12082,6 +12111,19 @@ impl Workspace {
                                         .map(|(spec, _, _)| spec.property);
                                     let group_picker = group_open.then(|| {
                                         let mut popup = div()
+                                            .id(SharedString::from(format!(
+                                                "db-group-picker-{}-{}",
+                                                block_id.0, active_view_id.0
+                                            )))
+                                            .on_mouse_down_out(cx.listener(move |_, _, window, cx| {
+                                                cx.defer_in(window, move |this, _, cx| {
+                                                    let key = (block_id.0, active_view_id.0);
+                                                    if this.database_group_open == Some(key) {
+                                                        this.database_group_open = None;
+                                                        cx.notify();
+                                                    }
+                                                });
+                                            }))
                                             .w_full()
                                             .px(px(8.))
                                             .py(px(6.))
@@ -12162,6 +12204,18 @@ impl Workspace {
                                                 "db-filter-panel-{}-{}",
                                                 block_id.0, active_view_id.0
                                             )))
+                                            .on_mouse_down_out(cx.listener(move |_, _, window, cx| {
+                                                cx.defer_in(window, move |this, _, cx| {
+                                                    let key = (block_id.0, active_view_id.0);
+                                                    if this.database_filter_open == Some(key) {
+                                                        this.database_filter_open = None;
+                                                        this.database_filter_panel = 0;
+                                                        this.database_filter_edit_row = None;
+                                                        this.database_filter_value_active = None;
+                                                        cx.notify();
+                                                    }
+                                                });
+                                            }))
                                             .w_full()
                                             .max_h(px(360.))
                                             .overflow_y_scroll()
@@ -12349,6 +12403,20 @@ impl Workspace {
                                     });
                                     let column_picker = columns_open.then(|| {
                                         let mut picker = div()
+                                            .id(SharedString::from(format!(
+                                                "db-column-picker-{}-{}",
+                                                block_id.0, active_view_id.0
+                                            )))
+                                            .on_mouse_down_out(cx.listener(move |_, _, window, cx| {
+                                                cx.defer_in(window, move |this, _, cx| {
+                                                    let key = (block_id.0, active_view_id.0);
+                                                    if this.database_columns_open == Some(key) {
+                                                        this.database_columns_open = None;
+                                                        this.database_property_kind_open = None;
+                                                        cx.notify();
+                                                    }
+                                                });
+                                            }))
                                             .w_full()
                                             .px(px(8.))
                                             .py(px(6.))
