@@ -1251,3 +1251,8 @@
 
 - 收口 F162：页面树/收藏/最近页面菜单之外，工作区标题、笔记、任务、搜索和设置入口也提供锚定右键菜单。工作区菜单可新建页面、打开数据目录或设置；笔记/任务可进入对应区或新建条目；搜索与设置可直接打开。
 - `tools/extract-parity.mjs` 重生成 246 callback / 261 property / 188 场景矩阵，语义 sidecar 成功合并。`cargo fmt --all -- --check`、`cargo test --locked`（94 项）、`cargo check --locked`、`cargo build --release --locked` 和 `git diff --check` 均通过。唯一临时目录及 SQLite 的 Release GUI smoke 退出码 0，覆盖 1000 块滚动、速记、托盘、MCP、最大化/还原和数据库视图。真人右键点击仍待验收；没有访问真实用户库或修改 Slint/core/冻结参考树。
+
+## 第二百零四轮：回填任务清单重命名回调
+
+- 对照 GPUI 的任务清单菜单与输入事件处理，确认 F164/F165 已实现：菜单可进入行内重命名，提交修剪后的非空名称写入可撤销 core 变更；Escape/取消清除草稿且不写库；空名称会拒绝提交并提示。此前 Release smoke 已经实际调用并验证重命名及撤销/重做路径。
+- F164/F165 与人工语义 sidecar 已更新；`tools/extract-parity.mjs` 重生成 246 callback / 261 property / 188 场景矩阵并成功合并。代码未改动，复用刚通过的全量测试、Release build 和隔离 GUI smoke 结果；真人键盘验收仍未做。
