@@ -783,6 +783,12 @@ impl Session {
     pub fn blocks(&self) -> &[Block] {
         self.document.page_blocks(self.page.id)
     }
+    pub fn can_move_block_to(&self, id: BlockId, index: usize) -> bool {
+        !self.page.locked
+            && i32::try_from(index).is_ok_and(|index| {
+                command::can_move_block_to(&self.document, self.page.id, id, index)
+            })
+    }
     pub fn make_database(&mut self, block: BlockId, name: String) -> Option<DatabaseId> {
         if self.page.locked {
             return None;
@@ -7142,6 +7148,59 @@ mod tests {
                 .page_blocks(target_page)
                 .iter()
                 .any(|block| block.id == block_id && block.text == "Move me")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn block_drag_reorder_validates_landing_and_is_undoable_and_persistent() -> Result<()> {
+        let scratch = quire_core::testing::ScratchDir::new("gpui-block-drag-reorder");
+        let path = scratch.path().join("test.db");
+        let page;
+        let original_order;
+        {
+            let mut session = Session::open(&path)?;
+            page = session.page.id;
+            for text in ["拖动目标一", "拖动目标二", "拖动来源"] {
+                session.execute(Command::AppendBlock {
+                    kind: BlockKind::Paragraph,
+                    text: text.into(),
+                });
+            }
+            original_order = session
+                .blocks()
+                .iter()
+                .map(|block| block.id)
+                .collect::<Vec<_>>();
+            let dragged = *original_order.last().unwrap();
+            assert!(session.can_move_block_to(dragged, 0));
+            assert!(!session.can_move_block_to(dragged, usize::MAX));
+
+            session.execute(Command::MoveBlockTo {
+                id: dragged,
+                index: 0,
+            });
+            assert_eq!(session.blocks()[0].id, dragged);
+            session.undo();
+            assert_eq!(
+                session
+                    .blocks()
+                    .iter()
+                    .map(|block| block.id)
+                    .collect::<Vec<_>>(),
+                original_order
+            );
+            session.redo();
+            assert_eq!(session.blocks()[0].id, dragged);
+            session.persistence.force_flush()?;
+        }
+
+        let reopened = Session::open(&path)?;
+        assert_eq!(reopened.page.id, page);
+        assert_eq!(
+            reopened.blocks()[0].text,
+            "拖动来源",
+            "the final drag order must survive reopening"
         );
         Ok(())
     }

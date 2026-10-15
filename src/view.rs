@@ -44,6 +44,33 @@ struct DatabaseBoardDragPreview {
     title: String,
 }
 
+#[derive(Clone)]
+struct EditorBlockDrag {
+    block: BlockId,
+    page: quire_core::core::types::PageId,
+    title: String,
+}
+
+struct EditorBlockDragPreview {
+    title: String,
+}
+
+impl Render for EditorBlockDragPreview {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .max_w(px(300.))
+            .px(px(10.))
+            .py(px(7.))
+            .rounded(px(6.))
+            .border_1()
+            .border_color(gpui::hsla(0.42, 0.52, 0.55, 0.9))
+            .bg(gpui::hsla(0.42, 0.28, 0.16, 0.94))
+            .text_size(px(11.))
+            .text_color(gpui::white())
+            .child(self.title.clone())
+    }
+}
+
 impl Render for DatabaseBoardDragPreview {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
         div()
@@ -4289,6 +4316,30 @@ impl Workspace {
             .get(&id.0)
             .map(|input| input.read(cx).buffer.caret());
         self.session.execute(Command::MoveBlock { id, delta });
+        self.sync_inputs(window, cx);
+        if let Some(caret) = caret {
+            self.focus(id, caret, window, cx);
+        }
+        self.schedule_save(false, window, cx);
+    }
+    fn move_block_to_index(
+        &mut self,
+        id: BlockId,
+        index: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.closing || !self.session.can_move_block_to(id, index) {
+            return;
+        }
+        let caret = self
+            .inputs
+            .get(&id.0)
+            .map(|input| input.read(cx).buffer.caret());
+        self.session.execute(Command::MoveBlockTo {
+            id,
+            index: index as i32,
+        });
         self.sync_inputs(window, cx);
         if let Some(caret) = caret {
             self.focus(id, caret, window, cx);
@@ -9448,6 +9499,8 @@ impl Workspace {
                 .blocks()
                 .iter()
                 .any(|child| child.parent == Some(block_id));
+        let block_drop_page = self.session.page.id;
+        let block_drop_enabled = !self.session.page.locked && !self.closing;
         let mention_options = if let Some((_, at, _)) = self
             .mention_menu
             .clone()
@@ -9973,6 +10026,19 @@ impl Workspace {
                 });
         div()
                     .id(("block", block.id.0))
+                    .can_drop(move |value, _, _| {
+                        block_drop_enabled
+                            && value
+                                .downcast_ref::<EditorBlockDrag>()
+                                .is_some_and(|drag| drag.page == block_drop_page)
+                    })
+                    .on_drop(cx.listener(
+                        move |this, drag: &EditorBlockDrag, window, cx| {
+                            if drag.page == this.session.page.id {
+                                this.move_block_to_index(block_id, block_index, window, cx);
+                            }
+                        },
+                    ))
                     .w_full()
                     .relative()
                     .flex()
@@ -13336,6 +13402,33 @@ impl Workspace {
                                 .flex()
                                 .items_center()
                                 .gap(px(2.))
+                                .child(
+                                    div()
+                                        .id(SharedString::from(format!(
+                                            "drag-block-{block_id:?}"
+                                        )))
+                                        .px(px(2.))
+                                        .cursor_pointer()
+                                        .text_color(muted)
+                                        .hover(|handle| handle.text_color(accent))
+                                        .when(!self.session.page.locked, |handle| {
+                                            let drag = EditorBlockDrag {
+                                                block: block_id,
+                                                page: self.session.page.id,
+                                                title: if block.text.trim().is_empty() {
+                                                    kind.as_str().to_owned()
+                                                } else {
+                                                    block.text.chars().take(64).collect()
+                                                },
+                                            };
+                                            handle.on_drag(drag, |drag, _, _, cx| {
+                                                cx.new(|_| EditorBlockDragPreview {
+                                                    title: drag.title.clone(),
+                                                })
+                                            })
+                                        })
+                                        .child("⠿"),
+                                )
                                 .child(
                                     div()
                                         .id(SharedString::from(format!(
@@ -16847,7 +16940,31 @@ impl Render for Workspace {
                         .unwrap_or_else(|_| div().into_any_element());
                 }
                 if list_index > document_ids.len() {
-                    return div().h(px(128.)).into_any_element();
+                    let tail = row_weak.clone();
+                    return tail
+                        .update(app, |this, cx| {
+                            let page = this.session.page.id;
+                            let enabled = !this.session.page.locked && !this.closing;
+                            div()
+                                .id("document-drop-tail")
+                                .h(px(128.))
+                                .can_drop(move |value, _, _| {
+                                    enabled
+                                        && value
+                                            .downcast_ref::<EditorBlockDrag>()
+                                            .is_some_and(|drag| drag.page == page)
+                                })
+                                .on_drop(cx.listener(
+                                    move |this, drag: &EditorBlockDrag, window, cx| {
+                                        if drag.page == this.session.page.id {
+                                            let index = this.session.blocks().len();
+                                            this.move_block_to_index(drag.block, index, window, cx);
+                                        }
+                                    },
+                                ))
+                                .into_any_element()
+                        })
+                        .unwrap_or_else(|_| div().h(px(128.)).into_any_element());
                 }
                 let (index, id) = document_blocks[list_index - 1];
                 let weak = row_weak.clone();
