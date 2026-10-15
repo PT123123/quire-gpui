@@ -866,6 +866,19 @@ fn mention_date_matches(query: &str, today: &str) -> bool {
     query.is_empty() || "today".contains(query) || today.contains(query)
 }
 
+fn settings_matches(query: &str, keywords: &str) -> bool {
+    let query = query.trim().to_lowercase();
+    query.is_empty() || keywords.to_lowercase().contains(&query)
+}
+
+fn settings_section_visible(query: &str, selected_tab: usize, tab: usize, keywords: &str) -> bool {
+    if query.trim().is_empty() {
+        selected_tab == tab
+    } else {
+        settings_matches(query, keywords)
+    }
+}
+
 fn block_clipboard_pasteable(blocks: &[Block]) -> bool {
     blocks.iter().any(|block| {
         block.parent.is_none()
@@ -884,8 +897,9 @@ mod view_tests {
         evaluate_database_formula, evaluate_database_rollup, find_matches_in, link_target_range,
         mention_date_matches, order_database_groups, organizer_tag_matches_path,
         organizer_tag_tree_rows, organizer_tags_exclude, palette_matches, parse_mcp_port,
-        parse_organizer_tags, push_history, slash_query, sync_peer_is_recent, sync_targets,
-        system_palette_id_for_appearance, toc_headings,
+        parse_organizer_tags, push_history, settings_matches, settings_section_visible,
+        slash_query, sync_peer_is_recent, sync_targets, system_palette_id_for_appearance,
+        toc_headings,
     };
     use gpui::WindowAppearance;
     use quire_core::core::database::PropertyKind;
@@ -1038,6 +1052,18 @@ mod view_tests {
         assert!(mention_date_matches("tod", today));
         assert!(mention_date_matches("2026-10", today));
         assert!(!mention_date_matches("project", today));
+    }
+
+    #[test]
+    fn settings_search_matches_case_insensitive_substrings_across_tabs() {
+        assert!(settings_section_visible("托盘", 0, 1, "通用 托盘 快捷键"));
+        assert!(settings_matches("alt+n", "全局 Alt+N 速记"));
+        assert!(settings_matches("ctrl+f", "页面内查找 Ctrl+F find in page"));
+        assert!(!settings_matches("ctrl+f", "新建页面 Ctrl+N new page"));
+        assert!(settings_matches("", "任意设置"));
+        assert!(!settings_matches("不存在", "同步 局域网 设备"));
+        assert!(settings_section_visible("", 4, 4, "快捷键"));
+        assert!(!settings_section_visible("", 4, 1, "通用"));
     }
 
     #[test]
@@ -14667,21 +14693,22 @@ impl Render for Workspace {
                 .filter(|palette| {
                     let query = self.search_query.trim().to_lowercase();
                     query.is_empty()
+                        || settings_matches(&query, "主题 渐变 theme palette 外观")
                         || palette.id.to_lowercase().contains(&query)
                         || match palette.id.as_str() {
-                            "system" => "跟随系统".contains(&query),
-                            "midnight" => "暗夜蓝".contains(&query),
-                            "graphite" => "石墨灰".contains(&query),
-                            "violet" => "紫罗兰".contains(&query),
-                            "emerald" => "森林绿".contains(&query),
-                            "amber" => "琥珀暖".contains(&query),
-                            "ocean" => "海洋青".contains(&query),
-                            "rose" => "珊瑚红".contains(&query),
-                            "light" => "明亮".contains(&query),
-                            "jade" => "翡翠绿".contains(&query),
-                            "deepblue" => "深空蓝".contains(&query),
-                            "twilight" => "暮光紫".contains(&query),
-                            "crimson" => "荣艳红".contains(&query),
+                            "system" => "跟随系统 系统 system".contains(&query),
+                            "midnight" => "暗夜蓝 深色 midnight".contains(&query),
+                            "graphite" => "石墨灰 graphite".contains(&query),
+                            "violet" => "紫罗兰 violet".contains(&query),
+                            "emerald" => "森林绿 emerald".contains(&query),
+                            "amber" => "琥珀暖 amber".contains(&query),
+                            "ocean" => "海洋青 ocean".contains(&query),
+                            "rose" => "珊瑚红 rose".contains(&query),
+                            "light" => "明亮 浅色 light".contains(&query),
+                            "jade" => "翡翠绿 jade".contains(&query),
+                            "deepblue" => "深空蓝 deepblue".contains(&query),
+                            "twilight" => "暮光紫 twilight".contains(&query),
+                            "crimson" => "荣艳红 crimson".contains(&query),
                             _ => false,
                         }
                 })
@@ -14804,7 +14831,7 @@ impl Render for Workspace {
                                 .child(sidebar_glyph(SidebarGlyph::Search, muted, px(14.)))
                                 .child(div().flex_1().min_w_0().child(self.search_input.clone())),
                         )
-                        .child(
+                        .when(self.search_query.trim().is_empty(), |dialog| dialog.child(
                             div()
                                 .id("settings-tabs")
                                 .w_full()
@@ -14842,23 +14869,23 @@ impl Render for Workspace {
                                                 .child(tab)
                                         }),
                                 ),
-                        )
+                        ))
                         .child(div().h(px(1.)).bg(Palette::color(&p.border)))
-                        .when(self.settings_tab == 0, |dialog| dialog.child(
-                            div()
-                                .text_size(px(12.))
-                                .text_color(muted)
-                                .child("外观 · 渐变主题"),
-                        ).child(
-                            div()
-                                .id("settings-theme-grid")
-                                .w_full()
-                                .flex()
-                                .flex_wrap()
-                                .gap(px(8.))
-                                .children(theme_options),
-                        ).child(
-                            div()
+                        .when(settings_section_visible(&self.search_query, self.settings_tab, 0, "外观 主题 渐变 配色 system midnight graphite violet emerald amber ocean rose light jade deepblue twilight crimson 缩放 zoom 放大 缩小 复位"), |dialog| dialog.child(
+                            div().flex().flex_col().gap(px(10.))
+                                .when(settings_matches(&self.search_query, "外观 主题 渐变 配色 system midnight graphite violet emerald amber ocean rose light jade deepblue twilight crimson"), |panel| panel.child(
+                                    div().text_size(px(12.)).text_color(muted).child("外观 · 渐变主题"),
+                                ).child(
+                                    div()
+                                        .id("settings-theme-grid")
+                                        .w_full()
+                                        .flex()
+                                        .flex_wrap()
+                                        .gap(px(8.))
+                                        .children(theme_options),
+                                ))
+                                .when(settings_matches(&self.search_query, "缩放 zoom 放大 缩小 复位"), |panel| panel.child(
+                                    div()
                                 .w_full()
                                 .flex()
                                 .items_center()
@@ -14923,67 +14950,77 @@ impl Render for Workspace {
                                                 .child("复位"),
                                         ),
                                 ),
-                        ).child(
-                            div()
+                                ).child(
+                                    div()
                                 .text_size(px(10.))
                                 .text_color(muted)
                                 .child("整个界面一起放大或缩小 · Ctrl+= / Ctrl+- 步进，Ctrl+0 复位"),
+                                ))
                         ))
-                        .when(self.settings_tab == 1, |dialog| dialog.child(
-                            div().flex().flex_col().gap(px(14.)).child(
-                                div().text_size(px(12.)).text_color(muted).child("通用 · 当前工作区"),
-                            ).child(
-                                div().flex().justify_between().items_center()
-                                    .child("启动时自动弹出新建笔记输入框")
-                                    .child(div().id("quick-note-on-start").px(px(8.)).py(px(4.)).rounded(px(4.))
-                                        .border_1().border_color(Palette::color(&p.border)).cursor_pointer()
-                                        .text_color(if quick_note_on_start { accent } else { muted })
-                                        .on_click(cx.listener(|this, _, window, cx| this.toggle_quick_note_on_start(window, cx)))
-                                        .child(if quick_note_on_start { "● 已开启" } else { "○ 已关闭" })),
-                            ).child(
-                                div().flex().justify_between().items_center()
-                                    .child("全局 Alt+N 速记（不打开主界面）")
-                                    .child(div().id("hotkey-alt-n").px(px(8.)).py(px(4.)).rounded(px(4.))
-                                        .border_1().border_color(Palette::color(&p.border)).cursor_pointer()
-                                        .text_color(if hotkey_alt_n { accent } else { muted })
-                                        .on_click(cx.listener(|this, _, window, cx| this.toggle_global_hotkey(
-                                            crate::platform::HOTKEY_ALT_N, "gpui.hotkey.alt-n", true, "Alt+N", window, cx
-                                        )))
-                                        .child(if hotkey_alt_n { "● 已开启" } else { "○ 已关闭" })),
-                            ).child(
-                                div().flex().justify_between().items_center()
-                                    .child("全局 Alt+M 显示主界面")
-                                    .child(div().id("hotkey-alt-m").px(px(8.)).py(px(4.)).rounded(px(4.))
-                                        .border_1().border_color(Palette::color(&p.border)).cursor_pointer()
-                                        .text_color(if hotkey_alt_m { accent } else { muted })
-                                        .on_click(cx.listener(|this, _, window, cx| this.toggle_global_hotkey(
-                                            crate::platform::HOTKEY_ALT_M, "gpui.hotkey.alt-m", false, "Alt+M", window, cx
-                                        )))
-                                        .child(if hotkey_alt_m { "● 已开启" } else { "○ 已关闭" })),
-                            ).child(
-                                div().flex().justify_between().items_center()
-                                    .child("在局域网内只读共享（端口 5877，重启后生效）")
-                                    .child(div().id("lan-sharing").px(px(8.)).py(px(4.)).rounded(px(4.))
-                                        .border_1().border_color(Palette::color(&p.border)).cursor_pointer()
-                                        .text_color(if lan_share_enabled { accent } else { muted })
-                                        .on_click(cx.listener(|this, _, window, cx| this.toggle_lan_sharing(window, cx)))
-                                        .child(if lan_share_enabled { "● 已开启" } else { "○ 已关闭" })),
-                            ).child(
-                                div().text_size(px(10.)).text_color(muted).child(if lan_share_active {
-                                    "当前进程正在端口 5877 提供只读共享。"
-                                } else {
-                                    "当前进程未启动分享；更改设置或使用 --share 后重启生效。"
-                                }),
-                            ).when_some(lan_share_notice, |panel, notice| panel.child(
-                                div().text_size(px(10.)).text_color(rgb(0xd9a441)).child(notice),
-                            )).child(
-                                div().text_size(px(11.)).text_color(muted).child(hotkey_notice),
-                            ).when(!tray_available, |panel| panel.child(
-                                div().text_size(px(10.)).text_color(rgb(0xd9a441))
-                                    .child("系统托盘当前不可用；关闭窗口会保存并退出 Quire。"),
-                            )),
+                        .when(settings_section_visible(&self.search_query, self.settings_tab, 1, "通用 启动 自动弹出 新建笔记 速记 全局 Alt+N Alt+M 主界面 局域网 共享 端口 5877 托盘 startup hotkey"), |dialog| dialog.child(
+                            div().flex().flex_col().gap(px(14.))
+                                .when(settings_matches(&self.search_query, "通用 当前工作区"), |panel| panel.child(
+                                    div().text_size(px(12.)).text_color(muted).child("通用 · 当前工作区"),
+                                ))
+                                .when(settings_matches(&self.search_query, "启动 startup 自动弹出 新建笔记 速记 capture"), |panel| panel.child(
+                                    div().flex().justify_between().items_center()
+                                        .child("启动时自动弹出新建笔记输入框")
+                                        .child(div().id("quick-note-on-start").px(px(8.)).py(px(4.)).rounded(px(4.))
+                                            .border_1().border_color(Palette::color(&p.border)).cursor_pointer()
+                                            .text_color(if quick_note_on_start { accent } else { muted })
+                                            .on_click(cx.listener(|this, _, window, cx| this.toggle_quick_note_on_start(window, cx)))
+                                            .child(if quick_note_on_start { "● 已开启" } else { "○ 已关闭" })),
+                                ))
+                                .when(settings_matches(&self.search_query, "全局 alt+n 速记 快捷键 hotkey"), |panel| panel.child(
+                                    div().flex().justify_between().items_center()
+                                        .child("全局 Alt+N 速记（不打开主界面）")
+                                        .child(div().id("hotkey-alt-n").px(px(8.)).py(px(4.)).rounded(px(4.))
+                                            .border_1().border_color(Palette::color(&p.border)).cursor_pointer()
+                                            .text_color(if hotkey_alt_n { accent } else { muted })
+                                            .on_click(cx.listener(|this, _, window, cx| this.toggle_global_hotkey(
+                                                crate::platform::HOTKEY_ALT_N, "gpui.hotkey.alt-n", true, "Alt+N", window, cx
+                                            )))
+                                            .child(if hotkey_alt_n { "● 已开启" } else { "○ 已关闭" })),
+                                ))
+                                .when(settings_matches(&self.search_query, "全局 alt+m 主界面 快捷键 hotkey"), |panel| panel.child(
+                                    div().flex().justify_between().items_center()
+                                        .child("全局 Alt+M 显示主界面")
+                                        .child(div().id("hotkey-alt-m").px(px(8.)).py(px(4.)).rounded(px(4.))
+                                            .border_1().border_color(Palette::color(&p.border)).cursor_pointer()
+                                            .text_color(if hotkey_alt_m { accent } else { muted })
+                                            .on_click(cx.listener(|this, _, window, cx| this.toggle_global_hotkey(
+                                                crate::platform::HOTKEY_ALT_M, "gpui.hotkey.alt-m", false, "Alt+M", window, cx
+                                            )))
+                                            .child(if hotkey_alt_m { "● 已开启" } else { "○ 已关闭" })),
+                                ))
+                                .when(settings_matches(&self.search_query, "局域网 lan 只读 共享 端口 5877"), |panel| panel.child(
+                                    div().flex().justify_between().items_center()
+                                        .child("在局域网内只读共享（端口 5877，重启后生效）")
+                                        .child(div().id("lan-sharing").px(px(8.)).py(px(4.)).rounded(px(4.))
+                                            .border_1().border_color(Palette::color(&p.border)).cursor_pointer()
+                                            .text_color(if lan_share_enabled { accent } else { muted })
+                                            .on_click(cx.listener(|this, _, window, cx| this.toggle_lan_sharing(window, cx)))
+                                            .child(if lan_share_enabled { "● 已开启" } else { "○ 已关闭" })),
+                                ))
+                                .when(settings_matches(&self.search_query, "局域网 lan 只读 共享 端口 5877"), |panel| panel.child(
+                                    div().text_size(px(10.)).text_color(muted).child(if lan_share_active {
+                                        "当前进程正在端口 5877 提供只读共享。"
+                                    } else {
+                                        "当前进程未启动分享；更改设置或使用 --share 后重启生效。"
+                                    }),
+                                ))
+                                .when(settings_matches(&self.search_query, "局域网 lan 只读 共享 端口 5877"), |panel| panel.when_some(lan_share_notice, |panel, notice| panel.child(
+                                    div().text_size(px(10.)).text_color(rgb(0xd9a441)).child(notice),
+                                )))
+                                .when(settings_matches(&self.search_query, "快捷键 hotkey alt+n alt+m 设置失败"), |panel| panel.child(
+                                    div().text_size(px(11.)).text_color(muted).child(hotkey_notice),
+                                ))
+                                .when(settings_matches(&self.search_query, "托盘 tray 系统图标 关闭 窗口 退出"), |panel| panel.when(!tray_available, |panel| panel.child(
+                                    div().text_size(px(10.)).text_color(rgb(0xd9a441))
+                                        .child("系统托盘当前不可用；关闭窗口会保存并退出 Quire。"),
+                                ))),
                         ))
-                        .when(self.settings_tab == 2, |dialog| dialog.child(
+                        .when(settings_section_visible(&self.search_query, self.settings_tab, 2, "同步 局域网 设备 名称 广播 自动同步 间隔 立即同步 端口 5878 连接 配对 清理 日志"), |dialog| dialog.child(
                             div().flex().flex_col().gap(px(8.))
                                 .child(div().flex().items_center().justify_between()
                                     .child(div().flex().flex_col().gap(px(2.))
@@ -15129,7 +15166,7 @@ impl Render for Workspace {
                                         .child("清空")))
                                 .children(sync_logs.iter().rev().take(3).map(|line| div().text_size(px(9.)).text_color(muted).child(format!("{} · {} · {}", line.at, line.peer, line.message))))
                         ))
-                        .when(self.settings_tab == 3, |dialog| dialog.child(
+                        .when(settings_section_visible(&self.search_query, self.settings_tab, 3, "mcp ai agent 人工智能 接口 端口 5880 客户端 配置 令牌 token 日志 页面 笔记 任务"), |dialog| dialog.child(
                             div().flex().flex_col().gap(px(10.))
                                 .child(div().flex().items_center().justify_between()
                                     .child(div().flex().items_center().gap(px(10.))
@@ -15217,20 +15254,23 @@ impl Render for Workspace {
                                 }))
                                 .when(mcp_logs.is_empty(), |panel| panel.child(div().text_size(px(10.)).text_color(muted).child("尚无调用记录"))),
                         ))
-                        .when(self.settings_tab == 4, |dialog| dialog.child(
-                            div().flex().flex_col().gap(px(12.)).child(
-                                div().text_size(px(12.)).text_color(muted).child("快捷键 · 编辑器"),
-                            ).children([
-                                ("保存页面", "Ctrl+S"),
-                                ("新建页面", "Ctrl+N"),
-                                ("撤销 / 重做", "Ctrl+Z / Ctrl+Shift+Z"),
-                                ("查找页面", "Ctrl+P"),
-                                ("页面内查找", "Ctrl+F"),
-                                ("界面缩放 / 复位", "Ctrl+= / Ctrl+- / Ctrl+0"),
-                                ("新建块", "Enter"),
-                            ].into_iter().map(|(label, key)| div().flex().justify_between().items_center().border_b_1().border_color(Palette::color(&p.border)).py(px(7.)).child(label).child(div().px(px(7.)).py(px(3.)).rounded(px(4.)).bg(Palette::color(&p.bg).opacity(0.3)).text_size(px(11.)).child(key)))),
+                        .when(settings_section_visible(&self.search_query, self.settings_tab, 4, "快捷键 命令面板 搜索页面 页内查找 新建页面 侧边栏 主题 深色 浅色 撤销 重做 粗体 斜体 代码 公式 缩进 复制块 保存 放大 缩小 复位 后退 前进"), |dialog| dialog.child(
+                            div().flex().flex_col().gap(px(12.)).children(
+                                std::iter::once(div().text_size(px(12.)).text_color(muted).child("快捷键 · 编辑器"))
+                                    .chain([
+                                        ("保存页面", "Ctrl+S", "保存页面 save"),
+                                        ("新建页面", "Ctrl+N", "新建页面 new page"),
+                                        ("撤销 / 重做", "Ctrl+Z / Ctrl+Shift+Z", "撤销 重做 undo redo"),
+                                        ("查找页面", "Ctrl+P", "查找页面 搜索 search find page"),
+                                        ("页面内查找", "Ctrl+F", "页面内查找 块 查找 find in page"),
+                                        ("界面缩放 / 复位", "Ctrl+= / Ctrl+- / Ctrl+0", "界面缩放 放大 缩小 复位 zoom"),
+                                        ("新建块", "Enter", "新建块 段落 block"),
+                                    ].into_iter().filter(|(label, key, keywords)| {
+                                        settings_matches(&self.search_query, &format!("{label} {key} {keywords}"))
+                                    }).map(|(label, key, _)| div().flex().justify_between().items_center().border_b_1().border_color(Palette::color(&p.border)).py(px(7.)).child(label).child(div().px(px(7.)).py(px(3.)).rounded(px(4.)).bg(Palette::color(&p.bg).opacity(0.3)).text_size(px(11.)).child(key))))
+                            ),
                         ))
-                        .when(self.settings_tab == 5, |dialog| dialog.child(
+                        .when(settings_section_visible(&self.search_query, self.settings_tab, 5, "关于 版本 GPUI SQLite 本地 数据目录 renderer 渲染器 信息"), |dialog| dialog.child(
                             div().flex().flex_col().gap(px(12.)).child(
                                 div().text_size(px(20.)).font_weight(FontWeight::SEMIBOLD).child("Quire GPUI"),
                             ).child(

@@ -1083,3 +1083,9 @@
 - 对照冻结 Slint 旧版的 mention picker，发现 GPUI 之前只列页面、缺少首项“今天”日期。现在 `@` 菜单会按空查询、`today` 或当前 ISO 日期匹配显示日期项；选择时通过 core `InsertReference` 写入 `MarkKind::Date` 与 ISO date payload，页面项仍写入 `MarkKind::Mention`。支持鼠标与既有上下键/Enter 选择；一次撤销恢复触发文本。
 - 新增隔离 Session 回归，验证日期标记 undo/redo 与 SQLite 重开；Release GUI smoke 直接运行 Workspace picker/选择路径，断言日期文本、标记类型、payload 和原子撤销。更正了计划中已落地的 Markdown 导入导出、Relation/Rollup 与页面引用状态；不更改 Slint/core/参考树。
 - 验证：`cargo fmt --all -- --check`、`cargo test --locked`（80 项：41 库 + 37 二进制 + 1 stdio 集成 + 1 双 Session 同步集成）、`cargo check --locked`、`cargo build --release --locked` 与新建随机临时库 Release GUI smoke（1000 块）通过。Smoke 同时覆盖 MCP HTTP 鉴权写入、速记、托盘隐藏/唤回、最大化/还原和虚拟滚动。真实候选框布局、多屏/缩放外观仍需桌面验收；没有访问真实用户库。
+
+## 第一百七十二轮：设置搜索跨区筛选
+
+- 设置弹窗现在遵循旧版搜索语义：空查询显示所选 tab；非空查询隐藏 tab 条，按区段关键词跨 tab 显示匹配区域。通用设置与快捷键清单逐行筛选；主题与缩放分别按中文/英文关键词过滤；快捷键行将名称、按键和同义词一起纳入匹配。
+- 新增大小写无关子串、跨区、Alt+N/Ctrl+F 命中和不匹配测试。计划状态改为实际完成度；快捷键清单内容、设置入口/各主题外观对照仍未全部验收。无真实用户库访问，无 Slint/core/参考树修改。
+- 验证：`cargo fmt --all` 与 `cargo test --locked` 通过（80 项：41 库 + 37 二进制 + 1 stdio 集成 + 1 双 Session 同步集成）；之前相同实现的 `cargo check --locked` 通过。最终提交前继续跑 check、release build、diff 检查与隔离 GUI smoke。
