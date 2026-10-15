@@ -896,3 +896,8 @@ GPUI 已覆盖主编辑器、整理区、独立速记与标签建议、Windows �
 
 - 数据库布局切换加入看板。视图按当前分组规则铺成横向列，每列通过 core `window_rows_in_group` 做范围读取，卡片显示记录标题及前两项非空属性，点击卡片可选中记录；原有搜索、过滤、排序直接作用于看板查询。未配置分组时显示“全部”列，空数据时保留空列。
 - 隔离 smoke 新建勾选/未勾选两组数据库记录，断言看板分组数与记录覆盖数，并确认虚拟分组查询加载卡片；同次 Release smoke 通过长文档滚动、速记、托盘、MCP 与窗口状态链路。`cargo test -j 8`（67 项）、`cargo check -j 8`、Release 构建通过。卡片内原位编辑、拖放换组、画廊/日历/时间线/表单/图表仍未完成。
+
+## 第一百三十八轮：看板卡片编辑与分组操作
+
+- 看板卡片现在展示前两项属性（空值显示占位），可直接编辑普通可编辑属性、切换 checkbox，并为 Select/Status 打开选项菜单；分组属性提供当前列标记和跨组快捷按钮，覆盖 Checkbox、Select、Status 及空值目标。所有更新复用唯一 Session、现有 core 单元格/选项写入和保存路径；卡片选择事件不再清掉其子项的输入/菜单状态。
+- 验证：`cargo check -j 8`、全量 `cargo test -j 8`（67 项）、`cargo build --release -j 8`，以及新建唯一临时目录/SQLite 的 Windows Release `--smoke-test --smoke-blocks 1000` 均通过。窗口 smoke 覆盖分组和卡片数据读取、MCP HTTP 写入、最大化/还原、虚拟滚动、速记小窗提交及托盘隐藏/唤回；没有真人鼠标逐项点击卡片控件，也没有两台实体设备 UDP 发现/防火墙验收。看板跨列拖放及 Gallery/Calendar/Timeline/Form/Chart 仍未实现。

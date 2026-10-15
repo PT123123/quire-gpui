@@ -5331,6 +5331,60 @@ impl Workspace {
             }
         }
     }
+    fn move_database_record_to_group(
+        &mut self,
+        block: u64,
+        database: u64,
+        record: u64,
+        property: u64,
+        kind: quire_core::core::database::PropertyKind,
+        target: quire_core::core::database_view::GroupKey,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.session.page.locked
+            || self
+                .session
+                .document
+                .block(BlockId(block))
+                .and_then(|block| block.db_ref)
+                .is_none_or(|db| db.0 != database)
+        {
+            return;
+        }
+        match kind {
+            quire_core::core::database::PropertyKind::Checkbox => {
+                let checked = matches!(target, quire_core::core::database_view::GroupKey::Checked);
+                match self.session.set_database_cell(
+                    BlockId(block),
+                    quire_core::core::database::RecordId(record),
+                    quire_core::core::database::PropertyId(property),
+                    if checked { "true" } else { "false" },
+                ) {
+                    Ok(_) => {
+                        self.selected_database_record = Some((block, database, record));
+                        self.schedule_save(true, window, cx);
+                        cx.notify();
+                    }
+                    Err(error) => {
+                        self.status = error.to_string();
+                        self.error = true;
+                        cx.notify();
+                    }
+                }
+            }
+            quire_core::core::database::PropertyKind::Select
+            | quire_core::core::database::PropertyKind::Status => {
+                let option = match target {
+                    quire_core::core::database_view::GroupKey::Option(id) => Some(id),
+                    quire_core::core::database_view::GroupKey::Empty => None,
+                    _ => return,
+                };
+                self.set_database_choice(block, record, property, option, window, cx);
+            }
+            _ => {}
+        }
+    }
     fn toggle_database_relation_target(
         &mut self,
         block: u64,
@@ -9982,6 +10036,18 @@ impl Workspace {
                                         let board_spec = group_data
                                             .as_ref()
                                             .map(|(spec, _, _)| spec.clone());
+                                        let board_group_property = board_spec.as_ref().and_then(|spec| {
+                                            all_columns
+                                                .iter()
+                                                .find(|property| property.id == spec.property)
+                                                .cloned()
+                                        });
+                                        let board_targets = board_groups
+                                            .iter()
+                                            .filter_map(|(key, _, label)| {
+                                                key.clone().map(|key| (key, label.clone()))
+                                            })
+                                            .collect::<Vec<_>>();
                                         let board_columns = board_groups
                                             .into_iter()
                                             .enumerate()
@@ -9993,6 +10059,9 @@ impl Workspace {
                                                 let card_search = board_row_search.clone();
                                                 let card_spec = board_spec.clone();
                                                 let card_key = group_key.clone();
+                                                let card_group_key = group_key.clone();
+                                                let card_group_property = board_group_property.clone();
+                                                let card_targets = board_targets.clone();
                                                 let card_db = db_id;
                                                 let card_title = title;
                                                 let card_block = block_id;
@@ -10052,24 +10121,117 @@ impl Workspace {
                                                                     let properties = card_columns
                                                                         .iter()
                                                                         .zip(row.cells.iter())
-                                                                        .filter(|(_, value)| !value.trim().is_empty())
                                                                         .take(2)
                                                                         .map(|(property, value)| {
-                                                                            let shown = value.chars().take(46).collect::<String>();
-                                                                            div()
+                                                                            let shown = if value.trim().is_empty() {
+                                                                                "—".to_owned()
+                                                                            } else {
+                                                                                value.chars().take(46).collect::<String>()
+                                                                            };
+                                                                            let property_id = property.id.0;
+                                                                            let property_kind = property.kind;
+                                                                            let property_name = property.name.clone();
+                                                                            let property_config = property.config.clone();
+                                                                            let property_value = value.clone();
+                                                                            let cell_key = (card_block.0, card_db.0, record, property_id);
+                                                                            let editing = this.active_database_cell == Some(cell_key);
+                                                                            let choice_open = this.active_database_choice == Some(cell_key);
+                                                                            let input = this.database_cell_input.clone();
+                                                                            let editable = !this.session.page.locked
+                                                                                && !property_kind.is_computed()
+                                                                                && !property_kind.is_derived()
+                                                                                && !matches!(property_kind, quire_core::core::database::PropertyKind::Files | quire_core::core::database::PropertyKind::Relation | quire_core::core::database::PropertyKind::MultiSelect);
+                                                                            let mut line = div()
+                                                                                .id(SharedString::from(format!("db-board-property-{}-{record}-{property_id}", card_db.0)))
                                                                                 .w_full()
+                                                                                .min_h(px(14.))
                                                                                 .text_size(px(10.))
                                                                                 .text_color(Palette::color(&this.palette.muted))
-                                                                                .child(format!("{} · {shown}", property.name))
+                                                                                .when(editing, |line| line.child(input.clone()))
+                                                                                .when(!editing, |line| line.child(format!("{} · {shown}", property_name)));
+                                                                            if editable && !editing {
+                                                                                line = line.cursor_pointer().hover(|line| line.text_color(text)).on_click(cx.listener(move |this, _, window, cx| {
+                                                                                    this.selected_database_record = Some((card_block.0, card_db.0, record));
+                                                                                    match property_kind {
+                                                                                        quire_core::core::database::PropertyKind::Checkbox => {
+                                                                                            let next = if matches!(property_value.as_str(), "Yes" | "true" | "True") { "false" } else { "true" };
+                                                                                            match this.session.set_database_cell(BlockId(card_block.0), quire_core::core::database::RecordId(record), quire_core::core::database::PropertyId(property_id), next) {
+                                                                                                Ok(_) => this.schedule_save(true, window, cx),
+                                                                                                Err(error) => { this.status = error.to_string(); this.error = true; cx.notify(); }
+                                                                                            }
+                                                                                        }
+                                                                                        quire_core::core::database::PropertyKind::Select | quire_core::core::database::PropertyKind::Status => {
+                                                                                            this.active_database_choice = if this.active_database_choice == Some((card_block.0, card_db.0, record, property_id)) { None } else { Some((card_block.0, card_db.0, record, property_id)) };
+                                                                                            this.active_database_cell = None;
+                                                                                            cx.notify();
+                                                                                        }
+                                                                                        _ => this.begin_database_cell_edit(card_block.0, card_db.0, record, property_id, property_value.clone(), window, cx),
+                                                                                    }
+                                                                                }));
+                                                                            }
+                                                                            if choice_open {
+                                                                                let options = quire_core::core::database_property::PropertyOptions::from_config(&property_config);
+                                                                                let selected = this.session.repo.cell(quire_core::core::database::RecordId(record), quire_core::core::database::PropertyId(property_id)).ok().map(|value| value.display()).unwrap_or_default();
+                                                                                let mut menu = div().id(SharedString::from(format!("db-board-choice-menu-{}-{record}-{property_id}", card_db.0))).absolute().top(px(14.)).left(px(0.)).min_w(px(132.)).max_h(px(160.)).overflow_y_scroll().flex_col().gap(px(2.)).p(px(4.)).rounded(px(5.)).border_1().border_color(db_border).bg(Palette::color(&this.palette.elevated)).shadow_lg();
+                                                                                menu = menu.child(div().id(SharedString::from(format!("db-board-choice-clear-{}-{record}-{property_id}", card_db.0))).px(px(6.)).py(px(4.)).rounded(px(3.)).text_size(px(10.)).text_color(Palette::color(&this.palette.muted)).hover(|item| item.bg(db_hover)).cursor_pointer().on_click(cx.listener(move |this, _, window, cx| this.set_database_choice(card_block.0, record, property_id, None, window, cx))).child("清除"));
+                                                                                menu = menu.children(options.iter().map(|option| {
+                                                                                    let option_id = option.id.0.to_string();
+                                                                                    let selected_here = selected == option.id.to_string();
+                                                                                    div().id(SharedString::from(format!("db-board-choice-{}-{record}-{property_id}-{}", card_db.0, option.id.0))).px(px(6.)).py(px(4.)).rounded(px(3.)).text_size(px(10.)).text_color(text).when(selected_here, |item| item.bg(accent.opacity(0.28))).hover(|item| item.bg(db_hover)).cursor_pointer().on_click(cx.listener(move |this, _, window, cx| this.set_database_choice(card_block.0, record, property_id, Some(option_id.clone()), window, cx))).child(option.name.clone())
+                                                                                }));
+                                                                                line = line.relative().child(menu);
+                                                                            }
+                                                                            line.into_any_element()
                                                                         })
                                                                         .collect::<Vec<_>>();
+                                                                    let move_controls = card_group_property.as_ref().and_then(|property| {
+                                                                        if card_targets.is_empty() {
+                                                                            return None;
+                                                                        }
+                                                                        let current_key = card_group_key.clone();
+                                                                        let property_id = property.id.0;
+                                                                        let property_kind = property.kind;
+                                                                        let mut controls = div()
+                                                                            .w_full()
+                                                                            .flex()
+                                                                            .flex_wrap()
+                                                                            .gap(px(3.));
+                                                                        controls = controls.children(card_targets.iter().enumerate().map(|(target_index, (target, label))| {
+                                                                            let target = target.clone();
+                                                                            let is_current = current_key.as_ref() == Some(&target);
+                                                                            let mut button = div()
+                                                                                .id(SharedString::from(format!("db-board-move-{}-{record}-{target_index}", card_db.0)))
+                                                                                .px(px(5.))
+                                                                                .rounded(px(4.))
+                                                                                .text_size(px(9.))
+                                                                                .text_color(if is_current { accent } else { Palette::color(&this.palette.muted) })
+                                                                                .when(!is_current, |button| button.cursor_pointer().hover(|button| button.bg(db_hover)))
+                                                                                .child(format!("{} {label}", if is_current { "●" } else { "→" }));
+                                                                            if !is_current && !this.session.page.locked {
+                                                                                button = button.on_click(cx.listener(move |this, _, window, cx| {
+                                                                                    this.move_database_record_to_group(
+                                                                                        card_block.0,
+                                                                                        card_db.0,
+                                                                                        record,
+                                                                                        property_id,
+                                                                                        property_kind,
+                                                                                        target.clone(),
+                                                                                        window,
+                                                                                        cx,
+                                                                                    );
+                                                                                }));
+                                                                            }
+                                                                            button
+                                                                        }));
+                                                                        Some(controls.into_any_element())
+                                                                    });
                                                                     div()
                                                                         .id(SharedString::from(format!(
                                                                             "db-board-card-{}-{record}",
                                                                             card_db.0
                                                                         )))
                                                                         .w(px(224.))
-                                                                        .h(px(84.))
+                                                                        .h(px(108.))
                                                                         .mb(px(7.))
                                                                         .p(px(9.))
                                                                         .flex()
@@ -10095,9 +10257,6 @@ impl Workspace {
                                                                                 card_db.0,
                                                                                 record,
                                                                             ));
-                                                                            this.active_database_cell = None;
-                                                                            this.active_database_choice = None;
-                                                                            this.active_database_relation = None;
                                                                             cx.notify();
                                                                         }))
                                                                         .child(
@@ -10109,6 +10268,7 @@ impl Workspace {
                                                                                 .child(title_text),
                                                                         )
                                                                         .children(properties)
+                                                                        .children(move_controls)
                                                                         .into_any_element()
                                                                 })
                                                                 .collect::<Vec<_>>()
