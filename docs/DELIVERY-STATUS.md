@@ -995,3 +995,9 @@
 
 - 数据库单元格的 Select/Status、Relation、Files 菜单、看板 Select/Status 选择器，以及列、筛选、分组配置面板现在会在外部按下时收起；筛选面板关闭时会清除未提交的筛选编辑态。关闭回调延迟执行，并按菜单对应的记录/属性/视图键核验，避免影响同次点击打开的另一菜单。
 - 验证：全量 `cargo test -j 8`（70 项）、开发检查、格式检查及 `git diff --check` 通过。全新隔离 Release GUI smoke 覆盖数据库多布局及拖放状态、MCP 16 工具/写入、速记、托盘隐藏/唤回、窗口最大化/还原和 1000 块虚拟滚动；没有模拟这些菜单的真实鼠标外点。Release 构建通过。没有访问默认用户数据库或修改 Slint 参考树。
+
+## 第一百五十七轮：子任务编辑取消与回调矩阵校准
+
+- 子任务标题行内编辑此前没有处理 Escape 事件，现新增取消路径：退出编辑态并丢弃草稿，不写入 Task；Enter 与失焦继续提交。隔离 Release smoke 通过 Workspace 编辑流程先取消草稿、核验旧值保留，再提交新标题并读回。
+- 校准 callback 矩阵：F234 `org-subtask-edit` 和 F235 `org-subtask-title-set` 标为 GPUI 已实现，分别描述打开编辑与提交/取消；将 F233 语义限定为新增，避免把新旧两种操作混成一行。运行生成器后仍为 246 callbacks、261 properties、188 scenes，sidecar 合并 100 条且字节稳定。
+- 验证：全量 `cargo test -j 8`（70 项）、`cargo check -j 8`、Release 构建、全新隔离 SQLite 的 Release GUI smoke、格式检查和 `git diff --check` 通过。未访问默认用户数据库或修改 Slint 参考树。

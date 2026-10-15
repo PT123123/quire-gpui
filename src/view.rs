@@ -2242,6 +2242,7 @@ impl Workspace {
                         this.add_subtask_from_draft(window, cx)
                     }
                 }
+                InputEvent::DismissSlash => this.cancel_subtask_edit(cx),
                 _ => {}
             },
         ));
@@ -2575,6 +2576,56 @@ impl Workspace {
                     assert!(this.session.delete_task_list(smoke_list).is_some());
                     this.selected_task_list = quire_core::core::organizer::ListId::INBOX;
                     eprintln!("SMOKE: organizer list menu, color submenu, rename and undo/redo passed");
+
+                    let smoke_task = this.session.create_task_in(
+                        quire_core::core::organizer::ListId::INBOX,
+                        "子任务编辑 smoke".into(),
+                    );
+                    assert!(this.session.add_subtask(smoke_task, "旧子任务名".into()));
+                    let smoke_subtask = this
+                        .session
+                        .organizer
+                        .task(smoke_task)
+                        .unwrap()
+                        .subtasks[0]
+                        .id;
+                    this.start_edit_subtask(
+                        smoke_task,
+                        smoke_subtask,
+                        "旧子任务名".into(),
+                        window,
+                        cx,
+                    );
+                    this.subtask_title_draft = "应被取消的草稿".into();
+                    this.cancel_subtask_edit(cx);
+                    assert_eq!(
+                        this.session
+                            .organizer
+                            .task(smoke_task)
+                            .unwrap()
+                            .subtasks[0]
+                            .title,
+                        "旧子任务名"
+                    );
+                    this.start_edit_subtask(
+                        smoke_task,
+                        smoke_subtask,
+                        "旧子任务名".into(),
+                        window,
+                        cx,
+                    );
+                    this.subtask_title_draft = "已编辑的子任务名".into();
+                    this.commit_subtask_draft(window, cx);
+                    assert_eq!(
+                        this.session
+                            .organizer
+                            .task(smoke_task)
+                            .unwrap()
+                            .subtasks[0]
+                            .title,
+                        "已编辑的子任务名"
+                    );
+                    eprintln!("SMOKE: organizer subtask inline rename cancel and commit passed");
 
                     this.organizer_trash = true;
                     this.organizer_tasks = false;
@@ -6440,6 +6491,15 @@ impl Workspace {
             input.reset(String::new(), Vec::new(), 0, cx);
         });
         cx.notify();
+    }
+    fn cancel_subtask_edit(&mut self, cx: &mut Context<Self>) {
+        if self.editing_subtask.take().is_some() {
+            self.subtask_title_draft.clear();
+            self.subtask_title_input.update(cx, |input, cx| {
+                input.reset(String::new(), Vec::new(), 0, cx);
+            });
+            cx.notify();
+        }
     }
     fn toggle_subtask_done(
         &mut self,
