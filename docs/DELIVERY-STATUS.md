@@ -1053,3 +1053,15 @@
 - 块 hover 操作新增“＋”：通过 core `InsertBlockAfter` 插入空段落并打开类型菜单。插入模式用整行文本过滤，支持上下键和 Enter 选择；Escape 关闭菜单但保留段落。普通 `/` 转换仍按前缀过滤。聚焦其他块时收起菜单，已锁定页面不提供插入入口。
 - 隔离 Release GUI smoke 覆盖插入段落、输入 `h2` 过滤并以 Enter 转成 Heading2，连续两次 undo 恢复原文档块数；独立查询单测验证 slash 与插入模式的过滤差异。`PLAN.md` 和 `PARITY-SEMANTICS.csv` 已更新；手柄真实鼠标命中、菜单定位和参考视觉仍未做真人验收。
 - 验证：`cargo fmt --all -- --check`、`cargo test -j 8`（75 项）、`cargo check -j 8`、`cargo build --release -j 8`、`git diff --check` 和新建随机临时 SQLite 的 Release GUI smoke（1000 块）通过。未访问默认用户库或修改 Slint/core。
+
+## 第一百六十七轮：块级复制、粘贴与 Ctrl+D
+
+- 补齐编辑器块级复制路径：Ctrl+D 现在触发当前块副本；块菜单区分“复制”（立即副本）与“复制块”（放入应用内剪贴板），复制块保留富文本 marks、块属性和可复制容器的嵌套子树；目标菜单可将其粘贴到当前块下方，生成新 ID 并作为单个 InsertForest 历史项。Page 引用粘贴为普通段落，数据库/表格单元格/分栏容器不开放内部粘贴。
+- 隔离 Session 回归验证 Toggle 子树、粗体 mark、undo 与 SQLite flush/reopen。同步更新编辑器规格与 parity 语义；Markdown 结构化 Ctrl+V 富粘贴仍未实现，按实际差距保留在计划中。
+- 验证：`cargo test -j 8` 76 项（38 库 + 36 二进制 + 2 集成）、`cargo check -j 8`、`cargo build --release -j 8`、格式和 diff 检查通过。全新随机临时目录 Release GUI smoke（1000 块）通过，覆盖 MCP 鉴权工具写入、速记保存、托盘隐藏/唤回、窗口最大化/还原和虚拟滚动。未访问默认用户库或修改 Slint/core；新增块菜单真实鼠标点选仍未自动化。
+
+## 第一百六十八轮：系统剪贴板 Markdown 与图片粘贴
+
+- Ctrl+V 在聚焦编辑块时先检查 GPUI 剪贴板条目：有结构标记的 Markdown 由 core importer 解析成独立块，保留 inline marks、待办 checked 和代码语言；粘贴到空白段落时一并移除占位行，整个结构粘贴只产生一个 undo entry。普通文本和 inline-only Markdown 保持 TextInput 原生光标/选区粘贴；没有文本的图片条目进入现有附件存储并插成 Image block。剪贴板解析或块插入失败时不吞掉普通文本输入。
+- ScratchDir 测试覆盖多块解析、标记/待办/代码语言保留、单步 undo、空白行恢复、重开持久化，以及真实 PNG 字节经隔离附件目录写入并重开读回。参考树未改动。
+- 验证：`cargo fmt --all -- --check`、全量 `cargo test -j 8`（78 项：40 库 + 36 二进制 + 2 集成）、`cargo check -j 8`、`cargo build --release -j 8` 与 `git diff --check` 通过。全新随机临时库 Release GUI smoke（1000 块）通过，覆盖 16 个 MCP 工具、速记提交、托盘隐藏/唤回、最大化/还原和虚拟滚动。Ctrl+V 的 GPUI capture handler 已编译；操作系统实际剪贴板事件/图片格式仍需真人桌面交互验收。没有访问默认用户库或修改 Slint/core。

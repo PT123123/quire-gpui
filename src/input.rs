@@ -37,7 +37,8 @@ actions!(
         ToggleItalic,
         ToggleStrike,
         ToggleInlineCode,
-        RemoveBlock
+        RemoveBlock,
+        DuplicateBlock
     ]
 );
 
@@ -54,6 +55,7 @@ pub enum InputEvent {
     Outdent,
     ToggleMark(MarkKind),
     RemoveBlock,
+    DuplicateBlock,
     DismissSlash,
     ActivateLink(String),
 }
@@ -334,6 +336,11 @@ impl TextInput {
     fn remove_block(&mut self, _: &RemoveBlock, _: &mut Window, cx: &mut Context<Self>) {
         if !self.buffer.composing() {
             cx.emit(InputEvent::RemoveBlock);
+        }
+    }
+    fn duplicate_block(&mut self, _: &DuplicateBlock, _: &mut Window, cx: &mut Context<Self>) {
+        if !self.buffer.composing() {
+            cx.emit(InputEvent::DuplicateBlock);
         }
     }
     fn mouse_down(&mut self, event: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
@@ -878,6 +885,7 @@ impl Render for TextInput {
             .on_action(cx.listener(Self::toggle_strike))
             .on_action(cx.listener(Self::toggle_inline_code))
             .on_action(cx.listener(Self::remove_block))
+            .on_action(cx.listener(Self::duplicate_block))
             .on_mouse_down(MouseButton::Left, cx.listener(Self::mouse_down))
             .on_mouse_move(cx.listener(Self::mouse_move))
             .on_mouse_up(MouseButton::Left, cx.listener(Self::mouse_up))
@@ -913,6 +921,7 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("ctrl-i", ToggleItalic, context),
         KeyBinding::new("ctrl-shift-x", ToggleStrike, context),
         KeyBinding::new("ctrl-e", ToggleInlineCode, context),
+        KeyBinding::new("ctrl-d", DuplicateBlock, context),
         KeyBinding::new("ctrl-shift-backspace", RemoveBlock, context),
     ]);
 }

@@ -855,6 +855,16 @@ fn slash_query(text: &str, insert_mode: bool) -> String {
     query.to_lowercase()
 }
 
+fn block_clipboard_pasteable(blocks: &[Block]) -> bool {
+    blocks.iter().any(|block| {
+        block.parent.is_none()
+            && !matches!(
+                block.kind,
+                BlockKind::Database | BlockKind::TableCell | BlockKind::Column
+            )
+    })
+}
+
 #[cfg(test)]
 mod view_tests {
     use super::{
@@ -1590,6 +1600,7 @@ pub struct Workspace {
     backlinks_open: bool,
     hovered_block: Option<BlockId>,
     block_menu_open: Option<(BlockId, BlockMenuMode)>,
+    block_clipboard: Option<Vec<Block>>,
     hovered_page: Option<quire_core::core::types::PageId>,
     hovered_note: Option<quire_core::core::organizer::NoteId>,
     hovered_task: Option<quire_core::core::organizer::TaskId>,
@@ -1983,6 +1994,7 @@ impl Workspace {
             backlinks_open: false,
             hovered_block: None,
             block_menu_open: None,
+            block_clipboard: None,
             hovered_page: None,
             hovered_note: None,
             hovered_task: None,
@@ -3920,6 +3932,7 @@ impl Workspace {
                 self.schedule_save(false, window, cx);
             }
             InputEvent::RemoveBlock => self.delete_block(id, window, cx),
+            InputEvent::DuplicateBlock => self.duplicate_block(id, window, cx),
             InputEvent::DismissSlash => {
                 let block_menu_closed = self.block_menu_open.take().is_some();
                 let filter_menu_closed = self.database_filter_open.take().is_some();
@@ -4605,6 +4618,40 @@ impl Workspace {
             self.restore_focus(window, cx);
         }
         self.status = "块副本已创建，正在保存…".into();
+        self.schedule_save(false, window, cx);
+    }
+    fn copy_block_to_clipboard(&mut self, id: BlockId, cx: &mut Context<Self>) {
+        self.block_clipboard = self.session.copy_block_forest(id);
+        self.status = if self.block_clipboard.is_some() {
+            "块已复制；可从其他块的 ⋮ 菜单粘贴到下方".into()
+        } else {
+            "无法复制此块".into()
+        };
+        cx.notify();
+    }
+    fn paste_block_from_clipboard(
+        &mut self,
+        anchor: BlockId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.closing || self.session.page.locked || self.composing(cx) {
+            return;
+        }
+        let Some(blocks) = self.block_clipboard.clone() else {
+            return;
+        };
+        let Some((pasted, focus_kind)) = self.session.paste_block_forest(anchor, &blocks) else {
+            return;
+        };
+        self.block_menu_open = None;
+        self.sync_inputs(window, cx);
+        self.active = Some(
+            self.first_child_editor(pasted, focus_kind)
+                .unwrap_or(pasted),
+        );
+        self.restore_focus(window, cx);
+        self.status = "块已粘贴（Ctrl+Z 可撤销）".into();
         self.schedule_save(false, window, cx);
     }
     fn move_block(&mut self, id: BlockId, delta: i32, window: &mut Window, cx: &mut Context<Self>) {
@@ -7184,6 +7231,78 @@ impl Workspace {
         }
         cx.stop_propagation();
         cx.notify();
+    }
+    fn editor_rich_paste_key_down(
+        &mut self,
+        event: &KeyDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let key = event.keystroke.key.as_str();
+        let modifiers = event.keystroke.modifiers;
+        if !matches!(key, "v" | "V") || !modifiers.control || modifiers.alt || modifiers.platform {
+            return;
+        }
+        let Some((id, input)) = self
+            .inputs
+            .iter()
+            .find(|(_, input)| input.read(cx).focus.is_focused(window))
+            .map(|(id, input)| (*id, input.clone()))
+        else {
+            return;
+        };
+        if self.closing || self.session.page.locked || input.read(cx).buffer.composing() {
+            return;
+        }
+        let Some(clipboard) = cx.read_from_clipboard() else {
+            return;
+        };
+        let Some(text) = clipboard.text() else {
+            let Some(image) = clipboard.entries().iter().find_map(|entry| match entry {
+                gpui::ClipboardEntry::Image(image) => Some(image.bytes.as_slice()),
+                gpui::ClipboardEntry::String(_) => None,
+            }) else {
+                return;
+            };
+            match self.session.import_clipboard_image(BlockId(id), image) {
+                Ok(inserted) => {
+                    self.sync_inputs(window, cx);
+                    self.active = Some(inserted);
+                    self.status = "剪贴板图片已添加，正在保存…".into();
+                    self.schedule_save(false, window, cx);
+                }
+                Err(error) => {
+                    self.status = format!("粘贴图片失败：{error}");
+                    self.error = true;
+                    cx.notify();
+                }
+            }
+            cx.stop_propagation();
+            return;
+        };
+        let Some(parsed) = quire_core::services::import_service::parse_if_block_structure(&text)
+        else {
+            // Plain text and inline-only Markdown remain the TextInput's native
+            // paste, preserving its caret and selection semantics.
+            return;
+        };
+        let anchor = BlockId(id);
+        let Some(inserted) = self.session.paste_block_structure(anchor, &parsed) else {
+            return;
+        };
+        let focus_id = inserted.first().copied().unwrap_or(anchor);
+        let caret = self
+            .session
+            .document
+            .block(focus_id)
+            .map_or(0, |block| block.text.len());
+        self.sync_inputs(window, cx);
+        self.active = Some(focus_id);
+        self.find_open = false;
+        self.focus(focus_id, caret, window, cx);
+        self.status = format!("已粘贴 {} 个结构块（Ctrl+Z 可撤销）", inserted.len());
+        self.schedule_save(false, window, cx);
+        cx.stop_propagation();
     }
     fn commit_task_list_rename(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(id) = self.task_list_editing.take() else {
@@ -10547,68 +10666,83 @@ impl Workspace {
                             })
                             .collect::<Vec<_>>()
                     } else {
-                        [
+                        let mut actions = vec![
                             ("转换为…", 0),
                             ("文字颜色", 1),
                             ("背景颜色", 2),
-                            ("复制块", 3),
+                            ("复制", 3),
+                            ("复制块", 6),
                             ("删除", 4),
                             ("移动到页面…", 5),
-                        ]
-                        .into_iter()
-                        .map(|(label, action)| {
-                            div()
-                                .id(SharedString::from(format!(
-                                    "block-menu-action-{block_id:?}-{action}"
-                                )))
-                                .w_full()
-                                .h(px(28.))
-                                .px(px(9.))
-                                .flex()
-                                .items_center()
-                                .rounded(px(4.))
-                                .cursor_pointer()
-                                .text_size(px(12.))
-                                .text_color(if action == 4 {
-                                    Hsla::from(rgb(0xe5534b))
-                                } else {
-                                    text
-                                })
-                                .hover(|item| item.bg(Palette::color(&p.bg).opacity(0.3)))
-                                .on_click(cx.listener(move |this, _, window, cx| {
-                                    match action {
-                                        0 => {
-                                            this.block_menu_open =
-                                                Some((block_id, BlockMenuMode::Convert))
+                        ];
+                        if !self.session.page.locked
+                            && self
+                                .block_clipboard
+                                .as_deref()
+                                .is_some_and(block_clipboard_pasteable)
+                        {
+                            actions.push(("粘贴到下方", 7));
+                        }
+                        actions
+                            .into_iter()
+                            .map(|(label, action)| {
+                                div()
+                                    .id(SharedString::from(format!(
+                                        "block-menu-action-{block_id:?}-{action}"
+                                    )))
+                                    .w_full()
+                                    .h(px(28.))
+                                    .px(px(9.))
+                                    .flex()
+                                    .items_center()
+                                    .rounded(px(4.))
+                                    .cursor_pointer()
+                                    .text_size(px(12.))
+                                    .text_color(if action == 4 {
+                                        Hsla::from(rgb(0xe5534b))
+                                    } else {
+                                        text
+                                    })
+                                    .hover(|item| item.bg(Palette::color(&p.bg).opacity(0.3)))
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        match action {
+                                            0 => {
+                                                this.block_menu_open =
+                                                    Some((block_id, BlockMenuMode::Convert))
+                                            }
+                                            1 => {
+                                                this.block_menu_open = None;
+                                                this.toggle_color_picker(block_id, false, cx);
+                                            }
+                                            2 => {
+                                                this.block_menu_open = None;
+                                                this.toggle_color_picker(block_id, true, cx);
+                                            }
+                                            3 => {
+                                                this.block_menu_open = None;
+                                                this.duplicate_block(block_id, window, cx);
+                                            }
+                                            6 => {
+                                                this.copy_block_to_clipboard(block_id, cx);
+                                            }
+                                            4 => {
+                                                this.block_menu_open = None;
+                                                this.delete_block(block_id, window, cx);
+                                            }
+                                            5 => {
+                                                this.block_menu_open =
+                                                    Some((block_id, BlockMenuMode::MoveToPage))
+                                            }
+                                            7 => this
+                                                .paste_block_from_clipboard(block_id, window, cx),
+                                            _ => {}
                                         }
-                                        1 => {
-                                            this.block_menu_open = None;
-                                            this.toggle_color_picker(block_id, false, cx);
-                                        }
-                                        2 => {
-                                            this.block_menu_open = None;
-                                            this.toggle_color_picker(block_id, true, cx);
-                                        }
-                                        3 => {
-                                            this.block_menu_open = None;
-                                            this.duplicate_block(block_id, window, cx);
-                                        }
-                                        4 => {
-                                            this.block_menu_open = None;
-                                            this.delete_block(block_id, window, cx);
-                                        }
-                                        5 => {
-                                            this.block_menu_open =
-                                                Some((block_id, BlockMenuMode::MoveToPage))
-                                        }
-                                        _ => {}
-                                    }
-                                    cx.notify();
-                                }))
-                                .child(label.to_owned())
-                                .into_any_element()
-                        })
-                        .collect::<Vec<_>>()
+                                        cx.notify();
+                                    }))
+                                    .child(label.to_owned())
+                                    .into_any_element()
+                            })
+                            .collect::<Vec<_>>()
                     };
                     let mut rows = rows;
                     if mode == BlockMenuMode::MoveToPage && rows.is_empty() {
@@ -17986,6 +18120,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::zoom_out))
             .on_action(cx.listener(Self::zoom_reset))
             .capture_key_down(cx.listener(Self::task_list_menu_key_down))
+            .capture_key_down(cx.listener(Self::editor_rich_paste_key_down))
             .when_some(self.transition_palette.clone(), |root, old_palette| {
                 root.child(
                     div()

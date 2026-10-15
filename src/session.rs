@@ -2311,6 +2311,31 @@ impl Session {
             .map(|block| block.id)
             .ok_or_else(|| anyhow::anyhow!("core rejected the attachment insertion"))
     }
+    pub fn import_clipboard_image(
+        &mut self,
+        after: BlockId,
+        bytes: &[u8],
+    ) -> anyhow::Result<BlockId> {
+        if self.page.locked || !self.editable(after) {
+            bail!("此位置不可插入图片");
+        }
+        let id = AttachmentId(self.next_attachment_id);
+        self.next_attachment_id = self.next_attachment_id.saturating_add(1);
+        let attachment = self
+            .attachment_store
+            .import_bytes(id, "clipboard-image", bytes)
+            .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+        self.attachments.insert(id.as_u64(), attachment.clone());
+        self.execute(Command::InsertImage {
+            id: after,
+            attachment,
+        });
+        self.blocks()
+            .iter()
+            .find(|block| block.attachment == Some(id))
+            .map(|block| block.id)
+            .ok_or_else(|| anyhow::anyhow!("core rejected the clipboard image"))
+    }
     pub fn attachment_display_path(&self, id: AttachmentId) -> Option<PathBuf> {
         self.attachments
             .get(&id.as_u64())
@@ -2982,6 +3007,130 @@ impl Session {
             .iter()
             .find(|block| !existing.contains(&block.id))
             .map(|block| block.id)
+    }
+    pub fn copy_block_forest(&self, id: BlockId) -> Option<Vec<Block>> {
+        let source = self.blocks().to_vec();
+        source.iter().find(|block| block.id == id)?;
+        let mut subtree = HashSet::from([id]);
+        loop {
+            let descendants = source
+                .iter()
+                .filter(|block| block.parent.is_some_and(|parent| subtree.contains(&parent)))
+                .map(|block| block.id)
+                .filter(|block| !subtree.contains(block))
+                .collect::<Vec<_>>();
+            if descendants.is_empty() {
+                break;
+            }
+            subtree.extend(descendants);
+        }
+        Some(
+            source
+                .into_iter()
+                .filter(|block| subtree.contains(&block.id))
+                .collect(),
+        )
+    }
+    pub fn paste_block_forest(
+        &mut self,
+        anchor: BlockId,
+        source: &[Block],
+    ) -> Option<(BlockId, BlockKind)> {
+        if self.page.locked || source.is_empty() {
+            return None;
+        }
+        let mut blocks = source.to_vec();
+        let root = blocks.iter_mut().find(|block| block.parent.is_none())?;
+        let focus_kind = if root.kind == BlockKind::Page {
+            BlockKind::Paragraph
+        } else {
+            root.kind
+        };
+        match root.kind {
+            BlockKind::Page => {
+                root.kind = BlockKind::Paragraph;
+                root.page_ref = None;
+                root.folded = false;
+                blocks.retain(|block| block.parent.is_none());
+                blocks.truncate(1);
+            }
+            BlockKind::Database | BlockKind::TableCell | BlockKind::Column => return None,
+            _ => {}
+        }
+        let existing = self
+            .blocks()
+            .iter()
+            .map(|block| block.id)
+            .collect::<HashSet<_>>();
+        self.execute(Command::InsertForest {
+            anchor: Some(anchor),
+            blocks,
+        });
+        self.blocks()
+            .iter()
+            .find(|block| !existing.contains(&block.id))
+            .map(|block| (block.id, focus_kind))
+    }
+    pub fn paste_block_structure(
+        &mut self,
+        anchor: BlockId,
+        parsed: &[quire_core::services::import_service::ParsedBlock],
+    ) -> Option<Vec<BlockId>> {
+        if self.page.locked || !self.editable(anchor) || parsed.is_empty() {
+            return None;
+        }
+        self.end_typing();
+        let current_empty = self.document.block(anchor).is_some_and(|block| {
+            block.parent.is_none() && block.kind == BlockKind::Paragraph && block.text.is_empty()
+        });
+        let blocks = parsed
+            .iter()
+            .map(|parsed| Block {
+                id: self.document.alloc_block_id(),
+                page: self.page.id,
+                parent: None,
+                order: OrderKey::FIRST,
+                kind: parsed.kind,
+                text: parsed.text.clone(),
+                checked: parsed.checked,
+                marks: parsed.marks.clone(),
+                color: ColorKind::Default,
+                background: ColorKind::Default,
+                page_ref: None,
+                folded: false,
+                attachment: None,
+                img_percent: 100,
+                columns: 0,
+                lang: parsed.lang,
+                db_ref: None,
+                sync_ref: None,
+            })
+            .collect::<Vec<_>>();
+        let mut commands = vec![Command::InsertForest {
+            anchor: Some(anchor),
+            blocks,
+        }];
+        if current_empty {
+            commands.push(Command::DeleteBlock { id: anchor });
+        }
+        let changes = command::exec_all(
+            &mut self.document,
+            &mut self.history,
+            self.page.id,
+            commands,
+        )?;
+        let inserted = changes
+            .iter()
+            .filter_map(|change| match change {
+                Change::BlockInserted(block) if block.page == self.page.id => Some(block.id),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        if inserted.len() != parsed.len() {
+            return None;
+        }
+        self.persistence.record(changes);
+        Some(inserted)
     }
     pub fn set_page_title(&mut self, title: String) {
         if self.page.locked || self.page.title == title {
@@ -5351,6 +5500,7 @@ fn is_database_change(change: &Change) -> bool {
 mod tests {
     use super::*;
     use quire_core::core::database::CellValue;
+    use quire_core::core::types::{Lang, MarkKind};
 
     #[test]
     fn startup_notice_surfaces_recovery_backup_and_migration_facts() {
@@ -7236,6 +7386,151 @@ mod tests {
                 .text,
             "Nested"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn internal_block_clipboard_pastes_formatted_subtree_as_one_undoable_forest() -> Result<()> {
+        let scratch = quire_core::testing::ScratchDir::new("gpui-block-clipboard");
+        let path = scratch.path().join("test.db");
+        let mut session = Session::open(&path)?;
+        let root = session.blocks()[0].id;
+        session.execute(Command::SetBlockType {
+            id: root,
+            kind: BlockKind::Toggle,
+        });
+        session.replace(root, "复制的标题".into(), false);
+        session.execute(Command::ToggleMark {
+            id: root,
+            start: 0,
+            end: "复制".len(),
+            kind: MarkKind::Bold,
+            url: String::new(),
+            date: None,
+        });
+        let child = Block {
+            id: session.document.alloc_block_id(),
+            page: session.page.id,
+            order: OrderKey::between(Some(session.document.block(root).unwrap().order), None)
+                .unwrap(),
+            parent: Some(root),
+            kind: BlockKind::Paragraph,
+            text: "子块内容".into(),
+            checked: false,
+            marks: Vec::new(),
+            color: ColorKind::Default,
+            background: ColorKind::Default,
+            page_ref: None,
+            folded: false,
+            attachment: None,
+            img_percent: 100,
+            columns: 0,
+            lang: Lang::Plain,
+            db_ref: None,
+            sync_ref: None,
+        };
+        session
+            .document
+            .apply(&[Change::BlockInserted(child.clone())]);
+        session
+            .persistence
+            .record(vec![Change::BlockInserted(child)]);
+        let copied = session.copy_block_forest(root).unwrap();
+        let (pasted, pasted_kind) = session.paste_block_forest(root, &copied).unwrap();
+        let pasted_root = session.document.block(pasted).unwrap();
+        assert_ne!(pasted, root);
+        assert_eq!(pasted_root.kind, BlockKind::Toggle);
+        assert_eq!(pasted_kind, BlockKind::Toggle);
+        assert_eq!(pasted_root.text, "复制的标题");
+        assert_eq!(pasted_root.marks.len(), 1);
+        let pasted_child = session
+            .blocks()
+            .iter()
+            .find(|block| block.parent == Some(pasted))
+            .unwrap();
+        assert_eq!(pasted_child.text, "子块内容");
+        assert_ne!(pasted_child.id, session.blocks()[1].id);
+        session.undo();
+        assert!(session.document.block(pasted).is_none());
+        assert_eq!(session.blocks().len(), 2);
+        session.persistence.force_flush()?;
+        drop(session);
+        let reopened = Session::open(&path)?;
+        assert_eq!(reopened.blocks().len(), 2);
+        assert_eq!(reopened.document.block(root).unwrap().marks.len(), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn markdown_structure_paste_preserves_marks_checked_state_and_undoes_atomically() -> Result<()>
+    {
+        let scratch = quire_core::testing::ScratchDir::new("gpui-markdown-paste");
+        let path = scratch.path().join("test.db");
+        let mut session = Session::open(&path)?;
+        let anchor = session.blocks()[0].id;
+        let source = "**加粗内容**\n- [x] 完成项\n```rs\nfn main() {}\n```";
+        let parsed =
+            quire_core::services::import_service::parse_if_block_structure(source).unwrap();
+        assert_eq!(parsed.len(), 3);
+        let inserted = session.paste_block_structure(anchor, &parsed).unwrap();
+        assert_eq!(inserted.len(), 3);
+        let blocks = session.blocks();
+        assert_eq!(blocks.len(), 3);
+        assert_eq!(blocks[0].text, "加粗内容");
+        assert!(
+            blocks[0]
+                .marks
+                .iter()
+                .any(|mark| mark.kind == MarkKind::Bold)
+        );
+        assert_eq!(blocks[1].kind, BlockKind::Todo);
+        assert!(blocks[1].checked);
+        assert_eq!(blocks[2].kind, BlockKind::Code);
+        assert_eq!(blocks[2].lang, Lang::Rust);
+        assert_eq!(blocks[2].text, "fn main() {}");
+        session.undo();
+        assert_eq!(session.blocks().len(), 1);
+        assert_eq!(session.blocks()[0].kind, BlockKind::Paragraph);
+        assert!(session.blocks()[0].text.is_empty());
+        session.replace(anchor, "锚点正文".into(), true);
+        let inserted = session.paste_block_structure(anchor, &parsed).unwrap();
+        assert_eq!(session.blocks().len(), 4);
+        assert_eq!(session.blocks()[0].text, "锚点正文");
+        assert_eq!(session.blocks()[1].id, inserted[0]);
+        assert_eq!(session.blocks()[2].id, inserted[1]);
+        assert_eq!(session.blocks()[3].id, inserted[2]);
+        session.undo();
+        assert_eq!(session.blocks().len(), 1);
+        assert_eq!(session.blocks()[0].text, "锚点正文");
+        session.persistence.force_flush()?;
+        drop(session);
+        let reopened = Session::open(&path)?;
+        assert_eq!(reopened.blocks().len(), 1);
+        assert_eq!(reopened.blocks()[0].text, "锚点正文");
+        Ok(())
+    }
+
+    #[test]
+    fn clipboard_image_import_uses_isolated_attachment_store_and_persists() -> Result<()> {
+        let scratch = quire_core::testing::ScratchDir::new("gpui-clipboard-image");
+        let path = scratch.path().join("test.db");
+        let mut session = Session::open(&path)?;
+        let anchor = session.blocks()[0].id;
+        let image = session.import_clipboard_image(
+            anchor,
+            include_bytes!("../vendor/gpui-0.2.2/examples/image/app-icon.png"),
+        )?;
+        let block = session.document.block(image).unwrap();
+        assert_eq!(block.kind, BlockKind::Image);
+        let attachment = block.attachment.unwrap();
+        assert!(session.attachment_path(attachment).unwrap().exists());
+        session.persistence.force_flush()?;
+        drop(session);
+        let reopened = Session::open(&path)?;
+        let image = reopened.document.block(image).unwrap();
+        assert_eq!(image.kind, BlockKind::Image);
+        assert_eq!(image.attachment, Some(attachment));
+        assert!(reopened.attachment_path(attachment).unwrap().exists());
         Ok(())
     }
 
