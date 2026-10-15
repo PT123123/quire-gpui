@@ -1176,3 +1176,8 @@
 
 - 笔记列表新增“平铺/列表”切换。平铺按 244px 卡片排列，使用同一搜索、标签包含/排除、置顶/排序结果；点击卡片仍选中并打开原详情。进入平铺会退出多选，回收站不显示该切换并保持原列表行为；任务看板维持独立状态。
 - Release GUI smoke 在隔离窗口中分别构造并渲染任务看板和笔记平铺视图，日志确认卡片树挂载。`cargo fmt --all -- --check`、`cargo test --locked`（89 项：44 库 + 43 二进制 + 1 stdio + 1 sync loopback）、`cargo check --locked`、`cargo build --release --locked`、`git diff --check` 均通过；全新随机 `%TEMP%` SQLite Release GUI smoke（1000 块）退出码为 0，并覆盖速记保存、托盘隐藏/恢复、MCP、最大化/还原和虚拟滚动。本轮未访问真实用户库，也未修改 Slint/core/冻结参考树。笔记卡片的真人点击、窄窗口布局和视觉对照仍待桌面验收。
+
+## 第一百八十九轮：补齐笔记内容排序
+
+- 对照旧版 `org-note-sort-picked` 与 `AppState::org_notes`，补齐此前缺失的“按内容”模式。排序控件循环“最新创建 / 最新更新 / 按内容”；置顶项在三种模式里都排在最前，内容排序以小写标题为主键、更新时间为次序，默认仍为最新创建。
+- 单元测试覆盖三种顺序、大小写不敏感与置顶优先；隔离 Release GUI smoke 渲染三种排序状态。`cargo fmt --all -- --check`、`cargo test --locked`（90 项：44 库 + 44 二进制 + 1 stdio + 1 sync loopback）、`cargo check --locked`、`cargo build --release --locked` 和 `git diff --check` 均通过；全新随机 `%TEMP%` SQLite smoke 退出码为 0，仍覆盖速记、托盘、MCP、最大化/还原和虚拟滚动。PARITY F244 已记为已实现/未验证；真人操作验收待桌面进行。未访问真实用户库，未修改 Slint/core/冻结参考树。

@@ -88,6 +88,33 @@ fn organizer_notes_copy_payload(notes: &[OrganizerNote]) -> (String, usize) {
     (rows.join("\n\n"), rows.len())
 }
 
+fn sort_organizer_notes(notes: &mut [OrganizerNote], mode: u8) {
+    notes.sort_by(|a, b| {
+        b.pinned.cmp(&a.pinned).then_with(|| match mode {
+            0 => b.created.cmp(&a.created).then_with(|| b.id.cmp(&a.id)),
+            1 => b.edited.cmp(&a.edited).then_with(|| b.id.cmp(&a.id)),
+            _ => {
+                let key = |note: &OrganizerNote| {
+                    let visible_head = if note.title.is_empty() {
+                        &note.body
+                    } else {
+                        &note.title
+                    };
+                    format!(
+                        "{}\u{1}{}",
+                        note.title.to_lowercase(),
+                        visible_head.to_lowercase()
+                    )
+                };
+                key(a)
+                    .cmp(&key(b))
+                    .then_with(|| b.edited.cmp(&a.edited))
+                    .then_with(|| b.id.cmp(&a.id))
+            }
+        })
+    });
+}
+
 #[derive(Clone)]
 struct EditorBlockDrag {
     block: BlockId,
@@ -962,8 +989,9 @@ mod view_tests {
         mention_date_matches, order_database_groups, organizer_notes_copy_payload,
         organizer_tag_matches_path, organizer_tag_tree_rows, organizer_tags_exclude,
         organizer_task_drop_accepted, palette_matches, parse_mcp_port, parse_organizer_tags,
-        push_history, settings_matches, settings_section_visible, slash_query, sync_peer_is_recent,
-        sync_targets, system_palette_id_for_appearance, toc_headings,
+        push_history, settings_matches, settings_section_visible, slash_query,
+        sort_organizer_notes, sync_peer_is_recent, sync_targets, system_palette_id_for_appearance,
+        toc_headings,
     };
     use gpui::WindowAppearance;
     use quire_core::core::database::PropertyKind;
@@ -1060,6 +1088,36 @@ mod view_tests {
         let (text, count) = organizer_notes_copy_payload(&notes);
         assert_eq!(count, 2);
         assert_eq!(text, "第一篇正文\nID: note-uuid-7\n\n标题回退\nID: local:8");
+    }
+
+    #[test]
+    fn organizer_note_sort_modes_keep_pins_first_and_sort_content_case_insensitively() {
+        let note = |id, title: &str, created, edited, pinned| OrganizerNote {
+            id: NoteId(id),
+            uuid: format!("note-{id}"),
+            title: title.into(),
+            body: String::new(),
+            pinned,
+            tags: Vec::new(),
+            created,
+            edited,
+            ref_note: None,
+            deleted_at: None,
+            rev: String::new(),
+        };
+        let source = vec![
+            note(1, "zeta", 1, 100, false),
+            note(2, "Alpha", 3, 2, false),
+            note(3, "Bravo", 2, 3, true),
+        ];
+        let ids = |mode| {
+            let mut notes = source.clone();
+            sort_organizer_notes(&mut notes, mode);
+            notes.iter().map(|note| note.id.0).collect::<Vec<_>>()
+        };
+        assert_eq!(ids(0), [3, 2, 1]);
+        assert_eq!(ids(1), [3, 1, 2]);
+        assert_eq!(ids(2), [3, 2, 1]);
     }
 
     #[test]
@@ -1872,7 +1930,7 @@ pub struct Workspace {
     selected_task_smart_view: Option<i32>,
     show_task_done: bool,
     task_sort: i32,
-    note_sort_recent: bool,
+    note_sort_mode: u8,
     note_multi_select: bool,
     selected_note_ids: HashSet<quire_core::core::organizer::NoteId>,
     task_multi_select: bool,
@@ -2294,7 +2352,7 @@ impl Workspace {
             selected_task_smart_view: Some(0),
             show_task_done: false,
             task_sort: 0,
-            note_sort_recent: true,
+            note_sort_mode: 0,
             note_multi_select: false,
             selected_note_ids: HashSet::new(),
             task_multi_select: false,
@@ -3263,6 +3321,14 @@ impl Workspace {
                     this.organizer_note_board_mode = false;
                     cx.notify();
                     eprintln!("SMOKE: organizer note tile view mounted with filtered note cards");
+                    for mode in 0..3 {
+                        this.note_sort_mode = mode;
+                        let sorted_frame = this.render(window, cx);
+                        drop(sorted_frame);
+                    }
+                    this.note_sort_mode = 0;
+                    cx.notify();
+                    eprintln!("SMOKE: organizer note created, updated and content sorts rendered");
                     assert!(this.command_palette_open);
                     assert_eq!(this.command_palette_query, "设置");
                     assert_eq!(this.palette_items().len(), 1);
@@ -16808,16 +16874,7 @@ impl Render for Workspace {
         })
         .collect::<Vec<_>>();
         let note_count = notes.len();
-        notes.sort_by_key(|note| {
-            std::cmp::Reverse((
-                note.pinned,
-                if self.note_sort_recent {
-                    note.created
-                } else {
-                    note.edited
-                },
-            ))
-        });
+        sort_organizer_notes(&mut notes, self.note_sort_mode);
         let visible_note_ids = notes.iter().map(|note| note.id).collect::<Vec<_>>();
         let note_rows = notes
             .into_iter()
@@ -18483,13 +18540,13 @@ impl Render for Workspace {
                                         .text_color(muted)
                                         .hover(|row| row.bg(Palette::color(&p.bg).opacity(0.25)))
                                         .on_click(cx.listener(|this, _, _, cx| {
-                                            this.note_sort_recent = !this.note_sort_recent;
+                                            this.note_sort_mode = (this.note_sort_mode + 1) % 3;
                                             cx.notify();
                                         }))
-                                        .child(if self.note_sort_recent {
-                                            "最近创建  ⌄"
-                                        } else {
-                                            "最近更新  ⌄"
+                                        .child(match self.note_sort_mode {
+                                            0 => "最新创建  ⌄",
+                                            1 => "最新更新  ⌄",
+                                            _ => "按内容  ⌄",
                                         }),
                                 )
                                 .child(
