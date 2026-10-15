@@ -1024,3 +1024,8 @@
 - 补齐旧版 VersionPanel 的主要行为：当前页面可命名保存快照、查看相对当前内容的块差异、恢复（单步 Ctrl+Z 可撤销）、逐项删除；每页最多保留 core 定义的 20 个版本，删除页面时同步清理其快照文件与 metadata。快照与标签继续使用 quire-core `storage::versions` 与 `version/<page>/<timestamp>` 元数据，不引入第二种格式。
 - 新增隔离 SQLite Session 测试，覆盖保存、差异、恢复、undo、删除及重开；Release GUI smoke 验证版本保存/差异/恢复/undo/删除的状态与数据路径，并还原后续 smoke 所需的输入夹具。页面选项提供“版本历史”入口，名称输入、空态、版本列表、差异行、后退/恢复/删除和关闭均已接入。smoke 无法稳定捕获面板 render pass，因此不把它记作面板已实绘的证据。
 - 收尾 Release smoke 通过；日志覆盖版本状态路径，以及速记、托盘、MCP、最大化/还原和 1000 块虚拟列表。`cargo test -j 8`（74 项：37 库 + 33 二进制 + 2 集成）、`cargo check -j 8`、Release build、格式与 diff 检查通过。没有访问真实用户数据库或修改参考树。速记/托盘/MCP 的隔离事件及请求路径均通过；托盘真人菜单点选、外部 MCP 客户端持续连接和两台设备同步仍待桌面/网络验收。版本面板真实鼠标打开、截图/几何、与 Slint 参考图逐状态对照仍未验。
+
+## 第一百六十二轮：官方 MCP SDK 外部客户端实连复核
+
+- 在当前 Release 可执行文件上启动独立隔离数据库，并通过官方 `@modelcontextprotocol/client@2.3.1` 的 `StreamableHTTPClientTransport` 实际建立 Bearer 鉴权连接；SDK 自动协商得到 `2026-07-28`，`tools/list` 返回 16 个工具，随后经真实客户端调用 `create_note` 并以 `list_notes` 读回中文标题/正文/标签，往返断言通过。
+- 客户端依官方文档使用标准 `Client.connect()` 握手与 Streamable HTTP transport；测试进程结束后关闭临时应用。库与 npm 安装均位于 `%TEMP%`，没有打开默认用户库或改动 Slint 参考树。真实 MCP 调用闭环已由本轮复核；长时间连接稳定性、宿主应用重启后的客户端自动重连尚未验收。
