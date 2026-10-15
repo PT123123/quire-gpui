@@ -1410,6 +1410,9 @@ pub struct Workspace {
     task_due_error: bool,
     status: String,
     error: bool,
+    smoke_mode: bool,
+    smoke_board_rendered: bool,
+    smoke_board_cards_rendered: bool,
     startup_notice: Option<String>,
     active: Option<BlockId>,
     save_task: Option<gpui::Task<()>>,
@@ -1759,6 +1762,9 @@ impl Workspace {
             task_due_error: false,
             status: "已保存".into(),
             error: false,
+            smoke_mode: smoke,
+            smoke_board_rendered: false,
+            smoke_board_cards_rendered: false,
             startup_notice,
             active: None,
             save_task: None,
@@ -9555,7 +9561,12 @@ impl Workspace {
                                     let formula_properties = all_columns.clone();
                                     let all_database_properties = self.session.databases.properties.clone();
                                     let database_attachments = self.session.attachments.clone();
-                                    let rows = uniform_list(
+                                    let board_query_columns = query_columns.clone();
+                                    let board_row_sorts = row_sorts.clone();
+                                    let board_row_filter = row_filter.clone();
+                                    let board_row_search = row_search.clone();
+                                    let board_repo = repo.clone();
+                                    let table_rows = uniform_list(
                                         SharedString::from(format!("database-rows-{}", db_id.0)),
                                         list_total,
                                         cx.processor(
@@ -9930,6 +9941,228 @@ impl Workspace {
                                     .max_h(px(288.))
                                     .flex_1()
                                     .min_h(px(40.));
+                                    let rows = if active_layout
+                                        == quire_core::core::database::ViewLayout::Board
+                                    {
+                                        if self.smoke_mode && !self.smoke_board_rendered {
+                                            let group_count = group_data
+                                                .as_ref()
+                                                .map_or(1, |(_, groups, _)| groups.len());
+                                            let grouped_rows = group_data.as_ref().map_or(
+                                                total,
+                                                |(_, groups, _)| {
+                                                    groups.iter().map(|(_, count)| count).sum()
+                                                },
+                                            );
+                                            assert_eq!(group_count, 2, "board smoke needs two groups");
+                                            assert_eq!(grouped_rows, total, "board groups must cover every filtered record");
+                                            self.smoke_board_rendered = true;
+                                            eprintln!("SMOKE: grouped board rendered two columns and all records");
+                                        }
+                                        let mut board_groups = if let Some((_, groups, config)) = &group_data {
+                                            groups
+                                                .iter()
+                                                .map(|(key, count)| {
+                                                    (
+                                                        Some(key.clone()),
+                                                        *count,
+                                                        database_group_label(key, config),
+                                                    )
+                                                })
+                                                .collect::<Vec<_>>()
+                                        } else {
+                                            vec![(None, total, "全部".to_owned())]
+                                        };
+                                        if board_groups.is_empty() {
+                                            board_groups.push((None, 0, "无记录".to_owned()));
+                                        }
+                                        let board_spec = group_data
+                                            .as_ref()
+                                            .map(|(spec, _, _)| spec.clone());
+                                        let board_columns = board_groups
+                                            .into_iter()
+                                            .enumerate()
+                                            .map(|(group_index, (group_key, count, label))| {
+                                                let card_repo = board_repo.clone();
+                                                let card_columns = board_query_columns.clone();
+                                                let card_sorts = board_row_sorts.clone();
+                                                let card_filter = board_row_filter.clone();
+                                                let card_search = board_row_search.clone();
+                                                let card_spec = board_spec.clone();
+                                                let card_key = group_key.clone();
+                                                let card_db = db_id;
+                                                let card_title = title;
+                                                let card_block = block_id;
+                                                let card_selected = self.selected_database_record;
+                                                let cards = uniform_list(
+                                                    SharedString::from(format!(
+                                                        "db-board-cards-{}-{group_index}",
+                                                        db_id.0
+                                                    )),
+                                                    count,
+                                                    cx.processor(
+                                                        move |this, range: Range<usize>, _window, cx| {
+                                                            let request = quire_core::core::database::RowRequest {
+                                                                db: card_db,
+                                                                title: card_title,
+                                                                columns: &card_columns,
+                                                                sorts: &card_sorts,
+                                                                filter: card_filter.as_ref(),
+                                                                search: card_search.as_deref(),
+                                                            };
+                                                            let row_slice = quire_core::core::database::RowWindow {
+                                                                start: range.start,
+                                                                end: range.end,
+                                                            };
+                                                            let card_rows = match (&card_spec, &card_key) {
+                                                                (Some(spec), Some(key)) => card_repo
+                                                                    .window_rows_in_group(
+                                                                        &request,
+                                                                        spec,
+                                                                        key,
+                                                                        range.start,
+                                                                        range.len(),
+                                                                    )
+                                                                    .unwrap_or_default(),
+                                                                _ => card_repo
+                                                                    .window_rows(&request, row_slice)
+                                                                    .unwrap_or_default(),
+                                                            };
+                                                            if this.smoke_mode
+                                                                && !this.smoke_board_cards_rendered
+                                                                && !card_rows.is_empty()
+                                                            {
+                                                                this.smoke_board_cards_rendered = true;
+                                                                eprintln!("SMOKE: board card data loaded through the virtualized group query");
+                                                            }
+                                                            card_rows
+                                                                .into_iter()
+                                                                .map(|row| {
+                                                                    let selected = card_selected
+                                                                        == Some((card_block.0, card_db.0, row.record));
+                                                                    let record = row.record;
+                                                                    let title_text = if row.title.is_empty() {
+                                                                        "（无标题）".to_owned()
+                                                                    } else {
+                                                                        row.title.clone()
+                                                                    };
+                                                                    let properties = card_columns
+                                                                        .iter()
+                                                                        .zip(row.cells.iter())
+                                                                        .filter(|(_, value)| !value.trim().is_empty())
+                                                                        .take(2)
+                                                                        .map(|(property, value)| {
+                                                                            let shown = value.chars().take(46).collect::<String>();
+                                                                            div()
+                                                                                .w_full()
+                                                                                .text_size(px(10.))
+                                                                                .text_color(Palette::color(&this.palette.muted))
+                                                                                .child(format!("{} · {shown}", property.name))
+                                                                        })
+                                                                        .collect::<Vec<_>>();
+                                                                    div()
+                                                                        .id(SharedString::from(format!(
+                                                                            "db-board-card-{}-{record}",
+                                                                            card_db.0
+                                                                        )))
+                                                                        .w(px(224.))
+                                                                        .h(px(84.))
+                                                                        .mb(px(7.))
+                                                                        .p(px(9.))
+                                                                        .flex()
+                                                                        .flex_col()
+                                                                        .gap(px(5.))
+                                                                        .rounded(px(7.))
+                                                                        .border_1()
+                                                                        .border_color(if selected {
+                                                                            Palette::color(&this.palette.accent)
+                                                                        } else {
+                                                                            db_border
+                                                                        })
+                                                                        .bg(if selected {
+                                                                            Palette::color(&this.palette.accent).opacity(0.13)
+                                                                        } else {
+                                                                            Palette::color(&this.palette.elevated)
+                                                                        })
+                                                                        .cursor_pointer()
+                                                                        .hover(|card| card.border_color(Palette::color(&this.palette.accent)))
+                                                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                                                            this.selected_database_record = Some((
+                                                                                card_block.0,
+                                                                                card_db.0,
+                                                                                record,
+                                                                            ));
+                                                                            this.active_database_cell = None;
+                                                                            this.active_database_choice = None;
+                                                                            this.active_database_relation = None;
+                                                                            cx.notify();
+                                                                        }))
+                                                                        .child(
+                                                                            div()
+                                                                                .w_full()
+                                                                                .text_size(px(12.))
+                                                                                .font_weight(FontWeight::SEMIBOLD)
+                                                                                .text_color(Palette::color(&this.palette.fg))
+                                                                                .child(title_text),
+                                                                        )
+                                                                        .children(properties)
+                                                                        .into_any_element()
+                                                                })
+                                                                .collect::<Vec<_>>()
+                                                        },
+                                                    ),
+                                                )
+                                                .h(px(250.))
+                                                .w(px(240.))
+                                                .flex_1()
+                                                .min_h(px(80.));
+                                                div()
+                                                    .id(SharedString::from(format!(
+                                                        "db-board-column-{}-{group_index}",
+                                                        db_id.0
+                                                    )))
+                                                    .w(px(240.))
+                                                    .h(px(288.))
+                                                    .flex_shrink_0()
+                                                    .flex()
+                                                    .flex_col()
+                                                    .rounded(px(7.))
+                                                    .border_1()
+                                                    .border_color(db_border)
+                                                    .bg(Palette::color(&p.bg).opacity(0.25))
+                                                    .child(
+                                                        div()
+                                                            .h(px(34.))
+                                                            .px(px(9.))
+                                                            .flex()
+                                                            .items_center()
+                                                            .justify_between()
+                                                            .border_b_1()
+                                                            .border_color(db_border)
+                                                            .text_size(px(11.))
+                                                            .text_color(text)
+                                                            .child(label)
+                                                            .child(format!("{count}")),
+                                                    )
+                                                    .child(cards)
+                                            })
+                                            .collect::<Vec<_>>();
+                                        div()
+                                            .id(SharedString::from(format!(
+                                                "db-board-{}",
+                                                db_id.0
+                                            )))
+                                            .w_full()
+                                            .h(px(288.))
+                                            .flex()
+                                            .items_start()
+                                            .gap(px(8.))
+                                            .overflow_x_scroll()
+                                            .children(board_columns)
+                                            .into_any_element()
+                                    } else {
+                                        table_rows.into_any_element()
+                                    };
                                     let columns_open = selected_view.is_some_and(|view_id| {
                                         self.database_columns_open
                                             == Some((block_id.0, view_id.0))
@@ -10728,7 +10961,12 @@ impl Workspace {
                                                             }
                                                             button
                                                         }).child({
-                                                            let is_table = !list_layout;
+                                                            let layout_label = match active_layout {
+                                                                quire_core::core::database::ViewLayout::Table => "表格",
+                                                                quire_core::core::database::ViewLayout::List => "列表",
+                                                                quire_core::core::database::ViewLayout::Board => "看板",
+                                                                _ => "表格",
+                                                            };
                                                             let mut button = div()
                                                                 .id(SharedString::from(format!(
                                                                     "db-layout-toggle-{}",
@@ -10739,14 +10977,20 @@ impl Workspace {
                                                                 .rounded(px(4.))
                                                                 .text_color(muted)
                                                                 .hover(|button| button.bg(db_hover))
-                                                                .child(if is_table { "表格" } else { "列表" });
+                                                                .child(layout_label);
                                                             if !self.session.page.locked {
                                                                 button = button.cursor_pointer().on_click(cx.listener(
                                                                     move |this, _, window, cx| {
-                                                                        let layout = if is_table {
-                                                                            quire_core::core::database::ViewLayout::List
-                                                                        } else {
-                                                                            quire_core::core::database::ViewLayout::Table
+                                                                        let layout = match active_layout {
+                                                                            quire_core::core::database::ViewLayout::Table => {
+                                                                                quire_core::core::database::ViewLayout::List
+                                                                            }
+                                                                            quire_core::core::database::ViewLayout::List => {
+                                                                                quire_core::core::database::ViewLayout::Board
+                                                                            }
+                                                                            _ => {
+                                                                                quire_core::core::database::ViewLayout::Table
+                                                                            }
                                                                         };
                                                                         match this.session.set_database_view_layout(
                                                                             block_id,
@@ -10964,7 +11208,11 @@ impl Workspace {
                                         .when_some(filter_picker, |view, picker| {
                                             view.child(picker)
                                         })
-                                        .when(!list_layout, |view| view.child(header))
+                                        .when(
+                                            active_layout
+                                                == quire_core::core::database::ViewLayout::Table,
+                                            |view| view.child(header),
+                                        )
                                         .child(rows)
                                 } else {
                                     view.rounded(px(7.))

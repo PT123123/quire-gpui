@@ -137,13 +137,69 @@ fn run() -> Result<()> {
         session.set_setting("gpui.mcp.token", "quire-gpui-isolated-smoke-token");
         session.persistence.force_flush()?;
     }
-    if smoke_blocks > 0 {
-        let anchor = session
+    let mut smoke_board_block = None;
+    if smoke && !smoke_recovery {
+        let database_command = Command::AppendBlock {
+            kind: quire_core::core::types::BlockKind::Database,
+            text: String::new(),
+        };
+        session.execute(database_command);
+        let board_block = session
             .blocks()
-            .first()
-            .map(|block| block.id)
+            .last()
+            .context("cannot create isolated board smoke block")?
+            .id;
+        smoke_board_block = Some(board_block);
+        let database = session
+            .make_database(board_block, "看板渲染回归".into())
+            .context("cannot seed isolated board database")?;
+        let title_property = session
+            .databases
+            .title_property(database)
+            .context("board smoke database is missing its title property")?
+            .id;
+        let checkbox_property = session
+            .add_database_property(
+                board_block,
+                "完成".into(),
+                quire_core::core::database::PropertyKind::Checkbox,
+            )
+            .context("cannot add the board smoke group property")?;
+        let view = session
+            .databases
+            .views_of(database)
+            .next()
+            .context("board smoke database is missing its view")?
+            .id;
+        let mut definition = quire_core::core::database_view::ViewDefinition::new();
+        definition.set_group(Some(checkbox_property));
+        session.set_database_view_definition(board_block, view, definition.to_text())?;
+        session.set_database_view_layout(
+            board_block,
+            view,
+            quire_core::core::database::ViewLayout::Board,
+        )?;
+        for (title, checked) in [("未完成示例", "false"), ("已完成示例", "true")] {
+            let record = session
+                .add_database_record(board_block)
+                .context("cannot add a board smoke record")?;
+            session.set_database_cell(board_block, record, title_property, title)?;
+            session.set_database_cell(board_block, record, checkbox_property, checked)?;
+        }
+        session.persistence.force_flush()?;
+        eprintln!("Seeded a grouped, two-column board in the isolated smoke database");
+    }
+    if smoke_blocks > 0 {
+        let anchor = smoke_board_block
+            .or_else(|| session.blocks().first().map(|block| block.id))
             .context("测试页没有可用的插入位置")?;
-        let mut template = session.blocks()[0].clone();
+        let template = session
+            .blocks()
+            .iter()
+            .find(|block| block.kind == quire_core::core::types::BlockKind::Paragraph)
+            .context("测试页没有可用的段落模板")?
+            .clone();
+        let mut template = template;
         template.parent = None;
         template.marks.clear();
         let blocks = (0..smoke_blocks)
@@ -159,6 +215,11 @@ fn run() -> Result<()> {
             blocks,
         });
         eprintln!("Seeded {smoke_blocks} synthetic blocks in the isolated test database");
+    } else if smoke_board_block.is_some() {
+        session.execute(Command::AppendBlock {
+            kind: quire_core::core::types::BlockKind::Paragraph,
+            text: "隔离看板 smoke 锚点".into(),
+        });
     }
     let sync_listener_warning = sync_listener_preflight(quire_core::services::sync::SYNC_PORT);
     let theme = theme
