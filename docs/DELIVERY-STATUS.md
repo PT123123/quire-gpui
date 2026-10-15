@@ -1186,3 +1186,8 @@
 
 - 对照旧版 `sort_tasks` 的 F243：GPUI 已有添加顺序/截止日期/优先级三种排序，但优先级相同时缺少按截止日期的次级排序。现抽出共用任务排序函数，优先级模式按优先级降序、截止日期、清单顺序排列；手动模式显式按清单与 `ord`，截止日期模式无日期排后。列表与看板共用相同排序函数。
 - 单元测试覆盖三种顺序和次级键；Release GUI smoke 分别渲染列表、看板下三种排序。`cargo fmt --all -- --check`、`cargo test --locked`（91 项：44 库 + 45 二进制 + 1 stdio + 1 sync loopback）、`cargo check --locked`、`cargo build --release --locked` 与 `git diff --check` 均通过；全新随机 `%TEMP%` SQLite smoke 退出码为 0。PARITY F243 已记为已实现/未验证；没有访问真实用户库，也没有修改 Slint/core/冻结参考树。
+
+## 第一百九十一轮：设置页数据库存储操作
+
+- 对照旧版设置存储区域，GPUI 关于页补出当前数据库路径、“打开数据目录”和“立即备份”。文件管理器操作交给平台默认工具，内存模式隐藏磁盘操作；备份先提交当前笔记草稿并 flush 写入队列，再调用 core repository 快照，状态栏报告结果。F136/F137 已更新为已实现/未验证。
+- Release GUI smoke 在隔离临时数据库调用同一备份处理路径，并断言最新 `.bak1` 存在。`cargo fmt --all -- --check`、`cargo test --locked`（91 项）、`cargo check --locked`、`cargo build --release --locked` 和 `git diff --check` 均通过；GUI smoke 退出码 0，且隔离库备份文件存在。文件管理器真人点击尚未验收；真实用户库未访问，Slint/core/冻结参考树未修改。

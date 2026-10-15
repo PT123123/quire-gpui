@@ -8,6 +8,20 @@ pub enum ShellEvent {
     McpCall(crate::mcp_tools::McpJob),
 }
 
+pub fn open_folder(path: &Path) -> Result<(), String> {
+    #[cfg(windows)]
+    let mut command = std::process::Command::new("explorer.exe");
+    #[cfg(target_os = "macos")]
+    let mut command = std::process::Command::new("open");
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let mut command = std::process::Command::new("xdg-open");
+    command
+        .arg(path)
+        .spawn()
+        .map(|_| ())
+        .map_err(|error| format!("无法打开目录 {}：{error}", path.display()))
+}
+
 pub type ServiceHandle = Box<dyn std::any::Any + Send>;
 pub const HOTKEY_ALT_N: u8 = 1;
 pub const HOTKEY_ALT_M: u8 = 2;

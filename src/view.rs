@@ -2963,6 +2963,13 @@ impl Workspace {
             })
             .detach();
         } else if smoke {
+            let smoke_db = this.session.path.clone();
+            this.backup_now(window, cx);
+            assert!(
+                quire_core::storage::backup::slot(&smoke_db, 1).exists(),
+                "the settings backup action must create the newest snapshot"
+            );
+            eprintln!("SMOKE: settings backup flushes and creates an isolated database snapshot");
             let mcp_port = this.mcp_port;
             let mcp_token = this.mcp_token.clone();
             let (mcp_result_tx, mcp_result_rx) = std::sync::mpsc::channel();
@@ -8626,6 +8633,53 @@ impl Workspace {
             input.reset(String::new(), Vec::new(), 0, cx);
         });
         self.restore_focus(window, cx);
+        cx.notify();
+    }
+    fn open_data_folder(&mut self, cx: &mut Context<Self>) {
+        let Some(directory) = self.session.path.parent() else {
+            self.status = "当前库没有可打开的数据目录".into();
+            self.error = true;
+            cx.notify();
+            return;
+        };
+        match crate::platform::open_folder(directory) {
+            Ok(()) => {
+                self.status = format!("已打开数据目录：{}", directory.display());
+                self.error = false;
+            }
+            Err(error) => {
+                self.status = error;
+                self.error = true;
+            }
+        }
+        cx.notify();
+    }
+    fn backup_now(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.commit_note_draft(window, cx);
+        let result = if self.session.repo.path().is_none() {
+            Err("当前库运行于内存模式，无需创建磁盘备份".to_owned())
+        } else {
+            self.session
+                .persistence
+                .force_flush()
+                .map_err(|error| format!("保存当前更改失败：{error}"))
+                .and_then(|()| {
+                    self.session
+                        .repo
+                        .snapshot()
+                        .map_err(|error| format!("创建备份失败：{error}"))
+                })
+        };
+        match result {
+            Ok(()) => {
+                self.status = "已创建新的数据库备份".into();
+                self.error = false;
+            }
+            Err(error) => {
+                self.status = error;
+                self.error = true;
+            }
+        }
         cx.notify();
     }
     fn toggle_sidebar(&mut self, cx: &mut Context<Self>) {
@@ -16108,7 +16162,33 @@ impl Render for Workspace {
                                 div().text_size(px(12.)).text_color(muted).child("界面：GPUI · 数据：本地 SQLite"),
                             ).child(
                                 div().text_size(px(12.)).text_color(muted).child("使用独立于 Slint 版的 Quire GPUI 数据目录。"),
-                            ),
+                            )
+                            .when(self.session.repo.path().is_some(), |about| {
+                                about
+                                    .child(div().h(px(1.)).bg(Palette::color(&p.border)))
+                                    .child(div().text_size(px(12.)).font_weight(FontWeight::SEMIBOLD).child("存储与备份"))
+                                    .child(div().text_size(px(10.)).text_color(muted).child(self.session.path.display().to_string()))
+                                    .child(
+                                        div().flex().gap(px(8.)).children([
+                                            div()
+                                                .id("settings-open-data-folder")
+                                                .px(px(10.)).py(px(6.)).rounded(px(5.))
+                                                .border_1().border_color(Palette::color(&p.border))
+                                                .cursor_pointer().text_size(px(11.))
+                                                .hover(|button| button.bg(Palette::color(&p.bg).opacity(0.35)))
+                                                .on_click(cx.listener(|this, _, _, cx| this.open_data_folder(cx)))
+                                                .child("打开数据目录"),
+                                            div()
+                                                .id("settings-backup-now")
+                                                .px(px(10.)).py(px(6.)).rounded(px(5.))
+                                                .border_1().border_color(Palette::color(&p.border))
+                                                .cursor_pointer().text_size(px(11.))
+                                                .hover(|button| button.bg(Palette::color(&p.bg).opacity(0.35)))
+                                                .on_click(cx.listener(|this, _, window, cx| this.backup_now(window, cx)))
+                                                .child("立即备份"),
+                                        ]),
+                                    )
+                            }),
                         ))
                         .child(div().flex_1())
                         .child(

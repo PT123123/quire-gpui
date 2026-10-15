@@ -79,6 +79,8 @@ toggle-sidebar,已实现,未验证,工具栏快捷键和顶栏入口可折叠/�
 sidebar-resized,已实现,未验证,可拖动侧栏右边缘调整 200–480px 宽度并在下次启动恢复,拖动期间实时更新宽度；松手后写入 GPUI session settings 并自动保存
 search-open-requested,已实现,未验证,Ctrl+P 或侧栏/顶栏搜索入口打开页面搜索浮层；输入页面标题或正文过滤并可键盘打开结果,搜索结果限制为 8 项并聚焦搜索框；关闭浮层后恢复正文焦点
 settings-open-requested,已实现,未验证,侧栏设置入口打开外观设置；默认搜索框获得焦点；Esc 或遮罩点击关闭,设置浮层主题切换沿用 GPUI 独立设置与 12 套渐变调色板
+open-data-folder,已实现,未验证,设置的存储区域打开当前 SQLite 数据库所在目录,使用系统文件管理器打开库文件父目录；内存库隐藏入口，打开失败显示状态错误
+backup-now,已实现,未验证,设置存储区域立即创建当前数据库快照,先提交当前编辑并 flush 排队更改，再由 core SQLite repository 写入最新 .bak1；隔离 Release GUI smoke 检查备份文件存在
 window-resized,已实现,未验证,窗口可原生拖动边缘缩放；最大化/还原使用系统窗口状态；退出时保存普通窗口位置与尺寸,通过 GPUI Windows hit-test 提供无标题栏客户区的四边四角缩放；最大化安全 inset 保持原生逻辑；普通几何写入 GPUI session settings 并启动时做屏幕可见性校验
 sync-now,已实现,未验证,设备行的同步操作通过 core Engine 执行一次 pull-merge-push；设备在途期间拒绝重复排队,两个独立 Session 的隔离 loopback HTTP 测试覆盖 pairing、双向 snapshot/附件/数据库/organizer 合并与重开；尚无两台实体设备 UDP/防火墙验收
 sync-now-all,已实现,未验证,立即同步 60 秒内广播过的所有设备；跳过当前同步中的设备,设置页按钮使用同步任务去重集合；无近期设备时展示状态而不伪报成功
