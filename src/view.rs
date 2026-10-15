@@ -2003,6 +2003,7 @@ pub struct Workspace {
     block_clipboard: Option<Vec<Block>>,
     hovered_page: Option<quire_core::core::types::PageId>,
     page_context_menu: Option<(quire_core::core::types::PageId, f32, f32)>,
+    fixed_context_menu: Option<(u8, f32, f32)>,
     hovered_note: Option<quire_core::core::organizer::NoteId>,
     hovered_task: Option<quire_core::core::organizer::TaskId>,
     inputs: BTreeMap<u64, Entity<TextInput>>,
@@ -2424,6 +2425,7 @@ impl Workspace {
             block_clipboard: None,
             hovered_page: None,
             page_context_menu: None,
+            fixed_context_menu: None,
             hovered_note: None,
             hovered_task: None,
             inputs: BTreeMap::new(),
@@ -9717,6 +9719,56 @@ impl Workspace {
             .clamp(0., (f32::from(bounds.height) / scale - height).max(0.));
         self.page_context_menu = Some((id, x, y));
         cx.stop_propagation();
+        cx.notify();
+    }
+    fn open_fixed_context_menu(
+        &mut self,
+        target: u8,
+        event: &MouseDownEvent,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) {
+        let scale = quire_gpui::ui_scale::get();
+        let bounds = window.bounds().size;
+        let width = 190.;
+        let height = 112.;
+        let x = (f32::from(event.position.x) / scale)
+            .clamp(0., (f32::from(bounds.width) / scale - width).max(0.));
+        let y = (f32::from(event.position.y) / scale)
+            .clamp(0., (f32::from(bounds.height) / scale - height).max(0.));
+        self.fixed_context_menu = Some((target, x, y));
+        cx.stop_propagation();
+        cx.notify();
+    }
+    fn run_fixed_context_action(
+        &mut self,
+        target: u8,
+        action: u8,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.fixed_context_menu = None;
+        match (target, action) {
+            (0, 0) => self.add_page(window, cx),
+            (0, 1) => self.open_data_folder(cx),
+            (0, 2) => self.toggle_theme_picker(window, cx),
+            (1, 0) => {
+                self.organizer_open = true;
+                self.toggle_organizer_tab(false, window, cx);
+            }
+            (1, 1) => {
+                self.organizer_tasks = false;
+                self.create_note(window, cx);
+            }
+            (2, 0) => {
+                self.organizer_open = true;
+                self.toggle_organizer_tab(true, window, cx);
+            }
+            (2, 1) => self.create_task(window, cx),
+            (3, 0) => self.open_search(&SearchPages, window, cx),
+            (4, 0) => self.toggle_theme_picker(window, cx),
+            _ => {}
+        }
         cx.notify();
     }
     fn run_page_context_action(
@@ -17279,6 +17331,55 @@ impl Render for Workspace {
                         }))
                 })
         });
+        let fixed_context_overlay = self.fixed_context_menu.map(|(target, x, y)| {
+            let actions: &[(&str, u8)] = match target {
+                0 => &[("新建页面", 0), ("打开数据目录", 1), ("设置", 2)],
+                1 => &[("打开笔记", 0), ("新建笔记", 1)],
+                2 => &[("打开任务", 0), ("新建任务", 1)],
+                3 => &[("打开搜索", 0)],
+                _ => &[("打开设置", 0)],
+            };
+            div()
+                .id("fixed-sidebar-context-menu")
+                .absolute()
+                .left(px(x))
+                .top(px(y))
+                .w(px(190.))
+                .p(px(5.))
+                .rounded(px(8.))
+                .border_1()
+                .border_color(Palette::color(&p.border))
+                .bg(Palette::color(&p.elevated))
+                .shadow_lg()
+                .flex()
+                .flex_col()
+                .gap(px(2.))
+                .on_mouse_down_out(cx.listener(|_, _, window, cx| {
+                    cx.defer_in(window, |this, _window, cx| {
+                        this.fixed_context_menu = None;
+                        cx.notify();
+                    });
+                }))
+                .children(actions.iter().map(|(label, action)| {
+                    div()
+                        .id(SharedString::from(format!(
+                            "fixed-context-{target}-{action}"
+                        )))
+                        .h(px(29.))
+                        .px(px(9.))
+                        .flex()
+                        .items_center()
+                        .rounded(px(4.))
+                        .cursor_pointer()
+                        .text_size(px(12.))
+                        .text_color(text)
+                        .hover(|row| row.bg(Palette::color(&p.bg).opacity(0.38)))
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.run_fixed_context_action(target, *action, window, cx)
+                        }))
+                        .child(*label)
+                }))
+        });
         let kind_buttons =
             [
                 ("段落", BlockKind::Paragraph),
@@ -20836,7 +20937,13 @@ impl Render for Workspace {
                                         SidebarGlyph::ChevronDown,
                                         muted,
                                         px(16.),
-                                    )),
+                                    ))
+                                    .on_mouse_down(
+                                        MouseButton::Right,
+                                        cx.listener(|this, event: &MouseDownEvent, window, cx| {
+                                            this.open_fixed_context_menu(0, event, window, cx)
+                                        }),
+                                    ),
                             )
                             .child(
                                 div()
@@ -20862,6 +20969,12 @@ impl Render for Workspace {
                                         }
                                         this.toggle_organizer_tab(false, window, cx);
                                     }))
+                                    .on_mouse_down(
+                                        MouseButton::Right,
+                                        cx.listener(|this, event: &MouseDownEvent, window, cx| {
+                                            this.open_fixed_context_menu(1, event, window, cx)
+                                        }),
+                                    )
                                     .child(
                                         div()
                                             .w(px(16.))
@@ -20905,6 +21018,12 @@ impl Render for Workspace {
                                         }
                                         this.toggle_organizer_tab(true, window, cx);
                                     }))
+                                    .on_mouse_down(
+                                        MouseButton::Right,
+                                        cx.listener(|this, event: &MouseDownEvent, window, cx| {
+                                            this.open_fixed_context_menu(2, event, window, cx)
+                                        }),
+                                    )
                                     .child(
                                         div()
                                             .w(px(16.))
@@ -20938,6 +21057,12 @@ impl Render for Workspace {
                                     .on_click(cx.listener(|this, _, window, cx| {
                                         this.open_search(&SearchPages, window, cx);
                                     }))
+                                    .on_mouse_down(
+                                        MouseButton::Right,
+                                        cx.listener(|this, event: &MouseDownEvent, window, cx| {
+                                            this.open_fixed_context_menu(3, event, window, cx)
+                                        }),
+                                    )
                                     .child(
                                         div()
                                             .w(px(16.))
@@ -20971,6 +21096,12 @@ impl Render for Workspace {
                                     .on_click(cx.listener(|this, _, window, cx| {
                                         this.toggle_theme_picker(window, cx);
                                     }))
+                                    .on_mouse_down(
+                                        MouseButton::Right,
+                                        cx.listener(|this, event: &MouseDownEvent, window, cx| {
+                                            this.open_fixed_context_menu(4, event, window, cx)
+                                        }),
+                                    )
                                     .child(
                                         div()
                                             .w(px(16.))
@@ -21201,6 +21332,7 @@ impl Render for Workspace {
             })
             .when_some(settings_overlay, |root, overlay| root.child(overlay))
             .when_some(page_context_overlay, |root, overlay| root.child(overlay))
+            .when_some(fixed_context_overlay, |root, overlay| root.child(overlay))
             .when(self.organizer_capture_open, |root| {
                 let suggestions = self.organizer_capture_suggestions.clone();
                 let selected = self.organizer_capture_selected;

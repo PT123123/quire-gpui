@@ -1246,3 +1246,8 @@
 
 - 补上 F162 的页面节点菜单部分：页面树、收藏及最近列表中的普通页面支持右键菜单，可打开、新建子页、重命名、复制、调整同级顺序、缩进/移回根级、切换收藏及发起删除确认。菜单按鼠标位置锚定，并限制在窗口范围；删除仍走现有确认流程，锁定页重命名会给出反馈。
 - 工作区标题和固定笔记/任务/搜索/设置入口的右键菜单仍未实现，F162 继续标为“实现中”。`cargo fmt --all -- --check`、`cargo test --locked`（94 项：46 库 + 46 二进制 + 1 stdio + 1 sync loopback）、`cargo check --locked`、`cargo build --release --locked`、`git diff --check` 均通过。唯一临时目录和 SQLite 的 Release GUI smoke 退出码 0，覆盖 1000 块滚动、速记、托盘、MCP、最大化/还原及数据库视图。未访问真实用户库，没有修改 Slint/core/冻结参考树。
+
+## 第二百零三轮：固定侧栏节点右键菜单
+
+- 收口 F162：页面树/收藏/最近页面菜单之外，工作区标题、笔记、任务、搜索和设置入口也提供锚定右键菜单。工作区菜单可新建页面、打开数据目录或设置；笔记/任务可进入对应区或新建条目；搜索与设置可直接打开。
+- `tools/extract-parity.mjs` 重生成 246 callback / 261 property / 188 场景矩阵，语义 sidecar 成功合并。`cargo fmt --all -- --check`、`cargo test --locked`（94 项）、`cargo check --locked`、`cargo build --release --locked` 和 `git diff --check` 均通过。唯一临时目录及 SQLite 的 Release GUI smoke 退出码 0，覆盖 1000 块滚动、速记、托盘、MCP、最大化/还原和数据库视图。真人右键点击仍待验收；没有访问真实用户库或修改 Slint/core/冻结参考树。
