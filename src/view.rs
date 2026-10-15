@@ -498,6 +498,55 @@ fn organizer_tag_matches_path(candidate: &str, path: &str) -> bool {
     path.is_empty() || candidate == path || candidate.starts_with(&format!("{path}/"))
 }
 
+/// Direct children at the current level of a hierarchical organizer tag tree.
+/// A note/task is counted once under each ancestor even when several of its tags
+/// share that ancestor, matching the reference organizer's subtree counts.
+fn organizer_tag_tree_rows(items_tags: &[Vec<String>], path: &str) -> Vec<(String, usize, bool)> {
+    let mut counts = std::collections::BTreeMap::<String, usize>::new();
+    for tags in items_tags {
+        let mut prefixes = std::collections::BTreeSet::new();
+        for tag in tags {
+            let mut prefix = String::new();
+            for segment in tag.split('/').filter(|segment| !segment.is_empty()) {
+                if !prefix.is_empty() {
+                    prefix.push('/');
+                }
+                prefix.push_str(segment);
+                prefixes.insert(prefix.clone());
+            }
+        }
+        for prefix in prefixes {
+            *counts.entry(prefix).or_default() += 1;
+        }
+    }
+    let paths = counts
+        .keys()
+        .cloned()
+        .collect::<std::collections::BTreeSet<_>>();
+    let mut rows = counts
+        .into_iter()
+        .filter_map(|(full, count)| {
+            let parent = full
+                .rsplit_once('/')
+                .map(|(parent, _)| parent)
+                .unwrap_or("");
+            (parent == path).then(|| {
+                let has_children = paths
+                    .iter()
+                    .any(|candidate| candidate.starts_with(&format!("{full}/")));
+                (full, count, has_children)
+            })
+        })
+        .collect::<Vec<_>>();
+    rows.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+    rows.into_iter()
+        .map(|(path, count, has_children)| {
+            let name = path.rsplit('/').next().unwrap_or_default().to_owned();
+            (name, count, has_children)
+        })
+        .collect()
+}
+
 fn organizer_tags_exclude(tags: &[String], excluded: &BTreeSet<String>) -> bool {
     excluded
         .iter()
@@ -581,8 +630,9 @@ mod view_tests {
         capture_tag_replacement, capture_tags, database_filter_value_from_text,
         database_group_identity, database_group_label, database_property_kind_choices,
         evaluate_database_formula, evaluate_database_rollup, find_matches_in, link_target_range,
-        order_database_groups, organizer_tag_matches_path, organizer_tags_exclude, palette_matches,
-        parse_mcp_port, parse_organizer_tags, push_history, sync_targets, toc_headings,
+        order_database_groups, organizer_tag_matches_path, organizer_tag_tree_rows,
+        organizer_tags_exclude, palette_matches, parse_mcp_port, parse_organizer_tags,
+        push_history, sync_targets, toc_headings,
     };
     use quire_core::core::database::PropertyKind;
     use quire_core::core::database_view::FilterValue;
@@ -611,6 +661,31 @@ mod view_tests {
             &["项目2/工作".into()],
             &["项目".into()].into()
         ));
+    }
+
+    #[test]
+    fn organizer_tag_tree_shows_direct_children_with_unique_subtree_counts() {
+        let tags = [
+            vec!["项目/工作/GPUI".to_owned(), "项目/工作/Slint".to_owned()],
+            vec!["项目/个人".to_owned()],
+            vec!["项目/个人".to_owned()],
+            vec!["读书".to_owned()],
+        ];
+        assert_eq!(
+            organizer_tag_tree_rows(&tags, ""),
+            [("项目".to_owned(), 3, true), ("读书".to_owned(), 1, false)]
+        );
+        assert_eq!(
+            organizer_tag_tree_rows(&tags, "项目"),
+            [("个人".to_owned(), 2, false), ("工作".to_owned(), 1, true)]
+        );
+        assert_eq!(
+            organizer_tag_tree_rows(&tags, "项目/工作"),
+            [
+                ("GPUI".to_owned(), 1, false),
+                ("Slint".to_owned(), 1, false)
+            ]
+        );
     }
 
     #[test]
@@ -12945,7 +13020,7 @@ impl Render for Workspace {
                     )
             })
             .collect::<Vec<_>>();
-        let mut organizer_tags = Vec::<String>::new();
+        let mut organizer_item_tags = Vec::<Vec<String>>::new();
         if self.organizer_tasks {
             let tasks = if self.organizer_trash {
                 self.session.organizer.trashed_tasks().collect::<Vec<_>>()
@@ -12957,11 +13032,7 @@ impl Render for Workspace {
                     .collect::<Vec<_>>()
             };
             for task in tasks {
-                for tag in &task.tags {
-                    if !organizer_tags.contains(tag) {
-                        organizer_tags.push(tag.clone());
-                    }
-                }
+                organizer_item_tags.push(task.tags.clone());
             }
         } else {
             let notes = if self.organizer_trash {
@@ -12974,14 +13045,11 @@ impl Render for Workspace {
                     .collect::<Vec<_>>()
             };
             for note in notes {
-                for tag in &note.tags {
-                    if !organizer_tags.contains(tag) {
-                        organizer_tags.push(tag.clone());
-                    }
-                }
+                organizer_item_tags.push(note.tags.clone());
             }
         }
-        organizer_tags.sort();
+        let organizer_tag_path = self.organizer_tag.as_deref().unwrap_or("");
+        let organizer_tag_tree = organizer_tag_tree_rows(&organizer_item_tags, organizer_tag_path);
         let organizer_excluded_label = (!self.organizer_excluded_tags.is_empty()).then(|| {
             format!(
                 "排除 {}",
@@ -12992,25 +13060,28 @@ impl Render for Workspace {
                     .join(" ")
             )
         });
-        let organizer_tag_buttons = organizer_tags
+        let organizer_tag_buttons = organizer_tag_tree
             .into_iter()
-            .map(|tag| {
-                let selected = self.organizer_tag.as_deref() == Some(tag.as_str());
-                let excluded = self.organizer_excluded_tags.contains(&tag);
-                let label = tag.clone();
-                let exclude_label = tag.clone();
+            .map(|(tag, count, has_children)| {
+                let tag_path = if organizer_tag_path.is_empty() {
+                    tag.clone()
+                } else {
+                    format!("{organizer_tag_path}/{tag}")
+                };
+                let excluded = self.organizer_excluded_tags.contains(&tag_path);
+                let label = tag_path.clone();
+                let exclude_label = tag_path.clone();
                 div()
-                    .id(SharedString::from(format!("organizer-tag-{tag}")))
+                    .id(SharedString::from(format!("organizer-tag-{tag_path}")))
                     .w_full()
                     .h(px(25.))
                     .flex()
                     .items_center()
                     .justify_between()
                     .rounded(px(5.))
-                    .when(selected, |row| row.bg(Palette::color(&p.elevated)))
                     .child(
                         div()
-                            .id(SharedString::from(format!("organizer-tag-pick-{tag}")))
+                            .id(SharedString::from(format!("organizer-tag-pick-{tag_path}")))
                             .flex_1()
                             .min_w_0()
                             .h_full()
@@ -13020,8 +13091,6 @@ impl Render for Workspace {
                             .cursor_pointer()
                             .text_color(if excluded {
                                 Hsla::from(rgb(0xe5534b))
-                            } else if selected {
-                                accent
                             } else {
                                 muted
                             })
@@ -13029,8 +13098,29 @@ impl Render for Workspace {
                             .on_click(cx.listener(move |this, _, window, cx| {
                                 this.toggle_organizer_tag(label.clone(), window, cx)
                             }))
-                            .child(tag),
+                            .child(format!("{tag}  ·  {count}")),
                     )
+                    .when(has_children, |row| {
+                        let child_path = tag_path.clone();
+                        row.child(
+                            div()
+                                .id(SharedString::from(format!(
+                                    "organizer-tag-expand-{child_path}"
+                                )))
+                                .w(px(22.))
+                                .h_full()
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .cursor_pointer()
+                                .text_color(muted)
+                                .hover(|button| button.text_color(accent))
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    this.toggle_organizer_tag(child_path.clone(), window, cx)
+                                }))
+                                .child("›"),
+                        )
+                    })
                     .child(
                         div()
                             .id(SharedString::from(format!(
@@ -13754,7 +13844,22 @@ impl Render for Workspace {
                                     .child(div().text_size(px(11.)).text_color(muted).mt(px(7.)).mb(px(2.)).child("清单"))
                                     .child(div().id("organizer-task-list-selector").flex().flex_col().gap(px(3.)).overflow_y_scroll().children(task_list_buttons))
                             ))
-                            .child(div().text_size(px(11.)).text_color(muted).mt(px(6.)).child("标签"))
+                            .child(div().text_size(px(11.)).text_color(muted).mt(px(6.)).child(if organizer_tag_path.is_empty() { "标签".to_owned() } else { organizer_tag_path.replace('/', " / ") }))
+                            .when(self.organizer_tag.is_some(), |nav| {
+                                let parent_path = organizer_tag_path.rsplit_once('/').map(|(parent, _)| parent.to_owned()).unwrap_or_default();
+                                nav.child(
+                                    div()
+                                        .id("organizer-tag-parent")
+                                        .px(px(8.))
+                                        .py(px(6.))
+                                        .rounded(px(5.))
+                                        .cursor_pointer()
+                                        .text_color(muted)
+                                        .hover(|row| row.text_color(accent).bg(Palette::color(&p.bg).opacity(0.3)))
+                                        .on_click(cx.listener(move |this, _, window, cx| this.toggle_organizer_tag(parent_path.clone(), window, cx)))
+                                        .child("↑ 上级"),
+                                )
+                            })
                             .when_some(organizer_excluded_label, |nav, label| {
                                 nav.child(
                                     div()
