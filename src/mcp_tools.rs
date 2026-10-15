@@ -320,11 +320,17 @@ pub fn execute(session: &mut Session, name: &str, args: &Value) -> Result<Value,
                         .ok_or_else(|| "priority 必须是 none/low/medium/high".to_owned())
                 })
                 .transpose()?;
-            let list_id = args
-                .get("list_id")
-                .and_then(Value::as_u64)
-                .map(ListId)
-                .unwrap_or(ListId::INBOX);
+            let list_id = match args.get("list_id") {
+                None => ListId::INBOX,
+                Some(value) => {
+                    let raw = value
+                        .as_i64()
+                        .ok_or_else(|| "list_id 必须是非负整数".to_owned())?;
+                    let raw =
+                        u64::try_from(raw).map_err(|_| "list_id 必须是非负整数".to_owned())?;
+                    ListId(raw)
+                }
+            };
             if list_id != ListId::INBOX && session.organizer.list(list_id).is_none() {
                 return Err(format!("找不到清單 {}", list_id.0));
             }
@@ -567,7 +573,7 @@ pub fn tool_defs() -> Vec<ToolDef> {
                     "due": { "type": "string" },
                     "priority": { "type": "string", "enum": ["none", "low", "medium", "high"] },
                     "tags": { "type": "string" },
-                    "list_id": { "type": "integer", "description": "清单 id；缺省为收集箱" }
+                    "list_id": { "type": "integer", "minimum": 0, "description": "清单 id；缺省为收集箱" }
                 }),
                 &["title"],
             ),
@@ -1072,5 +1078,33 @@ mod tests {
         );
         assert!(rejected.is_err());
         assert_eq!(session.organizer.task(TaskId(id)).unwrap().title, "Ship");
+    }
+
+    #[test]
+    fn create_task_rejects_invalid_explicit_list_id_without_falling_back_to_inbox() {
+        let (_scratch, mut session) = session();
+        let initial_task_count = session.organizer.tasks.len();
+
+        for list_id in [json!(-1), json!("not-a-list")] {
+            let result = execute(
+                &mut session,
+                "create_task",
+                &json!({"title":"must not be created", "list_id":list_id}),
+            );
+            assert!(result.is_err());
+            assert_eq!(session.organizer.tasks.len(), initial_task_count);
+        }
+
+        let created = execute(
+            &mut session,
+            "create_task",
+            &json!({"title":"inbox default"}),
+        )
+        .unwrap();
+        let task = session
+            .organizer
+            .task(TaskId(created["task_id"].as_u64().unwrap()))
+            .unwrap();
+        assert_eq!(task.list, ListId::INBOX);
     }
 }

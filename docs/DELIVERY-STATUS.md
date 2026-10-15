@@ -1115,3 +1115,9 @@
 
 - 对照旧版 `org_set_note_trashed` / `org_set_task_trashed`，GPUI MCP 在重复 trash 或对 live 条目 restore 时原先忽略 Session 的无变更结果，仍返回成功。现先验证当前状态，非法重复迁移返回与旧版一致的错误；Session 写入意外失败也不再伪报成功。
 - 新增隔离工具测试，覆盖笔记/任务 live→trash→restore 的有效路径，以及初始 restore、重复 trash、重复 restore 的拒绝和状态保持。验证：`cargo fmt --all -- --check`、`cargo test --locked`（83 项：41 库 + 40 二进制 + 1 stdio + 1 sync loopback）、`cargo check --locked` 与 `cargo build --release --locked` 均通过。无真实用户库访问，无旧版/core 修改。
+
+## 第一百七十八轮：MCP 创建任务清单参数校验
+
+- 修复 `create_task` 对负数 `list_id` 的错误回退：此前 `as_u64` 失败后会静默使用收集箱，可能把请求写入错误清单。现在显式参数必须是非负整数且对应现存清单，缺省仍使用收集箱；工具 schema 增加 `minimum: 0`。`list_id` 类型或数值无效时在任何写入前返回错误。
+- 隔离回归覆盖负数、错误类型拒绝且任务数不变，以及缺省收集箱行为。未访问真实用户库，未改 Slint/core/冻结参考树。
+- 验证：定向 `cargo test --locked` create_task_rejects_invalid_explicit_list_id_without_falling_back_to_inbox 通过；`cargo fmt --all -- --check`、全量 `cargo test --locked`（84 项：41 库 + 41 二进制 + 1 stdio + 1 sync loopback）、`cargo check --locked`、`cargo build --release --locked` 与 `git diff --check` 均通过。
