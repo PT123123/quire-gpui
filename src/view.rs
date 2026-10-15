@@ -11057,6 +11057,14 @@ impl Workspace {
                                             .child(div().text_size(px(13.)).font_weight(FontWeight::SEMIBOLD).text_color(text).child(month_label));
                                         let mut date_picker = div()
                                             .id(SharedString::from(format!("db-calendar-date-picker-{}", db_id.0)))
+                                            .on_mouse_down_out(cx.listener(move |_, _, window, cx| {
+                                                cx.defer_in(window, move |this, _, cx| {
+                                                    if this.database_calendar_property_open == Some(property_picker_key) {
+                                                        this.database_calendar_property_open = None;
+                                                        cx.notify();
+                                                    }
+                                                });
+                                            }))
                                             .relative()
                                             .ml(px(8.))
                                             .px(px(8.))
@@ -11378,6 +11386,14 @@ impl Workspace {
                                         let start_picker_open = self.database_calendar_property_open == Some(start_picker_key);
                                         let mut start_picker = div()
                                             .id(SharedString::from(format!("db-timeline-start-picker-{}", db_id.0)))
+                                            .on_mouse_down_out(cx.listener(move |_, _, window, cx| {
+                                                cx.defer_in(window, move |this, _, cx| {
+                                                    if this.database_calendar_property_open == Some(start_picker_key) {
+                                                        this.database_calendar_property_open = None;
+                                                        cx.notify();
+                                                    }
+                                                });
+                                            }))
                                             .relative()
                                             .ml(px(8.))
                                             .px(px(8.))
@@ -11421,7 +11437,14 @@ impl Workspace {
 
                                         let end_picker_key = start_picker_key;
                                         let end_picker_open = self.database_timeline_end_property_open == Some(end_picker_key);
-                                        let mut end_picker = div().id(SharedString::from(format!("db-timeline-end-picker-{}", db_id.0))).relative().ml(px(2.)).px(px(8.)).py(px(4.)).rounded(px(4.)).text_size(px(10.)).text_color(if end_picker_open { accent } else { muted }).hover(|button| button.bg(db_hover)).child(end_property.as_ref().map_or_else(|| "结束：无 ▾".to_owned(), |property| format!("结束：{} ▾", property.name)));
+                                        let mut end_picker = div().id(SharedString::from(format!("db-timeline-end-picker-{}", db_id.0))).on_mouse_down_out(cx.listener(move |_, _, window, cx| {
+                                            cx.defer_in(window, move |this, _, cx| {
+                                                if this.database_timeline_end_property_open == Some(end_picker_key) {
+                                                    this.database_timeline_end_property_open = None;
+                                                    cx.notify();
+                                                }
+                                            });
+                                        })).relative().ml(px(2.)).px(px(8.)).py(px(4.)).rounded(px(4.)).text_size(px(10.)).text_color(if end_picker_open { accent } else { muted }).hover(|button| button.bg(db_hover)).child(end_property.as_ref().map_or_else(|| "结束：无 ▾".to_owned(), |property| format!("结束：{} ▾", property.name)));
                                         if !self.session.page.locked {
                                             end_picker = end_picker.cursor_pointer().on_click(cx.listener(move |this, _, _, cx| {
                                                 this.database_timeline_end_property_open = if this.database_timeline_end_property_open == Some(end_picker_key) { None } else { Some(end_picker_key) };

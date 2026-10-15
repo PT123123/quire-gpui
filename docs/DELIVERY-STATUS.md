@@ -985,3 +985,8 @@
 
 - 页面选项（页面图标、封面）面板现在在外部按下时延迟关闭，并同步关闭其打开的图标候选；面板内部操作仍可正常执行。已在 `docs/DIFFERENCES.md` 记录行为及数据库视图菜单仍待统一收起。
 - 验证：全量 `cargo test -j 8`（70 项）、`cargo check -j 8`、`cargo build --release -j 8`、格式检查、`git diff --check` 与全新隔离库 Release GUI smoke 均通过。Smoke 覆盖 MCP 16 工具及写入、速记保存、托盘隐藏/唤回、最大化/还原和 1000 块虚拟滚动；没有模拟页面选项的真实鼠标外点。未访问默认用户数据库或修改 Slint 参考树。
+
+## 第一百五十五轮：Calendar/Timeline 日期属性菜单点击外部关闭
+
+- Calendar 日期轴、Timeline 起始日期轴与结束日期轴选择器现在在鼠标按下到各自菜单之外时收起；外点处理延迟到目标点击后，因此再次点击触发器仍可按原行为切换开关。单元格值编辑和日期数据不受影响。
+- 验证：全量 `cargo test -j 8`（70 项）、`cargo check -j 8`、`cargo build --release -j 8`、格式检查、`git diff --check` 与全新隔离 SQLite 的 Release GUI smoke 通过；同一 smoke 覆盖 MCP、速记、托盘、最大化/还原和 1000 块虚拟滚动。日期菜单的真实鼠标命中尚未自动化。未访问默认用户数据库或修改 Slint 参考树。
