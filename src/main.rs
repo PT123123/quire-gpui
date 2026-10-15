@@ -133,7 +133,6 @@ fn run() -> Result<()> {
         let listener = std::net::TcpListener::bind(("127.0.0.1", 0))?;
         let mcp_port = listener.local_addr()?.port();
         drop(listener);
-        session.set_setting("gpui.mcp.enabled", "true");
         session.set_setting("gpui.mcp.port", mcp_port.to_string());
         session.set_setting("gpui.mcp.token", "quire-gpui-isolated-smoke-token");
         session.persistence.force_flush()?;

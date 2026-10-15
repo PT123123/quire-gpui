@@ -1611,7 +1611,12 @@ impl Workspace {
                 token
             }
         };
-        let mcp_enabled = session.setting("gpui.mcp.enabled") == Some("true");
+        // Match the reference app: MCP is on for a fresh profile. The listener
+        // remains loopback-only and is protected by the per-library token.
+        let mcp_enabled = session
+            .setting("gpui.mcp.enabled")
+            .map(|value| value == "true")
+            .unwrap_or(true);
         let (sync_job_tx, sync_job_rx) = std::sync::mpsc::channel();
         let sync_cmd_tx = quire_core::services::sync::engine::Engine::start(sync_self, sync_job_tx);
         let mut this = Self {
