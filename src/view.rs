@@ -4333,6 +4333,34 @@ impl Workspace {
         if self.closing {
             return;
         }
+        if self.session.page.locked
+            && matches!(
+                event,
+                InputEvent::Edited { .. }
+                    | InputEvent::Split(_)
+                    | InputEvent::Merge
+                    | InputEvent::Indent
+                    | InputEvent::Outdent
+                    | InputEvent::ToggleMark(_)
+                    | InputEvent::RemoveBlock
+                    | InputEvent::DuplicateBlock
+            )
+        {
+            if matches!(event, InputEvent::Edited { .. })
+                && let (Some(input), Some(block)) = (
+                    self.inputs.get(&id.0).cloned(),
+                    self.session.document.block(id).cloned(),
+                )
+            {
+                input.update(cx, |input, cx| {
+                    let caret = block.text.len();
+                    input.reset(block.text, block.marks, caret, cx);
+                });
+            }
+            self.status = "此页面已锁定 — … → 解锁页面后可编辑。".into();
+            cx.notify();
+            return;
+        }
         match event {
             InputEvent::Edited { text, boundary } => {
                 let shortcut = if self.slash_insert_mode == Some(id) {

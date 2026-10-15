@@ -1211,3 +1211,8 @@
 
 - 补齐旧版 F067：多栏布局内 Tab / Shift+Tab 依列顺序及列内块树顺序切换焦点，首尾处停留且不会意外缩进列表；表格单元格继续使用表格导航。遍历忽略 Column 容器并尊重折叠状态。
 - 单测验证跨列、嵌套块顺序和折叠后代隐藏；功能矩阵更新为已实现/未验证。`cargo test --locked`（94 项：46 库 + 46 二进制 + 1 stdio + 1 sync loopback）、`cargo check --locked`、Release 构建、`cargo fmt --all -- --check` 和 `git diff --check` 全部通过。唯一新建临时目录及 SQLite 的 Release GUI smoke 退出码 0，覆盖速记、托盘隐藏/唤回、MCP 16 工具、最大化/窗口化还原、1000 块虚拟滚动和数据库视图。未访问真实用户库或修改 Slint/core。
+
+## 第一百九十六轮：锁定页编辑拒绝反馈
+
+- 补齐旧版 F047：在锁定页面尝试输入、拆分/合并块、缩进、格式化或删除/复制时，输入实体立刻恢复到文档原文，状态栏解释页面已锁定及解锁方式；底层 Session/core 仍作为写入拒绝的最终保护。此举避免编辑框显示未保存的临时文本。
+- F047 已更新为已实现/未验证。`cargo test --locked`（94 项：46 库 + 46 二进制 + 1 stdio + 1 sync loopback）、`cargo check --locked`、Release 构建、格式及 diff 检查通过。唯一临时目录和 SQLite 的 Release GUI smoke 退出码 0，覆盖 1000 块虚拟滚动、速记提交、托盘隐藏/唤回、MCP、最大化/还原与数据库视图。真实锁定页输入尚未真人点击验收；没有访问真实用户库或修改 Slint/core。
