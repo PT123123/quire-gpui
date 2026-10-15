@@ -7868,24 +7868,14 @@ impl Workspace {
 }
 
 fn smoke_mcp_create_note(port: u16, token: &str) -> Result<String, String> {
-    let initialize = smoke_mcp_post(
+    let discover = smoke_mcp_post(
         port,
         token,
-        r#"{"jsonrpc":"2.0","id":0,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"quire-gpui-smoke","version":"0.1.0"}}}"#,
+        r#"{"jsonrpc":"2.0","id":0,"method":"server/discover","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{},"io.modelcontextprotocol/clientInfo":{"name":"quire-gpui-smoke","version":"0.1.0"}}}}"#,
     )?;
-    if !initialize.contains("\"protocolVersion\":\"2025-11-25\"") {
+    if !discover.contains("\"2026-07-28\"") {
         return Err(format!(
-            "MCP initialize did not negotiate 2025-11-25: {initialize}"
-        ));
-    }
-    let initialized = smoke_mcp_post(
-        port,
-        token,
-        r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#,
-    )?;
-    if !initialized.starts_with("HTTP/1.1 202 Accepted") {
-        return Err(format!(
-            "MCP initialized notification was not accepted: {initialized}"
+            "MCP server discovery did not advertise 2026-07-28: {discover}"
         ));
     }
     let body = serde_json::json!({
@@ -7898,6 +7888,14 @@ fn smoke_mcp_create_note(port: u16, token: &str) -> Result<String, String> {
                 "title": "MCP 窗口 smoke",
                 "body": "由 MCP 桌面窗口回归创建",
                 "tags": "mcp-smoke,桌面回归"
+            },
+            "_meta": {
+                "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+                "io.modelcontextprotocol/clientCapabilities": {},
+                "io.modelcontextprotocol/clientInfo": {
+                    "name": "quire-gpui-smoke",
+                    "version": "0.1.0"
+                }
             }
         }
     })
@@ -7913,9 +7911,10 @@ fn smoke_mcp_post(port: u16, token: &str, body: &str) -> Result<String, String> 
     stream
         .set_read_timeout(Some(Duration::from_secs(5)))
         .map_err(|error| format!("set MCP smoke timeout: {error}"))?;
+    let metadata_headers = crate::mcp::transport_http_metadata_headers(body)?;
     write!(
         stream,
-        "POST /mcp HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nAuthorization: Bearer {token}\r\nContent-Type: application/json\r\nAccept: application/json, text/event-stream\r\nMCP-Protocol-Version: 2025-11-25\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        "POST /mcp HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nAuthorization: Bearer {token}\r\nContent-Type: application/json\r\nAccept: application/json, text/event-stream\r\n{metadata_headers}Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
         body.len()
     )
     .map_err(|error| format!("send MCP smoke request: {error}"))?;

@@ -843,6 +843,6 @@ GPUI 已覆盖主编辑器、整理区、独立速记与标签建议、Windows �
 ## 第一百二十八轮：速记 / 托盘 / 同步 / MCP 优先回归
 
 - 补强 MCP Streamable HTTP：支持 2025-11-25 版本协商及 `MCP-Protocol-Version` 回传；校验客户端同时接受 JSON 与 SSE、拒绝不支持的协议版本；对携带非本机 Origin 的请求返回 403，保留仅监听 127.0.0.1 与 Bearer token。stdio 桥同步声明 Streamable HTTP 所需的 Accept 类型。
-- MCP 自动回归覆盖 2025-11-25 initialize、版本回传、拒绝恶意 Origin / 未知版本、工具调用、鉴权、请求大小上限、stdio 转发、notification 空响应与相同端口重启。官方 MCP 2026-07-28 新版采用无握手/每请求元数据，本轮明确未实现；暂不能声称兼容当前最新协议。
+- MCP 自动回归覆盖 2025-11-25 initialize/版本回传，以及 2026-07-28 `server/discover`、无握手工具调用、`resultType`、逐请求 `_meta` 与 `Mcp-Method` / `Mcp-Name` 一致性校验；HTTP 与 stdio 两种传输均走现代请求，stdio 子进程测试确认其转发的协议头。两代协议都覆盖拒绝恶意 Origin / 未知版本、鉴权、请求大小上限、notification 空响应与同端口重启。当前是按官方字段契约写的 wire test，还未接正式 TypeScript/Python SDK 客户端实测。
 - 速记窗口、托盘隐藏/恢复与唯一草稿复用、同步 engine 的隔离双 Session HTTP 拉取/推送/合并已有 Release smoke 或自动测试；本轮未运行真人托盘点击，也未做两台 Windows 设备之间的 UDP 广播、防火墙和离线重连验收。所有测试使用新的临时库。
-- 验证：全量 62 项 `cargo test -j 8`、`cargo check -j 8`、`cargo fmt --all -- --check`、`git diff --check`、Release 构建及新临时库 `--smoke-test --smoke-blocks 1000` 均通过。Smoke 覆盖 MCP initialize/initialized/HTTP Bearer → UI Session 创建笔记、速记启动/事件重触发复用/标签提交、托盘隐藏/恢复、同步和窗口路径；没有真人点击托盘菜单或两台实体设备 UDP 互通验收。
+- 验证：最新代码的全量 62 项测试、`cargo check -j 8`、`cargo fmt --all -- --check`、`git diff --check`、Release 构建及新临时库 `--smoke-test --smoke-blocks 1000` 均通过。窗口 smoke 经 MCP 2026-07-28 `server/discover` → Bearer HTTP → UI Session 创建笔记，并继续覆盖速记启动/事件重触发复用/标签提交、托盘隐藏/恢复、同步和窗口路径；没有真人点击托盘菜单或两台实体设备 UDP 互通验收。

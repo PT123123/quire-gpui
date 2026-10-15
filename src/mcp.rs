@@ -65,6 +65,7 @@ pub fn now_label() -> String {
 /// 就回它，否则回最新的——MCP 规范要求服务端这样降级。
 const SUPPORTED_VERSIONS: [&str; 4] = ["2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25"];
 const LATEST_VERSION: &str = "2025-11-25";
+const MODERN_VERSION: &str = "2026-07-28";
 
 /// 一个工具的定义，原样进 `tools/list` 的响应。
 #[derive(Debug, Clone)]
@@ -366,12 +367,14 @@ impl McpServer {
             // MCP 2025-11-25 specifies this fallback for stateless servers.
             .unwrap_or("2025-03-26");
         if !SUPPORTED_VERSIONS.contains(&protocol_version) {
-            return respond(
-                &stream,
-                400,
-                "application/json",
-                "{\"error\":\"unsupported MCP protocol version\"}",
-            );
+            if protocol_version != MODERN_VERSION {
+                return respond(
+                    &stream,
+                    400,
+                    "application/json",
+                    "{\"error\":\"unsupported MCP protocol version\"}",
+                );
+            }
         }
         if content_length > MAX_HTTP_BODY_BYTES {
             return respond(
@@ -384,6 +387,45 @@ impl McpServer {
         let mut body = vec![0u8; content_length];
         reader.read_exact(&mut body)?;
         let body = String::from_utf8_lossy(&body).to_string();
+        if protocol_version == MODERN_VERSION {
+            if let Err(error) = validate_modern_http_headers(&headers, &body) {
+                return respond(&stream, 400, "application/json", &error);
+            }
+            let requested_method = serde_json::from_str::<Value>(&body)
+                .ok()
+                .and_then(|message| {
+                    message
+                        .get("method")
+                        .and_then(Value::as_str)
+                        .map(str::to_owned)
+                });
+            if requested_method.as_deref().is_some_and(|method| {
+                !matches!(
+                    method,
+                    "server/discover" | "ping" | "tools/list" | "tools/call"
+                )
+            }) {
+                let id = serde_json::from_str::<Value>(&body)
+                    .ok()
+                    .and_then(|message| message.get("id").cloned());
+                let error = modern_http_error(
+                    id.as_ref(),
+                    -32601,
+                    &format!("method not found: {}", requested_method.unwrap()),
+                );
+                return respond(&stream, 404, "application/json", &error);
+            }
+            return match handle_modern_request(&self.tools, &body, &self.call) {
+                Some(text) => respond_with_headers(
+                    &stream,
+                    200,
+                    "application/json",
+                    &text,
+                    &[("MCP-Protocol-Version", MODERN_VERSION)],
+                ),
+                None => respond(&stream, 202, "text/plain", ""),
+            };
+        }
         let response_version = serde_json::from_str::<Value>(&body)
             .ok()
             .filter(|message| message.get("method").and_then(Value::as_str) == Some("initialize"))
@@ -410,6 +452,106 @@ impl McpServer {
             None => respond(&stream, 202, "text/plain", ""),
         }
     }
+}
+
+fn validate_modern_http_headers(
+    headers: &HashMap<String, String>,
+    body: &str,
+) -> Result<(), String> {
+    let message: Value =
+        serde_json::from_str(body).map_err(|_| modern_http_error(None, -32700, "Parse error"))?;
+    let method = message.get("method").and_then(Value::as_str).unwrap_or("");
+    let id = message.get("id").filter(|value| !value.is_null());
+    let params = message.get("params").unwrap_or(&Value::Null);
+    let protocol = params
+        .pointer("/_meta/io.modelcontextprotocol~1protocolVersion")
+        .and_then(Value::as_str);
+    let method_header = headers.get("mcp-method").map(String::as_str);
+    let expected_name = match method {
+        "tools/call" => params.get("name").and_then(Value::as_str),
+        "resources/read" => params.get("uri").and_then(Value::as_str),
+        "prompts/get" => params.get("name").and_then(Value::as_str),
+        _ => None,
+    };
+    let name_header = headers.get("mcp-name").map(String::as_str);
+
+    if protocol != Some(MODERN_VERSION)
+        || method_header != Some(method)
+        || expected_name.is_some_and(|name| name_header != Some(name))
+        || (expected_name.is_none() && name_header.is_some())
+    {
+        return Err(modern_http_error(
+            id,
+            -32020,
+            "Header mismatch: modern MCP metadata does not match the request",
+        ));
+    }
+    Ok(())
+}
+
+fn modern_http_error(id: Option<&Value>, code: i64, message: &str) -> String {
+    json!({
+        "jsonrpc": "2.0",
+        "id": id.cloned().unwrap_or(Value::Null),
+        "error": { "code": code, "message": message },
+        "_meta": { "io.modelcontextprotocol/serverInfo": {
+            "name": "quire-gpui",
+            "version": env!("CARGO_PKG_VERSION"),
+        }}
+    })
+    .to_string()
+}
+
+fn handle_modern_request(tools: &[ToolDef], body: &str, call: &CallFn) -> Option<String> {
+    let message: Value = match serde_json::from_str(body) {
+        Ok(value) => value,
+        Err(_) => return Some(modern_http_error(None, -32700, "Parse error")),
+    };
+    if message.is_array() {
+        return Some(modern_http_error(None, -32600, "Invalid Request"));
+    }
+    let method = message.get("method").and_then(Value::as_str).unwrap_or("");
+    let id = message.get("id").filter(|value| !value.is_null());
+    if id.is_none() {
+        return None;
+    }
+    let params = message.get("params").unwrap_or(&Value::Null);
+    let result = if method == "server/discover" {
+        Reply::Result(json!({
+            "supportedVersions": [MODERN_VERSION],
+            "capabilities": { "tools": {} },
+            "instructions": "Quire 笔记与任务工具服务。",
+            "ttlMs": 0,
+            "cacheScope": "private",
+        }))
+    } else if method == "initialize" || method == "notifications/initialized" {
+        Reply::Error(-32601, format!("method not found: {method}"))
+    } else {
+        handle_message(tools, method, params, id, call)
+    };
+    let mut response = match result {
+        Reply::Result(mut result) => {
+            if let Some(object) = result.as_object_mut() {
+                if matches!(method, "tools/list" | "tools/call") {
+                    object.insert("resultType".into(), json!("complete"));
+                }
+                if method == "tools/list" {
+                    object.insert("ttlMs".into(), json!(0));
+                    object.insert("cacheScope".into(), json!("private"));
+                }
+            }
+            json!({ "jsonrpc": "2.0", "id": id, "result": result })
+        }
+        Reply::Error(code, text) => {
+            json!({ "jsonrpc": "2.0", "id": id, "error": { "code": code, "message": text } })
+        }
+        Reply::Silent => return None,
+    };
+    response["_meta"] = json!({ "io.modelcontextprotocol/serverInfo": {
+        "name": "quire-gpui",
+        "version": env!("CARGO_PKG_VERSION"),
+    }});
+    Some(response.to_string())
 }
 
 fn accepts_mcp_json(accept: &str) -> bool {
@@ -563,9 +705,10 @@ fn forward_stdio_message(port: u16, token: &str, body: &str) -> Result<Option<St
     stream
         .set_read_timeout(Some(std::time::Duration::from_secs(30)))
         .map_err(|error| error.to_string())?;
+    let metadata_headers = transport_http_metadata_headers(body)?;
     write!(
         stream,
-        "POST /mcp HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nAuthorization: Bearer {token}\r\nContent-Type: application/json\r\nAccept: application/json, text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        "POST /mcp HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nAuthorization: Bearer {token}\r\nContent-Type: application/json\r\nAccept: application/json, text/event-stream\r\n{metadata_headers}Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
         body.len()
     )
     .map_err(|error| format!("send MCP request: {error}"))?;
@@ -589,6 +732,50 @@ fn forward_stdio_message(port: u16, token: &str, body: &str) -> Result<Option<St
         return Err(format!("Quire MCP returned {status}: {payload}"));
     }
     Ok(Some(payload.to_owned()))
+}
+
+pub(crate) fn transport_http_metadata_headers(body: &str) -> Result<String, String> {
+    let Ok(message) = serde_json::from_str::<Value>(body) else {
+        return Ok(String::new());
+    };
+    let method = message.get("method").and_then(Value::as_str).unwrap_or("");
+    let params = message.get("params").unwrap_or(&Value::Null);
+    let modern_version = params
+        .pointer("/_meta/io.modelcontextprotocol~1protocolVersion")
+        .and_then(Value::as_str);
+    let version = if modern_version == Some(MODERN_VERSION) {
+        Some(MODERN_VERSION)
+    } else {
+        message
+            .pointer("/params/protocolVersion")
+            .and_then(Value::as_str)
+    };
+    let Some(version) = version else {
+        return Ok(String::new());
+    };
+    let mut headers = format!("MCP-Protocol-Version: {version}\r\n");
+    if version == MODERN_VERSION {
+        if method.is_empty() || !header_safe(method) {
+            return Err("invalid modern MCP method for HTTP metadata".into());
+        }
+        headers.push_str(&format!("Mcp-Method: {method}\r\n"));
+        let name = match method {
+            "tools/call" | "prompts/get" => params.get("name").and_then(Value::as_str),
+            "resources/read" => params.get("uri").and_then(Value::as_str),
+            _ => None,
+        };
+        if let Some(name) = name {
+            if !header_safe(name) {
+                return Err("modern MCP name must be visible ASCII in the stdio bridge".into());
+            }
+            headers.push_str(&format!("Mcp-Name: {name}\r\n"));
+        }
+    }
+    Ok(headers)
+}
+
+fn header_safe(value: &str) -> bool {
+    !value.is_empty() && value.bytes().all(|byte| (0x21..=0x7e).contains(&byte))
 }
 
 /// 没有依赖可用的随机源：拿 `RandomState` 的种子哈希两次进程状态。
@@ -742,6 +929,54 @@ mod tests {
         assert!(initialize.starts_with("HTTP/1.1 200 OK"));
         assert!(initialize.contains("MCP-Protocol-Version: 2025-11-25\r\n"));
         assert!(initialize.contains("\"protocolVersion\":\"2025-11-25\""));
+        let modern_discover = post_with_headers(
+            port,
+            Some("secret"),
+            "MCP-Protocol-Version: 2026-07-28\r\nMcp-Method: server/discover\r\n",
+            r#"{"jsonrpc":"2.0","id":10,"method":"server/discover","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientInfo":{"name":"smoke","version":"1"},"io.modelcontextprotocol/clientCapabilities":{}}}}"#,
+        );
+        assert!(modern_discover.starts_with("HTTP/1.1 200 OK"));
+        let modern_discover: Value =
+            serde_json::from_str(modern_discover.split_once("\r\n\r\n").unwrap().1).unwrap();
+        assert_eq!(
+            modern_discover["result"]["supportedVersions"][0],
+            MODERN_VERSION
+        );
+        assert_eq!(
+            modern_discover["_meta"]["io.modelcontextprotocol/serverInfo"]["name"],
+            "quire-gpui"
+        );
+        let modern_tool_call = r#"{"jsonrpc":"2.0","id":11,"method":"tools/call","params":{"name":"echo","arguments":{"value":"modern"},"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientInfo":{"name":"smoke","version":"1"},"io.modelcontextprotocol/clientCapabilities":{}}}}"#;
+        let modern_result = post_with_headers(
+            port,
+            Some("secret"),
+            "MCP-Protocol-Version: 2026-07-28\r\nMcp-Method: tools/call\r\nMcp-Name: echo\r\n",
+            modern_tool_call,
+        );
+        assert!(modern_result.starts_with("HTTP/1.1 200 OK"));
+        let modern_result: Value =
+            serde_json::from_str(modern_result.split_once("\r\n\r\n").unwrap().1).unwrap();
+        assert_eq!(modern_result["result"]["resultType"], "complete");
+        assert_eq!(
+            modern_result["result"]["content"][0]["text"],
+            "{\"echo\":\"modern\"}"
+        );
+        let mismatched_modern_name = post_with_headers(
+            port,
+            Some("secret"),
+            "MCP-Protocol-Version: 2026-07-28\r\nMcp-Method: tools/call\r\nMcp-Name: wrong\r\n",
+            modern_tool_call,
+        );
+        assert!(mismatched_modern_name.starts_with("HTTP/1.1 400 Bad Request"));
+        assert!(mismatched_modern_name.contains("-32020"));
+        let modern_unknown_method = post_with_headers(
+            port,
+            Some("secret"),
+            "MCP-Protocol-Version: 2026-07-28\r\nMcp-Method: resources/list\r\n",
+            r#"{"jsonrpc":"2.0","id":12,"method":"resources/list","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28"}}}"#,
+        );
+        assert!(modern_unknown_method.starts_with("HTTP/1.1 404 Not Found"));
+        assert!(modern_unknown_method.contains("-32601"));
         assert!(accepts_mcp_json("application/json, text/event-stream"));
         assert!(!accepts_mcp_json("application/json"));
         assert!(is_local_origin("http://localhost:5880"));
@@ -775,6 +1010,15 @@ mod tests {
         .unwrap();
         let value: Value = serde_json::from_str(&bridged).unwrap();
         assert_eq!(value["result"]["content"][0]["text"], "{\"echo\":\"中文\"}");
+        let modern_bridged = forward_stdio_message(port, "secret", modern_tool_call)
+            .unwrap()
+            .unwrap();
+        let modern_bridged: Value = serde_json::from_str(&modern_bridged).unwrap();
+        assert_eq!(modern_bridged["result"]["resultType"], "complete");
+        assert_eq!(
+            modern_bridged["result"]["content"][0]["text"],
+            "{\"echo\":\"modern\"}"
+        );
         let notification = forward_stdio_message(
             port,
             "secret",
