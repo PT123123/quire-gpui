@@ -1196,3 +1196,8 @@
 
 - 补上旧版 F138。清理前 flush 持久化队列，并将所有页面块、封面、撤销/重做历史、`version-files/` 元数据及编辑器内部复制块都视为活引用；仅对确认孤立的附件先删除 SQLite 行，再删除原图和缩略图。内存模式返回无需清理，文件删除失败会计入提示。关于页提供入口并说明保留规则。
 - 隔离 SQLite/附件目录回归验证孤立附件行和原图被删除，页面封面、版本快照和内部复制块引用均保留；未访问用户库。全量 `cargo test --locked`（92 项：45 库 + 45 二进制 + 1 stdio + 1 sync loopback）、`cargo check --locked`、`cargo build --release --locked`、`cargo fmt --all -- --check` 和 `git diff --check` 通过。新建唯一临时目录的 Release GUI smoke 通过，继续覆盖 1000 块虚拟滚动、MCP、速记、托盘、最大化/还原及既有功能。清理入口真人点击仍待桌面验收。
+
+## 第一百九十三轮：附件由系统默认程序打开
+
+- GPUI 的“打开附件”原先把本地 `file://` URI 交给 GPUI URL 路由，无法明确保证它按附件格式转到操作系统关联程序。现在文件块与数据库文件附件统一经平台 `open_with_default` 打开原文件；找不到文件和系统启动失败都会反馈到状态栏。“另存为”继续使用原生保存对话框及原始文件字节。F057/F058 已更新为已实现/未验证。
+- `cargo check --locked`、全量 `cargo test --locked`（92 项）、Release 构建、格式、diff 检查及唯一临时目录的 1000 块 Release GUI smoke 全通过；smoke 继续验证 MCP、速记、托盘、最大化/还原和其他既有场景。没有触发真实系统文件关联或文件选择对话框真人验收，未访问用户库。

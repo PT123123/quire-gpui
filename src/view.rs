@@ -4794,6 +4794,25 @@ impl Workspace {
             }
         }
     }
+    fn open_attachment(&mut self, path: Option<PathBuf>, cx: &mut Context<Self>) {
+        let Some(path) = path else {
+            self.status = "找不到附件文件".into();
+            self.error = true;
+            cx.notify();
+            return;
+        };
+        match crate::platform::open_with_default(&path) {
+            Ok(()) => {
+                self.status = format!("已使用系统默认程序打开：{}", path.display());
+                self.error = false;
+            }
+            Err(error) => {
+                self.status = format!("打开附件失败：{error}");
+                self.error = true;
+            }
+        }
+        cx.notify();
+    }
     fn export_markdown(&mut self, cx: &mut Context<Self>) {
         if self.closing {
             return;
@@ -12428,7 +12447,8 @@ impl Workspace {
                                                                     menu = menu.child(div().id(SharedString::from(format!("db-files-item-{property_id}-{}", file_id))).flex().items_center().gap(px(5.)).px(px(5.)).py(px(4.)).text_size(px(11.)).text_color(text)
                                                                         .child(div().flex_1().min_w_0().child(name))
                                                                         .child(div().id(SharedString::from(format!("db-files-open-{property_id}-{file_id}"))).px(px(5.)).rounded(px(3.)).text_color(accent).hover(|item| item.bg(db_hover)).cursor_pointer().on_click(_cx.listener(move |this, _, _, cx| {
-                                                                            if let Some(path) = this.session.attachment_path(quire_core::core::types::AttachmentId(file_id)).and_then(|path| url::Url::from_file_path(path).ok()) { cx.open_url(path.as_str()); }
+                                                                            let path = this.session.attachment_path(quire_core::core::types::AttachmentId(file_id));
+                                                                            this.open_attachment(path, cx);
                                                                         })).child("打开"))
                                                                         .child(div().id(SharedString::from(format!("db-files-save-{property_id}-{file_id}"))).px(px(5.)).rounded(px(3.)).text_color(muted).hover(|item| item.bg(db_hover)).cursor_pointer().on_click(_cx.listener(move |this, _, _, cx| this.save_attachment(quire_core::core::types::AttachmentId(file_id), cx))).child("另存"))
                                                                         .child(div().id(SharedString::from(format!("db-files-remove-{property_id}-{file_id}"))).px(px(5.)).rounded(px(3.)).text_color(muted).hover(|item| item.bg(db_hover)).cursor_pointer().on_click(_cx.listener(move |this, _, window, cx| this.remove_database_file(cell_block, row.record, property_id.0, file_id, window, cx))).child("移除")));
@@ -15233,12 +15253,8 @@ impl Workspace {
                                                     .hover(|button| {
                                                         button.bg(Palette::color(&p.elevated))
                                                     })
-                                                    .on_click(cx.listener(move |_, _, _, cx| {
-                                                        if let Ok(uri) =
-                                                            url::Url::from_file_path(&path)
-                                                        {
-                                                            cx.open_url(uri.as_str());
-                                                        }
+                                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                                        this.open_attachment(Some(path.clone()), cx);
                                                     }))
                                                     .child("打开文件"),
                                             )
