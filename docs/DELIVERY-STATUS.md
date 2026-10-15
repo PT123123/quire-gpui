@@ -1,4 +1,4 @@
-# 交付状态
+﻿# 交付状态
 
 ## 第一轮 2026-10-14（02:31）：交接包骨架
 
@@ -1138,3 +1138,9 @@
 - 任务列表行现可拖到侧栏中的收集箱或任意清单。单项拖动只移动该任务；若拖动多选中任务，则按当前可见顺序移动整组。源清单与目标相同、回收站状态均拒绝 drop；落地复用 set_tasks_list 原子批次，支持单步撤销/重做并保留重开持久化。拖动预览显示任务标题及选中数量。
 - 隔离 Release smoke 调用同一 payload/drop 更新路径覆盖多选移动与撤销/重做；纯逻辑测试覆盖同清单拒绝、回收站拒绝、跨清单和收集箱目标。真人鼠标拖放布局仍待桌面验收。参考树与真实用户库未访问。
 - 验证：`cargo fmt --all -- --check`、`cargo test --locked`（86 项：42 库 + 42 二进制 + 1 stdio + 1 sync loopback）、`cargo check --locked`、`cargo build --release --locked` 与 `git diff --check` 均通过。全新 `%TEMP%` 隔离 SQLite 的 Release GUI smoke（1000 块）通过拖放组移动 endpoint 及撤销/重做，并覆盖速记、托盘、MCP、最大化/还原和虚拟滚动。
+
+## 第一百八十二轮：整理区任务平铺看板
+
+- 整理区任务页新增列表/平铺切换。平铺按收集箱与每个清单分列，显示所有匹配的未完成任务；搜索和标签包含/排除继续生效。卡片可标记完成、打开详情并拖到其他清单列；每列的“添加任务”直接创建到该列。跨列移动复用现有单步 organizer 撤销批次。
+- 旧版 SPEC/OrganizerArea 明确平铺是整块看板，而非当前选中清单的第二种排列；实现按此忽略单一清单/智能视图范围。更新 PLAN 与 PARITY 语义矩阵。尚未做真人拖动/布局验收，笔记平铺和笔记拖放仍未实现。
+- 验证：`cargo fmt --all -- --check`、`cargo test --locked`（86 项）、`cargo check --locked`、`cargo build --release --locked` 与 `git diff --check` 通过；全新随机 `%TEMP%` SQLite 的 Release GUI smoke（1000 块）通过，并调用看板 view builder 构造整理区完整视图树。看板目前按列渲染全部匹配卡片，超大任务清单的虚拟化/滚动性能仍需补齐；真人拖动与截图视觉对照待桌面验收。本轮没有访问真实用户库或改动 Slint/core/冻结参考树。
