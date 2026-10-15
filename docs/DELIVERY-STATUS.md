@@ -1462,3 +1462,7 @@
 - `Session::set_block_folded` 原来直接记录 `BlockFoldedSet`，无法撤销；现调用 core `ToggleFold` 并纳入页面 undo/redo。隔离测试验证块折叠、撤销、重做、flush 和重开。保持 locked page 的折叠入口可用。
 - `cargo fmt --all`、两项数据库/折叠定向测试及 `cargo check --locked -j 8` 通过。用户库未触碰；完整全量验证安排在功能收尾。
 
+## 第二百三十四轮：扩展隔离 Release GUI smoke（2026-10-16）
+
+- Release GUI smoke 新增链接数据库选择器的过滤/选择/撤销路径，折叠状态的撤销/重做，以及数据库记录模板的撤销/重做。选择器行由当前隔离库的数据库列表生成；测试最后删除新建的链接块，避免污染后续页面场景。
+- 验证：全量 `cargo test --locked -j 8`（106 项：54 库 + 50 二进制 + MCP stdio + sync loopback）、`cargo build --release --locked -j 8 --target-dir target-release` 和独立临时 SQLite、1000 块 Release GUI smoke 全部通过。smoke 日志确认新增三条路径及既有速记、托盘、MCP、最大化/还原仍通过。真人点选和 IME 测试仍按用户说明留给后续反馈；性能复测未运行。

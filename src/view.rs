@@ -3554,6 +3554,21 @@ impl Workspace {
                     this.selected_task_list = quire_core::core::organizer::ListId::INBOX;
                     eprintln!("SMOKE: organizer list menu, color submenu, rename and undo/redo passed");
 
+                    this.session.execute(Command::AppendBlock {
+                        kind: BlockKind::Toggle,
+                        text: "折叠撤销 smoke".into(),
+                    });
+                    let fold_block = this.session.blocks().last().unwrap().id;
+                    this.session.set_block_folded(fold_block, true);
+                    assert!(this.session.document.block(fold_block).unwrap().folded);
+                    this.session.undo();
+                    assert!(!this.session.document.block(fold_block).unwrap().folded);
+                    this.session.redo();
+                    assert!(this.session.document.block(fold_block).unwrap().folded);
+                    this.session.execute(Command::DeleteBlock { id: fold_block });
+                    this.sync_inputs(window, cx);
+                    eprintln!("SMOKE: toggle fold undo and redo passed");
+
                     let smoke_task = this.session.create_task_in(
                         quire_core::core::organizer::ListId::INBOX,
                         "子任务编辑 smoke".into(),
@@ -3995,6 +4010,47 @@ impl Workspace {
                     this.sync_inputs(window, cx);
                     assert_eq!(this.session.blocks().len(), original_block_count);
                     eprintln!("SMOKE: block plus insertion menu filtering, selection and undo passed");
+                    let (source_db, source_name) = this
+                        .session
+                        .blocks()
+                        .iter()
+                        .find_map(|block| {
+                            (block.kind == BlockKind::Database)
+                                .then(|| block.db_ref)
+                                .flatten()
+                                .and_then(|database| {
+                                    this.session
+                                        .databases
+                                        .database(database)
+                                        .map(|row| (database, row.name.clone()))
+                                })
+                        })
+                        .expect("linked database smoke should have a source database");
+                    this.session.execute(Command::AppendBlock {
+                        kind: BlockKind::Paragraph,
+                        text: "/链接视图".into(),
+                    });
+                    let linked_block = this.session.blocks().last().unwrap().id;
+                    this.open_linked_database_picker(linked_block, window, cx);
+                    this.database_search_text = source_name.clone();
+                    this.database_search_input.update(cx, |input, cx| {
+                        input.reset(source_name.clone(), Vec::new(), source_name.len(), cx)
+                    });
+                    assert_eq!(this.linked_database_choices().len(), 1);
+                    this.choose_linked_database(source_db, window, cx);
+                    assert_eq!(
+                        this.session.document.block(linked_block).unwrap().db_ref,
+                        Some(source_db)
+                    );
+                    this.session.undo();
+                    assert_eq!(
+                        this.session.document.block(linked_block).unwrap().text,
+                        "/链接视图"
+                    );
+                    this.session.redo();
+                    this.session.execute(Command::DeleteBlock { id: linked_block });
+                    this.sync_inputs(window, cx);
+                    eprintln!("SMOKE: linked database picker filters, selects and undoes atomically");
                     let original_page = this.session.page.id;
                     let escape_anchor = this.session.blocks()[0].id;
                     this.database_columns_open = Some((escape_anchor.0, 1));
@@ -4145,12 +4201,25 @@ impl Workspace {
                         .next()
                         .expect("template smoke needs a database record");
                     this.selected_database_record = Some((block_id.0, database.0, template_record.id.0));
+                    let previous_template = this
+                        .session
+                        .databases
+                        .database(database)
+                        .unwrap()
+                        .template
+                        .clone();
                     assert!(this
                         .session
                         .save_database_record_as_template(block_id, template_record.id)
                         .expect("selected row should save as the record template"));
+                    this.session.undo();
+                    assert_eq!(
+                        this.session.databases.database(database).unwrap().template,
+                        previous_template
+                    );
+                    this.session.redo();
                     this.schedule_save(true, window, cx);
-                    eprintln!("SMOKE: selected database row saved as the new-record template");
+                    eprintln!("SMOKE: selected database row saved and undo/redone as the new-record template");
                     let view = this.session.databases.views_of(database).next().unwrap().id;
                     this.database_calendar_month = (2026, 10);
                     this.session
