@@ -221,13 +221,30 @@ pub fn execute(session: &mut Session, name: &str, args: &Value) -> Result<Value,
             Ok(json!({"notes": rows}))
         }
         "create_note" => {
-            let title = args
-                .get("title")
+            let body = args
+                .get("body")
                 .and_then(Value::as_str)
                 .unwrap_or("")
                 .to_owned();
-            let body = args
-                .get("body")
+            if let Some(parent) = args.get("parent_note_id") {
+                let parent = NoteId(
+                    parent
+                        .as_u64()
+                        .ok_or_else(|| "parent_note_id 必须是非负整数".to_owned())?,
+                );
+                if session.note_delete_is_pending(parent) {
+                    return Err(format!("笔记 {} 正在等待撤销删除", parent.0));
+                }
+                if args.get("title").is_some() || args.get("tags").is_some() {
+                    return Err("评论只接受 body 和 parent_note_id".into());
+                }
+                let id = session
+                    .create_note_reply(parent, body)
+                    .ok_or_else(|| format!("找不到父笔记 {}", parent.0))?;
+                return Ok(json!({"ok": true, "id": id.0, "note_id": id.0, "ref_note": parent.0}));
+            }
+            let title = args
+                .get("title")
                 .and_then(Value::as_str)
                 .unwrap_or("")
                 .to_owned();
@@ -526,12 +543,13 @@ pub fn tool_defs() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "create_note",
-            description: "新建一条笔记。tags 用逗号分隔。",
+            description: "新建一条笔记；提供 parent_note_id 时在该笔记下创建评论。普通笔记的 tags 用逗号分隔，评论只接受 body 与 parent_note_id。",
             input_schema: schema(
                 json!({
                     "title": { "type": "string" },
                     "body": { "type": "string" },
-                    "tags": { "type": "string", "description": "逗号分隔，如 \"工作,项目\"" }
+                    "tags": { "type": "string", "description": "逗号分隔，如 \"工作,项目\"" },
+                    "parent_note_id": { "type": "integer", "minimum": 0, "description": "可选；指定后创建指向此笔记的评论，只写 body" }
                 }),
                 &["title"],
             ),
@@ -703,9 +721,34 @@ mod tests {
         assert_eq!(created["id"], id);
         let note = session.organizer.note(NoteId(id)).unwrap();
         assert_eq!(note.tags, ["工作", "项目"]);
-        let reply = session
-            .create_note_reply(NoteId(id), "MCP 可见评论".into())
-            .unwrap();
+        let reply = execute(
+            &mut session,
+            "create_note",
+            &json!({"body": "MCP 可见评论", "parent_note_id": id}),
+        )
+        .unwrap();
+        let reply_id = reply["note_id"].as_u64().unwrap();
+        assert_eq!(reply["ref_note"], id);
+        assert_eq!(
+            session.organizer.note(NoteId(reply_id)).unwrap().ref_note,
+            Some(NoteId(id))
+        );
+        assert!(
+            execute(
+                &mut session,
+                "create_note",
+                &json!({"body": "orphan", "parent_note_id": -1}),
+            )
+            .is_err()
+        );
+        assert!(
+            execute(
+                &mut session,
+                "create_note",
+                &json!({"body": "unsupported", "title": "should fail", "parent_note_id": id}),
+            )
+            .is_err()
+        );
         let listed = execute(&mut session, "list_notes", &json!({})).unwrap();
         assert_eq!(listed["notes"][0]["id"], id);
         assert_eq!(listed["notes"][0]["note_id"], id);
@@ -713,7 +756,7 @@ mod tests {
             .as_array()
             .unwrap()
             .iter()
-            .find(|note| note["id"] == reply.0)
+            .find(|note| note["id"] == reply_id)
             .unwrap();
         assert_eq!(listed_reply["ref_note"], id);
         execute(
@@ -729,7 +772,7 @@ mod tests {
         execute(&mut session, "trash_note", &json!({"note_id": id})).unwrap();
         let remaining = execute(&mut session, "list_notes", &json!({})).unwrap();
         assert_eq!(remaining["notes"].as_array().unwrap().len(), 1);
-        assert_eq!(remaining["notes"][0]["id"], reply.0);
+        assert_eq!(remaining["notes"][0]["id"], reply_id);
         assert_eq!(remaining["notes"][0]["ref_note"], id);
         execute(&mut session, "restore_note", &json!({"note_id": id})).unwrap();
         assert!(!session.organizer.note(NoteId(id)).unwrap().is_trashed());

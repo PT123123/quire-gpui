@@ -1150,3 +1150,9 @@
 - GPUI 笔记详情现列出按创建时间排序的评论，支持 Enter 或“评论”提交。评论使用 core 已支持的 note `ref_note` 关系创建，记录单独进入 organizer 撤销栈；没有父笔记或输入仅为空白时拒绝写入。评论不再混入顶层笔记列表，MCP `list_notes` 增加 `ref_note` 字段以标识线程归属。
 - 新增 ScratchDir 测试覆盖有效/无效父项、关联、undo/redo 和 SQLite 重开；GUI smoke 创建评论并构造详情视图树，MCP 工具测试校验关系字段。真人键入/按钮命中与长评论布局尚未桌面验收。
 - 验证：`cargo fmt --all -- --check`、`cargo check --locked`、全量 `cargo test --locked`（87 项）、`cargo build --release --locked` 与 `git diff --check` 通过。全新随机 `%TEMP%` SQLite 的 Release GUI smoke（1000 块）通过，日志确认评论线程构造、提交、撤销/重做路径、看板虚拟列、MCP 和既有窗口/托盘流程；没有访问真实用户库或修改 Slint/core/冻结参考树。
+
+## 第一百八十四轮：MCP 创建笔记评论
+
+- MCP `create_note` 增加可选 `parent_note_id`。带父项时仅接受 `body`，创建 `ref_note` 关联的评论；父项必须是非负整数且存在，等候撤销删除中的父项拒绝提交。普通笔记的既有参数与响应保持兼容，工具目录说明新增评论用法。
+- 隔离 MCP 工具测试覆盖创建响应和 `list_notes.ref_note` 关联、负数父项拒绝、带评论模式多余字段拒绝，以及父笔记移入回收站后评论保留。数据使用测试 Session，不访问真实库。
+- 验证：`cargo fmt --all -- --check`、`cargo check --locked`、全量 `cargo test --locked`（87 项：43 库 + 42 二进制 + 1 stdio + 1 sync loopback）、`cargo build --release --locked` 与 `git diff --check` 通过。全新随机 `%TEMP%` SQLite 的 Release GUI smoke（1000 块）通过，确认 MCP 工具目录、评论 UI、速记、托盘、窗口最大化/还原和虚拟滚动路径；没有访问真实用户库或修改 Slint/core/冻结参考树。
