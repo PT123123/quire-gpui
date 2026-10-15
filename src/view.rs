@@ -1665,6 +1665,7 @@ pub struct Workspace {
     note_title_input: Entity<TextInput>,
     note_body_input: Entity<TextInput>,
     note_reply_input: Entity<TextInput>,
+    organizer_capture_input: Entity<TextInput>,
     task_title_input: Entity<TextInput>,
     task_list_name_input: Entity<TextInput>,
     task_due_input: Entity<TextInput>,
@@ -1687,6 +1688,7 @@ pub struct Workspace {
     note_title_subscription: Option<Subscription>,
     note_body_subscription: Option<Subscription>,
     note_reply_subscription: Option<Subscription>,
+    organizer_capture_subscription: Option<Subscription>,
     task_title_subscription: Option<Subscription>,
     task_list_name_subscription: Option<Subscription>,
     task_due_subscription: Option<Subscription>,
@@ -1760,6 +1762,11 @@ pub struct Workspace {
     mention_menu: Option<(BlockId, usize, String)>,
     mention_selection: usize,
     organizer_open: bool,
+    organizer_capture_open: bool,
+    organizer_capture_draft: String,
+    organizer_capture_suggestions: Vec<String>,
+    organizer_capture_selected: usize,
+    organizer_capture_suggestions_hidden: bool,
     sidebar_open: bool,
     sidebar_transition: Option<(u64, f32, f32)>,
     sidebar_transition_seq: u64,
@@ -1905,6 +1912,11 @@ impl Workspace {
         note_reply_input.update(cx, |input, _| {
             input.placeholder = Some("写一条评论…".into())
         });
+        let organizer_capture_input =
+            cx.new(|cx| TextInput::new(String::new(), Vec::new(), 14., window, cx));
+        organizer_capture_input.update(cx, |input, _| {
+            input.placeholder = Some("写下笔记…（#标签会加入笔记标签）".into());
+        });
         let task_title_input =
             cx.new(|cx| TextInput::new(String::new(), Vec::new(), 13., window, cx));
         task_title_input.update(cx, |input, _| {
@@ -1974,6 +1986,7 @@ impl Workspace {
             note_title_input.clone(),
             note_body_input.clone(),
             note_reply_input.clone(),
+            organizer_capture_input.clone(),
             task_title_input.clone(),
             task_list_name_input.clone(),
             task_due_input.clone(),
@@ -2069,6 +2082,7 @@ impl Workspace {
             note_title_input,
             note_body_input,
             note_reply_input,
+            organizer_capture_input,
             task_title_input,
             task_list_name_input,
             task_due_input,
@@ -2091,6 +2105,7 @@ impl Workspace {
             note_title_subscription: None,
             note_body_subscription: None,
             note_reply_subscription: None,
+            organizer_capture_subscription: None,
             task_title_subscription: None,
             task_list_name_subscription: None,
             task_due_subscription: None,
@@ -2168,6 +2183,11 @@ impl Workspace {
             mention_menu: None,
             mention_selection: 0,
             organizer_open: false,
+            organizer_capture_open: false,
+            organizer_capture_draft: String::new(),
+            organizer_capture_suggestions: Vec::new(),
+            organizer_capture_selected: 0,
+            organizer_capture_suggestions_hidden: false,
             sidebar_open: true,
             sidebar_transition: None,
             sidebar_transition_seq: 0,
@@ -2381,6 +2401,31 @@ impl Workspace {
                 InputEvent::Split(_) => {
                     if let Some(note) = this.selected_note {
                         this.submit_note_reply(note, window, cx);
+                    }
+                }
+                _ => {}
+            },
+        ));
+        let organizer_capture_input = this.organizer_capture_input.clone();
+        this.organizer_capture_subscription = Some(cx.subscribe_in(
+            &organizer_capture_input,
+            window,
+            |this, entity, event, window, cx| match event {
+                InputEvent::Edited { text, .. } => {
+                    this.organizer_capture_draft = text.clone();
+                    let caret = entity.read(cx).buffer.caret();
+                    this.refresh_organizer_capture_suggestions(caret, cx);
+                }
+                InputEvent::Split(_) => {
+                    if let Some(tag) = this.organizer_capture_current_suggestion() {
+                        this.pick_organizer_capture_suggestion(tag, window, cx);
+                    } else {
+                        entity.update(cx, |input, cx| input.insert_newline(cx));
+                    }
+                }
+                InputEvent::Indent => {
+                    if let Some(tag) = this.organizer_capture_current_suggestion() {
+                        this.pick_organizer_capture_suggestion(tag, window, cx);
                     }
                 }
                 _ => {}
@@ -2926,6 +2971,60 @@ impl Workspace {
                     assert!(this.session.organizer.note(reply_id).is_none());
                     assert!(this.session.redo_organizer());
                     eprintln!("SMOKE: organizer note replies render as a threaded, undoable comment");
+
+                    let note_count_before_capture = this
+                        .session
+                        .organizer
+                        .live_notes()
+                        .filter(|note| note.ref_note.is_none())
+                        .count();
+                    this.open_organizer_capture(window, cx);
+                    assert!(this.organizer_capture_open);
+                    assert_eq!(
+                        this.session
+                            .organizer
+                            .live_notes()
+                            .filter(|note| note.ref_note.is_none())
+                            .count(),
+                        note_count_before_capture,
+                        "opening the capture dialog must not create a blank note"
+                    );
+                    this.close_organizer_capture(window, cx);
+                    assert_eq!(
+                        this.session
+                            .organizer
+                            .live_notes()
+                            .filter(|note| note.ref_note.is_none())
+                            .count(),
+                        note_count_before_capture,
+                        "canceling the capture dialog must discard the draft without writing"
+                    );
+                    this.organizer_tag = Some("gpui-capture-seed".into());
+                    this.open_organizer_capture(window, cx);
+                    assert_eq!(this.organizer_capture_draft, "#gpui-capture-seed ");
+                    let capture_frame = this.render(window, cx);
+                    drop(capture_frame);
+                    let capture_text = "通过速记浮层创建 #gpui-capture-smoke";
+                    this.organizer_capture_input.update(cx, |input, cx| {
+                        input.reset(capture_text.into(), Vec::new(), capture_text.len(), cx);
+                    });
+                    this.organizer_capture_draft = capture_text.into();
+                    this.submit_organizer_capture(window, cx);
+                    this.organizer_tag = None;
+                    assert!(!this.organizer_capture_open);
+                    let captured = this
+                        .session
+                        .organizer
+                        .live_notes()
+                        .find(|note| note.body == capture_text)
+                        .expect("organizer capture should create its note on submit");
+                    let capture_id = captured.id;
+                    assert_eq!(captured.tags, ["gpui-capture-smoke"]);
+                    assert_eq!(this.selected_note, Some(capture_id));
+                    assert!(this.session.undo_organizer());
+                    assert!(this.session.organizer.note(capture_id).is_none());
+                    assert!(this.session.redo_organizer());
+                    eprintln!("SMOKE: organizer note composer writes only on submit and opens the created note");
 
                     let restore_notes = [this.session.create_note(), this.session.create_note()];
                     assert!(this.session.set_notes_trashed(&restore_notes, true));
@@ -7130,6 +7229,151 @@ impl Workspace {
         self.selected_note = None;
         self.select_note(id, window, cx);
         self.schedule_save(true, window, cx);
+    }
+    fn open_organizer_capture(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.organizer_tasks || self.organizer_trash {
+            return;
+        }
+        let preset = self
+            .organizer_tag
+            .as_ref()
+            .map(|tag| format!("#{tag} "))
+            .unwrap_or_default();
+        let caret = preset.len();
+        self.organizer_capture_draft = preset.clone();
+        self.organizer_capture_suggestions.clear();
+        self.organizer_capture_selected = 0;
+        self.organizer_capture_suggestions_hidden = false;
+        self.organizer_capture_input.update(cx, |input, cx| {
+            input.reset(preset, Vec::new(), caret, cx);
+        });
+        self.organizer_capture_open = true;
+        self.refresh_organizer_capture_suggestions(caret, cx);
+        window.focus(&self.organizer_capture_input.read(cx).focus);
+        cx.notify();
+    }
+    fn close_organizer_capture(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.organizer_capture_open = false;
+        self.organizer_capture_draft.clear();
+        self.organizer_capture_suggestions.clear();
+        self.organizer_capture_suggestions_hidden = false;
+        self.organizer_capture_input.update(cx, |input, cx| {
+            input.reset(String::new(), Vec::new(), 0, cx);
+        });
+        self.restore_focus(window, cx);
+        cx.notify();
+    }
+    fn submit_organizer_capture(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let body = self.organizer_capture_draft.trim_end().to_owned();
+        if body.trim().is_empty() {
+            return;
+        }
+        self.commit_note_draft(window, cx);
+        let tags = capture_tags(&body);
+        let id = self
+            .session
+            .create_note_with_content(String::new(), body, tags);
+        self.organizer_capture_open = false;
+        self.organizer_capture_draft.clear();
+        self.organizer_capture_suggestions.clear();
+        self.organizer_capture_input.update(cx, |input, cx| {
+            input.reset(String::new(), Vec::new(), 0, cx);
+        });
+        self.select_note(id, window, cx);
+        self.schedule_save(true, window, cx);
+        cx.notify();
+    }
+    fn organizer_capture_current_suggestion(&self) -> Option<String> {
+        (!self.organizer_capture_suggestions_hidden)
+            .then(|| {
+                self.organizer_capture_suggestions
+                    .get(self.organizer_capture_selected)
+                    .cloned()
+            })
+            .flatten()
+    }
+    fn refresh_organizer_capture_suggestions(&mut self, caret: usize, cx: &mut Context<Self>) {
+        let prefix = self
+            .organizer_capture_draft
+            .get(..caret)
+            .unwrap_or(&self.organizer_capture_draft)
+            .to_owned();
+        self.organizer_capture_suggestions = self.session.organizer_tag_suggestions(&prefix);
+        self.organizer_capture_selected = 0;
+        self.organizer_capture_suggestions_hidden = false;
+        cx.notify();
+    }
+    fn pick_organizer_capture_suggestion(
+        &mut self,
+        tag: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let caret = self.organizer_capture_input.read(cx).buffer.caret();
+        let Some((draft, caret)) =
+            capture_tag_replacement(&self.organizer_capture_draft, caret, &tag)
+        else {
+            return;
+        };
+        self.organizer_capture_draft = draft.clone();
+        self.organizer_capture_input.update(cx, |input, cx| {
+            input.reset(draft.clone(), Vec::new(), caret, cx);
+        });
+        self.refresh_organizer_capture_suggestions(caret, cx);
+        window.focus(&self.organizer_capture_input.read(cx).focus);
+    }
+    fn organizer_capture_key_down(
+        &mut self,
+        event: &KeyDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.organizer_capture_open || self.organizer_capture_input.read(cx).buffer.composing()
+        {
+            return;
+        }
+        let key = event.keystroke.key.as_str();
+        let modifiers = event.keystroke.modifiers;
+        if (key == "enter" && modifiers.control && !modifiers.alt && !modifiers.platform)
+            || (key.eq_ignore_ascii_case("s") && modifiers.alt && !modifiers.control)
+        {
+            cx.stop_propagation();
+            self.submit_organizer_capture(window, cx);
+            return;
+        }
+        if !modifiers.modified() && !self.organizer_capture_suggestions_hidden {
+            match key {
+                "up" | "down" if !self.organizer_capture_suggestions.is_empty() => {
+                    let count = self.organizer_capture_suggestions.len();
+                    self.organizer_capture_selected = if key == "up" {
+                        (self.organizer_capture_selected + count - 1) % count
+                    } else {
+                        (self.organizer_capture_selected + 1) % count
+                    };
+                    cx.stop_propagation();
+                    cx.notify();
+                    return;
+                }
+                "enter" | "tab" if !self.organizer_capture_suggestions.is_empty() => {
+                    if let Some(tag) = self.organizer_capture_current_suggestion() {
+                        self.pick_organizer_capture_suggestion(tag, window, cx);
+                    }
+                    cx.stop_propagation();
+                    return;
+                }
+                "escape" if !self.organizer_capture_suggestions.is_empty() => {
+                    self.organizer_capture_suggestions_hidden = true;
+                    cx.stop_propagation();
+                    cx.notify();
+                    return;
+                }
+                _ => {}
+            }
+        }
+        if key == "escape" && !modifiers.modified() {
+            cx.stop_propagation();
+            self.close_organizer_capture(window, cx);
+        }
     }
     fn cycle_task_priority(
         &mut self,
@@ -17946,7 +18190,7 @@ impl Render for Workspace {
                                             if this.organizer_tasks {
                                                 this.create_task(window, cx);
                                             } else {
-                                                this.create_note(window, cx);
+                                                this.open_organizer_capture(window, cx);
                                             }
                                         }))
                                     })
@@ -20071,6 +20315,207 @@ impl Render for Workspace {
                 root.child(command_overlay)
             })
             .when_some(settings_overlay, |root, overlay| root.child(overlay))
+            .when(self.organizer_capture_open, |root| {
+                let suggestions = self.organizer_capture_suggestions.clone();
+                let selected = self.organizer_capture_selected;
+                let suggestions_visible = !self.organizer_capture_suggestions_hidden
+                    && !suggestions.is_empty();
+                let draft_empty = self.organizer_capture_draft.trim().is_empty();
+                root.child(
+                    div()
+                        .id("organizer-capture-overlay")
+                        .absolute()
+                        .top_0()
+                        .right_0()
+                        .bottom_0()
+                        .left_0()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .bg(hsla(0., 0., 0., 0.46))
+                        .capture_key_down(cx.listener(|this, event, window, cx| {
+                            this.organizer_capture_key_down(event, window, cx)
+                        }))
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(|this, _, window, cx| {
+                                this.close_organizer_capture(window, cx)
+                            }),
+                        )
+                        .child(
+                            div()
+                                .id("organizer-capture-card")
+                                .w(px(560.))
+                                .h(px(340.))
+                                .max_w(px(760.))
+                                .max_h(px(520.))
+                                .flex()
+                                .flex_col()
+                                .gap(px(9.))
+                                .p(px(16.))
+                                .rounded(px(10.))
+                                .border_1()
+                                .border_color(Palette::color(&p.border))
+                                .bg(linear_gradient(
+                                    180.,
+                                    linear_color_stop(Palette::color(&p.bg), 0.),
+                                    linear_color_stop(Palette::color(&p.grad2), 1.),
+                                )
+                                .color_space(ColorSpace::Srgb))
+                                .shadow_lg()
+                                .on_mouse_down(MouseButton::Left, cx.listener(|_, _, _, cx| {
+                                    cx.stop_propagation();
+                                }))
+                                .child(
+                                    div()
+                                        .h(px(24.))
+                                        .flex()
+                                        .items_center()
+                                        .gap(px(8.))
+                                        .child(div().w(px(4.)).h(px(14.)).rounded(px(2.)).bg(accent))
+                                        .child(
+                                            div()
+                                                .flex_1()
+                                                .text_size(px(14.))
+                                                .font_weight(FontWeight::SEMIBOLD)
+                                                .child("新建笔记"),
+                                        )
+                                        .child(
+                                            div()
+                                                .id("organizer-capture-close")
+                                                .w(px(24.))
+                                                .h(px(24.))
+                                                .flex()
+                                                .items_center()
+                                                .justify_center()
+                                                .rounded(px(5.))
+                                                .cursor_pointer()
+                                                .text_color(muted)
+                                                .hover(|button| button.bg(Palette::color(&p.elevated)))
+                                                .on_click(cx.listener(|this, _, window, cx| {
+                                                    this.close_organizer_capture(window, cx)
+                                                }))
+                                                .child("×"),
+                                        ),
+                                )
+                                .child(
+                                    div()
+                                        .text_size(px(11.))
+                                        .text_color(muted)
+                                        .child("提示：# 输入标签，Ctrl+Enter 或 Alt+S 提交，Esc 取消"),
+                                )
+                                .child(
+                                    div()
+                                        .id("organizer-capture-input")
+                                        .flex_1()
+                                        .min_h(px(80.))
+                                        .p(px(10.))
+                                        .rounded(px(8.))
+                                        .border_1()
+                                        .border_color(Palette::color(&p.border))
+                                        .bg(Palette::color(&p.elevated))
+                                        .child(self.organizer_capture_input.clone()),
+                                )
+                                .when(suggestions_visible, |card| {
+                                    card.child(
+                                        div()
+                                            .id("organizer-capture-suggestions")
+                                            .flex()
+                                            .flex_col()
+                                            .gap(px(2.))
+                                            .max_h(px(96.))
+                                            .overflow_y_scroll()
+                                            .p(px(4.))
+                                            .rounded(px(7.))
+                                            .border_1()
+                                            .border_color(Palette::color(&p.border))
+                                            .bg(Palette::color(&p.bg))
+                                            .children(suggestions.into_iter().enumerate().map(
+                                                |(index, tag)| {
+                                                    let chosen = tag.clone();
+                                                    div()
+                                                        .id(SharedString::from(format!(
+                                                            "organizer-capture-suggestion-{index}"
+                                                        )))
+                                                        .h(px(26.))
+                                                        .px(px(8.))
+                                                        .flex()
+                                                        .items_center()
+                                                        .rounded(px(4.))
+                                                        .cursor_pointer()
+                                                        .when(index == selected, |row| {
+                                                            row.bg(accent)
+                                                                .text_color(Palette::color(&p.bg))
+                                                        })
+                                                        .when(index != selected, |row| {
+                                                            row.text_color(text).hover(|row| {
+                                                                row.bg(Palette::color(&p.elevated))
+                                                            })
+                                                        })
+                                                        .on_click(cx.listener(
+                                                            move |this, _, window, cx| {
+                                                                this.pick_organizer_capture_suggestion(
+                                                                    chosen.clone(), window, cx,
+                                                                );
+                                                            },
+                                                        ))
+                                                        .child(format!("#{tag}"))
+                                                },
+                                            )),
+                                    )
+                                })
+                                .child(
+                                    div()
+                                        .flex()
+                                        .items_center()
+                                        .justify_between()
+                                        .child(
+                                            div()
+                                                .text_size(px(11.))
+                                                .text_color(muted)
+                                                .child(if draft_empty {
+                                                    "空草稿".to_owned()
+                                                } else {
+                                                    format!("{} 字", self.organizer_capture_draft.chars().count())
+                                                }),
+                                        )
+                                        .child(
+                                            div()
+                                                .flex()
+                                                .gap(px(8.))
+                                                .child(
+                                                    div()
+                                                        .id("organizer-capture-cancel")
+                                                        .px(px(12.))
+                                                        .py(px(7.))
+                                                        .rounded(px(6.))
+                                                        .text_color(muted)
+                                                        .cursor_pointer()
+                                                        .on_click(cx.listener(|this, _, window, cx| {
+                                                            this.close_organizer_capture(window, cx)
+                                                        }))
+                                                        .child("取消"),
+                                                )
+                                                .child(
+                                                    div()
+                                                        .id("organizer-capture-submit")
+                                                        .px(px(14.))
+                                                        .py(px(7.))
+                                                        .rounded(px(6.))
+                                                        .bg(accent)
+                                                        .text_color(Palette::color(&p.bg))
+                                                        .when(draft_empty, |button| button.opacity(0.45))
+                                                        .cursor_pointer()
+                                                        .on_click(cx.listener(|this, _, window, cx| {
+                                                            this.submit_organizer_capture(window, cx)
+                                                        }))
+                                                        .child("保存"),
+                                                ),
+                                        ),
+                                ),
+                        ),
+                )
+            })
             .when(self.versions_open, |root| {
                 let page_id = self.session.page.id;
                 let versions = self.session.page_versions(page_id).to_vec();

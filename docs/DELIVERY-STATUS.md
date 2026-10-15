@@ -1161,3 +1161,8 @@
 
 - `create_note` 的运行时支持 `{body, parent_note_id}` 评论，但此前 `tools/list` schema 仍全局要求普通笔记的 `title`，会被遵循 schema 的客户端在调用前拒绝。现以 `oneOf` 描述互斥的普通笔记/评论参数，评论分支要求父 ID 和正文、拒绝 title/tags；运行时也拒绝缺正文或纯空白正文。
 - 隔离 MCP 工具测试核验 schema 分支、普通笔记/评论创建、非法分支字段和空评论拒绝。`cargo fmt --all -- --check`、`cargo test --locked`（87 项：43 库 + 42 二进制 + 1 stdio + 1 sync loopback）、`cargo check --locked`、`cargo build --release --locked` 和 `git diff --check` 均通过；全新 `%TEMP%` SQLite Release GUI smoke（1000 块）确认 MCP 工具发现/HTTP 写入，以及速记、托盘、窗口最大化还原和虚拟滚动回归。未访问真实用户库，未改 Slint/core/冻结参考树。
+
+## 第一百八十六轮：整理区笔记捕获浮层
+
+- 对照旧版发现，笔记区“＋”应弹出 560×340 的同窗捕获层，而 GPUI 原先直接创建空笔记。现支持空白草稿、当前标签路径预填并将焦点/光标放在末尾、标签建议键盘和点击选择、Enter 换行、Ctrl+Enter/Alt+S/按钮提交、Escape 分两级关闭建议/浮层、取消按钮和点遮罩关闭。提交才用单条 core `CreateNote` 写入正文与 `#标签`，随后选中并打开新笔记；取消不写入。
+- Session ScratchDir 覆盖单步撤销/重做与 SQLite 重开。隔离 Release GUI smoke 构造并渲染浮层，断言打开和取消均不新增记录、筛选标签预填、提交创建唯一笔记并打开详情。`cargo fmt --all -- --check`、`cargo test --locked`（88 项：44 库 + 42 二进制 + 1 stdio + 1 sync loopback）、`cargo check --locked`、`cargo build --release --locked` 与 `git diff --check` 均通过；Release GUI smoke（1000 块）也通过并继续覆盖 MCP、独立速记、托盘、最大化/还原和虚拟列表。标签建议真人点击、Escape 层级及多屏视觉仍待桌面验收。未访问真实用户库，未改 Slint/core/冻结参考树。

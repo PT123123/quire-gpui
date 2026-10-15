@@ -3958,6 +3958,14 @@ impl Session {
         true
     }
     pub fn create_note(&mut self) -> NoteId {
+        self.create_note_with_content("新建笔记".into(), String::new(), Vec::new())
+    }
+    pub fn create_note_with_content(
+        &mut self,
+        title: String,
+        body: String,
+        tags: Vec<String>,
+    ) -> NoteId {
         let id = NoteId(
             self.organizer
                 .notes
@@ -3976,10 +3984,10 @@ impl Session {
         let note = Note {
             id,
             uuid: organizer::new_uuid(),
-            title: "新建笔记".into(),
-            body: String::new(),
+            title,
+            body,
             pinned: false,
-            tags: Vec::new(),
+            tags,
             created: seconds,
             edited: seconds,
             ref_note: None,
@@ -7264,6 +7272,34 @@ mod tests {
         assert!(!note.uuid.is_empty());
         assert!(note.pinned);
         assert!(note.is_trashed());
+        Ok(())
+    }
+
+    #[test]
+    fn organizer_capture_creates_one_atomic_note_and_persists() -> Result<()> {
+        let scratch = quire_core::testing::ScratchDir::new("gpui-organizer-capture");
+        let db = scratch.path().join("capture.db");
+        let id;
+        {
+            let mut session = Session::open(&db)?;
+            id = session.create_note_with_content(
+                String::new(),
+                "记录一件事 #工作/项目".into(),
+                vec!["工作/项目".into()],
+            );
+            let note = session.organizer.note(id).unwrap();
+            assert_eq!(note.title, "");
+            assert_eq!(note.body, "记录一件事 #工作/项目");
+            assert_eq!(note.tags, ["工作/项目"]);
+            assert!(session.undo_organizer());
+            assert!(session.organizer.note(id).is_none());
+            assert!(session.redo_organizer());
+            session.persistence.force_flush()?;
+        }
+        let reopened = Session::open(&db)?;
+        let note = reopened.organizer.note(id).unwrap();
+        assert_eq!(note.body, "记录一件事 #工作/项目");
+        assert_eq!(note.tags, ["工作/项目"]);
         Ok(())
     }
 

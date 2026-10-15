@@ -97,15 +97,15 @@ db-row-removed,已实现,未验证,选择一条普通数据库行后可点击“
 db-search-opened,已实现,未验证,数据库工具栏的搜索按钮打开内嵌搜索框并聚焦,搜索是临时视图状态不写入文档或数据库配置
 db-search-text-set,已实现,未验证,搜索词下推给 SQLite；行数和虚拟列表同步显示匹配记录,使用 RowRequest.search 与 filtered_count；只请求 uniform_list 当前窗口中的匹配行
 db-search-closed,已实现,未验证,点击 × 或按 Escape 关闭数据库搜索并清除本次查询,关闭后恢复当前页面编辑焦点
-org-capture-opened,已实现,未验证,速记小窗打开时从当前整理区标签筛选预填 #标签 并聚焦输入；无筛选时空白；每次打开使用独立草稿,使用唯一 Session 的当前 organizer 过滤器种子草稿；不创建第二个数据库写者
-org-capture-sent,已实现,未验证,Ctrl+Enter Alt+S 或保存按钮将普通笔记写入当前库并提取 #标签；成功关闭，失败保留草稿,创建笔记后立即 flush；保存失败返回 false 并留在速记窗；沿用主窗口唯一 Session
-org-capture-closed,已实现,未验证,Escape 先收起标签建议再关闭速记；取消不写入笔记,隐藏建议只改变窗口 UI 状态；取消仅丢弃本次草稿，不产生 undo 项
+org-capture-opened,已实现,未验证,整理区笔记“＋”打开同窗 560×340 捕获浮层；从当前标签筛选预填 #标签 并将光标置于末尾；无筛选时空白,仅保留窗口内草稿并聚焦输入；打开浮层不创建笔记
+org-capture-sent,已实现,未验证,Ctrl+Enter Alt+S 或保存按钮提交普通笔记并提取 #标签；成功后关闭浮层、选中并打开新笔记,以单条 core CreateNote 写入当前唯一 Session；空草稿拒绝；创建、标签和正文是一条 organizer undo 记录
+org-capture-closed,已实现,未验证,取消按钮、遮罩、关闭按钮或 Escape 关闭草稿；Escape 先收起标签建议；关闭不写入笔记,只丢弃浮层草稿并恢复原焦点，不产生 organizer 记录
 org-quick-note-requested,已实现,未验证,全局 Alt+N 打开独立无边框速记窗口，不要求主窗口先显示；应用内 Alt+N 同样可用,复用现有速记窗口和 UI job pump；不会重置已存在的草稿
 toggle-lan-sharing,已实现,已验证,通用设置可持久化启停 5877 局域网只读分享，重启生效；默认关闭,命令行 --share / --share-port 可显式启动；--pull URL 将共享页面导入当前库；pull 通过 loopback 与隔离 SQLite 回归
 org-select-entered,已实现,已验证,笔记和任务均可进入多选模式；点击整行选择，提供退出入口,切换标签或回收站时清空选择；隔离 Release GUI smoke 调用两类选择路径并断言 ID 集更新，但未做真人鼠标点验
 org-select-all-toggled,已实现,已验证,全选或取消全选当前筛选后可见的笔记/任务,选择集合按显示行构建；隔离 Release GUI smoke 覆盖可见笔记全选；过滤隐藏的条目不被“全选”误纳入
 org-selection-verbed,已实现,已验证,批量复制含唯一 ID 的笔记/任务，批量删除进入可撤销回收站；任务另支持批量完成,隔离 Release GUI smoke 覆盖笔记批量删除/撤销与任务批量完成/撤销；剪贴板复制及真人界面点验未覆盖
-org-capture-draft-changed,已实现,未验证,编辑时从当前 live 笔记与任务标签重算最多五个候选；支持完整层级标签和末级标签不区分大小写匹配,候选针对光标前未结束的 #token；有空白分隔时不显示；标签池按唯一值排序
+org-capture-draft-changed,已实现,未验证,编辑浮层草稿时从当前 live 笔记与任务标签重算最多五个候选；支持完整层级标签和末级标签不区分大小写匹配,候选针对光标前未结束的 #token；有空白分隔时不显示；标签池按唯一值排序
 org-tag-suggest-picked,已实现,未验证,上下方向键移动候选；Enter Tab 或点击应用候选并将光标移到完整标签之后,按 UTF-8 字符边界替换当前 #token；后续文本和标点保留，避免重复空格
 version-save,已实现,已验证,为当前页面保存命名快照；最多保留最新 20 个版本，空名称自动编号,隔离 Release GUI smoke 验证保存并持久化；快照复用 core `versions/` 单页 SQLite 格式和 metadata 索引
 version-view,已实现,已验证,选择版本后查看相对当前页面的新增/删除块差异,基于 core `diff::compare`；Session/GUI 状态 smoke 核对差异行；面板真实绘制与截图尚未验证
