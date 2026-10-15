@@ -1266,3 +1266,8 @@
 
 - 对齐旧版 `current-area` / `current-page` 元数据：GPUI 启动时恢复上次文档页；若上次停留在整理区，则回到笔记页。进入文档/整理区都会更新旧版兼容元数据。笔记区启动捕获受共享设置 `notes.auto_input` 控制，缺省开启；设置页将其与独立 GPUI 速记小窗启动选项区分显示。选中当前文档时点击侧栏行也能从整理区返回文档。
 - 新增隔离 SQLite 重开测试，覆盖文档页恢复、整理区恢复及切回文档后的恢复；设置默认/关闭值测试通过。`cargo fmt --all -- --check`、`cargo test --locked`（96 项：47 库 + 47 二进制 + 1 stdio + 1 sync loopback）、`cargo check --locked`、`cargo build --release --locked` 和 `git diff --check` 均通过。唯一临时目录和 SQLite 的 1000 块 Release GUI smoke 退出码 0；smoke 走默认文档启动路径，启动落点与自动输入条件由隔离 SQLite/设置单测覆盖。未访问真实用户库，也没有修改 Slint/core/冻结参考树。
+
+## 第二百零七轮：跨区域后退与前进历史
+
+- 将 GPUI 页面历史扩成统一导航栈，覆盖文档、笔记和任务三个停靠点，并保留旧版规则：新导航清除前进分支；删除页面会在回退时跳过；回退栈上限 50；没有历史时文档回退落到笔记首页，且可前进返回。点击当前文档页也能从整理区切回文档，切换笔记/任务 tab 进入同一历史。
+- 新增两个导航栈单测，覆盖跨页/tab 回退前进、删除页面跳过和笔记首页栈底；Release GUI smoke 实际走过文档→笔记→任务→回退/前进，并从整理区返回当前文档。`cargo fmt --all -- --check`、`cargo test --locked`（98 项：47 库 + 49 二进制 + 1 stdio + 1 sync loopback）、`cargo check --locked`、`cargo build --release --locked`、`git diff --check` 全部通过。使用唯一临时目录与 SQLite；未访问真实用户库，未修改 Slint/core/冻结参考树。

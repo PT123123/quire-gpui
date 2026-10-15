@@ -399,6 +399,85 @@ fn push_history<T: Copy + PartialEq>(history: &mut Vec<T>, value: T) {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum NavigationStop {
+    Page(quire_core::core::types::PageId),
+    Organizer { tasks: bool },
+}
+
+impl NavigationStop {
+    fn is_open(self) -> bool {
+        match self {
+            Self::Page(id) => id.0 > 0,
+            Self::Organizer { .. } => true,
+        }
+    }
+    fn is_alive(self, pages: &[quire_core::core::types::Page]) -> bool {
+        match self {
+            Self::Page(id) => pages.iter().any(|page| page.id == id && !page.template),
+            Self::Organizer { .. } => true,
+        }
+    }
+}
+
+#[derive(Default)]
+struct NavigationHistory {
+    back: Vec<NavigationStop>,
+    forward: Vec<NavigationStop>,
+}
+
+impl NavigationHistory {
+    fn record(&mut self, from: NavigationStop, to: NavigationStop) {
+        if from.is_open() && from != to {
+            push_history(&mut self.back, from);
+        }
+        self.forward.clear();
+    }
+    fn step(
+        &mut self,
+        forward: bool,
+        current: NavigationStop,
+        pages: &[quire_core::core::types::Page],
+    ) -> Option<NavigationStop> {
+        let (from, to) = if forward {
+            (&mut self.forward, &mut self.back)
+        } else {
+            (&mut self.back, &mut self.forward)
+        };
+        let target = loop {
+            match from.pop() {
+                Some(stop) if stop.is_alive(pages) => break stop,
+                Some(_) => continue,
+                None => return None,
+            }
+        };
+        if current.is_open() && current.is_alive(pages) && to.last() != Some(&current) {
+            push_history(to, current);
+        }
+        Some(target)
+    }
+    fn back(
+        &mut self,
+        current: NavigationStop,
+        pages: &[quire_core::core::types::Page],
+    ) -> Option<NavigationStop> {
+        match self.step(false, current, pages) {
+            Some(stop) => Some(stop),
+            None if current == (NavigationStop::Organizer { tasks: false })
+                || !current.is_open() =>
+            {
+                None
+            }
+            None => {
+                if !self.forward.contains(&current) {
+                    push_history(&mut self.forward, current);
+                }
+                Some(NavigationStop::Organizer { tasks: false })
+            }
+        }
+    }
+}
+
 fn find_matches_in(text: &str, query: &str) -> Vec<Range<usize>> {
     if query.is_empty() || query.len() > text.len() {
         return Vec::new();
@@ -1076,15 +1155,16 @@ fn columns_layout_item_ids(blocks: &[Block], layout_id: BlockId) -> Vec<BlockId>
 #[cfg(test)]
 mod view_tests {
     use super::{
-        OrganizerTaskDrag, capture_tag_replacement, capture_tags, columns_layout_item_ids,
-        database_filter_value_from_text, database_group_identity, database_group_label,
-        database_property_kind_choices, evaluate_database_formula, evaluate_database_rollup,
-        find_matches_in, link_target_range, mention_date_matches, notes_auto_input_enabled,
-        order_database_groups, organizer_notes_copy_payload, organizer_tag_matches_path,
-        organizer_tag_tree_rows, organizer_tags_exclude, organizer_task_drop_accepted,
-        palette_matches, parse_mcp_port, parse_organizer_tags, push_history, settings_matches,
-        settings_section_visible, slash_query, sort_organizer_notes, sort_organizer_tasks,
-        sync_peer_is_recent, sync_targets, system_palette_id_for_appearance, toc_headings,
+        NavigationHistory, NavigationStop, OrganizerTaskDrag, Session, capture_tag_replacement,
+        capture_tags, columns_layout_item_ids, database_filter_value_from_text,
+        database_group_identity, database_group_label, database_property_kind_choices,
+        evaluate_database_formula, evaluate_database_rollup, find_matches_in, link_target_range,
+        mention_date_matches, notes_auto_input_enabled, order_database_groups,
+        organizer_notes_copy_payload, organizer_tag_matches_path, organizer_tag_tree_rows,
+        organizer_tags_exclude, organizer_task_drop_accepted, palette_matches, parse_mcp_port,
+        parse_organizer_tags, push_history, settings_matches, settings_section_visible,
+        slash_query, sort_organizer_notes, sort_organizer_tasks, sync_peer_is_recent, sync_targets,
+        system_palette_id_for_appearance, toc_headings,
     };
     use gpui::WindowAppearance;
     use quire_core::core::database::PropertyKind;
@@ -1430,6 +1510,62 @@ mod view_tests {
         assert_eq!(history.len(), 50);
         assert_eq!(history.first(), Some(&11));
         assert_eq!(history.last(), Some(&60));
+    }
+
+    #[test]
+    fn navigation_history_retraces_pages_and_both_organizer_tabs() -> anyhow::Result<()> {
+        let scratch = quire_core::testing::ScratchDir::new("gpui-navigation-history");
+        let mut session = Session::open(&scratch.path().join("quire.db"))?;
+        let page_one = session.page.id;
+        let page_two = session.create_page(None);
+        let page_three = session.create_page(None);
+        let pages = session.pages.clone();
+        let notes = NavigationStop::Organizer { tasks: false };
+        let tasks = NavigationStop::Organizer { tasks: true };
+        let one = NavigationStop::Page(page_one);
+        let two = NavigationStop::Page(page_two);
+        let three = NavigationStop::Page(page_three);
+
+        let mut history = NavigationHistory::default();
+        history.record(one, notes);
+        history.record(notes, tasks);
+        history.record(tasks, two);
+        assert_eq!(history.back(two, &pages), Some(tasks));
+        assert_eq!(history.back(tasks, &pages), Some(notes));
+        assert_eq!(history.back(notes, &pages), Some(one));
+        assert_eq!(history.step(true, one, &pages), Some(notes));
+        assert_eq!(history.step(true, notes, &pages), Some(tasks));
+
+        history.record(tasks, three);
+        assert_eq!(history.step(true, three, &pages), None);
+        Ok(())
+    }
+
+    #[test]
+    fn navigation_history_skips_deleted_pages_and_returns_home() -> anyhow::Result<()> {
+        let scratch = quire_core::testing::ScratchDir::new("gpui-navigation-deleted-page");
+        let mut session = Session::open(&scratch.path().join("quire.db"))?;
+        let page_one = session.page.id;
+        let page_two = session.create_page(None);
+        let page_three = session.create_page(None);
+        let live_pages = session
+            .pages
+            .iter()
+            .filter(|page| page.id != page_two)
+            .cloned()
+            .collect::<Vec<_>>();
+        let one = NavigationStop::Page(page_one);
+        let two = NavigationStop::Page(page_two);
+        let three = NavigationStop::Page(page_three);
+        let home = NavigationStop::Organizer { tasks: false };
+        let mut history = NavigationHistory::default();
+        history.record(one, two);
+        history.record(two, three);
+        assert_eq!(history.back(three, &live_pages), Some(one));
+        assert_eq!(history.back(one, &live_pages), Some(home));
+        assert_eq!(history.back(home, &live_pages), None);
+        assert_eq!(history.step(true, home, &live_pages), Some(one));
+        Ok(())
     }
 
     #[test]
@@ -1948,8 +2084,7 @@ fn system_palette_id_for_appearance(appearance: WindowAppearance) -> &'static st
 
 pub struct Workspace {
     session: Session,
-    page_history_back: Vec<quire_core::core::types::PageId>,
-    page_history_forward: Vec<quire_core::core::types::PageId>,
+    navigation_history: NavigationHistory,
     title_input: Entity<TextInput>,
     version_name_input: Entity<TextInput>,
     version_name_subscription: Option<Subscription>,
@@ -2378,8 +2513,7 @@ impl Workspace {
             versions_open: false,
             version_selected: None,
             version_diff_rows: Vec::new(),
-            page_history_back: Vec::new(),
-            page_history_forward: Vec::new(),
+            navigation_history: NavigationHistory::default(),
             title_input,
             title_subscription: None,
             title_edit_original: None,
@@ -3605,6 +3739,22 @@ impl Workspace {
                     assert_eq!(this.session.blocks().len(), original_block_count);
                     eprintln!("SMOKE: block plus insertion menu filtering, selection and undo passed");
                     let original_page = this.session.page.id;
+                    this.open_organizer_tab(false, true, window, cx);
+                    assert!(this.organizer_open && !this.organizer_tasks);
+                    this.open_organizer_tab(true, true, window, cx);
+                    assert!(this.organizer_open && this.organizer_tasks);
+                    this.navigate_page_history(false, window, cx);
+                    assert!(this.organizer_open && !this.organizer_tasks);
+                    this.navigate_page_history(false, window, cx);
+                    assert!(!this.organizer_open && this.session.page.id == original_page);
+                    this.navigate_page_history(true, window, cx);
+                    assert!(this.organizer_open && !this.organizer_tasks);
+                    this.navigate_page_history(true, window, cx);
+                    assert!(this.organizer_open && this.organizer_tasks);
+                    this.activate_page(original_page, window, cx);
+                    assert!(!this.organizer_open && this.session.page.id == original_page);
+                    this.navigation_history = NavigationHistory::default();
+                    eprintln!("SMOKE: back/forward crosses document, notes and tasks stops");
                     this.add_page(window, cx);
                     let created_page = this.session.page.id;
                     assert_ne!(created_page, original_page);
@@ -5054,7 +5204,11 @@ impl Workspace {
             .map(|stem| stem.to_string_lossy().trim().to_owned())
             .filter(|stem| !stem.is_empty())
             .unwrap_or_else(|| "已导入".into());
+        let from = self.current_navigation_stop();
         let page = self.session.import_markdown(title.clone(), &source);
+        self.record_navigation(from, NavigationStop::Page(page));
+        self.organizer_open = false;
+        self.mark_current_area("docs", window, cx);
         self.session.visit_page(page);
         self.find_index = None;
         self.refresh_find_matches();
@@ -7464,6 +7618,7 @@ impl Workspace {
         } else {
             note.title.trim().chars().take(50).collect::<String>()
         };
+        self.record_navigation_to(NavigationStop::Organizer { tasks: true });
         let task_id = self
             .session
             .create_task_in(quire_core::core::organizer::ListId::INBOX, title.clone());
@@ -7729,9 +7884,11 @@ impl Workspace {
         cx.notify();
     }
     fn create_note(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.record_navigation_to(NavigationStop::Organizer { tasks: false });
         self.commit_note_draft(window, cx);
         let id = self.session.create_note();
         self.organizer_open = true;
+        self.organizer_tasks = false;
         self.mark_current_area("organizer", window, cx);
         self.selected_note = None;
         self.select_note(id, window, cx);
@@ -8000,6 +8157,7 @@ impl Workspace {
         }
     }
     fn create_task(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.record_navigation_to(NavigationStop::Organizer { tasks: true });
         self.commit_note_draft(window, cx);
         let id = self
             .session
@@ -8827,17 +8985,28 @@ impl Workspace {
             cx.notify();
         }
     }
-    fn toggle_organizer(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.commit_note_draft(window, cx);
-        self.organizer_open = !self.organizer_open;
-        if self.organizer_open {
-            self.mark_current_area("organizer", window, cx);
-        } else {
-            self.mark_current_area("docs", window, cx);
+    fn open_organizer_tab(
+        &mut self,
+        tasks: bool,
+        record_history: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let target = NavigationStop::Organizer { tasks };
+        if record_history {
+            self.record_navigation_to(target);
         }
-        if self.organizer_open {
+        self.commit_note_draft(window, cx);
+        if self.organizer_capture_open {
+            self.close_organizer_capture(window, cx);
+        }
+        self.organizer_open = true;
+        self.mark_current_area("organizer", window, cx);
+        if self.organizer_tasks != tasks {
+            self.toggle_organizer_tab(tasks, window, cx);
+        } else {
             self.search_query.clear();
-            let placeholder = if self.organizer_tasks {
+            let placeholder = if tasks {
                 "搜索任务…"
             } else {
                 "搜索笔记…"
@@ -8846,9 +9015,6 @@ impl Workspace {
                 input.placeholder = Some(placeholder.into());
                 input.reset(String::new(), Vec::new(), 0, cx);
             });
-        }
-        if !self.organizer_open {
-            self.restore_focus(window, cx);
         }
         cx.notify();
     }
@@ -9155,6 +9321,7 @@ impl Workspace {
         }
         if id == self.session.page.id {
             if self.organizer_open {
+                self.record_navigation_to(NavigationStop::Page(id));
                 self.organizer_open = false;
                 self.mark_current_area("docs", window, cx);
                 self.restore_focus(window, cx);
@@ -9168,16 +9335,25 @@ impl Workspace {
             .iter()
             .any(|page| page.id == id && !page.template)
         {
-            Self::push_page_history(&mut self.page_history_back, self.session.page.id);
-            self.page_history_forward.clear();
+            self.record_navigation_to(NavigationStop::Page(id));
         }
         self.activate_page_without_history(id, window, cx);
     }
-    fn push_page_history(
-        history: &mut Vec<quire_core::core::types::PageId>,
-        page: quire_core::core::types::PageId,
-    ) {
-        push_history(history, page);
+    fn current_navigation_stop(&self) -> NavigationStop {
+        if self.organizer_open {
+            NavigationStop::Organizer {
+                tasks: self.organizer_tasks,
+            }
+        } else {
+            NavigationStop::Page(self.session.page.id)
+        }
+    }
+    fn record_navigation(&mut self, from: NavigationStop, to: NavigationStop) {
+        self.navigation_history.record(from, to);
+    }
+    fn record_navigation_to(&mut self, to: NavigationStop) {
+        let from = self.current_navigation_stop();
+        self.record_navigation(from, to);
     }
     fn navigate_page_history(
         &mut self,
@@ -9188,35 +9364,24 @@ impl Workspace {
         if self.closing || self.composing(cx) {
             return;
         }
-        let target = {
-            let history = if forward {
-                &mut self.page_history_forward
-            } else {
-                &mut self.page_history_back
-            };
-            loop {
-                let Some(candidate) = history.pop() else {
-                    break None;
-                };
-                if self
-                    .session
-                    .pages
-                    .iter()
-                    .any(|page| page.id == candidate && !page.template)
-                {
-                    break Some(candidate);
-                }
-            }
+        self.commit_note_draft(window, cx);
+        if self.organizer_capture_open {
+            self.close_organizer_capture(window, cx);
+        }
+        let current = self.current_navigation_stop();
+        let target = if forward {
+            self.navigation_history
+                .step(true, current, &self.session.pages)
+        } else {
+            self.navigation_history.back(current, &self.session.pages)
         };
         let Some(target) = target else { return };
-        let current = self.session.page.id;
-        let opposite = if forward {
-            &mut self.page_history_back
-        } else {
-            &mut self.page_history_forward
-        };
-        Self::push_page_history(opposite, current);
-        self.activate_page_without_history(target, window, cx);
+        match target {
+            NavigationStop::Page(id) => self.activate_page_without_history(id, window, cx),
+            NavigationStop::Organizer { tasks } => {
+                self.open_organizer_tab(tasks, false, window, cx)
+            }
+        }
     }
     fn activate_page_without_history(
         &mut self,
@@ -9506,22 +9671,12 @@ impl Workspace {
                 self.toggle_theme_picker(window, cx);
             }
             PaletteCommand::OpenNotes | PaletteCommand::OpenTasks => {
-                self.commit_note_draft(window, cx);
-                self.organizer_open = true;
-                self.organizer_tasks = matches!(action, PaletteCommand::OpenTasks);
-                self.selected_note = None;
-                self.selected_task = None;
-                self.search_query.clear();
-                let placeholder = if self.organizer_tasks {
-                    "搜索任务…"
-                } else {
-                    "搜索笔记…"
-                };
-                self.search_input.update(cx, |input, cx| {
-                    input.placeholder = Some(placeholder.into());
-                    input.reset(String::new(), Vec::new(), 0, cx);
-                });
-                cx.notify();
+                self.open_organizer_tab(
+                    matches!(action, PaletteCommand::OpenTasks),
+                    true,
+                    window,
+                    cx,
+                );
             }
             PaletteCommand::RenamePage => {
                 if !self.session.page.locked {
@@ -9607,10 +9762,11 @@ impl Workspace {
                 }
             }
             PaletteCommand::NewPageFromTemplate(template_id) => {
-                let previous = self.session.page.id;
+                let from = self.current_navigation_stop();
                 if let Some(id) = self.session.create_page_from_template(template_id, None) {
-                    Self::push_page_history(&mut self.page_history_back, previous);
-                    self.page_history_forward.clear();
+                    self.record_navigation(from, NavigationStop::Page(id));
+                    self.organizer_open = false;
+                    self.mark_current_area("docs", window, cx);
                     self.session.visit_page(id);
                     self.find_index = None;
                     self.refresh_find_matches();
@@ -9811,20 +9967,12 @@ impl Workspace {
             (0, 0) => self.add_page(window, cx),
             (0, 1) => self.open_data_folder(cx),
             (0, 2) => self.toggle_theme_picker(window, cx),
-            (1, 0) => {
-                self.organizer_open = true;
-                self.mark_current_area("organizer", window, cx);
-                self.toggle_organizer_tab(false, window, cx);
-            }
+            (1, 0) => self.open_organizer_tab(false, true, window, cx),
             (1, 1) => {
-                self.organizer_tasks = false;
+                self.open_organizer_tab(false, true, window, cx);
                 self.create_note(window, cx);
             }
-            (2, 0) => {
-                self.organizer_open = true;
-                self.mark_current_area("organizer", window, cx);
-                self.toggle_organizer_tab(true, window, cx);
-            }
+            (2, 0) => self.open_organizer_tab(true, true, window, cx),
             (2, 1) => self.create_task(window, cx),
             (3, 0) => self.open_search(&SearchPages, window, cx),
             (4, 0) => self.toggle_theme_picker(window, cx),
@@ -9921,14 +10069,13 @@ impl Workspace {
         if self.closing || self.composing(cx) {
             return;
         }
-        let previous_page = self.session.page.id;
+        let from = self.current_navigation_stop();
         let Some(duplicate) = self.session.duplicate_page(id) else {
             return;
         };
+        self.record_navigation(from, NavigationStop::Page(duplicate));
         self.organizer_open = false;
         self.mark_current_area("docs", window, cx);
-        Self::push_page_history(&mut self.page_history_back, previous_page);
-        self.page_history_forward.clear();
         self.session.visit_page(duplicate);
         self.find_index = None;
         self.refresh_find_matches();
@@ -10003,13 +10150,12 @@ impl Workspace {
         if self.closing || self.session.page.locked {
             return;
         }
-        let previous = self.session.page.id;
+        let from = self.current_navigation_stop();
         self.session.create_page(None);
+        let id = self.session.page.id;
+        self.record_navigation(from, NavigationStop::Page(id));
         self.organizer_open = false;
         self.mark_current_area("docs", window, cx);
-        let id = self.session.page.id;
-        Self::push_page_history(&mut self.page_history_back, previous);
-        self.page_history_forward.clear();
         self.session.visit_page(id);
         self.find_index = None;
         self.refresh_find_matches();
@@ -10027,13 +10173,12 @@ impl Workspace {
         if self.closing || self.session.page.locked {
             return;
         }
-        let previous = self.session.page.id;
+        let from = self.current_navigation_stop();
         self.session.create_page(Some(parent));
+        let id = self.session.page.id;
+        self.record_navigation(from, NavigationStop::Page(id));
         self.organizer_open = false;
         self.mark_current_area("docs", window, cx);
-        let id = self.session.page.id;
-        Self::push_page_history(&mut self.page_history_back, previous);
-        self.page_history_forward.clear();
         self.session.visit_page(id);
         self.find_index = None;
         self.refresh_find_matches();
@@ -20044,9 +20189,9 @@ impl Render for Workspace {
                             .gap(px(8.))
                             .child(
                                 div().flex().gap(px(6.)).child(
-                                    div().id("organizer-tab-notes").flex_1().px(px(9.)).py(px(6.)).rounded(px(5.)).cursor_pointer().text_color(if !self.organizer_tasks { accent } else { muted }).when(!self.organizer_tasks, |tab| tab.bg(Palette::color(&p.elevated))).on_click(cx.listener(|this, _, window, cx| this.toggle_organizer_tab(false, window, cx))).child("笔记")
+                                    div().id("organizer-tab-notes").flex_1().px(px(9.)).py(px(6.)).rounded(px(5.)).cursor_pointer().text_color(if !self.organizer_tasks { accent } else { muted }).when(!self.organizer_tasks, |tab| tab.bg(Palette::color(&p.elevated))).on_click(cx.listener(|this, _, window, cx| this.open_organizer_tab(false, true, window, cx))).child("笔记")
                                 ).child(
-                                    div().id("organizer-tab-tasks").flex_1().px(px(9.)).py(px(6.)).rounded(px(5.)).cursor_pointer().text_color(if self.organizer_tasks { accent } else { muted }).when(self.organizer_tasks, |tab| tab.bg(Palette::color(&p.elevated))).on_click(cx.listener(|this, _, window, cx| this.toggle_organizer_tab(true, window, cx))).child("任务")
+                                    div().id("organizer-tab-tasks").flex_1().px(px(9.)).py(px(6.)).rounded(px(5.)).cursor_pointer().text_color(if self.organizer_tasks { accent } else { muted }).when(self.organizer_tasks, |tab| tab.bg(Palette::color(&p.elevated))).on_click(cx.listener(|this, _, window, cx| this.open_organizer_tab(true, true, window, cx))).child("任务")
                                 ),
                             )
                             .when(self.organizer_tasks, |nav| {
@@ -21055,12 +21200,7 @@ impl Render for Workspace {
                                         row.bg(Palette::color(&p.elevated2).opacity(0.55))
                                     })
                                     .hover(|row| row.bg(Palette::color(&p.elevated2).opacity(0.45)))
-                                    .on_click(cx.listener(|this, _, window, cx| {
-                                        if !this.organizer_open {
-                                            this.toggle_organizer(window, cx);
-                                        }
-                                        this.toggle_organizer_tab(false, window, cx);
-                                    }))
+                                    .on_click(cx.listener(|this, _, window, cx| this.open_organizer_tab(false, true, window, cx)))
                                     .on_mouse_down(
                                         MouseButton::Right,
                                         cx.listener(|this, event: &MouseDownEvent, window, cx| {
@@ -21104,12 +21244,7 @@ impl Render for Workspace {
                                         row.bg(Palette::color(&p.elevated2).opacity(0.55))
                                     })
                                     .hover(|row| row.bg(Palette::color(&p.elevated2).opacity(0.45)))
-                                    .on_click(cx.listener(|this, _, window, cx| {
-                                        if !this.organizer_open {
-                                            this.toggle_organizer(window, cx);
-                                        }
-                                        this.toggle_organizer_tab(true, window, cx);
-                                    }))
+                                    .on_click(cx.listener(|this, _, window, cx| this.open_organizer_tab(true, true, window, cx)))
                                     .on_mouse_down(
                                         MouseButton::Right,
                                         cx.listener(|this, event: &MouseDownEvent, window, cx| {

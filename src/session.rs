@@ -5783,7 +5783,6 @@ mod tests {
         assert_eq!(reopened.page.id, expected_page);
         assert_eq!(reopened.page.title, expected_title);
 
-        let mut reopened = reopened;
         reopened.mark_document_area();
         reopened.persistence.force_flush()?;
         drop(reopened);
