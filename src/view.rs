@@ -115,6 +115,26 @@ fn sort_organizer_notes(notes: &mut [OrganizerNote], mode: u8) {
     });
 }
 
+fn sort_organizer_tasks(tasks: &mut [OrganizerTask], mode: i32) {
+    match mode {
+        1 => tasks.sort_by(|a, b| {
+            a.due
+                .is_none()
+                .cmp(&b.due.is_none())
+                .then_with(|| a.due.cmp(&b.due))
+                .then_with(|| a.ord.cmp(&b.ord))
+        }),
+        2 => tasks.sort_by(|a, b| {
+            b.priority
+                .slot()
+                .cmp(&a.priority.slot())
+                .then_with(|| a.due.cmp(&b.due))
+                .then_with(|| a.ord.cmp(&b.ord))
+        }),
+        _ => tasks.sort_by_key(|task| (task.list, task.ord)),
+    }
+}
+
 #[derive(Clone)]
 struct EditorBlockDrag {
     block: BlockId,
@@ -990,13 +1010,15 @@ mod view_tests {
         organizer_tag_matches_path, organizer_tag_tree_rows, organizer_tags_exclude,
         organizer_task_drop_accepted, palette_matches, parse_mcp_port, parse_organizer_tags,
         push_history, settings_matches, settings_section_visible, slash_query,
-        sort_organizer_notes, sync_peer_is_recent, sync_targets, system_palette_id_for_appearance,
-        toc_headings,
+        sort_organizer_notes, sort_organizer_tasks, sync_peer_is_recent, sync_targets,
+        system_palette_id_for_appearance, toc_headings,
     };
     use gpui::WindowAppearance;
     use quire_core::core::database::PropertyKind;
     use quire_core::core::database_view::FilterValue;
-    use quire_core::core::organizer::{ListId, Note as OrganizerNote, NoteId, TaskId};
+    use quire_core::core::organizer::{
+        ListId, Note as OrganizerNote, NoteId, Priority, Repeat, Task as OrganizerTask, TaskId,
+    };
     use quire_core::core::types::{
         Block, BlockId, BlockKind, ColorKind, Lang, Mark, MarkKind, OrderKey, PageId,
     };
@@ -1118,6 +1140,44 @@ mod view_tests {
         assert_eq!(ids(0), [3, 2, 1]);
         assert_eq!(ids(1), [3, 1, 2]);
         assert_eq!(ids(2), [3, 2, 1]);
+    }
+
+    #[test]
+    fn organizer_task_sort_modes_match_manual_due_and_priority_tie_breaks() {
+        let task = |id, list, ord, priority, due: Option<&str>| OrganizerTask {
+            id: TaskId(id),
+            uuid: format!("task-{id}"),
+            list,
+            title: format!("Task {id}"),
+            notes: String::new(),
+            priority,
+            due: due.map(str::to_owned),
+            repeat: Repeat::None,
+            done: false,
+            completed_at: None,
+            tags: Vec::new(),
+            subtasks: Vec::new(),
+            created: 0,
+            edited: 0,
+            ord: OrderKey(ord),
+            deleted_at: None,
+            rev: String::new(),
+        };
+        let source = vec![
+            task(1, ListId::INBOX, 20, Priority::High, None),
+            task(2, ListId::INBOX, 10, Priority::High, Some("2026-10-17")),
+            task(3, ListId(4), 5, Priority::Medium, Some("2026-10-15")),
+            task(4, ListId::INBOX, 15, Priority::None, None),
+            task(5, ListId::INBOX, 25, Priority::High, Some("2026-10-15")),
+        ];
+        let ids = |mode| {
+            let mut tasks = source.clone();
+            sort_organizer_tasks(&mut tasks, mode);
+            tasks.iter().map(|task| task.id.0).collect::<Vec<_>>()
+        };
+        assert_eq!(ids(0), [2, 4, 1, 5, 3]);
+        assert_eq!(ids(1), [3, 5, 2, 4, 1]);
+        assert_eq!(ids(2), [1, 5, 2, 3, 4]);
     }
 
     #[test]
@@ -3308,9 +3368,21 @@ impl Workspace {
                     .await;
                 let _ = weak.update_in(cx, |this, window, cx| {
                     assert!(this.organizer_board_mode);
+                    for mode in 0..3 {
+                        this.task_sort = mode;
+                        let sorted_board = this.render(window, cx);
+                        drop(sorted_board);
+                    }
+                    this.task_sort = 0;
                     let board_frame = this.render(window, cx);
                     drop(board_frame);
                     this.organizer_board_mode = false;
+                    for mode in 0..3 {
+                        this.task_sort = mode;
+                        let sorted_list = this.render(window, cx);
+                        drop(sorted_list);
+                    }
+                    this.task_sort = 0;
                     this.organizer_tasks = false;
                     this.organizer_note_board_mode = true;
                     cx.notify();
@@ -17245,22 +17317,7 @@ impl Render for Workspace {
                     && !organizer_tags_exclude(&task.tags, &self.organizer_excluded_tags)
             })
             .count();
-        match self.task_sort {
-            1 => tasks.sort_by(|a, b| {
-                a.due
-                    .is_none()
-                    .cmp(&b.due.is_none())
-                    .then_with(|| a.due.cmp(&b.due))
-                    .then_with(|| a.ord.cmp(&b.ord))
-            }),
-            2 => tasks.sort_by(|a, b| {
-                b.priority
-                    .slot()
-                    .cmp(&a.priority.slot())
-                    .then_with(|| a.ord.cmp(&b.ord))
-            }),
-            _ => tasks.sort_by_key(|task| task.ord),
-        }
+        sort_organizer_tasks(&mut tasks, self.task_sort);
         let board_tasks = tasks.clone();
         let visible_task_ids = tasks.iter().map(|task| task.id).collect::<Vec<_>>();
         let today = quire_core::core::date::today_iso();

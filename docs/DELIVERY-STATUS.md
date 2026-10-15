@@ -1181,3 +1181,8 @@
 
 - 对照旧版 `org-note-sort-picked` 与 `AppState::org_notes`，补齐此前缺失的“按内容”模式。排序控件循环“最新创建 / 最新更新 / 按内容”；置顶项在三种模式里都排在最前，内容排序以小写标题为主键、更新时间为次序，默认仍为最新创建。
 - 单元测试覆盖三种顺序、大小写不敏感与置顶优先；隔离 Release GUI smoke 渲染三种排序状态。`cargo fmt --all -- --check`、`cargo test --locked`（90 项：44 库 + 44 二进制 + 1 stdio + 1 sync loopback）、`cargo check --locked`、`cargo build --release --locked` 和 `git diff --check` 均通过；全新随机 `%TEMP%` SQLite smoke 退出码为 0，仍覆盖速记、托盘、MCP、最大化/还原和虚拟滚动。PARITY F244 已记为已实现/未验证；真人操作验收待桌面进行。未访问真实用户库，未修改 Slint/core/冻结参考树。
+
+## 第一百九十轮：校准任务优先级排序
+
+- 对照旧版 `sort_tasks` 的 F243：GPUI 已有添加顺序/截止日期/优先级三种排序，但优先级相同时缺少按截止日期的次级排序。现抽出共用任务排序函数，优先级模式按优先级降序、截止日期、清单顺序排列；手动模式显式按清单与 `ord`，截止日期模式无日期排后。列表与看板共用相同排序函数。
+- 单元测试覆盖三种顺序和次级键；Release GUI smoke 分别渲染列表、看板下三种排序。`cargo fmt --all -- --check`、`cargo test --locked`（91 项：44 库 + 45 二进制 + 1 stdio + 1 sync loopback）、`cargo check --locked`、`cargo build --release --locked` 与 `git diff --check` 均通过；全新随机 `%TEMP%` SQLite smoke 退出码为 0。PARITY F243 已记为已实现/未验证；没有访问真实用户库，也没有修改 Slint/core/冻结参考树。
