@@ -1271,3 +1271,8 @@
 
 - 将 GPUI 页面历史扩成统一导航栈，覆盖文档、笔记和任务三个停靠点，并保留旧版规则：新导航清除前进分支；删除页面会在回退时跳过；回退栈上限 50；没有历史时文档回退落到笔记首页，且可前进返回。点击当前文档页也能从整理区切回文档，切换笔记/任务 tab 进入同一历史。
 - 新增两个导航栈单测，覆盖跨页/tab 回退前进、删除页面跳过和笔记首页栈底；Release GUI smoke 实际走过文档→笔记→任务→回退/前进，并从整理区返回当前文档。`cargo fmt --all -- --check`、`cargo test --locked`（98 项：47 库 + 49 二进制 + 1 stdio + 1 sync loopback）、`cargo check --locked`、`cargo build --release --locked`、`git diff --check` 全部通过。使用唯一临时目录与 SQLite；未访问真实用户库，未修改 Slint/core/冻结参考树。
+
+## 第二百零八轮：数据库选择器 Escape 关闭与图标选择回填
+
+- 数据库列选择器补齐 Escape 关闭和焦点转移时关闭；筛选/分组选择器已有 Escape 与互斥关闭路径，统一回填 F081/F083/F099。Release GUI smoke 直接经过与编辑器相同的 `DismissSlash` 事件关闭列选择器。
+- 对照 GPUI 已有图标网格、None 项和 `PageIconSet` 持久化，把 F167 从“未开始”校准为“已实现/未验证”；Release GUI smoke 选择图标并恢复隔离页原值。`tools/extract-parity.mjs` 重生成 246 callback / 261 property / 188 场景并成功合并 161 个回调语义项。`cargo fmt --all -- --check`、`cargo test --locked`（98 项）、`cargo check --locked`、`cargo build --release --locked` 与 `git diff --check` 通过。全新临时 SQLite 的 1000 块 Release GUI smoke 退出码 0，包含上述新场景以及 MCP、速记、托盘、窗口最大化/还原和既有数据库视图；未访问真实用户库或修改 Slint/core/冻结参考树。

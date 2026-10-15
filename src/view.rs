@@ -3749,6 +3749,13 @@ impl Workspace {
                     );
                     assert!(this.database_columns_open.is_none());
                     eprintln!("SMOKE: Escape dismisses the database column picker");
+                    let original_icon = this.session.page.icon.clone();
+                    let picked_icon = quire_core::core::icon::PICKER[0];
+                    this.select_page_icon(picked_icon, window, cx);
+                    assert_eq!(this.session.page.icon, picked_icon);
+                    this.select_page_icon(&original_icon, window, cx);
+                    assert_eq!(this.session.page.icon, original_icon);
+                    eprintln!("SMOKE: page icon picker selection and clear/restore path passed");
                     this.open_organizer_tab(false, true, window, cx);
                     assert!(this.organizer_open && !this.organizer_tasks);
                     this.open_organizer_tab(true, true, window, cx);
