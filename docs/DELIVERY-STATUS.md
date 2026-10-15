@@ -1385,31 +1385,30 @@
 - 扩展隔离 Session 测试：笔记更新、标签和评论批次一次撤销/重做后字段一致；任务创建、优先级、子任务和完成状态组合一次撤销可整体删除、重做可整体恢复。定向 `cargo test --locked organizer_json_commands_apply_and_report_per_operation` 通过。
 - 全量 `cargo fmt --all -- --check`、`cargo test --locked`（103 项：50 library + 51 binary + 1 MCP stdio + 1 sync loopback）、`cargo check --locked`、`cargo build --release --locked` 与 `git diff --check` 通过。全新临时目录中的 Release GUI smoke（1000 块）通过，覆盖 JSON 指令执行、速记保存、托盘隐藏/唤回、MCP 16 工具、数据库视图、最大化/还原及虚拟滚动。不修改 core、Slint 或冻结参考树；性能比较继续留到最后。
 
-## 第二百二十七轮：正文块拖动目标反馈与矩阵更正
+## 第二百二十六轮：正文块拖动目标反馈与矩阵更正
 
 - 正文块拖动经过同页目标行时，上半区选择行前落点、下半区选择行后落点，并在对应边缘显示当前主题强调色落点线；core 落点校验仍负责拒绝跨越子树的非法位置。隔离 Session 新增行后落点的撤销/重做与顺序验证；真实鼠标命中和线条呈现未做桌面验收。
 - 复核整理区功能边界后更正计划：旧版没有笔记拖放排序入口，因此不再把它列为 GPUI 待实现功能。更新人工 parity sidecar 并重跑生成器，矩阵仍为 246 callbacks / 261 properties / 188 scenes。
 - `cargo fmt --all -- --check`、`cargo check --locked`、`cargo test --locked -j 8`（102 项：50 library + 50 binary + 1 MCP stdio + 1 sync loopback）与 `cargo build --release --locked -j 8` 通过；拖放 Session 测试增加了“放到行后”顺序、撤销与重开检查。全新临时目录 Release GUI smoke（1000 个合成块）通过，覆盖 JSON 指令、速记、托盘隐藏/唤回、MCP 16 工具、数据库视图、最大化/还原与虚拟滚动；测试库位于 `%TEMP%` 并与用户数据隔离。此前对照测量仍是基线，最终代码收尾后按用户要求再做性能复测。
 - 未访问真实用户库，未修改 Slint、core 或冻结参考树。
 
-## 第二百二十六轮：GPUI 与 Slint 性能基线
+## 第二百二十七轮：GPUI 与 Slint 最终性能对比（2026-10-16）
 
-- 同机、同 Rust 1.98.0、Windows 11 build 26200、Intel Core Ultra 9 185H（16 核 / 22 线程，32 GiB）测量。GPUI commit `84edf6f4136d` / Slint commit `911246743cf7`；Slint 版为 v0.1.26。两边分别运行 `cargo build --release --locked`，Release 产物已更新；二进制大小为 GPUI 25,708,544 B、Slint 38,415,872 B。
-- 构建方法：Windows PowerShell 脚本每 250 ms 汇总 cargo/rustc/link/lld-link 的 Working Set 与 Private Bytes；先记录无改动构建，再只改源码 mtime 触发应用 crate 重编，文件内容未变。目标目录此前已有编译缓存，因此不是清空 target 的冷构建。
+- 同机、同 Rust 1.98.0、Windows 11 build 26200、Intel Core Ultra 9 185H（16 核 / 22 线程，32 GiB）测量。GPUI commit `b69312f15fb23ff36fc2028beb327b6413890794` / Slint commit `911246743cf79c43c96b38dfd39dffac3fb4d53c`（v0.1.26）。Release 二进制大小：GPUI 25,775,104 B、Slint 38,415,872 B。
+- 构建测量用 `tools/measure-build.ps1`，每 250 ms 汇总 cargo/rustc/link/lld-link 子进程的 Working Set 与 Private Bytes。先测 warm no-op，再只改 GPUI `src/view.rs`、Slint `src/app/state.rs` 的文件 mtime 触发单文件重编，内容未改；目标目录保留已有依赖缓存，不是清空 target 的冷构建。GPUI 最终源码首次更新 release 目标目录为 44.78 s，峰值 1128.6 / 1708.8 MiB；随后 warm no-op 与源码触发重编结果如下。
 
 | Release 构建场景 | GPUI | Slint | 说明 |
 |---|---:|---:|---|
-| 无改动构建 | 4.59 s；峰值 Working Set 122.5 MiB / Private 106.0 MiB | 4.09 s；116.0 / 99.4 MiB | 每边 1 次，主要反映 cargo 启动与 Fresh 检查 |
-| 单文件源码触发重编 | 35.83 s；峰值 1,120.9 / 1,695.5 MiB | 447.26 s；5,621.5 / 5,521.1 MiB | GPUI touch `src/view.rs`；Slint touch `src/app/state.rs`；每边 1 次 |
-| Slint 旧 target 首次更新 | — | 453.45 s；峰值 5,667.4 / 5,570.2 MiB | 之后再做的单文件重编为 447.26 s，故表中以热依赖树的单文件行作比较 |
+| warm no-op | 3.78 s；峰值 Working Set 121.9 MiB / Private 105.4 MiB | 4.38 s；115.9 / 99.4 MiB | 每边 1 次，主要反映 Cargo Fresh 检查 |
+| 单文件源码触发重编 | 34.86 s；峰值 1127.0 / 1708.1 MiB | 434.45 s；5623.0 / 5523.8 MiB | GPUI touch `src/view.rs`；Slint touch `src/app/state.rs`；每边 1 次 |
 
-- 运行时两边用同一 PowerShell 脚本：主窗口句柄出现后统一调整为 1600×900 外窗尺寸，预热 2 秒，采样 8 秒；CPU 是单核占用百分比，内存为采样窗口末值/窗口峰值。下表是每边两次的中位数；空白场景打开新隔离库，10k 场景使用 GPUI 持久化 10,000 个合成块和 Slint `--blocks 10000` 合成场景。每次都从 `%TEMP%` 新目录/数据库运行，采样后结束进程。
+- 运行时用 `tools/measure-runtime.ps1`：进程主窗口出现后设置为 1600×900 外窗，预热 2 秒、采样 8 秒，250 ms 采样一次；CPU 为单核占用百分比。每个场景每端两次，表中取两次平均（n=2）；每轮独立启动进程并强制结束。空白场景使用新的隔离 SQLite；10k 场景 GPUI 打开隔离 SQLite 中持久化的 10,000 个合成块，Slint 通过 `--blocks 10000` 在内存中生成合成内容。
 
 | 场景 | GPUI handle-up | Slint handle-up | GPUI idle CPU | Slint idle CPU | GPUI Working Set 末值 / 峰值 | Slint Working Set 末值 / 峰值 | GPUI Private 末值 / 峰值 | Slint Private 末值 / 峰值 |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
-| 空白工作区 | 852 ms | 716 ms | 2.30% | 0.29% | 121.0 / 149.6 MiB | 110.8 / 116.0 MiB | 90.2 / 118.9 MiB | 79.4 / 84.7 MiB |
-| 10,000 块 | 859 ms | 757 ms | 1.82% | 0.10% | 153.5 / 194.6 MiB | 126.7 / 131.9 MiB | 122.7 / 164.0 MiB | 95.6 / 100.9 MiB |
+| 空白工作区 | 1114.7 ms | 1017.5 ms | 3.27% | 0.49% | 121.6 / 149.0 MiB | 110.8 / 116.1 MiB | 90.4 / 117.9 MiB | 79.5 / 84.8 MiB |
+| 10,000 块 | 1135.5 ms | 879.0 ms | 2.89% | 0.19% | 153.8 / 194.9 MiB | 126.4 / 131.5 MiB | 122.7 / 164.0 MiB | 95.3 / 100.6 MiB |
 
-- 10k 场景 GPUI 的末值 Private Bytes 高约 27 MiB，峰值高约 63 MiB；10k 块在 GPUI 是真实 core/SQLite 工作区数据，Slint 场景通过 bench 参数覆盖为内存合成文档，数据加载路径不同，内存差值包含这项差异。GPUI 空闲 CPU 的绝对值仍低于单核 3%；30 秒 10k 复测为 2.79% 单核（22 线程机器约 0.13% 全机），与 8 秒测值相符。记录为基线，不为这点绝对 CPU 占用改变 40 ms 的托盘/同步事件响应循环。
-- 初步结论：Slint 的大单 crate + thin LTO 在源码改动后的 Release 重编耗时/峰值内存更高；GPUI 当前大文档运行时 Private Bytes 较高，空闲 CPU 也较高，但仍在低绝对占用范围。构建只有单轮源码重编、运行时每场景两轮，适用于本机后续回归比较，不代表多机或统计级结论；未测 typing、持续滚动、GPU 专用内存或干净依赖冷构建。
-- 可复跑工具：`tools/measure-build.ps1`、`tools/measure-runtime.ps1`。Slint 原有 `benchmarks/scripts/bench_matrix.ps1` 另以 `A` / `D10000` 场景完成一轮原生基线采样。Slint 与 core 源码/内容均未修改；所有应用测试数据库均为新的隔离临时库。
+- 这轮 GPUI 的单文件 Release 重编约为 Slint 的 1/12.5，编译峰值 Private Bytes 约低 69%；GPUI warm no-op 略快。运行时 GPUI 的主窗句柄出现较慢，10k Private Bytes 峰值多约 63 MiB；空闲 CPU 明显高于 Slint。两次样本的 handle-up 波动较大（例如空白 Slint 为 898.6–1136.3 ms），所以启动时间差异不作稳定性结论。GPUI 的 10k 样本来自持久化 SQLite，Slint 是内存 fixture，数据加载路径不完全相同。
+- 这是同机本地回归数据，不代表多机或统计级结论；每项只有两轮，未测键入延迟、连续滚动帧率、GPU 专用内存或干净依赖冷构建。同步/托盘定时器会产生周期性 CPU 样本，8 秒窗口对 GPUI 空闲占用尤其敏感。
+- 可复跑工具：`tools/measure-build.ps1`、`tools/measure-runtime.ps1`。Slint/core 源码内容均未修改，旧版 Git 工作树保持干净；所有运行数据库均在 `%TEMP%` 的隔离目录内。

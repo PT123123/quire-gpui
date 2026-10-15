@@ -90,7 +90,7 @@
 - [ ] 全功能矩阵关闭；所有未验证项明确列出，不冒充已完成。
 - [ ] 全主题、尺寸、DPI 和交互状态视觉对照。
 - [ ] IME、人机交互、编辑正确性、数据库兼容全部通过。
-- [x] 同机 GPUI/Slint 性能基线：warm no-op / 单文件 Release 重编时间与聚合编译内存，空白/10k 文档下窗口 handle-up、CPU、Working Set/Private Bytes；方法、commit、限制与结果见 `docs/DELIVERY-STATUS.md` 第二百二十六轮。后续代码变化需按同脚本复测。
+- [x] 同机 GPUI/Slint 最终性能对比：warm no-op / 单文件 Release 重编时间与聚合编译内存，空白/10k 文档下窗口 handle-up、CPU、Working Set/Private Bytes；方法、最终 commit、限制与结果见 `docs/DELIVERY-STATUS.md` 第二百二十七轮。后续影响编译或运行路径的代码变化需按同脚本复测。
 - [ ] 测试库完成旧版→新版→旧版往返，附件和协议兼容。
 - [ ] 数据备份/切换/回退流程，候选安装包与验收报告。
 
