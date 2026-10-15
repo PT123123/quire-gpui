@@ -268,11 +268,22 @@ pub fn execute(session: &mut Session, name: &str, args: &Value) -> Result<Value,
             if session.note_delete_is_pending(id) {
                 return Err(format!("笔记 {} 正在等待撤销删除", id.0));
             }
-            if session.organizer.note(id).is_none() {
-                return Err(format!("找不到笔记 {}", id.0));
+            let note = session
+                .organizer
+                .note(id)
+                .ok_or_else(|| format!("找不到笔记 {}", id.0))?;
+            let trashed = name == "trash_note";
+            if note.is_trashed() == trashed {
+                return Err(if trashed {
+                    format!("笔记 {} 不存在（或已在回收站）", id.0)
+                } else {
+                    format!("笔记 {} 不在回收站", id.0)
+                });
             }
-            session.set_note_trashed(id, name == "trash_note");
-            Ok(json!({"ok": true, "note_id": id.0, "trashed": name == "trash_note"}))
+            if !session.set_note_trashed(id, trashed) {
+                return Err(format!("更新笔记 {} 的回收站状态失败", id.0));
+            }
+            Ok(json!({"ok": true, "note_id": id.0, "trashed": trashed}))
         }
         "list_tasks" => {
             let include_trashed = args
@@ -400,11 +411,22 @@ pub fn execute(session: &mut Session, name: &str, args: &Value) -> Result<Value,
             if session.task_delete_is_pending(id) {
                 return Err(format!("任务 {} 正在等待撤销删除", id.0));
             }
-            if session.organizer.task(id).is_none() {
-                return Err(format!("找不到任务 {}", id.0));
+            let task = session
+                .organizer
+                .task(id)
+                .ok_or_else(|| format!("找不到任务 {}", id.0))?;
+            let trashed = name == "trash_task";
+            if task.is_trashed() == trashed {
+                return Err(if trashed {
+                    format!("任务 {} 不存在（或已在回收站）", id.0)
+                } else {
+                    format!("任务 {} 不在回收站", id.0)
+                });
             }
-            session.set_task_trashed(id, name == "trash_task");
-            Ok(json!({"ok": true, "task_id": id.0, "trashed": name == "trash_task"}))
+            if !session.set_task_trashed(id, trashed) {
+                return Err(format!("更新任务 {} 的回收站状态失败", id.0));
+            }
+            Ok(json!({"ok": true, "task_id": id.0, "trashed": trashed}))
         }
         _ => Err(format!("未知工具：{name}")),
     }
@@ -697,6 +719,28 @@ mod tests {
         );
         execute(&mut session, "restore_note", &json!({"note_id": id})).unwrap();
         assert!(!session.organizer.note(NoteId(id)).unwrap().is_trashed());
+    }
+
+    #[test]
+    fn trash_restore_tools_reject_noop_state_transitions() {
+        let (_scratch, mut session) = session();
+        let note_id = session.create_note();
+        assert!(execute(&mut session, "restore_note", &json!({"note_id": note_id.0})).is_err());
+        execute(&mut session, "trash_note", &json!({"note_id": note_id.0})).unwrap();
+        assert!(execute(&mut session, "trash_note", &json!({"note_id": note_id.0})).is_err());
+        assert!(session.organizer.note(note_id).unwrap().is_trashed());
+        execute(&mut session, "restore_note", &json!({"note_id": note_id.0})).unwrap();
+        assert!(execute(&mut session, "restore_note", &json!({"note_id": note_id.0})).is_err());
+        assert!(!session.organizer.note(note_id).unwrap().is_trashed());
+
+        let task_id = session.create_task("状态迁移".into());
+        assert!(execute(&mut session, "restore_task", &json!({"task_id": task_id.0})).is_err());
+        execute(&mut session, "trash_task", &json!({"task_id": task_id.0})).unwrap();
+        assert!(execute(&mut session, "trash_task", &json!({"task_id": task_id.0})).is_err());
+        assert!(session.organizer.task(task_id).unwrap().is_trashed());
+        execute(&mut session, "restore_task", &json!({"task_id": task_id.0})).unwrap();
+        assert!(execute(&mut session, "restore_task", &json!({"task_id": task_id.0})).is_err());
+        assert!(!session.organizer.task(task_id).unwrap().is_trashed());
     }
 
     #[test]

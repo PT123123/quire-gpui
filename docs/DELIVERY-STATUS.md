@@ -1110,3 +1110,8 @@
 
 - 确认 Inno Setup 6 实际安装在标准 per-user 目录但不在 PATH；打包脚本增加该目录回退查找。安装定义改用当前 Inno 推荐的版本读取函数，去除编译弃用警告。
 - `install/build-release.ps1 -SkipBuild -BuildInstaller` 成功生成安装器。使用随机 `%TEMP%` 目录完成静默安装、安装后 `quire-gpui.exe --help` 启动、静默卸载；验证程序和卸载注册表项清理。先行脚本检查因 GUI 子系统安装器的 PowerShell `$LASTEXITCODE` 为空而中断读取，日志确认安装成功后改用等待进程句柄重跑，最终往返通过。过程未启动应用主窗口、未创建数据库、未访问真实用户数据；Slint/core 未改。
+
+## 第一百七十七轮：MCP 回收站状态迁移校验
+
+- 对照旧版 `org_set_note_trashed` / `org_set_task_trashed`，GPUI MCP 在重复 trash 或对 live 条目 restore 时原先忽略 Session 的无变更结果，仍返回成功。现先验证当前状态，非法重复迁移返回与旧版一致的错误；Session 写入意外失败也不再伪报成功。
+- 新增隔离工具测试，覆盖笔记/任务 live→trash→restore 的有效路径，以及初始 restore、重复 trash、重复 restore 的拒绝和状态保持。验证：`cargo fmt --all -- --check`、`cargo test --locked`（83 项：41 库 + 40 二进制 + 1 stdio + 1 sync loopback）、`cargo check --locked` 与 `cargo build --release --locked` 均通过。无真实用户库访问，无旧版/core 修改。
