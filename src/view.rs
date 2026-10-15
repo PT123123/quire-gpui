@@ -7541,6 +7541,8 @@ impl Workspace {
                     self.focus_first(window, cx);
                 }
                 let result = execution.and_then(|value| {
+                    let flush_lock = self.flush_lock.clone();
+                    let _flush_guard = flush_lock.lock().unwrap_or_else(|error| error.into_inner());
                     self.session
                         .persistence
                         .force_flush()
@@ -7614,10 +7616,13 @@ impl Workspace {
                 if !snapshot.device.is_empty() {
                     peer.name = snapshot.device.clone();
                 }
-                let result = self
-                    .session
-                    .sync_apply_remote(&snapshot, &bytes, &peer)
-                    .map_err(|error| error.to_string());
+                let result = {
+                    let flush_lock = self.flush_lock.clone();
+                    let _flush_guard = flush_lock.lock().unwrap_or_else(|error| error.into_inner());
+                    self.session
+                        .sync_apply_remote(&snapshot, &bytes, &peer)
+                        .map_err(|error| error.to_string())
+                };
                 match &result {
                     Ok(_) => {
                         self.session.sync_note_device(
@@ -7972,6 +7977,8 @@ impl Workspace {
         let id = self.session.create_note();
         self.session
             .update_note_editor(id, String::new(), text.to_owned(), tags);
+        let flush_lock = self.flush_lock.clone();
+        let _flush_guard = flush_lock.lock().unwrap_or_else(|error| error.into_inner());
         if let Err(error) = self.session.persistence.force_flush() {
             self.status = format!("速记保存失败：{error}");
             self.error = true;
