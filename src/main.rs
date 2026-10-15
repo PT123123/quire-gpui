@@ -2,6 +2,7 @@ mod input;
 mod mcp;
 mod mcp_tools;
 mod platform;
+mod sync_client;
 mod view;
 
 use anyhow::{Context, Result, bail};

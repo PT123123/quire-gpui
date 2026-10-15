@@ -1681,7 +1681,7 @@ pub struct Workspace {
     lan_share_active: bool,
     lan_share_notice: Option<String>,
     quick_note_window: Option<WindowHandle<QuickNoteWindow>>,
-    sync_cmd_tx: std::sync::mpsc::Sender<quire_core::services::sync::engine::Cmd>,
+    sync_cmd_tx: std::sync::mpsc::Sender<crate::sync_client::Cmd>,
     sync_status: String,
     sync_listener_warning: Option<String>,
     sync_last_auto: std::time::Instant,
@@ -1887,7 +1887,14 @@ impl Workspace {
             .map(|value| value == "true")
             .unwrap_or(true);
         let (sync_job_tx, sync_job_rx) = std::sync::mpsc::channel();
-        let sync_cmd_tx = quire_core::services::sync::engine::Engine::start(sync_self, sync_job_tx);
+        // Keep core's UDP discovery and inbound sync server, but route outgoing
+        // snapshots through the GPUI transport so its requested 60–120 second
+        // timeout also applies to socket reads/writes.
+        drop(quire_core::services::sync::engine::Engine::start(
+            sync_self,
+            sync_job_tx.clone(),
+        ));
+        let sync_cmd_tx = crate::sync_client::start(sync_job_tx);
         let mut this = Self {
             session,
             version_name_input,
@@ -8877,9 +8884,7 @@ impl Workspace {
                 self.sync_pending.insert(peer.id.clone());
                 if self
                     .sync_cmd_tx
-                    .send(quire_core::services::sync::engine::Cmd::SyncWith(
-                        peer.clone(),
-                    ))
+                    .send(crate::sync_client::Cmd::SyncWith(peer.clone()))
                     .is_err()
                 {
                     self.sync_pending.remove(&peer.id);
@@ -8979,9 +8984,7 @@ impl Workspace {
             self.sync_pending.insert(peer.id.clone());
             if self
                 .sync_cmd_tx
-                .send(quire_core::services::sync::engine::Cmd::SyncWith(
-                    peer.clone(),
-                ))
+                .send(crate::sync_client::Cmd::SyncWith(peer.clone()))
                 .is_ok()
             {
                 queued += 1;
@@ -14694,7 +14697,7 @@ impl Render for Workspace {
                                                         cx.notify();
                                                         return;
                                                     }
-                                                    if this.sync_cmd_tx.send(quire_core::services::sync::engine::Cmd::SyncWith(peer_for_sync.clone())).is_ok() {
+                                                    if this.sync_cmd_tx.send(crate::sync_client::Cmd::SyncWith(peer_for_sync.clone())).is_ok() {
                                                         this.sync_status = format!("正在与 {peer_name} 同步…");
                                                     } else {
                                                         this.sync_pending.remove(&peer_key);

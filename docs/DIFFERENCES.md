@@ -30,6 +30,13 @@
 - 理由：补齐旧版回收站的两个必要管理操作，同时避免误删后无法恢复。
 - 验收：隔离库测试覆盖笔记/任务单项删除、整批清空、撤销/重做与重开持久化；隔离 Windows Release smoke 实际调用 Workspace 操作路径并验证完整行为，未访问真实用户库。
 
+## LAN 出站同步的 socket 超时（2026-10-15）
+
+- 旧路径：GPUI 把 `SyncWith` 交给锁定的 quire-core transport；虽然调用方为 snapshot/附件传入 60–120 秒 timeout，core 建连后仍把读写 idle timeout 固定为 30 秒。
+- 新路径：保留 core Engine 的 UDP 发现、入站 HTTP server、同步 job、snapshot wire format 与 merge；GPUI 自有出站 worker 按每个操作把 5/60/120 秒配置用于 TCP connect/read/write，维持相同 pull → merge → push 协议。
+- 理由：大型 snapshot 或慢速附件链路不能被一个更短的硬编码 idle timeout 截断；不修改共享 quire-core revision，也不改变 Slint 端。
+- 验收：单测检查 120 秒 timeout 同时设置到 socket 读写，并以 loopback 假 peer 执行完整 info/snapshot/attachment/push 往返；双 Session 集成测试、74 项全量测试、Release build 与隔离 GUI smoke 通过。真实设备网络仍待验收。
+
 ## 页面历史导航与 HTML 外部打开（2026-10-15）
 
 - GPUI 原先没有页面历史后退/前进或选择本地 HTML 并交由浏览器打开的入口。

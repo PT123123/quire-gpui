@@ -1034,3 +1034,9 @@
 
 - 直接检查 Cargo 锁定的 quire-core `b73af898f88eaa35620b654c6d9b78d8022f56c4` `services/sync/transport.rs`：`connect()` 接收每个操作的 timeout 并传给 `connect_timeout`，但成功建连后把 socket read/write timeout 固定设为 30 秒。因 `sync_with` 对 snapshot/attachment 请求传入 60–120 秒，慢速或大型同步的实际 I/O 仍可能在 30 秒无进展时提前失败。loopback 小数据端到端通过不能覆盖该边界。
 - 该代码属于 GPUI 当前复用的共享 core，不属于本仓库；本轮没有擅改依赖 revision，也没有改动 Slint/core 仓库。同步项与 P6 追踪已标明这一实测代码缺口；需后续通过更新共享 core 或 GPUI 专用网络传输修正，并以限速/大附件回归验证。没有访问真实用户库。
+
+## 第一百六十四轮：GPUI 出站同步 transport 超时修正
+
+- 以本仓库的 GPUI 出站 client worker 替换 core 的 `SyncWith` worker 调用，同时继续由 core Engine 提供 UDP discovery、入站同步 server 和设备广播；仍复用 core 的 `Job`/`SyncSnapshot`、Session merge、附件落库及对端协议，不改共享依赖 revision。每个 HTTP 请求的连接、读与写现在都使用传入的 5/60/120 秒 timeout，避免 pinned core 的固定 30 秒 socket 限制。
+- 新增 timeout socket 配置测试和 loopback 假 peer 端到端测试，执行 `/sync/info`、snapshot pull、附件获取、UI job merge/reply 与 merged snapshot push；原有双 Session 集成仍覆盖真实 server/Session 合并与重开。`cargo test -j 8` 74 项、`cargo check -j 8`、Release 构建、隔离 Release GUI smoke（1000 块、速记/托盘/MCP/最大化还原）及 `git diff --check` 均通过。没有访问真实用户库或修改 Slint/core。
+- 真实双机 UDP、防火墙/网络往返、断线重连及大附件慢速链路仍未做物理设备验收；loopback 假 peer 证明实现路径，不冒充这些环境验证。
