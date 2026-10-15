@@ -181,7 +181,15 @@ pub fn open_with_default(path: &Path) -> Result<(), String> {
             Ok(())
         }
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .arg(path)
+            .spawn()
+            .map(|_| ())
+            .map_err(|error| error.to_string())
+    }
+    #[cfg(all(not(windows), not(target_os = "macos")))]
     {
         std::process::Command::new("xdg-open")
             .arg(path)
