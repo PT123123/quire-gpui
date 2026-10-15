@@ -2537,6 +2537,10 @@ impl Workspace {
                     assert_eq!(this.task_list_menu_open, Some(smoke_list));
                     this.toggle_task_list_color_picker(smoke_list, cx);
                     assert_eq!(this.task_list_color_open, Some(smoke_list));
+                    this.dismiss_task_list_menu(smoke_list, cx);
+                    assert_eq!(this.task_list_menu_open, None);
+                    assert_eq!(this.task_list_color_open, None);
+                    this.toggle_task_list_menu(smoke_list, cx);
                     this.task_list_color_open = None;
                     this.start_task_list_rename(smoke_list, window, cx);
                     this.task_list_name_draft = "桌面回归清单".into();
@@ -6657,6 +6661,17 @@ impl Workspace {
         self.task_list_menu_open = (self.task_list_menu_open != Some(id)).then_some(id);
         self.task_list_color_open = None;
         cx.notify();
+    }
+    fn dismiss_task_list_menu(
+        &mut self,
+        id: quire_core::core::organizer::ListId,
+        cx: &mut Context<Self>,
+    ) {
+        if self.task_list_menu_open == Some(id) {
+            self.task_list_menu_open = None;
+            self.task_list_color_open = None;
+            cx.notify();
+        }
     }
     fn task_list_menu_key_down(
         &mut self,
@@ -15746,6 +15761,9 @@ impl Render for Workspace {
                                         .flex()
                                         .flex_col()
                                         .gap(px(2.))
+                                        .on_mouse_down_out(cx.listener(move |this, _, _, cx| {
+                                            this.dismiss_task_list_menu(id, cx)
+                                        }))
                                         .child(
                                             div()
                                                 .id(SharedString::from(format!(
@@ -15846,6 +15864,9 @@ impl Render for Workspace {
                                         .flex()
                                         .flex_col()
                                         .gap(px(2.))
+                                        .on_mouse_down_out(cx.listener(move |this, _, _, cx| {
+                                            this.dismiss_task_list_menu(id, cx)
+                                        }))
                                         .child(
                                             div()
                                                 .id(SharedString::from(format!(

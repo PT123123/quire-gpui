@@ -969,3 +969,9 @@
 - 对照当前实现及第 128、137–145 轮的验证记录，修正了数据库矩阵仍称“仅表格 / 不支持删行和编辑”的过时说明，补记 Relation、MultiSelect、Files 的专用入口；将 `sync-now` 的证据更新为双 Session loopback 覆盖，同时保留实体设备 UDP/防火墙仍待验的界限。
 - 更新人工 sidecar 后重跑 `node tools/extract-parity.mjs`：246 callback、261 property、188 scene，合并 98 条人工语义；无未知回调名。此次只更新追踪文档，没有修改应用代码或 Slint 参考树。
 - 最新应用代码验证仍为上一轮结果：70 项自动测试和 Release GUI smoke 通过；本轮执行 parity 生成及 `git diff --check` 核验追踪文件。
+
+## 第一百五十二轮：整理区清单菜单点击外部关闭
+
+- 为任务清单锚定菜单及颜色子页添加 GPUI `on_mouse_down_out` 处理；鼠标在当前弹层外按下时同时关闭菜单/子页，子页内部操作不会触发关闭。Escape 原有的子页返回/菜单关闭层级保留。
+- Release GUI smoke 打开主菜单及颜色子页后调用同一关闭状态迁移，断言两级状态清空，再继续验证改名、选色与撤销/重做。该 smoke 没有模拟真实鼠标命中；原生点按位置仍待桌面交互验收。
+- 验证：`cargo fmt --all`、全量 `cargo test -j 8`（70 项）、`cargo check -j 8`、`cargo build --release -j 8`、`git diff --check` 与全新临时 SQLite 的 Release GUI smoke 通过。未访问默认用户数据库或修改 Slint 参考树。
