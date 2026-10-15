@@ -1860,6 +1860,7 @@ pub struct Workspace {
     sidebar_drag_offset: f32,
     organizer_tasks: bool,
     organizer_board_mode: bool,
+    organizer_note_board_mode: bool,
     organizer_trash: bool,
     organizer_tag: Option<String>,
     organizer_excluded_tags: BTreeSet<String>,
@@ -2281,6 +2282,7 @@ impl Workspace {
             sidebar_drag_offset: 0.,
             organizer_tasks: false,
             organizer_board_mode: false,
+            organizer_note_board_mode: false,
             organizer_trash: false,
             organizer_tag: None,
             organizer_excluded_tags: BTreeSet::new(),
@@ -3252,8 +3254,15 @@ impl Workspace {
                     drop(board_frame);
                     this.organizer_board_mode = false;
                     this.organizer_tasks = false;
+                    this.organizer_note_board_mode = true;
                     cx.notify();
                     eprintln!("SMOKE: organizer task board mounted with virtualized columns");
+                    let note_board_frame = this.render(window, cx);
+                    drop(note_board_frame);
+                    assert!(this.organizer_note_board_mode);
+                    this.organizer_note_board_mode = false;
+                    cx.notify();
+                    eprintln!("SMOKE: organizer note tile view mounted with filtered note cards");
                     assert!(this.command_palette_open);
                     assert_eq!(this.command_palette_query, "设置");
                     assert_eq!(this.palette_items().len(), 1);
@@ -7678,6 +7687,17 @@ impl Workspace {
         }
         cx.notify();
     }
+    fn toggle_organizer_note_board_mode(&mut self, cx: &mut Context<Self>) {
+        if self.organizer_trash || self.organizer_tasks {
+            return;
+        }
+        self.organizer_note_board_mode = !self.organizer_note_board_mode;
+        if self.organizer_note_board_mode {
+            self.note_multi_select = false;
+            self.selected_note_ids.clear();
+        }
+        cx.notify();
+    }
     fn toggle_task_done(
         &mut self,
         id: quire_core::core::organizer::TaskId,
@@ -8272,6 +8292,7 @@ impl Workspace {
         self.task_list_color_open = None;
         self.organizer_trash = !self.organizer_trash;
         self.organizer_board_mode = false;
+        self.organizer_note_board_mode = false;
         self.note_multi_select = false;
         self.selected_note_ids.clear();
         self.task_multi_select = false;
@@ -16838,6 +16859,9 @@ impl Render for Workspace {
                 div()
                     .id(SharedString::from(format!("organizer-note-{id:?}")))
                     .w_full()
+                    .when(self.organizer_note_board_mode, |card| {
+                        card.flex_none().w(px(244.)).h(px(190.)).overflow_hidden()
+                    })
                     .px(px(14.))
                     .py(px(8.))
                     .rounded(px(9.))
@@ -18264,6 +18288,9 @@ impl Render for Workspace {
                     .when(self.organizer_tasks && self.organizer_board_mode, |column| {
                         column.flex_1().w(px(0.))
                     })
+                    .when(!self.organizer_tasks && self.organizer_note_board_mode, |column| {
+                        column.flex_1().w(px(0.))
+                    })
                     .h_full()
                     .border_r_1()
                     .border_color(Palette::color(&p.border))
@@ -18404,6 +18431,28 @@ impl Render for Workspace {
                                         .bg(Palette::color(&p.bg).opacity(0.25))
                                         .child(self.search_input.clone()),
                                 )
+                                .when(!self.organizer_tasks && !self.organizer_trash, |toolbar| {
+                                    toolbar.child(
+                                        div()
+                                            .id("organizer-note-view-mode")
+                                            .px(px(8.))
+                                            .py(px(6.))
+                                            .rounded(px(5.))
+                                            .cursor_pointer()
+                                            .text_color(accent)
+                                            .hover(|button| {
+                                                button.bg(Palette::color(&p.bg).opacity(0.25))
+                                            })
+                                            .on_click(cx.listener(|this, _, _, cx| {
+                                                this.toggle_organizer_note_board_mode(cx)
+                                            }))
+                                            .child(if self.organizer_note_board_mode {
+                                                "列表"
+                                            } else {
+                                                "平铺"
+                                            }),
+                                    )
+                                })
                                 .when(!self.organizer_trash, |toolbar| {
                                     let ids = visible_note_ids.clone();
                                     toolbar.child(
@@ -18789,7 +18838,13 @@ impl Render for Workspace {
                                 board.flex().gap(px(12.)).overflow_x_scroll().children(board_columns)
                             })
                             .when(self.organizer_tasks && !self.organizer_board_mode, |list| list.children(task_rows))
-                            .when(!self.organizer_tasks, |list| list.children(note_rows)),
+                            .when(!self.organizer_tasks, |list| {
+                                if self.organizer_note_board_mode {
+                                    list.flex().flex_wrap().gap(px(10.)).children(note_rows)
+                                } else {
+                                    list.children(note_rows)
+                                }
+                            }),
                     )
                     .when(self.organizer_tasks && !self.organizer_trash && !self.organizer_board_mode, |list| {
                         list.child(

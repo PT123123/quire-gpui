@@ -1171,3 +1171,8 @@
 
 - 旧版笔记工具栏可将当前搜索/标签结果一次复制，逐条携带稳定 UUID；GPUI 之前只有先开多选再点“复制”。现新增“复制全部”入口，使用排序后的可见顶层笔记 ID，回收站隐藏；导出正文优先、空正文回退标题、评论和空条目跳过，缺 UUID 时回退本地 ID。
 - 纯逻辑测试验证列表顺序、正文与标题回退、稳定 UUID、本地 ID 和评论过滤；桌面剪贴板真人点击尚未验收。验证：单测、`cargo fmt --all -- --check`、`cargo test --locked`（90 项：44 库 + 43 二进制 + 1 stdio + 1 sync loopback）、`cargo check --locked`、`cargo build --release --locked`、`git diff --check` 均通过；全新随机 `%TEMP%` SQLite 的 Release GUI smoke（1000 块）通过，覆盖速记窗口保存、托盘隐藏/恢复、最大化/还原及虚拟滚动。未访问真实用户库或改动 Slint/core/冻结参考树。
+
+## 第一百八十八轮：整理区笔记平铺视图
+
+- 笔记列表新增“平铺/列表”切换。平铺按 244px 卡片排列，使用同一搜索、标签包含/排除、置顶/排序结果；点击卡片仍选中并打开原详情。进入平铺会退出多选，回收站不显示该切换并保持原列表行为；任务看板维持独立状态。
+- Release GUI smoke 在隔离窗口中分别构造并渲染任务看板和笔记平铺视图，日志确认卡片树挂载。`cargo fmt --all -- --check`、`cargo test --locked`（89 项：44 库 + 43 二进制 + 1 stdio + 1 sync loopback）、`cargo check --locked`、`cargo build --release --locked`、`git diff --check` 均通过；全新随机 `%TEMP%` SQLite Release GUI smoke（1000 块）退出码为 0，并覆盖速记保存、托盘隐藏/恢复、MCP、最大化/还原和虚拟滚动。本轮未访问真实用户库，也未修改 Slint/core/冻结参考树。笔记卡片的真人点击、窄窗口布局和视觉对照仍待桌面验收。
