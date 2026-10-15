@@ -1413,6 +1413,7 @@ pub struct Workspace {
     smoke_mode: bool,
     smoke_board_rendered: bool,
     smoke_board_cards_rendered: bool,
+    smoke_gallery_rendered: bool,
     startup_notice: Option<String>,
     active: Option<BlockId>,
     save_task: Option<gpui::Task<()>>,
@@ -1765,6 +1766,7 @@ impl Workspace {
             smoke_mode: smoke,
             smoke_board_rendered: false,
             smoke_board_cards_rendered: false,
+            smoke_gallery_rendered: false,
             startup_notice,
             active: None,
             save_task: None,
@@ -2410,9 +2412,56 @@ impl Workspace {
                 cx.background_executor()
                     .timer(Duration::from_millis(150))
                     .await;
-                let _ = weak.update_in(cx, |_, window, _| {
+                let _ = weak.update_in(cx, |this, window, cx| {
                     assert!(!window.is_maximized(), "native restore control must return to windowed mode");
                     eprintln!("SMOKE: maximize and windowed restore passed");
+                    let block = this
+                        .session
+                        .blocks()
+                        .iter()
+                        .find(|block| block.kind == BlockKind::Database)
+                        .expect("gallery smoke needs the seeded database block");
+                    let block_id = block.id;
+                    let database = block.db_ref.expect("gallery smoke database reference");
+                    let view = this
+                        .session
+                        .databases
+                        .views_of(database)
+                        .next()
+                        .expect("gallery smoke needs a database view")
+                        .id;
+                    assert!(this
+                        .session
+                        .set_database_view_layout(
+                            block_id,
+                            view,
+                            quire_core::core::database::ViewLayout::Gallery,
+                        )
+                        .expect("gallery layout should be supported"));
+                    this.schedule_save(true, window, cx);
+                });
+                cx.background_executor()
+                    .timer(Duration::from_millis(300))
+                    .await;
+                let _ = weak.update_in(cx, |this, window, cx| {
+                    assert!(this.smoke_gallery_rendered, "gallery layout should query and render its records");
+                    let block = this
+                        .session
+                        .blocks()
+                        .iter()
+                        .find(|block| block.kind == BlockKind::Database)
+                        .expect("gallery smoke database block should remain available");
+                    let block_id = block.id;
+                    let database = block.db_ref.expect("gallery smoke database reference");
+                    let view = this.session.databases.views_of(database).next().unwrap().id;
+                    this.session
+                        .set_database_view_layout(
+                            block_id,
+                            view,
+                            quire_core::core::database::ViewLayout::Board,
+                        )
+                        .expect("board layout should restore after gallery smoke");
+                    this.schedule_save(true, window, cx);
                 });
                 cx.background_executor()
                     .timer(Duration::from_millis(150))
@@ -9610,7 +9659,9 @@ impl Workspace {
                                         active_layout == quire_core::core::database::ViewLayout::List;
                                     let show_table_header = !list_layout
                                         && active_layout
-                                            != quire_core::core::database::ViewLayout::Board;
+                                            != quire_core::core::database::ViewLayout::Board
+                                        && active_layout
+                                            != quire_core::core::database::ViewLayout::Gallery;
                                     let row_sorts = view_sorts.clone();
                                     let row_filter = view_filter.clone();
                                     let row_group_data = group_data.clone();
@@ -9623,6 +9674,12 @@ impl Workspace {
                                     let board_row_filter = row_filter.clone();
                                     let board_row_search = row_search.clone();
                                     let board_repo = repo.clone();
+                                    let gallery_repo = repo.clone();
+                                    let gallery_columns = query_columns.clone();
+                                    let gallery_sorts = row_sorts.clone();
+                                    let gallery_filter = row_filter.clone();
+                                    let gallery_search = row_search.clone();
+                                    let gallery_total = total;
                                     let table_rows = uniform_list(
                                         SharedString::from(format!("database-rows-{}", db_id.0)),
                                         list_total,
@@ -9999,6 +10056,105 @@ impl Workspace {
                                     .flex_1()
                                     .min_h(px(40.));
                                     let rows = if active_layout
+                                        == quire_core::core::database::ViewLayout::Gallery
+                                    {
+                                        let gallery_rows = gallery_total.div_ceil(3);
+                                        uniform_list(
+                                            SharedString::from(format!("db-gallery-{}", db_id.0)),
+                                            gallery_rows,
+                                            cx.processor(
+                                                move |this, range: Range<usize>, _window, cx| {
+                                                    let request = quire_core::core::database::RowRequest {
+                                                        db: db_id,
+                                                        title,
+                                                        columns: &gallery_columns,
+                                                        sorts: &gallery_sorts,
+                                                        filter: gallery_filter.as_ref(),
+                                                        search: gallery_search.as_deref(),
+                                                    };
+                                                    range
+                                                        .map(|row_index| {
+                                                            let start = row_index * 3;
+                                                            let records = gallery_repo
+                                                                .window_rows(
+                                                                    &request,
+                                                                    quire_core::core::database::RowWindow {
+                                                                        start,
+                                                                        end: (start + 3).min(gallery_total),
+                                                                    },
+                                                                )
+                                                                .unwrap_or_default();
+                                                            if this.smoke_mode
+                                                                && !this.smoke_gallery_rendered
+                                                                && !records.is_empty()
+                                                            {
+                                                                assert_eq!(
+                                                                    records.len(),
+                                                                    gallery_total.min(3),
+                                                                    "gallery row must load its visible records"
+                                                                );
+                                                                this.smoke_gallery_rendered = true;
+                                                                eprintln!("SMOKE: gallery layout rendered a virtualized three-card row");
+                                                            }
+                                                            let cards = records.into_iter().map(|row| {
+                                                                let record = row.record;
+                                                                let title_text = if row.title.trim().is_empty() { "（无标题）".to_owned() } else { row.title.clone() };
+                                                                let selected = this.selected_database_record == Some((block_id.0, db_id.0, record));
+                                                                let properties = gallery_columns
+                                                                    .iter()
+                                                                    .zip(row.cells.iter())
+                                                                    .take(3)
+                                                                    .map(|(property, value)| {
+                                                                        let value = if value.trim().is_empty() { "—".to_owned() } else { value.chars().take(48).collect::<String>() };
+                                                                        div()
+                                                                            .w_full()
+                                                                            .text_size(px(10.))
+                                                                            .text_color(Palette::color(&this.palette.muted))
+                                                                            .child(format!("{} · {value}", property.name))
+                                                                    })
+                                                                    .collect::<Vec<_>>();
+                                                                div()
+                                                                    .id(SharedString::from(format!("db-gallery-card-{}-{record}", db_id.0)))
+                                                                    .flex_1()
+                                                                    .min_w(px(180.))
+                                                                    .h(px(132.))
+                                                                    .p(px(10.))
+                                                                    .flex()
+                                                                    .flex_col()
+                                                                    .gap(px(6.))
+                                                                    .rounded(px(7.))
+                                                                    .border_1()
+                                                                    .border_color(if selected { Palette::color(&this.palette.accent) } else { db_border })
+                                                                    .bg(if selected { Palette::color(&this.palette.accent).opacity(0.13) } else { Palette::color(&this.palette.elevated) })
+                                                                    .cursor_pointer()
+                                                                    .hover(|card| card.border_color(Palette::color(&this.palette.accent)))
+                                                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                                                        this.selected_database_record = Some((block_id.0, db_id.0, record));
+                                                                        cx.notify();
+                                                                    }))
+                                                                    .child(div().w_full().text_size(px(12.)).font_weight(FontWeight::SEMIBOLD).text_color(Palette::color(&this.palette.fg)).child(title_text))
+                                                                    .children(properties)
+                                                                    .into_any_element()
+                                                            });
+                                                            div()
+                                                                .id(SharedString::from(format!("db-gallery-row-{}-{row_index}", db_id.0)))
+                                                                .w_full()
+                                                                .flex()
+                                                                .items_start()
+                                                                .gap(px(8.))
+                                                                .mb(px(8.))
+                                                                .children(cards)
+                                                                .into_any_element()
+                                                        })
+                                                        .collect::<Vec<_>>()
+                                                },
+                                            ),
+                                        )
+                                        .h(px(288.))
+                                        .w_full()
+                                        .max_h(px(480.))
+                                        .into_any_element()
+                                    } else if active_layout
                                         == quire_core::core::database::ViewLayout::Board
                                     {
                                         if self.smoke_mode && !self.smoke_board_rendered {
@@ -11128,6 +11284,7 @@ impl Workspace {
                                                                 quire_core::core::database::ViewLayout::Table => "表格",
                                                                 quire_core::core::database::ViewLayout::List => "列表",
                                                                 quire_core::core::database::ViewLayout::Board => "看板",
+                                                                quire_core::core::database::ViewLayout::Gallery => "画廊",
                                                                 _ => "表格",
                                                             };
                                                             let mut button = div()
@@ -11150,6 +11307,9 @@ impl Workspace {
                                                                             }
                                                                             quire_core::core::database::ViewLayout::List => {
                                                                                 quire_core::core::database::ViewLayout::Board
+                                                                            }
+                                                                            quire_core::core::database::ViewLayout::Board => {
+                                                                                quire_core::core::database::ViewLayout::Gallery
                                                                             }
                                                                             _ => {
                                                                                 quire_core::core::database::ViewLayout::Table

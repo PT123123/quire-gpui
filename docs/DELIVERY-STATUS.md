@@ -901,3 +901,8 @@ GPUI 已覆盖主编辑器、整理区、独立速记与标签建议、Windows �
 
 - 看板卡片现在展示前两项属性（空值显示占位），可直接编辑普通可编辑属性、切换 checkbox，并为 Select/Status 打开选项菜单；分组属性提供当前列标记和跨组快捷按钮，覆盖 Checkbox、Select、Status 及空值目标。所有更新复用唯一 Session、现有 core 单元格/选项写入和保存路径；卡片选择事件不再清掉其子项的输入/菜单状态。
 - 验证：`cargo check -j 8`、全量 `cargo test -j 8`（67 项）、`cargo build --release -j 8`，以及新建唯一临时目录/SQLite 的 Windows Release `--smoke-test --smoke-blocks 1000` 均通过。窗口 smoke 覆盖分组和卡片数据读取、MCP HTTP 写入、最大化/还原、虚拟滚动、速记小窗提交及托盘隐藏/唤回；没有真人鼠标逐项点击卡片控件，也没有两台实体设备 UDP 发现/防火墙验收。看板跨列拖放及 Gallery/Calendar/Timeline/Form/Chart 仍未实现。
+
+## 第一百三十九轮：数据库 Gallery 画廊布局
+
+- 数据库视图布局选择新增 Gallery。画廊按当前查询结果（筛选、排序、搜索）使用 core 范围查询，每行虚拟加载三张卡片，卡片显示标题与前三项属性并可选中记录；在窄窗口维持可读卡片最小宽度并允许横向滚动。分组配置保留在视图中，但 Gallery 不套用分组列。
+- 隔离 Release smoke 从看板切换到 Gallery，断言虚拟行确实读回预计记录数并设置渲染标志，然后恢复原布局；完整窗口 smoke 继续通过速记、托盘、MCP、最大化/还原、编辑器输入和千块虚拟滚动。`cargo check -j 8`、`cargo test -j 8`（67 项）、Release build/smoke 通过。卡片内联编辑、日历/时间线/表单/图表仍待实现；没有真人鼠标实测布局控件。
