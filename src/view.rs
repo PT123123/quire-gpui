@@ -2002,6 +2002,7 @@ pub struct Workspace {
     block_menu_open: Option<(BlockId, BlockMenuMode)>,
     block_clipboard: Option<Vec<Block>>,
     hovered_page: Option<quire_core::core::types::PageId>,
+    page_context_menu: Option<(quire_core::core::types::PageId, f32, f32)>,
     hovered_note: Option<quire_core::core::organizer::NoteId>,
     hovered_task: Option<quire_core::core::organizer::TaskId>,
     inputs: BTreeMap<u64, Entity<TextInput>>,
@@ -2422,6 +2423,7 @@ impl Workspace {
             block_menu_open: None,
             block_clipboard: None,
             hovered_page: None,
+            page_context_menu: None,
             hovered_note: None,
             hovered_task: None,
             inputs: BTreeMap::new(),
@@ -9698,6 +9700,62 @@ impl Workspace {
         ]);
         self.schedule_save(false, window, cx);
     }
+    fn open_page_context_menu(
+        &mut self,
+        id: quire_core::core::types::PageId,
+        event: &MouseDownEvent,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) {
+        let scale = quire_gpui::ui_scale::get();
+        let bounds = window.bounds().size;
+        let width = 228.;
+        let height = 318.;
+        let x = (f32::from(event.position.x) / scale)
+            .clamp(0., (f32::from(bounds.width) / scale - width).max(0.));
+        let y = (f32::from(event.position.y) / scale)
+            .clamp(0., (f32::from(bounds.height) / scale - height).max(0.));
+        self.page_context_menu = Some((id, x, y));
+        cx.stop_propagation();
+        cx.notify();
+    }
+    fn run_page_context_action(
+        &mut self,
+        id: quire_core::core::types::PageId,
+        action: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.page_context_menu = None;
+        match action {
+            0 => self.activate_page(id, window, cx),
+            1 => self.add_child_page(id, window, cx),
+            2 => {
+                if self
+                    .session
+                    .pages
+                    .iter()
+                    .any(|page| page.id == id && page.locked)
+                {
+                    self.status = "此页面已锁定，无法重命名".into();
+                    cx.notify();
+                    return;
+                }
+                self.activate_page(id, window, cx);
+                self.title_edit_original = Some(self.session.page.title.clone());
+                window.focus(&self.title_input.read(cx).focus);
+            }
+            3 => self.duplicate_page(id, window, cx),
+            4 => self.move_page(id, -1, window, cx),
+            5 => self.move_page(id, 1, window, cx),
+            6 => self.indent_page(id, window, cx),
+            7 => self.outdent_page(id, window, cx),
+            8 => self.toggle_favorite(id, window, cx),
+            9 => self.request_delete_page(id, cx),
+            _ => {}
+        }
+        cx.notify();
+    }
     fn toggle_favorite(
         &mut self,
         id: quire_core::core::types::PageId,
@@ -16714,6 +16772,12 @@ impl Render for Workspace {
                     .when(selected, |row| row.bg(rgba(0xffffff14)).text_color(accent))
                     .when(!selected, |row| row.text_color(muted))
                     .hover(|row| row.bg(Palette::color(&p.bg).opacity(0.24)))
+                    .on_mouse_down(
+                        MouseButton::Right,
+                        cx.listener(move |this, event: &MouseDownEvent, window, cx| {
+                            this.open_page_context_menu(page_id, event, window, cx)
+                        }),
+                    )
                     .on_drag(drag_data, |drag, _, _, cx| {
                         cx.new(|_| PageTreeDragPreview {
                             title: drag.title.clone(),
@@ -16796,6 +16860,12 @@ impl Render for Workspace {
                     .when(selected, |row| row.bg(rgba(0xffffff14)).text_color(accent))
                     .when(!selected, |row| row.text_color(muted))
                     .hover(|row| row.bg(Palette::color(&p.bg).opacity(0.24)))
+                    .on_mouse_down(
+                        MouseButton::Right,
+                        cx.listener(move |this, event: &MouseDownEvent, window, cx| {
+                            this.open_page_context_menu(page_id, event, window, cx)
+                        }),
+                    )
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.activate_page(page_id, window, cx)
                     }))
@@ -16827,6 +16897,12 @@ impl Render for Workspace {
                     .cursor_pointer()
                     .text_color(muted)
                     .hover(|row| row.bg(Palette::color(&p.bg).opacity(0.24)))
+                    .on_mouse_down(
+                        MouseButton::Right,
+                        cx.listener(move |this, event: &MouseDownEvent, window, cx| {
+                            this.open_page_context_menu(page_id, event, window, cx)
+                        }),
+                    )
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.activate_page(page_id, window, cx)
                     }))
@@ -17134,6 +17210,75 @@ impl Render for Workspace {
                             )
                     })
             });
+        let page_context_overlay = self.page_context_menu.and_then(|(page_id, x, y)| {
+            self.session
+                .pages
+                .iter()
+                .find(|page| page.id == page_id && !page.template)
+                .map(|page| {
+                    let favorite = page.favorite;
+                    let locked = page.locked;
+                    let actions = [
+                        ("打开页面", 0, false),
+                        ("新建子页面", 1, false),
+                        ("重命名", 2, false),
+                        ("复制", 3, false),
+                        ("上移", 4, false),
+                        ("下移", 5, false),
+                        ("缩进为子页面", 6, false),
+                        ("移回根级", 7, false),
+                        (
+                            if favorite {
+                                "取消收藏"
+                            } else {
+                                "添加到收藏"
+                            },
+                            8,
+                            false,
+                        ),
+                        ("删除页面…", 9, true),
+                    ];
+                    div()
+                        .id("page-context-menu")
+                        .absolute()
+                        .left(px(x))
+                        .top(px(y))
+                        .w(px(228.))
+                        .p(px(5.))
+                        .rounded(px(8.))
+                        .border_1()
+                        .border_color(Palette::color(&p.border))
+                        .bg(Palette::color(&p.elevated))
+                        .shadow_lg()
+                        .flex()
+                        .flex_col()
+                        .gap(px(2.))
+                        .on_mouse_down_out(cx.listener(|_, _, window, cx| {
+                            cx.defer_in(window, |this, _window, cx| {
+                                this.page_context_menu = None;
+                                cx.notify();
+                            });
+                        }))
+                        .children(actions.into_iter().map(|(label, action, danger)| {
+                            div()
+                                .id(SharedString::from(format!("page-context-action-{action}")))
+                                .h(px(29.))
+                                .px(px(9.))
+                                .flex()
+                                .items_center()
+                                .rounded(px(4.))
+                                .cursor_pointer()
+                                .text_size(px(12.))
+                                .text_color(if danger { rgb(0xe06c75).into() } else { text })
+                                .when(locked && action == 2, |row| row.opacity(0.48))
+                                .hover(|row| row.bg(Palette::color(&p.bg).opacity(0.38)))
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    this.run_page_context_action(page_id, action, window, cx)
+                                }))
+                                .child(label)
+                        }))
+                })
+        });
         let kind_buttons =
             [
                 ("段落", BlockKind::Paragraph),
@@ -21055,6 +21200,7 @@ impl Render for Workspace {
                 root.child(command_overlay)
             })
             .when_some(settings_overlay, |root, overlay| root.child(overlay))
+            .when_some(page_context_overlay, |root, overlay| root.child(overlay))
             .when(self.organizer_capture_open, |root| {
                 let suggestions = self.organizer_capture_suggestions.clone();
                 let selected = self.organizer_capture_selected;
