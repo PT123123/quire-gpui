@@ -1424,3 +1424,23 @@
 - 编辑器新增 `Ctrl+Home` / `Ctrl+End`，分别跳到当前页面首个可编辑块的起始处、末个可编辑块的末尾；跳转跳过不可编辑容器，并沿用虚拟列表 focus/scroll 路径。输入法组合期间不发出文档导航事件。
 - 验证：`cargo fmt --all`、`cargo check --locked -j 8`、全量 `cargo test --locked -j 8`（102 项：50 库 + 50 二进制 + MCP stdio + sync loopback）、`cargo build --release --locked -j 8` 均通过。Release 隔离 GUI smoke 在新临时 SQLite 和 1000 个合成块下通过，覆盖 MCP、速记/托盘、最大化还原、数据库视图、虚拟列表跳转及保存；完整真人快捷键和 IME 场景仍待桌面回归。本轮未运行性能评测。
 
+## 第二百三十轮：实现收尾后的 GPUI / Slint 性能复测（2026-10-16）
+
+- 对比版本：GPUI `0cc27c3c033056d4e5c72000c2f56e4ecfc7c6d7`，Slint `911246743cf79c43c96b38dfd39dffac3fb4d53c`（v0.1.26）。同机 Windows 11 build 26200、Rust/Cargo 1.98.0、Core Ultra 9 185H、32 GiB。Release exe：GPUI 25,810,944 B；Slint 38,415,872 B。
+- Release 构建由 `tools/measure-build.ps1` 采样，每 250 ms 合计 cargo/rustc/link/lld-link 进程内存；warm 与单文件重编各测一次。重编只改 GPUI `src/view.rs`、Slint `src/app/state.rs` 的 mtime，不改内容；保留既有依赖缓存。
+
+| Release 构建 | GPUI | Slint |
+|---|---:|---:|
+| warm no-op | 3.72 s；峰值 Working Set / Private 122.6 / 106.1 MiB | 5.19 s；115.9 / 99.3 MiB |
+| 单文件源码重编 | 36.59 s；峰值 1083.1 / 1660.5 MiB | 442.71 s；5568.3 / 5566.7 MiB |
+
+- 运行时由 `tools/measure-runtime.ps1` 测量：窗口 1600×900，预热 2 秒、空闲采样 8 秒、每 250 ms 一次；空白工作区和 10k 块各端各两次，表中列算术平均。空白样本使用全新隔离库；10k 场景 GPUI 使用持久化 SQLite，Slint 使用 `--blocks 10000` 内存夹具，因此数据加载路径不完全相同。运行库均在 `%TEMP%`。
+
+| 场景（n=2） | GPUI 窗口出现 | Slint 窗口出现 | GPUI CPU / 单核 | Slint CPU / 单核 | GPUI Working Set 末值 / 峰值 | Slint Working Set 末值 / 峰值 | GPUI Private 末值 / 峰值 | Slint Private 末值 / 峰值 |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| 空白工作区 | 1011.6 ms | 991.7 ms | 2.22% | 0.20% | 121.7 / 149.1 MiB | 110.7 / 115.8 MiB | 90.1 / 117.6 MiB | 79.4 / 84.7 MiB |
+| 10,000 块 | 867.7 ms | 911.5 ms | 2.99% | 0.10% | 159.6 / 195.0 MiB | 126.1 / 131.4 MiB | 128.9 / 164.4 MiB | 95.2 / 100.5 MiB |
+
+- GPUI 单文件重编约快 12.1 倍，峰值 Private Bytes 低约 70%；10k 工作区窗口出现时间略快约 44 ms，但两次样本不足以说明稳定差异。GPUI 的 10k Private 峰值比 Slint 高约 63.9 MiB（约 64%），空闲 CPU 读数也较高；这反映的是当前实现与该机器上的样本，不代表跨机结论。测量未覆盖键入延迟、连续滚动帧率、GPU 专用内存或全新 target 冷构建。
+- 可复跑脚本为 `tools/measure-build.ps1` 和 `tools/measure-runtime.ps1`。构建样本 JSON 与进程日志保存在 `%TEMP%\quire-final-perf-2026-10-16`；Slint 工作树内容未改且 Git 状态干净。性能复测后只改了交付文档，GPUI 源码和 Release 二进制均对应上列提交。
+
