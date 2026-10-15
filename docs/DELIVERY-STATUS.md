@@ -859,3 +859,9 @@ GPUI 已覆盖主编辑器、整理区、独立速记与标签建议、Windows �
 - `create_page` 新增可选 `parent_id`，可在普通页面下创建子页面并以 Markdown 初始化正文；父页面不存在、ID 非正整数或目标为模板页时拒绝。创建结果返回父 ID，仍恢复调用前的当前页面选择。Session 通过 core 记录创建变更，页面树排序按父页分组。
 - ScratchDir 回归覆盖子页面层级、正文、当前选择保持和无效父页无部分写入。最新 Windows Release 窗口 smoke 在独立临时库中通过启动速记、重复触发复用、标签解析/提交、托盘隐藏/唤回、MCP Bearer HTTP → UI Session 创建笔记、最大化/还原及编辑器虚拟滚动路径；完整自动测试亦通过。未访问真实用户库；真人点按托盘菜单和两台实体设备 UDP 发现仍待桌面验收。
 - 验证：`cargo fmt --all -- --check`、全量 `cargo test -j 8`（65 项）、Release 构建及隔离 `--smoke-test` 通过。GPUI vendor float fallback 与 MCP `serve` dead-code 警告为既有警告。
+
+## 第一百三十一轮：块菜单跨页面移动
+
+- 编辑器块悬停菜单补上“移动到页面”子菜单；目标过滤当前页、模板页和锁定页，空目标时显示说明。选中后用 core `MoveBlockToPage` 移动整个子树，当前页可一步撤销；输入法组合期间拒绝操作，成功后清理旧页输入实体、恢复焦点并保存。
+- GPUI Session 在应用 core 移动命令时把移动子树重排到目标页全部现有块之后。测试发现 core 命令保留子块原顺序键可能与新根块或目标页原有块冲突，导致平铺 display order 错位；此修正仍保留 core 生成的撤销 Entry，只修改该批跨页 Change 的目标顺序键。ScratchDir 覆盖嵌套子树、锁定目标拒绝、目标页原内容顺序、单步撤销/重做和 SQLite 重开。
+- parity sidecar 已标注 `move-block` 与 `block-menu-action`，并重生成 `PARITY.csv`（246 callback，96 项人工语义合并）。验证：全量自动测试 66 项、Release 构建、格式/diff 检查及隔离 Release 窗口 smoke 通过；smoke 继续覆盖速记保存、托盘隐藏/唤回、MCP HTTP 唯一 Session 写入、窗口最大化/还原及虚拟列表导航。块菜单跨页目标的真实鼠标点选尚未单独验收。

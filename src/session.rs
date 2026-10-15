@@ -4027,6 +4027,77 @@ impl Session {
         self.persistence.record(changes);
         true
     }
+
+    /// Move a block and its entire core-managed subtree to another ordinary,
+    /// writable page. The core command records one undoable cross-page change.
+    pub fn move_block_to_page(&mut self, id: BlockId, target: PageId) -> bool {
+        if self.page.locked || target == self.page.id {
+            return false;
+        }
+        let Some(destination) = self
+            .pages
+            .iter()
+            .find(|page| page.id == target && !page.template)
+        else {
+            return false;
+        };
+        if destination.locked
+            || !self
+                .document
+                .block(id)
+                .is_some_and(|block| block.page == self.page.id)
+        {
+            return false;
+        }
+        self.end_typing();
+        let source = self.page.id;
+        let Some(mut entry) = command::plan(
+            &mut self.document,
+            source,
+            Command::MoveBlockToPage { id, page: target },
+        ) else {
+            return false;
+        };
+        // The core command appends the moved root after the target's last
+        // top-level block and preserves descendant order keys. Rebase the
+        // moved subtree after every target block so flat display ordering
+        // cannot interleave a destination child between the new root/child.
+        let last_target_order = self
+            .document
+            .page_blocks(target)
+            .iter()
+            .map(|block| block.order)
+            .max();
+        let Some(mut next_order) = OrderKey::between(last_target_order, None) else {
+            return false;
+        };
+        let moved_count = entry
+            .apply
+            .iter()
+            .filter(
+                |change| matches!(change, Change::BlockMovedToPage { page, .. } if *page == target),
+            )
+            .count();
+        let mut moved_index = 0;
+        for change in &mut entry.apply {
+            if let Change::BlockMovedToPage { page, order, .. } = change
+                && *page == target
+            {
+                *order = next_order;
+                moved_index += 1;
+                if moved_index < moved_count {
+                    let Some(order) = OrderKey::between(Some(next_order), None) else {
+                        return false;
+                    };
+                    next_order = order;
+                }
+            }
+        }
+        self.document.apply(&entry.apply);
+        self.persistence.record(entry.apply.clone());
+        self.history.push(source, entry);
+        true
+    }
     pub fn indent_page(&mut self, id: PageId) -> bool {
         let Some(page) = self
             .pages
@@ -6344,6 +6415,93 @@ mod tests {
                 .unwrap()
                 .text,
             "Nested"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn cross_page_block_move_is_atomic_undoable_and_persistent() -> Result<()> {
+        let scratch = quire_core::testing::ScratchDir::new("gpui-block-move-page");
+        let path = scratch.path().join("test.db");
+        let source_page;
+        let target_page;
+        let locked_page;
+        let block_id;
+        let child_id;
+        {
+            let mut session = Session::open(&path)?;
+            source_page = session.page.id;
+            block_id = session.blocks()[0].id;
+            session.execute(Command::SetBlockType {
+                id: block_id,
+                kind: BlockKind::Toggle,
+            });
+            session.replace(block_id, "Move me".into(), false);
+            let mut child = session.document.block(block_id).unwrap().clone();
+            child.id = session.document.alloc_block_id();
+            child.parent = Some(block_id);
+            child.order = OrderKey::between(Some(child.order), None).unwrap();
+            child.kind = BlockKind::Paragraph;
+            child.text = "Nested content".into();
+            child.marks.clear();
+            child_id = child.id;
+            session
+                .document
+                .apply(&[Change::BlockInserted(child.clone())]);
+            session
+                .persistence
+                .record(vec![Change::BlockInserted(child)]);
+            locked_page = session.import_markdown("Read-only destination".into(), "Locked target");
+            session.set_page_locked(true);
+            assert!(session.select_page(source_page));
+            assert!(!session.move_block_to_page(block_id, locked_page));
+            assert_eq!(session.document.block(block_id).unwrap().page, source_page);
+            target_page = session.import_markdown("Destination".into(), "Existing target text");
+            assert!(session.select_page(source_page));
+            assert!(session.move_block_to_page(block_id, target_page));
+            assert_eq!(session.document.block(block_id).unwrap().page, target_page);
+            assert_eq!(session.document.block(child_id).unwrap().page, target_page);
+            assert_eq!(
+                session.document.block(child_id).unwrap().parent,
+                Some(block_id)
+            );
+            assert!(session.document.page_blocks(source_page).is_empty());
+
+            session.undo();
+            assert_eq!(session.document.block(block_id).unwrap().page, source_page);
+            assert_eq!(session.document.block(child_id).unwrap().page, source_page);
+            assert_eq!(session.document.page_blocks(source_page)[0].text, "Move me");
+            assert_eq!(session.document.page_blocks(target_page).len(), 1);
+
+            session.redo();
+            assert_eq!(session.document.block(block_id).unwrap().page, target_page);
+            assert_eq!(session.document.block(child_id).unwrap().page, target_page);
+            assert_eq!(
+                session.document.block(child_id).unwrap().parent,
+                Some(block_id)
+            );
+            let target_blocks = session.document.page_blocks(target_page);
+            assert_eq!(target_blocks.len(), 3);
+            assert_eq!(target_blocks[1].id, block_id);
+            assert_eq!(target_blocks[2].id, child_id);
+            assert!(session.select_page(source_page));
+            session.persistence.force_flush()?;
+        }
+
+        let reopened = Session::open(&path)?;
+        assert_eq!(reopened.document.block(block_id).unwrap().page, target_page);
+        assert_eq!(reopened.document.block(child_id).unwrap().page, target_page);
+        assert_eq!(
+            reopened.document.block(child_id).unwrap().parent,
+            Some(block_id)
+        );
+        assert_eq!(reopened.document.page_blocks(source_page).len(), 1);
+        assert!(
+            reopened
+                .document
+                .page_blocks(target_page)
+                .iter()
+                .any(|block| block.id == block_id && block.text == "Move me")
         );
         Ok(())
     }

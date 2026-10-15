@@ -134,6 +134,13 @@ actions!(
     ]
 );
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum BlockMenuMode {
+    Actions,
+    Convert,
+    MoveToPage,
+}
+
 #[derive(Clone, Copy)]
 enum PaletteCommand {
     NewPage,
@@ -1311,7 +1318,7 @@ pub struct Workspace {
     command_palette_selected: usize,
     backlinks_open: bool,
     hovered_block: Option<BlockId>,
-    block_menu_open: Option<(BlockId, bool)>,
+    block_menu_open: Option<(BlockId, BlockMenuMode)>,
     hovered_page: Option<quire_core::core::types::PageId>,
     hovered_note: Option<quire_core::core::organizer::NoteId>,
     hovered_task: Option<quire_core::core::organizer::TaskId>,
@@ -3794,6 +3801,38 @@ impl Workspace {
             self.focus(id, caret, window, cx);
         }
         self.schedule_save(false, window, cx);
+    }
+    fn move_block_to_page(
+        &mut self,
+        id: BlockId,
+        target: quire_core::core::types::PageId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.closing || self.session.page.locked {
+            return;
+        }
+        if self.composing(cx) {
+            self.status = "请先完成输入法组合输入，再移动此块".into();
+            self.error = true;
+            cx.notify();
+            return;
+        }
+        if self.session.move_block_to_page(id, target) {
+            self.block_menu_open = None;
+            self.sync_inputs(window, cx);
+            self.focus_first(window, cx);
+            let title = self
+                .session
+                .pages
+                .iter()
+                .find(|page| page.id == target)
+                .map(|page| page.title.as_str())
+                .unwrap_or("目标页面");
+            self.status = format!("块已移动到「{title}」，可撤销");
+            self.error = false;
+            self.schedule_save(false, window, cx);
+        }
     }
     fn toggle_color_picker(&mut self, id: BlockId, background: bool, cx: &mut Context<Self>) {
         self.color_picker = if self.color_picker == Some((id, background)) {
@@ -8840,8 +8879,8 @@ impl Workspace {
         let block_context_popup =
             self.block_menu_open
                 .filter(|(id, _)| *id == block_id)
-                .map(|(_, turn_into)| {
-                    let rows = if turn_into {
+                .map(|(_, mode)| {
+                    let rows = if mode == BlockMenuMode::Convert {
                         slash_items()
                             .iter()
                             .filter(|(_, _, target)| *target != kind)
@@ -8869,6 +8908,38 @@ impl Workspace {
                                     .into_any_element()
                             })
                             .collect::<Vec<_>>()
+                    } else if mode == BlockMenuMode::MoveToPage {
+                        self.session
+                            .pages
+                            .iter()
+                            .filter(|page| {
+                                !page.template && page.id != self.session.page.id && !page.locked
+                            })
+                            .map(|page| {
+                                let target = page.id;
+                                div()
+                                    .id(SharedString::from(format!(
+                                        "block-menu-move-to-{}-{block_id:?}",
+                                        target.0
+                                    )))
+                                    .w_full()
+                                    .h(px(28.))
+                                    .px(px(9.))
+                                    .flex()
+                                    .items_center()
+                                    .rounded(px(4.))
+                                    .cursor_pointer()
+                                    .text_size(px(12.))
+                                    .text_color(text)
+                                    .hover(|item| item.bg(Palette::color(&p.bg).opacity(0.3)))
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        this.block_menu_open = None;
+                                        this.move_block_to_page(block_id, target, window, cx);
+                                    }))
+                                    .child(page.title.clone())
+                                    .into_any_element()
+                            })
+                            .collect::<Vec<_>>()
                     } else {
                         [
                             ("转换为…", 0),
@@ -8876,6 +8947,7 @@ impl Workspace {
                             ("背景颜色", 2),
                             ("复制块", 3),
                             ("删除", 4),
+                            ("移动到页面…", 5),
                         ]
                         .into_iter()
                         .map(|(label, action)| {
@@ -8899,7 +8971,10 @@ impl Workspace {
                                 .hover(|item| item.bg(Palette::color(&p.bg).opacity(0.3)))
                                 .on_click(cx.listener(move |this, _, window, cx| {
                                     match action {
-                                        0 => this.block_menu_open = Some((block_id, true)),
+                                        0 => {
+                                            this.block_menu_open =
+                                                Some((block_id, BlockMenuMode::Convert))
+                                        }
                                         1 => {
                                             this.block_menu_open = None;
                                             this.toggle_color_picker(block_id, false, cx);
@@ -8916,6 +8991,10 @@ impl Workspace {
                                             this.block_menu_open = None;
                                             this.delete_block(block_id, window, cx);
                                         }
+                                        5 => {
+                                            this.block_menu_open =
+                                                Some((block_id, BlockMenuMode::MoveToPage))
+                                        }
                                         _ => {}
                                     }
                                     cx.notify();
@@ -8926,7 +9005,21 @@ impl Workspace {
                         .collect::<Vec<_>>()
                     };
                     let mut rows = rows;
-                    if turn_into {
+                    if mode == BlockMenuMode::MoveToPage && rows.is_empty() {
+                        rows.push(
+                            div()
+                                .w_full()
+                                .h(px(28.))
+                                .px(px(9.))
+                                .flex()
+                                .items_center()
+                                .text_size(px(11.))
+                                .text_color(muted)
+                                .child("没有可移动到的页面")
+                                .into_any_element(),
+                        );
+                    }
+                    if mode != BlockMenuMode::Actions {
                         rows.insert(
                             0,
                             div()
@@ -8942,7 +9035,7 @@ impl Workspace {
                                 .text_color(muted)
                                 .hover(|item| item.bg(Palette::color(&p.bg).opacity(0.3)))
                                 .on_click(cx.listener(move |this, _, _, cx| {
-                                    this.block_menu_open = Some((block_id, false));
+                                    this.block_menu_open = Some((block_id, BlockMenuMode::Actions));
                                     cx.notify();
                                 }))
                                 .child("‹  返回")
@@ -11127,7 +11220,7 @@ impl Workspace {
                                                 {
                                                     None
                                                 } else {
-                                                    Some((block_id, false))
+                                                    Some((block_id, BlockMenuMode::Actions))
                                                 };
                                                 cx.notify();
                                             }))
