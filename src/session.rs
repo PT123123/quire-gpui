@@ -1218,17 +1218,33 @@ impl Session {
         let database_row = self
             .databases
             .databases
-            .iter_mut()
+            .iter()
             .find(|row| row.id == database)
             .context("数据库定义已不存在")?;
         if database_row.template == template {
             return Ok(false);
         }
-        database_row.template = template.clone();
-        self.persistence.record(vec![Change::DatabaseTemplateSet {
-            id: database,
-            template,
-        }]);
+        let from = database_row.template.clone();
+        self.end_typing();
+        let Some(entry) = command::plan(
+            &mut self.document,
+            self.page.id,
+            Command::SetDatabaseTemplate {
+                block,
+                db: database,
+                from,
+                to: template.clone(),
+            },
+        ) else {
+            return Ok(false);
+        };
+        self.apply_entry(entry);
+        self.databases
+            .databases
+            .iter_mut()
+            .find(|row| row.id == database)
+            .expect("database validated above")
+            .template = template;
         self.persistence.force_flush()?;
         Ok(true)
     }
@@ -5561,9 +5577,12 @@ impl Session {
         if block.folded == folded {
             return;
         }
-        let change = Change::BlockFoldedSet { id, folded };
-        self.document.apply(std::slice::from_ref(&change));
-        self.persistence.record(vec![change]);
+        self.end_typing();
+        if let Some(entry) =
+            command::plan(&mut self.document, self.page.id, Command::ToggleFold { id })
+        {
+            self.apply_entry(entry);
+        }
     }
     pub fn set_link(&mut self, id: BlockId, start: usize, end: usize, url: String) {
         if self.page.locked {
@@ -7919,6 +7938,32 @@ mod tests {
     }
 
     #[test]
+    fn folding_a_toggle_block_is_undoable_and_persists() -> Result<()> {
+        let scratch = quire_core::testing::ScratchDir::new("gpui-toggle-fold-history");
+        let path = scratch.path().join("test.db");
+        let id;
+        {
+            let mut session = Session::open(&path)?;
+            id = session.blocks()[0].id;
+            session.execute(Command::SetBlockType {
+                id,
+                kind: BlockKind::Toggle,
+            });
+            session.set_block_folded(id, true);
+            assert!(session.document.block(id).unwrap().folded);
+
+            session.undo();
+            assert!(!session.document.block(id).unwrap().folded);
+            session.redo();
+            assert!(session.document.block(id).unwrap().folded);
+            session.persistence.force_flush()?;
+        }
+        let reopened = Session::open(&path)?;
+        assert!(reopened.document.block(id).unwrap().folded);
+        Ok(())
+    }
+
+    #[test]
     fn saving_a_database_record_as_template_prefills_future_records() -> Result<()> {
         let scratch = quire_core::testing::ScratchDir::new("gpui-database-record-template");
         let path = scratch.path().join("test.db");
@@ -7944,6 +7989,14 @@ mod tests {
 
             assert!(session.save_database_record_as_template(block, source)?);
             assert!(!session.save_database_record_as_template(block, source)?);
+            session.undo();
+            assert!(
+                quire_core::core::database_template::cells_of(
+                    &session.databases.database(database).unwrap().template
+                )
+                .is_empty()
+            );
+            session.redo();
             assert_eq!(
                 quire_core::core::database_template::cells_of(
                     &session.databases.database(database).unwrap().template

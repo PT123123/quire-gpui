@@ -1451,3 +1451,14 @@
 - 隔离测试覆盖图片/文件转换的块 ID、附件文件、撤销/重做与重开，以及 slash 文本和链接数据库共享实体的原子撤销/重开。`cargo fmt --all`、开发构建检查和全量 `cargo test --locked -j 8`（105 项：53 库 + 50 二进制 + 2 集成）通过；`cargo build --release --locked -j 8 --target-dir target-release` 与全新临时 SQLite 的 Release GUI smoke（1000 块）通过。未访问用户数据库。
 - 尚未做文件选择器和链接数据库选择器的真人窗口点选回归；性能报告仍记录旧二进制，本轮按用户要求暂不重测，功能收尾时再运行最终对比。
 
+## 第二百三十二轮：数据库记录模板接入撤销历史（2026-10-16）
+
+- 复核 core `Command` 与 GPUI 的反向入口时发现，模板保存此前绕过已有的 `SetDatabaseTemplate` 命令，虽能持久化却无法撤销。现由 Session 规划并应用该命令，更新运行时 catalog 并立即 flush。
+- 扩展隔离数据库回归：保存模板后撤销可恢复空模板，重做后新建表单继续使用已保存默认值，关闭并重开后模板与记录值一致。验证通过：定向测试、`cargo check --locked -j 8`。
+- 继续对照时发现折叠状态也绕过 core 命令并未进入 undo。现通过 `ToggleFold` 生成 core 历史项，仍以视图状态变更持久化；折叠/展开保留在锁定页允许操作的路径上。隔离测试覆盖撤销、重做和重开读回。当前 50 个 core Command 均已找到 GPUI 实现入口或明确的会话层封装；完整 build/test 与 Release smoke 将在本批功能改动收束后重跑。
+
+## 第二百三十三轮：折叠状态接入撤销历史（2026-10-16）
+
+- `Session::set_block_folded` 原来直接记录 `BlockFoldedSet`，无法撤销；现调用 core `ToggleFold` 并纳入页面 undo/redo。隔离测试验证块折叠、撤销、重做、flush 和重开。保持 locked page 的折叠入口可用。
+- `cargo fmt --all`、两项数据库/折叠定向测试及 `cargo check --locked -j 8` 通过。用户库未触碰；完整全量验证安排在功能收尾。
+

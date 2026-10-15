@@ -158,7 +158,7 @@ lock-nudge,已实现,未验证,锁定页上的文本编辑、拆分合并、缩�
 empty-page-started,已实现,未验证,空白文档区点击或标题输入框按 Enter 会创建首个空段落并将焦点置于起点,锁定空页显示解锁提示；创建后进入普通编辑与持久化流程column-added
 column-removed,已实现,未验证,仅在超过两列时可移除最右侧列,删除列时 core 将其内容并入前一列并维持块内容
 column-fill,已实现,未验证,空列显示整块可点击的空状态，点击后创建并聚焦首个段落,入口复用 ColumnsAddBlock 并保存；下方添加内容按钮仍可用
-toggle-fold,已实现,未验证,Toggle 块与可折叠标题可切换折叠状态并隐藏/展开后代,写入 core page history 后更新虚拟文档列表
+toggle-fold,已实现,未验证,Toggle 块与可折叠标题可切换折叠状态并隐藏/展开后代,通过 core ToggleFold 进入页面撤销历史并持久化；隔离 Session 测试覆盖折叠撤销重做与重开
 rich-paste,已实现,未验证,Ctrl+V 对结构化 Markdown 粘贴转换为块子树，纯文本仍走原生剪贴板；支持剪贴板图片导入,结构粘贴为单条撤销操作并从首个新块恢复焦点；有集成单测与 Release smoke 覆盖
 editing-changed,已实现,未验证,文本编辑同步到 core，支持 Markdown 前缀转换、slash 命令和正文 @页面/日期候选；slash 可将当前块转为图片或文件并链接到已有数据库,图片和文件转换在选取成功后才应用并与清理 slash 前缀合成单条撤销记录；取消选择保留原文；链接数据库弹窗支持过滤、方向键、Enter、点击和 Escape；core 隔离测试覆盖撤销重做和重开读回
 enter-at-caret,已实现,未验证,Enter 在 UTF-8 字节插入点拆分当前块并把焦点放到新块，表格单元格 Enter 导航到下一格,slash 与 mention 候选打开时 Enter 优先应用当前候选；命令由 core 记录撤销历史
@@ -234,7 +234,7 @@ cancel-editing,不适用,已验证,GPUI 内容块始终直接编辑，没有旧�
 db-cal-month,已实现,未验证,Calendar 与 Timeline 均可用前后按钮跨月浏览并重查日期记录,GPUI 以年月状态和 core month_cells/shift_month 查询实现；含闰年及跨年边界需 GUI 回归
 db-gallery-shaped,已实现,未验证,画廊根据正文区宽度自适应显示一至四列虚拟卡片行并保持最小卡宽,列数边界有单测且隔离 GUI smoke 验证可视行记录查询；真实拖动窗口观察断点未做
 db-open-record,已实现,未验证,表格标题快捷入口与画廊/日历/时间线/看板记录入口打开记录关联页面，无页面的记录首次打开时延迟创建子页面并绑定记录,页面创建/首段落/RecordPageSet 写入同一持久化批次；隔离 Session 覆盖首次创建、重复打开复用及重启读回
-db-template-saved,已实现,未验证,选中数据库行可设为后续新记录的默认模板,使用 core database_template typed 编解码并通过 DatabaseTemplateSet 持久化；表单创建会合并模板默认值与用户本次输入
+db-template-saved,已实现,未验证,选中数据库行可设为后续新记录的默认模板,使用 core database_template typed 编解码与 SetDatabaseTemplate 写入页面撤销历史；支持撤销重做和持久化；表单创建会合并模板默认值与用户本次输入
 menu-action,已实现,未验证,GPUI 的块/页面/固定侧栏菜单项直接绑定各自的类型化动作处理器，执行转换、颜色、复制/删除/移动、页面管理或导航命令,泛化整数 menu-action 被每个菜单专属闭包替代；源码中各菜单项都有点击处理及边界/锁定校验，真人逐项菜单验收未做
 org-field-edited,已实现,未验证,笔记标题/正文、任务标题/备注/标签/截止日期与子任务输入通过 TextInput 编辑事件更新草稿；按现有失焦/防抖/提交路径写入 Session。,
 org-command-opened,已实现,未验证,笔记列表和任务列表新增“指令…”入口；记录打开时所在页签，清空 JSON 草稿并聚焦多行输入框。,
