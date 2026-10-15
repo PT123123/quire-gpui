@@ -1087,6 +1087,10 @@ fn settings_matches(query: &str, keywords: &str) -> bool {
     query.is_empty() || keywords.to_lowercase().contains(&query)
 }
 
+fn gallery_columns_for_width(width: f32) -> usize {
+    (((width.max(0.) + 8.) / 188.).floor() as usize).clamp(1, 4)
+}
+
 fn notes_auto_input_enabled(value: Option<&str>) -> bool {
     value.is_none_or(|value| !matches!(value, "0" | "false"))
 }
@@ -1159,12 +1163,13 @@ mod view_tests {
         NavigationHistory, NavigationStop, OrganizerTaskDrag, Session, capture_tag_replacement,
         capture_tags, columns_layout_item_ids, database_filter_value_from_text,
         database_group_identity, database_group_label, database_property_kind_choices,
-        evaluate_database_formula, evaluate_database_rollup, find_matches_in, link_target_range,
-        mention_date_matches, notes_auto_input_enabled, order_database_groups,
-        organizer_notes_copy_payload, organizer_tag_matches_path, organizer_tag_tree_rows,
-        organizer_tags_exclude, organizer_task_drop_accepted, palette_matches, parse_mcp_port,
-        parse_organizer_tags, push_history, settings_matches, settings_section_visible,
-        slash_query, sort_organizer_notes, sort_organizer_tasks, sync_peer_is_recent, sync_targets,
+        evaluate_database_formula, evaluate_database_rollup, find_matches_in,
+        gallery_columns_for_width, link_target_range, mention_date_matches,
+        notes_auto_input_enabled, order_database_groups, organizer_notes_copy_payload,
+        organizer_tag_matches_path, organizer_tag_tree_rows, organizer_tags_exclude,
+        organizer_task_drop_accepted, palette_matches, parse_mcp_port, parse_organizer_tags,
+        push_history, settings_matches, settings_section_visible, slash_query,
+        sort_organizer_notes, sort_organizer_tasks, sync_peer_is_recent, sync_targets,
         system_palette_id_for_appearance, toc_headings,
     };
     use gpui::WindowAppearance;
@@ -1490,6 +1495,14 @@ mod view_tests {
         assert!(!settings_matches("不存在", "同步 局域网 设备"));
         assert!(settings_section_visible("", 4, 4, "快捷键"));
         assert!(!settings_section_visible("", 4, 1, "通用"));
+    }
+
+    #[test]
+    fn gallery_columns_follow_available_width_and_preserve_card_minimum() {
+        assert_eq!(gallery_columns_for_width(200.), 1);
+        assert_eq!(gallery_columns_for_width(375.), 2);
+        assert_eq!(gallery_columns_for_width(560.), 3);
+        assert_eq!(gallery_columns_for_width(760.), 4);
     }
 
     #[test]
@@ -12798,6 +12811,8 @@ impl Workspace {
                                     let gallery_filter = row_filter.clone();
                                     let gallery_search = row_search.clone();
                                     let gallery_total = total;
+                                    let gallery_cards_per_row =
+                                        gallery_columns_for_width(f32::from(database_width));
                                     let calendar_repo = repo.clone();
                                     let calendar_columns = query_columns.clone();
                                     let calendar_sorts = row_sorts.clone();
@@ -14005,7 +14020,7 @@ impl Workspace {
                                     } else if active_layout
                                         == quire_core::core::database::ViewLayout::Gallery
                                     {
-                                        let gallery_rows = gallery_total.div_ceil(3);
+                                        let gallery_rows = gallery_total.div_ceil(gallery_cards_per_row);
                                         uniform_list(
                                             SharedString::from(format!("db-gallery-{}", db_id.0)),
                                             gallery_rows,
@@ -14021,13 +14036,13 @@ impl Workspace {
                                                     };
                                                     range
                                                         .map(|row_index| {
-                                                            let start = row_index * 3;
+                                                            let start = row_index * gallery_cards_per_row;
                                                             let records = gallery_repo
                                                                 .window_rows(
                                                                     &request,
                                                                     quire_core::core::database::RowWindow {
                                                                         start,
-                                                                        end: (start + 3).min(gallery_total),
+                                                                        end: (start + gallery_cards_per_row).min(gallery_total),
                                                                     },
                                                                 )
                                                                 .unwrap_or_default();
@@ -14037,11 +14052,11 @@ impl Workspace {
                                                             {
                                                                 assert_eq!(
                                                                     records.len(),
-                                                                    gallery_total.min(3),
+                                                                    gallery_total.min(gallery_cards_per_row),
                                                                     "gallery row must load its visible records"
                                                                 );
                                                                 this.smoke_gallery_rendered = true;
-                                                                eprintln!("SMOKE: gallery layout rendered a virtualized three-card row");
+                                                                eprintln!("SMOKE: gallery layout rendered a virtualized responsive card row");
                                                             }
                                                             let cards = records.into_iter().map(|row| {
                                                                 let record = row.record;

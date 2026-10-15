@@ -1331,3 +1331,9 @@
 - 笔记详情标题/正文输入框现在响应 Escape 关闭详情；输入组件在 IME 组合期间先取消组合，不会误关闭笔记。关闭仍先提交当前草稿。其余 Escape 路径未改变。
 - 对照 GPUI 整理区现有路径，回填笔记选择/关闭/转待办、标签排除/清筛选、回收站切换、任务创建/选择/取消多选、列表快速添加和看板按清单添加。记录已知差异：回收站切换会清空当前详情，旧版保留选择；看板按列添加使用“新任务”默认标题。
 - `cargo fmt --all -- --check`、`cargo test --locked`（98 项）和 `git diff --check` 通过；生成矩阵仍为 246 callbacks / 261 properties / 188 scenes，语义 sidecar 合并 223 个回调。菜单 callback F166 与 organizer 命令面板仍留待逐类核对；未访问真实用户库或修改 Slint/core/冻结参考树。
+
+## 第二百一十九轮：数据库画廊响应式列数
+
+- 画廊虚拟列表原先固定每行三张卡片，窗口或侧栏宽度变化时会留下不必要的空隙或挤压卡片。现在根据正文区可用宽度在 1–4 列间切换，记录窗口查询仍只读取可见行范围；最小卡宽维持约 180px。
+- 回填 F105/F106：日历/时间线月份导航与画廊自适应网格都已在 GPUI 实现，状态为已实现/未验证；画廊列数断点有单元测试。`tools/extract-parity.mjs` 重生成 246 callbacks / 261 properties / 188 scenes，语义 sidecar 合并 225 个回调。
+- `cargo fmt --all -- --check`、`cargo test --locked`（99 项：47 库 + 50 二进制 + 1 MCP stdio + 1 sync loopback）、`cargo build --release --locked`、`git diff --check` 均通过。全新隔离 SQLite 的 Release GUI smoke（1000 个合成块）通过，日志确认画廊行渲染/查询、日历、时间线、表单、图表、托盘、速记、MCP、最大化/还原与虚拟滚动路径。真人拖动窗口核对具体断点尚未做；未访问真实用户库，也未改 Slint/core/冻结参考树。

@@ -226,3 +226,5 @@ block-activate,已实现,未验证,内容块点击即聚焦并将其设为活动
 column-added,已实现,未验证,分栏工具区可新增至最多三列并可删除最右侧列,通过 ColumnsAddColumn/ColumnsDeleteColumn 纳入页面撤销历史；空列可点入首段落
 block-menu-opened,已实现,未验证,内容块拖拽把手可打开锚定于该行的块操作菜单,菜单包含块类型/颜色/复制/移动等操作并贴合窗口边界
 cancel-editing,未开始,未验证,旧版 Escape 将内容块从只读/编辑切换态退出,GPUI 没有独立编辑态；根节点焦点试验已撤回，需先设计不会改变 GPUI 焦点/编辑器模型的等价交互
+db-cal-month,已实现,未验证,Calendar 与 Timeline 均可用前后按钮跨月浏览并重查日期记录,GPUI 以年月状态和 core month_cells/shift_month 查询实现；含闰年及跨年边界需 GUI 回归
+db-gallery-shaped,已实现,未验证,画廊根据正文区宽度自适应显示一至四列虚拟卡片行并保持最小卡宽,列数边界有单测且隔离 GUI smoke 验证可视行记录查询；真实拖动窗口观察断点未做
