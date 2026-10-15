@@ -494,10 +494,6 @@ fn modern_http_error(id: Option<&Value>, code: i64, message: &str) -> String {
         "jsonrpc": "2.0",
         "id": id.cloned().unwrap_or(Value::Null),
         "error": { "code": code, "message": message },
-        "_meta": { "io.modelcontextprotocol/serverInfo": {
-            "name": "quire-gpui",
-            "version": env!("CARGO_PKG_VERSION"),
-        }}
     })
     .to_string()
 }
@@ -547,10 +543,12 @@ fn handle_modern_request(tools: &[ToolDef], body: &str, call: &CallFn) -> Option
         }
         Reply::Silent => return None,
     };
-    response["_meta"] = json!({ "io.modelcontextprotocol/serverInfo": {
-        "name": "quire-gpui",
-        "version": env!("CARGO_PKG_VERSION"),
-    }});
+    if response.get("result").is_some() {
+        response["result"]["_meta"] = json!({ "io.modelcontextprotocol/serverInfo": {
+            "name": "quire-gpui",
+            "version": env!("CARGO_PKG_VERSION"),
+        }});
+    }
     Some(response.to_string())
 }
 
@@ -943,7 +941,7 @@ mod tests {
             MODERN_VERSION
         );
         assert_eq!(
-            modern_discover["_meta"]["io.modelcontextprotocol/serverInfo"]["name"],
+            modern_discover["result"]["_meta"]["io.modelcontextprotocol/serverInfo"]["name"],
             "quire-gpui"
         );
         let modern_tool_call = r#"{"jsonrpc":"2.0","id":11,"method":"tools/call","params":{"name":"echo","arguments":{"value":"modern"},"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientInfo":{"name":"smoke","version":"1"},"io.modelcontextprotocol/clientCapabilities":{}}}}"#;
