@@ -367,6 +367,26 @@ fn database_group_identity(key: &quire_core::core::database_view::GroupKey) -> S
     }
 }
 
+fn current_utc_month() -> (i32, u32) {
+    let days = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64
+        / 86_400;
+    let z = days + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let mut year = (yoe + era * 400) as i32;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let month = (mp + if mp < 10 { 3 } else { -9 }) as u32;
+    if month <= 2 {
+        year += 1;
+    }
+    (year, month)
+}
+
 fn evaluate_database_formula(
     property: quire_core::core::database::PropertyId,
     properties: &[quire_core::core::database::Property],
@@ -1414,6 +1434,9 @@ pub struct Workspace {
     smoke_board_rendered: bool,
     smoke_board_cards_rendered: bool,
     smoke_gallery_rendered: bool,
+    smoke_calendar_rendered: bool,
+    database_calendar_month: (i32, u32),
+    database_calendar_property_open: Option<(u64, u64)>,
     startup_notice: Option<String>,
     active: Option<BlockId>,
     save_task: Option<gpui::Task<()>>,
@@ -1767,6 +1790,9 @@ impl Workspace {
             smoke_board_rendered: false,
             smoke_board_cards_rendered: false,
             smoke_gallery_rendered: false,
+            smoke_calendar_rendered: false,
+            database_calendar_month: current_utc_month(),
+            database_calendar_property_open: None,
             startup_notice,
             active: None,
             save_task: None,
@@ -2454,13 +2480,36 @@ impl Workspace {
                     let block_id = block.id;
                     let database = block.db_ref.expect("gallery smoke database reference");
                     let view = this.session.databases.views_of(database).next().unwrap().id;
+                    this.database_calendar_month = (2026, 10);
                     this.session
                         .set_database_view_layout(
                             block_id,
                             view,
+                            quire_core::core::database::ViewLayout::Calendar,
+                        )
+                        .expect("calendar layout should be available after gallery smoke");
+                    this.schedule_save(true, window, cx);
+                });
+                cx.background_executor()
+                    .timer(Duration::from_millis(300))
+                    .await;
+                let _ = weak.update_in(cx, |this, window, cx| {
+                    assert!(this.smoke_calendar_rendered, "calendar should query and render a dated record");
+                    let block = this
+                        .session
+                        .blocks()
+                        .iter()
+                        .find(|block| block.kind == BlockKind::Database)
+                        .expect("calendar smoke database block should remain available");
+                    let database = block.db_ref.expect("calendar smoke database reference");
+                    let view = this.session.databases.views_of(database).next().unwrap().id;
+                    this.session
+                        .set_database_view_layout(
+                            block.id,
+                            view,
                             quire_core::core::database::ViewLayout::Board,
                         )
-                        .expect("board layout should restore after gallery smoke");
+                        .expect("board layout should restore after calendar smoke");
                     this.schedule_save(true, window, cx);
                 });
                 cx.background_executor()
@@ -9661,7 +9710,9 @@ impl Workspace {
                                         && active_layout
                                             != quire_core::core::database::ViewLayout::Board
                                         && active_layout
-                                            != quire_core::core::database::ViewLayout::Gallery;
+                                            != quire_core::core::database::ViewLayout::Gallery
+                                        && active_layout
+                                            != quire_core::core::database::ViewLayout::Calendar;
                                     let row_sorts = view_sorts.clone();
                                     let row_filter = view_filter.clone();
                                     let row_group_data = group_data.clone();
@@ -9680,6 +9731,12 @@ impl Workspace {
                                     let gallery_filter = row_filter.clone();
                                     let gallery_search = row_search.clone();
                                     let gallery_total = total;
+                                    let calendar_repo = repo.clone();
+                                    let calendar_columns = query_columns.clone();
+                                    let calendar_sorts = row_sorts.clone();
+                                    let calendar_filter = row_filter.clone();
+                                    let calendar_search = row_search.clone();
+                                    let calendar_properties = all_database_properties.clone();
                                     let table_rows = uniform_list(
                                         SharedString::from(format!("database-rows-{}", db_id.0)),
                                         list_total,
@@ -10056,6 +10113,256 @@ impl Workspace {
                                     .flex_1()
                                     .min_h(px(40.));
                                     let rows = if active_layout
+                                        == quire_core::core::database::ViewLayout::Calendar
+                                    {
+                                        let view_definition = selected_view
+                                            .and_then(|view_id| views.iter().find(|view| view.id == view_id))
+                                            .map(|view| quire_core::core::database_view::ViewDefinition::parse(&view.definition));
+                                        let date_property = view_definition
+                                            .as_ref()
+                                            .and_then(|definition| definition.date_column())
+                                            .and_then(|property_id| {
+                                                calendar_properties
+                                                    .iter()
+                                                    .find(|property| property.id == property_id && property.kind == quire_core::core::database::PropertyKind::Date)
+                                                    .cloned()
+                                            })
+                                            .or_else(|| {
+                                                calendar_properties
+                                                    .iter()
+                                                    .find(|property| property.kind == quire_core::core::database::PropertyKind::Date)
+                                                    .cloned()
+                                            });
+                                        let date_property_id = date_property.as_ref().map(|property| property.id);
+                                        let calendar_month = self.database_calendar_month;
+                                        let month_label = quire_core::core::database_view::month_label(calendar_month.0, calendar_month.1);
+                                        let month_cells = quire_core::core::database_view::month_cells(calendar_month.0, calendar_month.1);
+                                        let property_picker_key = (block_id.0, active_view_id.0);
+                                        let property_picker_open = self.database_calendar_property_open == Some(property_picker_key);
+                                        let date_options = calendar_properties
+                                            .iter()
+                                            .filter(|property| property.kind == quire_core::core::database::PropertyKind::Date)
+                                            .cloned()
+                                            .collect::<Vec<_>>();
+                                        let previous_month = quire_core::core::database_view::shift_month(calendar_month.0, calendar_month.1, -1);
+                                        let next_month = quire_core::core::database_view::shift_month(calendar_month.0, calendar_month.1, 1);
+                                        let mut month_header = div()
+                                            .id(SharedString::from(format!("db-calendar-header-{}", db_id.0)))
+                                            .w_full()
+                                            .h(px(34.))
+                                            .flex()
+                                            .items_center()
+                                            .gap(px(7.));
+                                        month_header = month_header
+                                            .child(div().id(SharedString::from(format!("db-calendar-prev-{}", db_id.0))).px(px(8.)).py(px(3.)).rounded(px(4.)).text_color(muted).hover(|button| button.bg(db_hover)).cursor_pointer().on_click(cx.listener(move |this, _, _, cx| { this.database_calendar_month = previous_month; cx.notify(); })).child("‹"))
+                                            .child(div().id(SharedString::from(format!("db-calendar-next-{}", db_id.0))).px(px(8.)).py(px(3.)).rounded(px(4.)).text_color(muted).hover(|button| button.bg(db_hover)).cursor_pointer().on_click(cx.listener(move |this, _, _, cx| { this.database_calendar_month = next_month; cx.notify(); })).child("›"))
+                                            .child(div().text_size(px(13.)).font_weight(FontWeight::SEMIBOLD).text_color(text).child(month_label));
+                                        let mut date_picker = div()
+                                            .id(SharedString::from(format!("db-calendar-date-picker-{}", db_id.0)))
+                                            .relative()
+                                            .ml(px(8.))
+                                            .px(px(8.))
+                                            .py(px(4.))
+                                            .rounded(px(4.))
+                                            .text_size(px(10.))
+                                            .text_color(if property_picker_open { accent } else { muted })
+                                            .hover(|button| button.bg(db_hover))
+                                            .child(date_property.as_ref().map_or_else(|| "选择日期属性".to_owned(), |property| format!("日期：{} ▾", property.name)));
+                                        if !self.session.page.locked {
+                                            date_picker = date_picker.cursor_pointer().on_click(cx.listener(move |this, _, _, cx| {
+                                                this.database_calendar_property_open = if this.database_calendar_property_open == Some(property_picker_key) { None } else { Some(property_picker_key) };
+                                                cx.notify();
+                                            }));
+                                        }
+                                        if property_picker_open {
+                                            let mut menu = div()
+                                                .id(SharedString::from(format!("db-calendar-date-menu-{}", db_id.0)))
+                                                .absolute()
+                                                .top(px(28.))
+                                                .left(px(0.))
+                                                .min_w(px(170.))
+                                                .max_h(px(220.))
+                                                .overflow_y_scroll()
+                                                .flex()
+                                                .flex_col()
+                                                .gap(px(2.))
+                                                .p(px(5.))
+                                                .rounded(px(6.))
+                                                .border_1()
+                                                .border_color(db_border)
+                                                .bg(elevated)
+                                                .shadow_lg()
+                                                .on_click(cx.listener(|_, _, _, cx| cx.stop_propagation()));
+                                            if date_options.is_empty() {
+                                                menu = menu.child(div().px(px(7.)).py(px(6.)).text_size(px(10.)).text_color(muted).child("请先添加 Date 属性"));
+                                            } else {
+                                                menu = menu.children(date_options.iter().map(|property| {
+                                                    let property_id = property.id;
+                                                    let property_name = property.name.clone();
+                                                    let selected = date_property_id == Some(property_id);
+                                                    div()
+                                                        .id(SharedString::from(format!("db-calendar-date-option-{}-{}", db_id.0, property_id.0)))
+                                                        .w_full()
+                                                        .px(px(7.))
+                                                        .py(px(5.))
+                                                        .rounded(px(4.))
+                                                        .text_size(px(11.))
+                                                        .text_color(if selected { accent } else { text })
+                                                        .when(selected, |item| item.bg(accent.opacity(0.16)))
+                                                        .hover(|item| item.bg(db_hover))
+                                                        .cursor_pointer()
+                                                        .on_click(cx.listener(move |this, _, window, cx| {
+                                                            if let Some(view) = this.session.databases.views.iter().find(|view| view.id == active_view_id && view.db == db_id) {
+                                                                let mut definition = quire_core::core::database_view::ViewDefinition::parse(&view.definition);
+                                                                definition.set_date(Some(property_id));
+                                                                match this.session.set_database_view_definition(block_id, active_view_id, definition.to_text()) {
+                                                                    Ok(true) => {
+                                                                        this.database_calendar_property_open = None;
+                                                                        this.schedule_save(true, window, cx);
+                                                                        cx.notify();
+                                                                    }
+                                                                    Ok(false) => {}
+                                                                    Err(error) => { this.status = format!("日历日期属性保存失败：{error}"); this.error = true; cx.notify(); }
+                                                                }
+                                                            }
+                                                        }))
+                                                        .child(property_name)
+                                                }));
+                                            }
+                                            date_picker = date_picker.child(menu);
+                                        }
+                                        month_header = month_header.child(date_picker);
+
+                                        let weekdays = ["一", "二", "三", "四", "五", "六", "日"]
+                                            .into_iter()
+                                            .map(|weekday| div().flex_1().min_w(px(132.)).h(px(20.)).flex().items_center().justify_center().text_size(px(10.)).text_color(muted).child(weekday))
+                                            .collect::<Vec<_>>();
+                                        let weekday_row = div()
+                                            .id(SharedString::from(format!("db-calendar-weekdays-{}", db_id.0)))
+                                            .w_full()
+                                            .flex()
+                                            .gap(px(4.))
+                                            .children(weekdays);
+                                        let mut weeks = Vec::new();
+                                        for (week_index, days) in month_cells.chunks(7).enumerate() {
+                                            let cells = days.iter().map(|day| {
+                                                let mut cell = div()
+                                                    .id(SharedString::from(format!("db-calendar-day-{}-{week_index}-{day}", db_id.0)))
+                                                    .flex_1()
+                                                    .min_w(px(132.))
+                                                    .h(px(96.))
+                                                    .p(px(5.))
+                                                    .flex()
+                                                    .flex_col()
+                                                    .gap(px(2.))
+                                                    .rounded(px(4.))
+                                                    .border_1()
+                                                    .border_color(db_border)
+                                                    .bg(Palette::color(&p.elevated).opacity(0.45));
+                                                if *day == 0 {
+                                                    cell = cell.border_color(db_border.opacity(0.35));
+                                                } else {
+                                                    cell = cell.child(div().w_full().text_size(px(10.)).text_color(muted).child(day.to_string()));
+                                                    if let Some(property_id) = date_property_id {
+                                                        let date_key = quire_core::core::database_view::date_key(calendar_month.0, calendar_month.1, *day as u32);
+                                                        let (end_year, end_month, end_day) = if *day as u32 == quire_core::core::database_view::days_in_month(calendar_month.0, calendar_month.1) {
+                                                            let (year, month) = quire_core::core::database_view::shift_month(calendar_month.0, calendar_month.1, 1);
+                                                            (year, month, 1)
+                                                        } else {
+                                                            (calendar_month.0, calendar_month.1, *day as u32 + 1)
+                                                        };
+                                                        let next_date_key = quire_core::core::database_view::date_key(end_year, end_month, end_day);
+                                                        let date_range = quire_core::core::database_view::FilterNode::All(vec![
+                                                            quire_core::core::database_view::FilterNode::Clause(
+                                                                quire_core::core::database_view::FilterClause {
+                                                                    property: property_id,
+                                                                    kind: quire_core::core::database::PropertyKind::Date,
+                                                                    op: quire_core::core::database_view::FilterOp::Gte,
+                                                                    value: quire_core::core::database_view::FilterValue::Text(date_key),
+                                                                },
+                                                            ),
+                                                            quire_core::core::database_view::FilterNode::Clause(
+                                                                quire_core::core::database_view::FilterClause {
+                                                                    property: property_id,
+                                                                    kind: quire_core::core::database::PropertyKind::Date,
+                                                                    op: quire_core::core::database_view::FilterOp::Lt,
+                                                                    value: quire_core::core::database_view::FilterValue::Text(next_date_key),
+                                                                },
+                                                            ),
+                                                        ]);
+                                                        let date_filter = calendar_filter.clone().map_or_else(
+                                                            || date_range.clone(),
+                                                            |filter| quire_core::core::database_view::FilterNode::All(vec![filter, date_range.clone()]),
+                                                        );
+                                                        let request = quire_core::core::database::RowRequest {
+                                                            db: db_id,
+                                                            title,
+                                                            columns: &calendar_columns,
+                                                            sorts: &calendar_sorts,
+                                                            filter: Some(&date_filter),
+                                                            search: calendar_search.as_deref(),
+                                                        };
+                                                        let records = calendar_repo
+                                                            .window_rows(
+                                                                &request,
+                                                                quire_core::core::database::RowWindow {
+                                                                    start: 0,
+                                                                    end: quire_core::core::database_view::CALENDAR_PEEK + 1,
+                                                                },
+                                                            )
+                                                            .unwrap_or_default();
+                                                        if self.smoke_mode && !self.smoke_calendar_rendered && !records.is_empty() {
+                                                            self.smoke_calendar_rendered = true;
+                                                            eprintln!("SMOKE: calendar month grid queried and rendered dated records");
+                                                        }
+                                                        let has_more = records.len() > quire_core::core::database_view::CALENDAR_PEEK;
+                                                        let record_items = records.into_iter().take(quire_core::core::database_view::CALENDAR_PEEK).map(|row| {
+                                                            let record = row.record;
+                                                            let title_text = if row.title.trim().is_empty() { "（无标题）".to_owned() } else { row.title.chars().take(18).collect::<String>() };
+                                                            div()
+                                                                .id(SharedString::from(format!("db-calendar-record-{}-{record}", db_id.0)))
+                                                                .w_full()
+                                                                .px(px(3.))
+                                                                .rounded(px(3.))
+                                                                .text_size(px(9.))
+                                                                .text_color(text)
+                                                                .hover(|item| item.bg(db_hover))
+                                                                .cursor_pointer()
+                                                                .on_click(cx.listener(move |this, _, _, cx| { this.selected_database_record = Some((block_id.0, db_id.0, record)); cx.notify(); }))
+                                                                .child(title_text)
+                                                        });
+                                                        cell = cell.children(record_items);
+                                                        if has_more {
+                                                            cell = cell.child(div().text_size(px(9.)).text_color(muted).child("…更多"));
+                                                        }
+                                                    }
+                                                }
+                                                cell.into_any_element()
+                                            }).collect::<Vec<_>>();
+                                            weeks.push(
+                                                div()
+                                                    .id(SharedString::from(format!("db-calendar-week-{}-{week_index}", db_id.0)))
+                                                    .w_full()
+                                                    .flex()
+                                                    .gap(px(4.))
+                                                    .mb(px(4.))
+                                                    .children(cells)
+                                                    .into_any_element(),
+                                            );
+                                        }
+                                        div()
+                                            .id(SharedString::from(format!("db-calendar-{}", db_id.0)))
+                                            .w_full()
+                                            .h(px(480.))
+                                            .flex()
+                                            .flex_col()
+                                            .overflow_y_scroll()
+                                            .overflow_x_scroll()
+                                            .child(month_header)
+                                            .child(weekday_row)
+                                            .children(weeks)
+                                            .into_any_element()
+                                    } else if active_layout
                                         == quire_core::core::database::ViewLayout::Gallery
                                     {
                                         let gallery_rows = gallery_total.div_ceil(3);
@@ -11285,6 +11592,7 @@ impl Workspace {
                                                                 quire_core::core::database::ViewLayout::List => "列表",
                                                                 quire_core::core::database::ViewLayout::Board => "看板",
                                                                 quire_core::core::database::ViewLayout::Gallery => "画廊",
+                                                                quire_core::core::database::ViewLayout::Calendar => "日历",
                                                                 _ => "表格",
                                                             };
                                                             let mut button = div()
@@ -11310,6 +11618,9 @@ impl Workspace {
                                                                             }
                                                                             quire_core::core::database::ViewLayout::Board => {
                                                                                 quire_core::core::database::ViewLayout::Gallery
+                                                                            }
+                                                                            quire_core::core::database::ViewLayout::Gallery => {
+                                                                                quire_core::core::database::ViewLayout::Calendar
                                                                             }
                                                                             _ => {
                                                                                 quire_core::core::database::ViewLayout::Table

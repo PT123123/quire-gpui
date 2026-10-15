@@ -165,6 +165,13 @@ fn run() -> Result<()> {
                 quire_core::core::database::PropertyKind::Checkbox,
             )
             .context("cannot add the board smoke group property")?;
+        let date_property = session
+            .add_database_property(
+                board_block,
+                "日期".into(),
+                quire_core::core::database::PropertyKind::Date,
+            )
+            .context("cannot add the calendar smoke property")?;
         let view = session
             .databases
             .views_of(database)
@@ -185,6 +192,7 @@ fn run() -> Result<()> {
                 .context("cannot add a board smoke record")?;
             session.set_database_cell(board_block, record, title_property, title)?;
             session.set_database_cell(board_block, record, checkbox_property, checked)?;
+            session.set_database_cell(board_block, record, date_property, "2026-10-15T14:30")?;
         }
         session.persistence.force_flush()?;
         eprintln!("Seeded a grouped, two-column board in the isolated smoke database");
