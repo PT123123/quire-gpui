@@ -1302,3 +1302,9 @@
 - 试做“无弹层时 Escape 将焦点移至工作区根节点”来近似旧版退出编辑态，因 GPUI 没有独立编辑态且可能影响多窗口焦点，已撤回实现；F145 继续标记未开始，等待更合适的 GPUI 编辑态设计。
 - 同期重复运行 smoke 揭示原断言过严：系统可能先关闭 `WindowKind::PopUp` 启动速记窗，但 Workspace 仍持有过期句柄；随后热键正确地重开一个窗口。现将断言改为验证激活后至多有一个替换窗口，并继续验证窗口可写入/提交。F145 的 Escape 试验与速记断言无关。
 - 回滚后 `cargo fmt --all -- --check`、`cargo test --locked`（98 项）、`cargo check --locked`、`cargo build --release --locked`、`git diff --check` 和唯一新建临时目录 + SQLite 的 1000 块 Release GUI smoke 均通过；速记窗提交与托盘隐藏/唤回通过。未访问真实用户库或修改 Slint/core/冻结参考树。
+
+## 第二百一十四轮：搜索面板功能矩阵复核
+
+- 核对 GPUI 搜索订阅、过滤函数、结果行与旧版 controller：F169 查询过滤、F170 键盘移动、F171 回车/点击打开页面已存在，加入人工语义 sidecar；选择行为有一处差异，GPUI 上下键循环，旧版在结果首尾夹取。
+- F172 保持未开始：旧版能定位并选中具体命中块，当前 GPUI 只列页面和一条预览，打开页面后不跳到命中块。明确了完成条件为保留匹配 block ID、滚动虚拟列表并选中命中范围。
+- `tools/extract-parity.mjs` 重生成 246 callbacks / 261 properties / 188 scenes，语义 sidecar 合并 208 个回调。仅文档变更；沿用上一轮通过的 98 项测试、check、Release build 和隔离 GUI smoke，未访问真实用户库或修改 Slint/core/冻结参考树。
