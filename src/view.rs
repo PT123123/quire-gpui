@@ -357,6 +357,133 @@ fn database_group_label(key: &quire_core::core::database_view::GroupKey, config:
     }
 }
 
+fn database_chart_plot(
+    counts: Vec<usize>,
+    kind: quire_core::core::database_view::ChartKind,
+    colors: Vec<Hsla>,
+    baseline_color: Hsla,
+) -> impl IntoElement {
+    canvas(
+        move |bounds, _, _| {
+            let origin = bounds.origin;
+            let width = f32::from(bounds.size.width);
+            let height = f32::from(bounds.size.height);
+            let total = counts.iter().sum::<usize>().max(1) as f32;
+            let fractions = counts
+                .iter()
+                .map(|count| *count as f32 / total)
+                .collect::<Vec<_>>();
+            let mut paths = Vec::new();
+            if kind == quire_core::core::database_view::ChartKind::Bar {
+                let n = counts.len().max(1) as f32;
+                let slot = (width - 24.).max(0.) / n;
+                for (i, fraction) in fractions.iter().enumerate() {
+                    let bar_width = (slot - 12.).max(2.);
+                    let bar_height = (height * fraction).max(2.);
+                    let x = origin.x + px(12. + i as f32 * slot + (slot - bar_width) / 2.);
+                    let y = origin.y + px(height - bar_height);
+                    let mut path = PathBuilder::fill();
+                    path.add_polygon(
+                        &[
+                            point(x, y),
+                            point(x + px(bar_width), y),
+                            point(x + px(bar_width), origin.y + px(height)),
+                            point(x, origin.y + px(height)),
+                        ],
+                        true,
+                    );
+                    paths.push((
+                        path.build().expect("bar geometry"),
+                        colors[i % colors.len()],
+                    ));
+                }
+            } else if kind == quire_core::core::database_view::ChartKind::Line {
+                if fractions.len() > 1 {
+                    let mut path = PathBuilder::stroke(px(2.));
+                    let step = width / (fractions.len() - 1) as f32;
+                    for (i, fraction) in fractions.iter().enumerate() {
+                        let at = point(
+                            origin.x + px(i as f32 * step),
+                            origin.y + px(height - (2. + fraction * (height - 4.))),
+                        );
+                        if i == 0 {
+                            path.move_to(at);
+                        } else {
+                            path.line_to(at);
+                        }
+                    }
+                    paths.push((path.build().expect("line geometry"), colors[0]));
+                    for (i, fraction) in fractions.iter().enumerate() {
+                        let x = origin.x + px(i as f32 * step);
+                        let y = origin.y + px(height - (2. + fraction * (height - 4.)));
+                        let radius = px(3.5);
+                        let mut dot = PathBuilder::fill();
+                        dot.add_polygon(
+                            &[
+                                point(x - radius, y),
+                                point(x, y - radius),
+                                point(x + radius, y),
+                                point(x, y + radius),
+                            ],
+                            true,
+                        );
+                        paths.push((dot.build().expect("line marker"), colors[i % colors.len()]));
+                    }
+                }
+            } else if !fractions.is_empty() {
+                let diameter = (width.min(height) - 8.).max(0.);
+                let center = point(origin.x + px(width / 2.), origin.y + px(height / 2.));
+                let radius = px(diameter / 2.);
+                let mut angle = -std::f32::consts::FRAC_PI_2;
+                for (i, fraction) in fractions.iter().enumerate() {
+                    let sweep = fraction * std::f32::consts::TAU;
+                    if sweep <= f32::EPSILON {
+                        continue;
+                    }
+                    let start = point(
+                        center.x + radius * angle.cos(),
+                        center.y + radius * angle.sin(),
+                    );
+                    let end_angle = angle + sweep;
+                    let end = point(
+                        center.x + radius * end_angle.cos(),
+                        center.y + radius * end_angle.sin(),
+                    );
+                    let mut path = PathBuilder::fill();
+                    path.move_to(center);
+                    path.line_to(start);
+                    path.arc_to(
+                        point(radius, radius),
+                        px(0.),
+                        sweep > std::f32::consts::PI,
+                        true,
+                        end,
+                    );
+                    path.close();
+                    paths.push((
+                        path.build().expect("pie slice geometry"),
+                        colors[i % colors.len()],
+                    ));
+                    angle = end_angle;
+                }
+            }
+            let mut base = PathBuilder::stroke(px(1.));
+            base.move_to(point(origin.x, origin.y + px(height - 0.5)));
+            base.line_to(point(origin.x + px(width), origin.y + px(height - 0.5)));
+            let baseline = base.build().expect("chart baseline");
+            (paths, baseline)
+        },
+        move |_, (paths, baseline_path), window, _| {
+            for (path, color) in paths {
+                window.paint_path(path, color);
+            }
+            window.paint_path(baseline_path, baseline_color);
+        },
+    )
+    .h(px(188.))
+    .w_full()
+}
+
 fn database_group_identity(key: &quire_core::core::database_view::GroupKey) -> String {
     use quire_core::core::database_view::GroupKey;
     match key {
@@ -1440,6 +1567,7 @@ pub struct Workspace {
     smoke_calendar_rendered: bool,
     smoke_timeline_rendered: bool,
     smoke_form_rendered: bool,
+    smoke_chart_rendered: bool,
     database_calendar_month: (i32, u32),
     database_calendar_property_open: Option<(u64, u64)>,
     database_timeline_end_property_open: Option<(u64, u64)>,
@@ -1802,6 +1930,7 @@ impl Workspace {
             smoke_calendar_rendered: false,
             smoke_timeline_rendered: false,
             smoke_form_rendered: false,
+            smoke_chart_rendered: false,
             database_calendar_month: current_utc_month(),
             database_calendar_property_open: None,
             database_timeline_end_property_open: None,
@@ -2588,10 +2717,36 @@ impl Workspace {
                     assert_eq!(this.session.repo.cell(record, done).expect("form checkbox should persist"), quire_core::core::database::CellValue::Flag(true));
                     assert_eq!(this.session.repo.cell(record, date).expect("form start date should persist"), quire_core::core::database::CellValue::Text("2026-10-16".into()));
                     assert_eq!(this.session.repo.cell(record, end_date).expect("form end date should persist"), quire_core::core::database::CellValue::Text("2026-10-20".into()));
-                    this.session.set_database_view_layout(block_id, view, quire_core::core::database::ViewLayout::Board)
-                        .expect("board layout should restore after form smoke");
+                    this.session.set_database_view_layout(block_id, view, quire_core::core::database::ViewLayout::Chart)
+                        .expect("chart layout should follow form smoke");
                     this.schedule_save(true, window, cx);
                     eprintln!("SMOKE: database form submission parsed typed fields and persisted one record");
+                });
+                cx.background_executor()
+                    .timer(Duration::from_millis(300))
+                    .await;
+                let _ = weak.update_in(cx, |this, window, cx| {
+                    assert!(this.smoke_chart_rendered, "chart should aggregate configured database groups");
+                    let block_id = this.session.blocks().iter().find(|block| block.kind == BlockKind::Database)
+                        .expect("chart smoke database block should remain available");
+                    let database = block_id.db_ref.expect("chart smoke database reference");
+                    let block_id = block_id.id;
+                    let view = this.session.databases.views_of(database).next().unwrap().id;
+                    for kind in quire_core::core::database_view::CHART_KINDS {
+                        let mut definition = this.session.databases.views.iter()
+                            .find(|candidate| candidate.id == view)
+                            .map(|candidate| quire_core::core::database_view::ViewDefinition::parse(&candidate.definition))
+                            .unwrap();
+                        definition.set_chart_kind(kind);
+                        this.session.set_database_view_definition(block_id, view, definition.to_text())
+                            .expect("chart type should be stored in the view definition");
+                        let stored = this.session.databases.views.iter().find(|candidate| candidate.id == view).unwrap();
+                        assert_eq!(quire_core::core::database_view::ViewDefinition::parse(&stored.definition).chart_kind(), kind);
+                    }
+                    this.session.set_database_view_layout(block_id, view, quire_core::core::database::ViewLayout::Board)
+                        .expect("board layout should restore after chart smoke");
+                    this.schedule_save(true, window, cx);
+                    eprintln!("SMOKE: chart layout rendered its grouped counts and restored the board");
                 });
                 cx.background_executor()
                     .timer(Duration::from_millis(150))
@@ -10486,6 +10641,86 @@ impl Workspace {
                                         }
                                         form.into_any_element()
                                     } else if active_layout
+                                        == quire_core::core::database::ViewLayout::Chart
+                                    {
+                                        let chart_view = views.iter().find(|view| view.id == active_view_id);
+                                        let chart_definition = chart_view.map(|view| quire_core::core::database_view::ViewDefinition::parse(&view.definition));
+                                        let chart_kind = chart_definition.as_ref().map_or(
+                                            quire_core::core::database_view::ChartKind::Bar,
+                                            |definition| definition.chart_kind(),
+                                        );
+                                        let chart_data = group_data.as_ref().map(|(_, groups, config)| {
+                                            groups.iter().map(|(key, count)| {
+                                                (database_group_label(key, config), *count)
+                                            }).collect::<Vec<_>>()
+                                        });
+                                        let counts = chart_data.as_ref().map(|data| data.iter().map(|(_, count)| *count).collect::<Vec<_>>()).unwrap_or_default();
+                                        let labels = chart_data.unwrap_or_default();
+                                        let colors = (0..labels.len().max(1)).map(|index| {
+                                            gpui::hsla((index as f32 * 0.618_034) % 1.0, 0.58, 0.56, 1.0)
+                                        }).collect::<Vec<_>>();
+                                        let mut chart = div()
+                                            .id(SharedString::from(format!("db-chart-{}", db_id.0)))
+                                            .w(database_width)
+                                            .h(px(260.))
+                                            .flex()
+                                            .flex_col()
+                                            .px(px(8.))
+                                            .pb(px(5.));
+                                        let kinds = quire_core::core::database_view::CHART_KINDS;
+                                        let buttons = div().w_full().h(px(30.)).flex().items_center().justify_end().gap(px(4.)).children(kinds.into_iter().map(|kind| {
+                                            let selected = kind == chart_kind;
+                                            let label = match kind {
+                                                quire_core::core::database_view::ChartKind::Bar => "柱状",
+                                                quire_core::core::database_view::ChartKind::Line => "折线",
+                                                quire_core::core::database_view::ChartKind::Pie => "饼图",
+                                            };
+                                            div().id(SharedString::from(format!("db-chart-kind-{}-{}", db_id.0, kind.index())))
+                                                .px(px(8.)).py(px(3.)).rounded(px(4.))
+                                                .text_size(px(10.))
+                                                .text_color(if selected { accent } else { muted })
+                                                .when(selected, |button| button.bg(accent.opacity(0.18)))
+                                                .when(!selected && !self.session.page.locked, |button| button.cursor_pointer().hover(|button| button.bg(db_hover)))
+                                                .on_click(cx.listener(move |this, _, window, cx| {
+                                                    let mut definition = this.session.databases.views.iter().find(|view| view.id == active_view_id)
+                                                        .map(|view| quire_core::core::database_view::ViewDefinition::parse(&view.definition))
+                                                        .unwrap_or_default();
+                                                    definition.set_chart_kind(kind);
+                                                    match this.session.set_database_view_definition(block_id, active_view_id, definition.to_text()) {
+                                                        Ok(_) => { this.schedule_save(true, window, cx); cx.notify(); }
+                                                        Err(error) => { this.status = error.to_string(); this.error = true; cx.notify(); }
+                                                    }
+                                                }))
+                                                .child(label)
+                                        }));
+                                        chart = chart.child(buttons);
+                                        if group_data.is_some() {
+                                            if labels.is_empty() {
+                                                chart = chart.child(div().flex_1().flex().items_center().justify_center().text_size(px(11.)).text_color(muted).child("暂无分组数据"));
+                                            } else {
+                                                chart = chart.child(database_chart_plot(
+                                                    counts,
+                                                    chart_kind,
+                                                    colors.clone(),
+                                                    Palette::color(&p.border),
+                                                ));
+                                                chart = chart.child(div().w_full().h(px(24.)).flex().items_center().justify_center().gap(px(8.)).children(labels.iter().enumerate().map(|(index, (label, count))| {
+                                                    div().flex().items_center().gap(px(4.)).text_size(px(9.)).text_color(muted)
+                                                        .child(div().size(px(7.)).rounded(px(2.)).bg(colors[index % colors.len()]))
+                                                        .child(format!("{count} · {label}"))
+                                                })));
+                                            }
+                                        } else if total == 0 {
+                                            chart = chart.child(div().flex_1().flex().items_center().justify_center().text_size(px(11.)).text_color(muted).child("还没有行 · 请先新建记录"));
+                                        } else {
+                                            chart = chart.child(div().flex_1().flex().items_center().justify_center().text_size(px(11.)).text_color(muted).child("选择一个要分组的列"));
+                                        }
+                                        if self.smoke_mode && !self.smoke_chart_rendered && group_data.is_some() {
+                                            self.smoke_chart_rendered = true;
+                                            eprintln!("SMOKE: grouped database chart aggregates rendered without realizing rows");
+                                        }
+                                        chart.into_any_element()
+                                    } else if active_layout
                                         == quire_core::core::database::ViewLayout::Calendar
                                     {
                                         let view_definition = selected_view
@@ -12309,9 +12544,9 @@ impl Workspace {
                                                                                 quire_core::core::database::ViewLayout::Form
                                                                             }
                                                                             quire_core::core::database::ViewLayout::Form => {
-                                                                                quire_core::core::database::ViewLayout::Table
+                                                                                quire_core::core::database::ViewLayout::Chart
                                                                             }
-                                                                            _ => {
+                                                                            quire_core::core::database::ViewLayout::Chart => {
                                                                                 quire_core::core::database::ViewLayout::Table
                                                                             }
                                                                         };

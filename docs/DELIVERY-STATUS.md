@@ -926,3 +926,8 @@ GPUI 已覆盖主编辑器、整理区、独立速记与标签建议、Windows �
 
 - 数据库布局循环加入 Form。表单按当前视图列配置生成标题及可见属性字段，展示属性名和输入提示；公式、汇总、创建/编辑时间等只读属性保留字段提示。支持提交、清空和 Enter 提交；属性类型解析在 Session 层执行，错误显示属性名并保留草稿。数据库模板默认值与显式输入合并，以一个 `exec_all` 历史批次新建记录，支持单步撤销/重做；模板中已删除或派生属性被过滤。
 - 新增隔离 Session 回归，覆盖数字解析失败时零写入、文本/数字/Select 提交、整条 undo/redo 和重开持久化。Release GUI smoke 切换 Form 后断言字段渲染，提交标题/checkbox/起止日期并从 SQLite 读回四种类型，记录数从 3 增至 4 后恢复看板。`cargo test -j 8`（68 项）、Release build、1000 块新隔离目录窗口 smoke 通过；smoke 全程使用唯一临时数据库，不访问默认用户库。Form 当前使用可编辑单行文本输入承载各类型，富选择器/日期控件、Chart 和看板拖放仍待后续实现。
+
+## 第一百四十四轮：数据库 Chart 聚合图表
+
+- 数据库布局选择加入 Chart。图表复用当前视图的 SQL `group_counts`（因此筛选、搜索与分组配置仍生效），不读取/实例化记录；绘制柱状、折线和饼图，展示类别数量图例。柱/线/饼切换使用 core `ChartKind`，将选择写入当前 view definition 的 `chart` 键，经 Session 命令持久化并进入撤销历史；没有分组时提示使用上方分组入口，空分组结果与无记录状态分别显示。
+- 隔离 Release GUI smoke 在 1000 段文档运行期间从 Form 切至 Chart，断言聚合分组数据已渲染，再逐一写入/读回 Bar、Line、Pie 类型并恢复 Board；同期速记、托盘、MCP 16 工具、窗口最大化/还原与虚拟滚动仍通过。验证：`cargo check -j 8`、全量 `cargo test -j 8`（68 项）、Release build 与新建临时目录 SQLite 的 `--smoke-test --smoke-blocks 1000` 通过。看板卡片拖放仍未完成；图表当前使用 GPUI canvas 几何绘制，未做真人窗口截图的像素级视觉复核。
