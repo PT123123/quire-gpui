@@ -156,6 +156,12 @@ enum PaletteCommand {
     ExportMarkdown,
     ImportMarkdown,
     CopyMarkdown,
+    SaveCurrentAsTemplate,
+    ImportTemplate,
+    InsertTemplate(quire_core::core::types::PageId),
+    NewPageFromTemplate(quire_core::core::types::PageId),
+    DeleteTemplate(quire_core::core::types::PageId),
+    ExportTemplateMarkdown(quire_core::core::types::PageId),
     NavigateBack,
     NavigateForward,
     OpenHtml,
@@ -2333,6 +2339,36 @@ impl Workspace {
                     assert!(this.theme_picker_open);
                     this.close_settings(window, cx);
                     eprintln!("SMOKE: Ctrl+K command palette filtering and settings action passed");
+                    this.open_command_palette(window, cx);
+                    this.search_input.update(cx, |input, cx| {
+                        input.replace_text_in_range(
+                            None,
+                            "插入模板：Meeting notes",
+                            window,
+                            cx,
+                        );
+                    });
+                });
+                cx.background_executor()
+                    .timer(Duration::from_millis(150))
+                    .await;
+                let _ = weak.update_in(cx, |this, window, cx| {
+                    assert_eq!(this.command_palette_query, "插入模板：Meeting notes");
+                    assert_eq!(this.palette_items().len(), 1);
+                    let original_block_count = this.session.blocks().len();
+                    this.invoke_palette_command(window, cx);
+                    assert!(this.session.blocks().len() > original_block_count);
+                    this.sync_inputs(window, cx);
+                    this.session.undo();
+                    this.sync_inputs(window, cx);
+                    assert_eq!(this.session.blocks().len(), original_block_count);
+                    this.session.redo();
+                    this.sync_inputs(window, cx);
+                    assert!(this.session.blocks().len() > original_block_count);
+                    this.session.undo();
+                    this.sync_inputs(window, cx);
+                    assert_eq!(this.session.blocks().len(), original_block_count);
+                    eprintln!("SMOKE: template palette insertion and one-step undo/redo passed");
                     let original_page = this.session.page.id;
                     this.add_page(window, cx);
                     let created_page = this.session.page.id;
@@ -6621,6 +6657,20 @@ impl Workspace {
                 action: PaletteCommand::CopyMarkdown,
             },
             PaletteItem {
+                name: "将当前页面保存为模板".into(),
+                hint: "",
+                section: "模板",
+                icon: "▧",
+                action: PaletteCommand::SaveCurrentAsTemplate,
+            },
+            PaletteItem {
+                name: "从 Markdown 导入模板…".into(),
+                hint: "",
+                section: "模板",
+                icon: "⇧",
+                action: PaletteCommand::ImportTemplate,
+            },
+            PaletteItem {
                 name: "后退".into(),
                 hint: "Alt+←",
                 section: "导航",
@@ -6656,6 +6706,36 @@ impl Workspace {
             icon: "▤",
             action: PaletteCommand::OpenPage(page.id),
         }));
+        for template in self.session.templates() {
+            items.push(PaletteItem {
+                name: format!("插入模板：{}", template.title),
+                hint: "",
+                section: "模板",
+                icon: "⇩",
+                action: PaletteCommand::InsertTemplate(template.id),
+            });
+            items.push(PaletteItem {
+                name: format!("从模板新建页面：{}", template.title),
+                hint: "",
+                section: "模板",
+                icon: "+",
+                action: PaletteCommand::NewPageFromTemplate(template.id),
+            });
+            items.push(PaletteItem {
+                name: format!("删除模板：{}", template.title),
+                hint: "",
+                section: "模板",
+                icon: "×",
+                action: PaletteCommand::DeleteTemplate(template.id),
+            });
+            items.push(PaletteItem {
+                name: format!("导出模板为 Markdown：{}", template.title),
+                hint: "",
+                section: "模板",
+                icon: "⇧",
+                action: PaletteCommand::ExportTemplateMarkdown(template.id),
+            });
+        }
         items
             .into_iter()
             .filter(|item| palette_matches(&self.command_palette_query, &item.name, item.section))
@@ -6758,6 +6838,137 @@ impl Workspace {
                 cx.write_to_clipboard(ClipboardItem::new_string(markdown));
                 self.status = "页面 Markdown 已复制".into();
                 self.error = false;
+                cx.notify();
+            }
+            PaletteCommand::SaveCurrentAsTemplate => {
+                let title = format!("{} 模板", self.session.page.title);
+                if self.session.save_page_as_template(title).is_some() {
+                    self.status = "当前页面已保存为模板".into();
+                    self.error = false;
+                    self.schedule_save(false, window, cx);
+                } else {
+                    self.status = "当前页面无法保存为模板（可能已锁定）".into();
+                    self.error = true;
+                    cx.notify();
+                }
+            }
+            PaletteCommand::ImportTemplate => {
+                if self.closing {
+                    return;
+                }
+                let Some(path) = rfd::FileDialog::new()
+                    .set_title("从 Markdown 导入模板")
+                    .add_filter("Markdown", &["md", "markdown"])
+                    .pick_file()
+                else {
+                    return;
+                };
+                let source = match std::fs::read_to_string(&path) {
+                    Ok(source) => source,
+                    Err(error) => {
+                        self.status = format!("读取 Markdown 失败：{error}");
+                        self.error = true;
+                        cx.notify();
+                        return;
+                    }
+                };
+                let title = path
+                    .file_stem()
+                    .map(|stem| stem.to_string_lossy().trim().to_owned())
+                    .filter(|stem| !stem.is_empty())
+                    .unwrap_or_else(|| "已导入模板".into());
+                if self
+                    .session
+                    .import_markdown_as_template(title.clone(), &source)
+                    .is_some()
+                {
+                    self.status = format!("已导入模板：{title}");
+                    self.error = false;
+                    self.schedule_save(false, window, cx);
+                }
+            }
+            PaletteCommand::InsertTemplate(template_id) => {
+                let anchor = self
+                    .active
+                    .or_else(|| self.session.blocks().first().map(|block| block.id));
+                if let Some(first) = self.session.insert_template(template_id, anchor) {
+                    self.sync_inputs(window, cx);
+                    self.active = Some(first);
+                    self.restore_focus(window, cx);
+                    self.status = "模板已插入，可撤销".into();
+                    self.error = false;
+                    self.schedule_save(false, window, cx);
+                } else {
+                    self.status = "无法在当前位置插入该模板".into();
+                    self.error = true;
+                    cx.notify();
+                }
+            }
+            PaletteCommand::NewPageFromTemplate(template_id) => {
+                let previous = self.session.page.id;
+                if let Some(id) = self.session.create_page_from_template(template_id, None) {
+                    Self::push_page_history(&mut self.page_history_back, previous);
+                    self.page_history_forward.clear();
+                    self.session.visit_page(id);
+                    self.find_index = None;
+                    self.refresh_find_matches();
+                    self.active = None;
+                    let title = self.session.page.title.clone();
+                    self.title_input.update(cx, |input, cx| {
+                        let len = title.len();
+                        input.reset(title, Vec::new(), len, cx);
+                    });
+                    self.sync_inputs(window, cx);
+                    self.focus_first(window, cx);
+                    self.schedule_save(false, window, cx);
+                }
+            }
+            PaletteCommand::DeleteTemplate(template_id) => {
+                if self.session.delete_template(template_id) {
+                    self.status = "模板已删除".into();
+                    self.error = false;
+                    self.schedule_save(false, window, cx);
+                }
+            }
+            PaletteCommand::ExportTemplateMarkdown(template_id) => {
+                if self.closing {
+                    return;
+                }
+                let Some(template) = self
+                    .session
+                    .pages
+                    .iter()
+                    .find(|page| page.id == template_id && page.template)
+                else {
+                    return;
+                };
+                let title = template
+                    .title
+                    .chars()
+                    .map(|ch| if r#"<>:\"/|?*"#.contains(ch) { '_' } else { ch })
+                    .collect::<String>();
+                let file_name = format!("{}.md", title.trim());
+                let Some(path) = rfd::FileDialog::new()
+                    .set_title("导出模板为 Markdown")
+                    .set_file_name(file_name)
+                    .add_filter("Markdown", &["md"])
+                    .save_file()
+                else {
+                    return;
+                };
+                let markdown = quire_core::services::export_service::export_page(
+                    self.session.document.page_blocks(template_id),
+                );
+                match std::fs::write(&path, markdown) {
+                    Ok(()) => {
+                        self.status = format!("已导出模板：{}", path.display());
+                        self.error = false;
+                    }
+                    Err(error) => {
+                        self.status = format!("导出模板失败：{error}");
+                        self.error = true;
+                    }
+                }
                 cx.notify();
             }
             PaletteCommand::NavigateBack => self.navigate_page_history(false, window, cx),

@@ -648,12 +648,9 @@ impl Session {
             .find(|p| !p.template && p.parent.is_none())
             .cloned()
             .or_else(|| pages.iter().find(|p| !p.template).cloned());
-        let create_initial_page = pages.is_empty();
-        if selected.is_none() && !pages.is_empty() {
-            bail!("库中只有模板，本轮原型不会自动修改该库");
-        }
+        let create_initial_page = selected.is_none();
         let page = selected.unwrap_or(Page {
-            id: PageId(1),
+            id: PageId(pages.iter().map(|page| page.id.0).max().unwrap_or(0) + 1),
             title: "未命名".into(),
             parent: None,
             order: OrderKey(1 << 32),
@@ -667,7 +664,7 @@ impl Session {
             locked: false,
             template: false,
         });
-        if pages.is_empty() {
+        if create_initial_page {
             // The synthetic first page is persisted below; it also belongs in
             // the live workspace tree so later imports and page creation do
             // not reuse its id or leave it out of navigation.
@@ -719,9 +716,69 @@ impl Session {
                 session.persistence.record(entry.apply);
             }
         }
+        session.seed_builtin_templates();
         // Startup runs before the event loop, not in render or a keystroke handler.
         session.persistence.force_flush()?;
         Ok(session)
+    }
+
+    fn seed_builtin_templates(&mut self) {
+        const SEEDED_KEY: &str = "gpui.templates-seeded-v1";
+        if self.setting(SEEDED_KEY) == Some("true") {
+            return;
+        }
+        let mut next_page = self
+            .pages
+            .iter()
+            .map(|page| page.id.0)
+            .max()
+            .unwrap_or(0)
+            .saturating_add(1);
+        let mut next_order = self
+            .pages
+            .iter()
+            .filter(|page| page.template)
+            .map(|page| page.order)
+            .max();
+        let mut changes = Vec::new();
+        for preset in quire_core::core::template::PRESETS {
+            let order = OrderKey::between(next_order, None).unwrap_or(OrderKey::FIRST);
+            next_order = Some(order);
+            let page = Page {
+                id: PageId(next_page),
+                title: preset.name.into(),
+                parent: None,
+                order,
+                favorite: false,
+                expanded: false,
+                font: PageFont::Default,
+                full_width: false,
+                small_text: false,
+                icon: String::new(),
+                cover: None,
+                locked: false,
+                template: true,
+            };
+            next_page = next_page.saturating_add(1);
+            let imported = {
+                let mut allocate = || self.document.alloc_block_id();
+                quire_core::services::import_service::import_markdown(
+                    preset.markdown,
+                    &page,
+                    &mut allocate,
+                )
+            };
+            self.document.apply(&imported);
+            changes.extend(imported);
+            self.pages.push(page);
+        }
+        self.pages.sort_by_key(|page| (page.parent, page.order));
+        self.settings.insert(SEEDED_KEY.into(), "true".into());
+        changes.push(Change::SettingSet {
+            key: SEEDED_KEY.into(),
+            value: "true".into(),
+        });
+        self.persistence.record(changes);
     }
     pub fn blocks(&self) -> &[Block] {
         self.document.page_blocks(self.page.id)
@@ -2367,6 +2424,257 @@ impl Session {
         self.ensure_page_has_block();
         Some(new_id)
     }
+
+    pub fn templates(&self) -> Vec<Page> {
+        let mut templates = self
+            .pages
+            .iter()
+            .filter(|page| page.template)
+            .cloned()
+            .collect::<Vec<_>>();
+        templates.sort_by_key(|page| page.order);
+        templates
+    }
+
+    pub fn save_page_as_template(&mut self, title: String) -> Option<PageId> {
+        if self.page.locked || title.trim().is_empty() {
+            return None;
+        }
+        self.end_typing();
+        let id = PageId(
+            self.pages
+                .iter()
+                .map(|page| page.id.0)
+                .max()?
+                .checked_add(1)?,
+        );
+        let order = OrderKey::between(
+            self.pages
+                .iter()
+                .filter(|page| page.template)
+                .map(|page| page.order)
+                .max(),
+            None,
+        )?;
+        let page = Page {
+            id,
+            title: title.trim().to_owned(),
+            parent: None,
+            order,
+            favorite: false,
+            expanded: false,
+            font: PageFont::Default,
+            full_width: false,
+            small_text: false,
+            icon: String::new(),
+            cover: None,
+            locked: false,
+            template: true,
+        };
+        let source = self.document.page_blocks(self.page.id).to_vec();
+        let mut id_map = BTreeMap::new();
+        let mut copies = Vec::with_capacity(source.len());
+        for block in source {
+            let source_id = block.id;
+            let mut copy = block;
+            copy.id = self.document.alloc_block_id();
+            copy.page = id;
+            id_map.insert(source_id, copy.id);
+            copies.push(copy);
+        }
+        for block in &mut copies {
+            if let Some(parent) = block.parent {
+                block.parent = id_map.get(&parent).copied();
+            }
+        }
+        let mut changes = vec![Change::PageCreated(page.clone())];
+        changes.extend(copies.iter().cloned().map(Change::BlockInserted));
+        self.document.apply(&changes);
+        self.persistence.record(changes);
+        self.pages.push(page);
+        self.pages.sort_by_key(|page| (page.parent, page.order));
+        Some(id)
+    }
+
+    pub fn import_markdown_as_template(&mut self, title: String, source: &str) -> Option<PageId> {
+        let title = title.trim();
+        if title.is_empty() {
+            return None;
+        }
+        self.end_typing();
+        let id = PageId(
+            self.pages
+                .iter()
+                .map(|page| page.id.0)
+                .max()?
+                .checked_add(1)?,
+        );
+        let order = OrderKey::between(
+            self.pages
+                .iter()
+                .filter(|page| page.template)
+                .map(|page| page.order)
+                .max(),
+            None,
+        )?;
+        let page = Page {
+            id,
+            title: title.to_owned(),
+            parent: None,
+            order,
+            favorite: false,
+            expanded: false,
+            font: PageFont::Default,
+            full_width: false,
+            small_text: false,
+            icon: String::new(),
+            cover: None,
+            locked: false,
+            template: true,
+        };
+        let changes = {
+            let mut allocate = || self.document.alloc_block_id();
+            quire_core::services::import_service::import_markdown(source, &page, &mut allocate)
+        };
+        self.document.apply(&changes);
+        self.persistence.record(changes);
+        self.pages.push(page);
+        self.pages.sort_by_key(|page| (page.parent, page.order));
+        Some(id)
+    }
+
+    pub fn create_page_from_template(
+        &mut self,
+        template_id: PageId,
+        title: Option<String>,
+    ) -> Option<PageId> {
+        self.end_typing();
+        let source_page = self
+            .pages
+            .iter()
+            .find(|page| page.id == template_id && page.template)?
+            .clone();
+        let id = PageId(
+            self.pages
+                .iter()
+                .map(|page| page.id.0)
+                .max()?
+                .checked_add(1)?,
+        );
+        let order = OrderKey::between(
+            self.pages
+                .iter()
+                .filter(|page| !page.template && page.parent.is_none())
+                .map(|page| page.order)
+                .max(),
+            None,
+        )?;
+        let mut page = source_page;
+        page.id = id;
+        page.title = title
+            .filter(|title| !title.trim().is_empty())
+            .unwrap_or(page.title);
+        page.parent = None;
+        page.order = order;
+        page.favorite = false;
+        page.expanded = true;
+        page.locked = false;
+        page.template = false;
+        let source = self.document.page_blocks(template_id).to_vec();
+        let mut id_map = BTreeMap::new();
+        let mut copies = Vec::with_capacity(source.len());
+        for block in source {
+            let source_id = block.id;
+            let mut copy = block;
+            copy.id = self.document.alloc_block_id();
+            copy.page = id;
+            id_map.insert(source_id, copy.id);
+            copies.push(copy);
+        }
+        for block in &mut copies {
+            if let Some(parent) = block.parent {
+                block.parent = id_map.get(&parent).copied();
+            }
+        }
+        let mut changes = vec![Change::PageCreated(page.clone())];
+        changes.extend(copies.iter().cloned().map(Change::BlockInserted));
+        self.document.apply(&changes);
+        self.persistence.record(changes);
+        self.pages.push(page.clone());
+        self.pages.sort_by_key(|page| (page.parent, page.order));
+        self.page = page;
+        self.ensure_page_has_block();
+        Some(id)
+    }
+
+    pub fn insert_template(
+        &mut self,
+        template_id: PageId,
+        anchor: Option<BlockId>,
+    ) -> Option<BlockId> {
+        if self.page.locked {
+            return None;
+        }
+        let template = self
+            .pages
+            .iter()
+            .find(|page| page.id == template_id && page.template)?;
+        let blocks = self.document.page_blocks(template.id).to_vec();
+        if blocks.is_empty() {
+            return None;
+        }
+        let anchor = anchor.filter(|id| {
+            self.document
+                .block(*id)
+                .is_some_and(|block| block.page == self.page.id)
+        });
+        let replace_blank = anchor.is_some_and(|id| {
+            self.document.block(id).is_some_and(|block| {
+                block.parent.is_none()
+                    && block.kind == BlockKind::Paragraph
+                    && block.text.is_empty()
+                    && self
+                        .document
+                        .page_blocks(self.page.id)
+                        .iter()
+                        .all(|candidate| candidate.parent != Some(id))
+            })
+        });
+        self.end_typing();
+        let mut commands = vec![Command::InsertForest { anchor, blocks }];
+        if replace_blank {
+            commands.push(Command::DeleteBlock { id: anchor? });
+        }
+        let changes = command::exec_all(
+            &mut self.document,
+            &mut self.history,
+            self.page.id,
+            commands,
+        )?;
+        let first = changes.iter().find_map(|change| match change {
+            Change::BlockInserted(block) if block.parent.is_none() => Some(block.id),
+            _ => None,
+        });
+        self.persistence.record(changes);
+        first
+    }
+
+    pub fn delete_template(&mut self, template_id: PageId) -> bool {
+        if !self
+            .pages
+            .iter()
+            .any(|page| page.id == template_id && page.template)
+        {
+            return false;
+        }
+        self.end_typing();
+        self.document.drop_page(template_id);
+        self.pages.retain(|page| page.id != template_id);
+        self.persistence
+            .record(vec![Change::PageDeleted { id: template_id }]);
+        true
+    }
+
     pub fn duplicate_block(&mut self, id: BlockId) -> Option<BlockId> {
         if self.page.locked {
             return None;
@@ -2686,9 +2994,38 @@ impl Session {
         let mut snapshot = SyncSnapshot::default();
         snapshot.device_id = me.id;
         snapshot.device = me.name;
-        snapshot.pages = self.pages.iter().map(SPage::from).collect();
-        snapshot.blocks = self.document.all_blocks().map(SBlock::from).collect();
-        snapshot.attachments = self.attachments.values().map(SAttachment::from).collect();
+        let shared_pages = self
+            .pages
+            .iter()
+            .filter(|page| !page.template)
+            .collect::<Vec<_>>();
+        let shared_page_ids = shared_pages
+            .iter()
+            .map(|page| page.id)
+            .collect::<HashSet<_>>();
+        snapshot.pages = shared_pages.into_iter().map(SPage::from).collect();
+        let shared_blocks = self
+            .document
+            .all_blocks()
+            .filter(|block| shared_page_ids.contains(&block.page))
+            .collect::<Vec<_>>();
+        let shared_attachments = shared_blocks
+            .iter()
+            .filter_map(|block| block.attachment)
+            .chain(
+                self.pages
+                    .iter()
+                    .filter(|page| !page.template)
+                    .filter_map(|page| page.cover),
+            )
+            .collect::<HashSet<_>>();
+        snapshot.blocks = shared_blocks.into_iter().map(SBlock::from).collect();
+        snapshot.attachments = self
+            .attachments
+            .values()
+            .filter(|attachment| shared_attachments.contains(&attachment.id))
+            .map(SAttachment::from)
+            .collect();
         snapshot.databases = model::catalog_schema(&self.databases);
         for database in &mut snapshot.databases {
             let records = self.repo.records_of(DatabaseId(database.id))?;
@@ -2756,11 +3093,15 @@ impl Session {
         }
         allocator!(
             next_page,
-            local.pages.iter().map(|row| row.id).max().unwrap_or(0)
+            self.pages.iter().map(|row| row.id.0).max().unwrap_or(0)
         );
         allocator!(
             next_block,
-            local.blocks.iter().map(|row| row.id).max().unwrap_or(0)
+            self.document
+                .all_blocks()
+                .map(|row| row.id.0)
+                .max()
+                .unwrap_or(0)
         );
         allocator!(
             next_attachment,
@@ -2893,6 +3234,7 @@ impl Session {
         let local_pages: std::collections::HashMap<u64, _> = self
             .pages
             .iter()
+            .filter(|page| !page.template)
             .map(|page| (page.id.0, page.clone()))
             .collect();
         let merged_page_ids: std::collections::HashSet<u64> =
@@ -2984,6 +3326,11 @@ impl Session {
         let local_blocks: std::collections::HashMap<u64, SBlock> = self
             .document
             .all_blocks()
+            .filter(|block| {
+                self.pages
+                    .iter()
+                    .any(|page| page.id == block.page && !page.template)
+            })
             .map(|block| (block.id.0, SBlock::from(block)))
             .collect();
         let merged_block_ids: std::collections::HashSet<u64> =
@@ -3030,9 +3377,16 @@ impl Session {
         for id in &deleted_pages {
             self.document.drop_page(PageId(*id));
         }
+        let template_pages = self
+            .pages
+            .iter()
+            .filter(|page| page.template)
+            .cloned()
+            .collect::<Vec<_>>();
         self.pages = ordered_pages
             .into_iter()
             .map(|page| page.to_core())
+            .chain(template_pages)
             .collect();
         self.pages.sort_by_key(|page| (page.parent, page.order));
         self.apply_database_changes(&changes);
@@ -4865,7 +5219,14 @@ mod tests {
         let record = session.add_database_record(block).unwrap();
         let snapshot = session.sync_export()?;
         assert!(!snapshot.device_id.is_empty());
-        assert_eq!(snapshot.pages.len(), session.pages.len());
+        assert_eq!(
+            snapshot.pages.len(),
+            session.pages.iter().filter(|page| !page.template).count()
+        );
+        assert_eq!(
+            session.templates().len(),
+            quire_core::core::template::PRESETS.len()
+        );
         assert!(snapshot.blocks.iter().any(|row| row.id == block.0));
         let database = snapshot
             .databases
@@ -4879,10 +5240,111 @@ mod tests {
     }
 
     #[test]
+    fn built_in_templates_seed_once_and_insert_as_one_undoable_copy() -> Result<()> {
+        let scratch = quire_core::testing::ScratchDir::new("gpui-templates");
+        let path = scratch.path().join("templates.db");
+        let deleted_template;
+        {
+            let mut session = Session::open(&path)?;
+            let templates = session.templates();
+            assert_eq!(templates.len(), quire_core::core::template::PRESETS.len());
+            let meeting = templates
+                .iter()
+                .find(|page| page.title == "Meeting notes")
+                .unwrap();
+            let source_blocks = session.document.page_blocks(meeting.id).to_vec();
+            let empty = session.blocks()[0].id;
+            let inserted = session.insert_template(meeting.id, Some(empty)).unwrap();
+            assert_eq!(session.blocks().len(), source_blocks.len());
+            assert_eq!(session.blocks()[0].id, inserted);
+            assert_eq!(session.blocks()[0].text, source_blocks[0].text);
+            assert!(
+                session
+                    .blocks()
+                    .iter()
+                    .all(|block| block.id != source_blocks[0].id)
+            );
+            session.undo();
+            assert_eq!(session.blocks().len(), 1);
+            assert_eq!(session.blocks()[0].id, empty);
+            assert_eq!(session.blocks()[0].text, "");
+            session.redo();
+            assert_eq!(session.blocks().len(), source_blocks.len());
+
+            let custom_id = session
+                .save_page_as_template("Custom draft".into())
+                .unwrap();
+            let custom = session
+                .pages
+                .iter()
+                .find(|page| page.id == custom_id)
+                .unwrap();
+            assert!(custom.template);
+            assert_eq!(custom.title, "Custom draft");
+            assert_eq!(
+                session.document.page_blocks(custom_id)[0].text,
+                session.blocks()[0].text
+            );
+            assert_ne!(session.document.page_blocks(custom_id)[0].id, inserted);
+
+            let imported_id = session
+                .import_markdown_as_template("Imported markdown".into(), "## Imported\n\n- ")
+                .unwrap();
+            assert!(session.pages.iter().any(|page| {
+                page.id == imported_id && page.template && page.title == "Imported markdown"
+            }));
+            assert!(
+                session
+                    .document
+                    .page_blocks(imported_id)
+                    .iter()
+                    .any(|block| block.kind == BlockKind::Bullet && block.text.is_empty())
+            );
+
+            let new_page = session
+                .create_page_from_template(custom_id, Some("From custom".into()))
+                .unwrap();
+            assert!(!session.page.template);
+            assert_eq!(session.page.id, new_page);
+            assert_eq!(session.page.title, "From custom");
+            assert_eq!(
+                session.blocks()[0].text,
+                session.document.page_blocks(custom_id)[0].text
+            );
+            deleted_template = templates[0].id;
+            session.delete_template(deleted_template);
+            session.persistence.force_flush()?;
+        }
+        let reopened = Session::open(&path)?;
+        assert_eq!(
+            reopened.templates().len(),
+            quire_core::core::template::PRESETS.len() + 1
+        );
+        assert!(
+            reopened
+                .templates()
+                .iter()
+                .all(|page| page.id != deleted_template)
+        );
+        assert!(
+            reopened
+                .pages
+                .iter()
+                .any(|page| page.title == "From custom")
+        );
+        Ok(())
+    }
+
+    #[test]
     fn sync_merge_applies_remote_organizer_changes_and_persists_shadow() -> Result<()> {
         let scratch = quire_core::testing::ScratchDir::new("gpui-sync-merge");
         let path = scratch.path().join("sync.db");
         let mut session = Session::open(&path)?;
+        let template_ids = session
+            .templates()
+            .iter()
+            .map(|page| page.id)
+            .collect::<HashSet<_>>();
         let note_id = session.create_note();
         session.update_note_editor(note_id, "Local title".into(), "body".into(), vec![]);
         let mut remote = session.sync_export()?;
@@ -4918,6 +5380,12 @@ mod tests {
             last_sync: String::new(),
         };
         let answer = session.sync_apply_remote(&remote, &[], &peer)?;
+        assert!(template_ids.iter().all(|id| {
+            session
+                .pages
+                .iter()
+                .any(|page| page.id == *id && page.template)
+        }));
         assert_eq!(
             session.organizer.note(note_id).unwrap().title,
             "Remote title"
@@ -4944,6 +5412,12 @@ mod tests {
             "Remote title"
         );
         assert!(reopened.pages.iter().any(|page| page.id.0 == 999));
+        assert!(template_ids.iter().all(|id| {
+            reopened
+                .pages
+                .iter()
+                .any(|page| page.id == *id && page.template)
+        }));
         Ok(())
     }
 
