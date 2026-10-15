@@ -827,3 +827,9 @@ GPUI 已覆盖主编辑器、整理区、独立速记与标签建议、Windows �
 - 标签栏由平铺的完整路径改为参考版的逐层树：显示当前层直接子标签，按各条目在子树中是否出现计数（同一条目多个同祖先标签只计一次），数量降序、路径升序；有子层时显示箭头进入，标签名用于路径筛选，非根层提供“↑ 上级”，已有排除和清除筛选继续按路径边界工作。
 - 新增纯函数测试，覆盖三层路径、同项目重复祖先去重、兄弟节点、计数排序与叶节点。更新回调 sidecar 和计划；尚未对真实窗口做标签点击/键盘与主题逐项截图验收。
 - 验证：全量 62 项自动测试、`cargo check -j 8`、`cargo fmt --all -- --check`、`git diff --check`、Release 构建、回调矩阵重生成通过；Release 窗口 `--smoke-test --smoke-blocks 1000` 通过，包括 MCP、回收站、命令面板、历史导航、最大化还原、长文档查找/滚动、速记与托盘隐藏恢复。只用新建临时测试库，不访问真实用户库。
+
+## 第一百二十六轮：任务清单改名与配色
+
+- 清单行加入直接配色、改名与删除入口；改名使用 inline TextInput，Enter/失焦提交、Escape 取消、拒绝空名称；颜色面板列出 core 全部十种 `ColorKind`。更新由 `Command::UpdateTaskList` 写入 organizer 历史，改名和选色可独立撤销/重做。
+- ScratchDir 回归覆盖名称 trim/空值拒绝、改名与颜色 undo/redo 及 SQLite 重开；Release smoke 经 Workspace 编辑实体提交改名、配色并走历史撤销/重做。旧版统一锚定“⋯”菜单仍是记录中的界面差异，功能入口均可用。
+- 验证：全量 62 项自动测试、`cargo check -j 8`、`cargo fmt --all -- --check`、`git diff --check`、Release 构建及隔离 Release `--smoke-test --smoke-blocks 1000` 通过；同次 smoke 覆盖 MCP、回收站、命令面板、页面历史、窗口最大化/还原、远端查找/滚动、速记和托盘。仅使用新建临时数据库。

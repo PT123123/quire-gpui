@@ -32,6 +32,8 @@ org-task-notes-set,已实现,未验证,任务备注支持多行纯文本编辑,�
 org-task-done-toggled,已实现,未验证,任务列表复选入口和详情按钮可切换完成状态,完成时写 completed_at，重新打开时清除；通过 core UpdateTask 同步写 done 与时间戳
 org-task-deleted,已实现,未验证,任务移入回收站并从当前列表隐藏,用 deleted_at 软删除并复用 organizer 撤销栈；无永久删除
 org-list-created,已实现,未验证,任务页可新建具名清单并立即切换到该清单,TaskList 通过 core CreateTaskList 写入 organizer history 和 SQLite
+org-list-menu-requested,未实现,未验证,GPUI 暂以行内颜色按钮、改名按钮和删除按钮提供同等任务；尚未复刻旧版统一“⋯”菜单与锚定弹层,改名和配色操作已可用，但菜单分组/定位/关闭行为仍不同
+org-list-name-set,已实现,已验证,任务清单行的改名入口打开行内编辑；Enter 或失焦提交，Escape 取消，空名称拒绝写入,复用 core UpdateTaskList 命令将名称作为单条 organizer 历史项；ScratchDir 覆盖 trim、空名称拒绝、撤销/重做与重开读回，Release smoke 覆盖 Workspace 的编辑/提交路径
 org-list-picked,已实现,未验证,任务页可切换收集箱和已创建清单并显示对应任务,列表过滤依据 Task.list；选择行为只改会话 UI 状态
 org-task-list-set,已实现,未验证,选中任务详情可将任务移动到收集箱或其他清单,通过 core UpdateTask 修改 list，撤销时恢复旧清单，任务顺序重新追加
 org-task-priority-set,已实现,未验证,任务详情可循环设置无/低/中/高优先级,优先级更新走 core UpdateTask；和标题、备注、截止日期草稿的提交边界分开

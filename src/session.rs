@@ -3495,6 +3495,30 @@ impl Session {
         }
         id
     }
+    pub fn update_task_list(&mut self, id: ListId, name: String, color: ColorKind) -> bool {
+        let Some(before) = self.organizer.list(id).cloned() else {
+            return false;
+        };
+        let name = name.trim();
+        if name.is_empty() {
+            return false;
+        }
+        let mut after = before.clone();
+        after.name = name.to_owned();
+        after.color = color;
+        if before == after {
+            return false;
+        }
+        let Some(entry) = command::plan(
+            &mut self.document,
+            ORGANIZER_STACK,
+            Command::UpdateTaskList { id, before, after },
+        ) else {
+            return false;
+        };
+        self.apply_organizer_entry(entry);
+        true
+    }
     pub fn set_task_list(&mut self, id: TaskId, list: ListId) -> bool {
         self.update_task(id, |task| task.list = list)
     }
@@ -6076,6 +6100,21 @@ mod tests {
             assert!(session.undo_organizer());
             assert!(!session.organizer.task(task_id).unwrap().is_trashed());
             list_id = session.create_task_list("工作".into());
+            let original_color = session.organizer.list(list_id).unwrap().color;
+            assert!(session.update_task_list(list_id, "  项目发布  ".into(), ColorKind::Blue));
+            assert_eq!(session.organizer.list(list_id).unwrap().name, "项目发布");
+            assert_eq!(
+                session.organizer.list(list_id).unwrap().color,
+                ColorKind::Blue
+            );
+            assert!(session.undo_organizer());
+            assert_eq!(session.organizer.list(list_id).unwrap().name, "工作");
+            assert_eq!(
+                session.organizer.list(list_id).unwrap().color,
+                original_color
+            );
+            assert!(session.redo_organizer());
+            assert!(!session.update_task_list(list_id, "   ".into(), ColorKind::Red));
             assert!(session.set_task_list(task_id, list_id));
             assert_eq!(session.organizer.task(task_id).unwrap().list, list_id);
             assert!(session.undo_organizer());
@@ -6085,7 +6124,11 @@ mod tests {
             assert!(session.organizer.list(list_id).is_none());
             assert_eq!(session.organizer.task(task_id).unwrap().list, ListId::INBOX);
             assert!(session.undo_organizer());
-            assert_eq!(session.organizer.list(list_id).unwrap().name, "工作");
+            assert_eq!(session.organizer.list(list_id).unwrap().name, "项目发布");
+            assert_eq!(
+                session.organizer.list(list_id).unwrap().color,
+                ColorKind::Blue
+            );
             assert_eq!(session.organizer.task(task_id).unwrap().list, list_id);
             session.persistence.force_flush()?;
         }
@@ -6103,7 +6146,11 @@ mod tests {
         assert!(!task.done);
         assert!(!task.is_trashed());
         assert_eq!(task.list, list_id);
-        assert_eq!(reopened.organizer.list(list_id).unwrap().name, "工作");
+        assert_eq!(reopened.organizer.list(list_id).unwrap().name, "项目发布");
+        assert_eq!(
+            reopened.organizer.list(list_id).unwrap().color,
+            ColorKind::Blue
+        );
         Ok(())
     }
 

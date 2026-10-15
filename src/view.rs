@@ -1274,6 +1274,7 @@ pub struct Workspace {
     note_title_input: Entity<TextInput>,
     note_body_input: Entity<TextInput>,
     task_title_input: Entity<TextInput>,
+    task_list_name_input: Entity<TextInput>,
     task_due_input: Entity<TextInput>,
     organizer_tags_input: Entity<TextInput>,
     subtask_title_input: Entity<TextInput>,
@@ -1291,6 +1292,7 @@ pub struct Workspace {
     note_title_subscription: Option<Subscription>,
     note_body_subscription: Option<Subscription>,
     task_title_subscription: Option<Subscription>,
+    task_list_name_subscription: Option<Subscription>,
     task_due_subscription: Option<Subscription>,
     organizer_tags_subscription: Option<Subscription>,
     subtask_title_subscription: Option<Subscription>,
@@ -1371,6 +1373,9 @@ pub struct Workspace {
     organizer_tag: Option<String>,
     organizer_excluded_tags: BTreeSet<String>,
     selected_task_list: quire_core::core::organizer::ListId,
+    task_list_editing: Option<quire_core::core::organizer::ListId>,
+    task_list_color_open: Option<quire_core::core::organizer::ListId>,
+    task_list_name_draft: String,
     selected_task_smart_view: Option<i32>,
     show_task_done: bool,
     task_sort: i32,
@@ -1467,6 +1472,9 @@ impl Workspace {
         task_title_input.update(cx, |input, _| {
             input.placeholder = Some("添加任务到「收集箱」…".into())
         });
+        let task_list_name_input =
+            cx.new(|cx| TextInput::new(String::new(), Vec::new(), 12., window, cx));
+        task_list_name_input.update(cx, |input, _| input.placeholder = Some("清单名称".into()));
         let task_due_input =
             cx.new(|cx| TextInput::new(String::new(), Vec::new(), 12., window, cx));
         task_due_input.update(cx, |input, _| input.placeholder = Some("YYYY-MM-DD".into()));
@@ -1527,6 +1535,7 @@ impl Workspace {
             note_title_input.clone(),
             note_body_input.clone(),
             task_title_input.clone(),
+            task_list_name_input.clone(),
             task_due_input.clone(),
             organizer_tags_input.clone(),
             subtask_title_input.clone(),
@@ -1603,6 +1612,7 @@ impl Workspace {
             note_title_input,
             note_body_input,
             task_title_input,
+            task_list_name_input,
             task_due_input,
             organizer_tags_input,
             subtask_title_input,
@@ -1620,6 +1630,7 @@ impl Workspace {
             note_title_subscription: None,
             note_body_subscription: None,
             task_title_subscription: None,
+            task_list_name_subscription: None,
             task_due_subscription: None,
             organizer_tags_subscription: None,
             subtask_title_subscription: None,
@@ -1700,6 +1711,9 @@ impl Workspace {
             organizer_tag: None,
             organizer_excluded_tags: BTreeSet::new(),
             selected_task_list: quire_core::core::organizer::ListId::INBOX,
+            task_list_editing: None,
+            task_list_color_open: None,
+            task_list_name_draft: String::new(),
             selected_task_smart_view: Some(0),
             show_task_done: false,
             task_sort: 0,
@@ -1855,6 +1869,22 @@ impl Workspace {
                     cx.notify();
                 }
                 InputEvent::Split(_) => this.create_task_from_draft(window, cx),
+                _ => {}
+            },
+        ));
+        let task_list_name_input = this.task_list_name_input.clone();
+        this.task_list_name_subscription = Some(cx.subscribe_in(
+            &task_list_name_input,
+            window,
+            |this, _, event, window, cx| match event {
+                InputEvent::Edited { text, .. } => {
+                    this.task_list_name_draft = text.clone();
+                    cx.notify();
+                }
+                InputEvent::Split(_) | InputEvent::Blurred => {
+                    this.commit_task_list_rename(window, cx)
+                }
+                InputEvent::DismissSlash => this.cancel_task_list_rename(cx),
                 _ => {}
             },
         ));
@@ -2178,6 +2208,41 @@ impl Workspace {
                     eprintln!("SMOKE: persisted MCP startup, HTTP auth, UI dispatch and note write passed");
                 });
                 let _ = weak.update_in(cx, |this, window, cx| {
+                    let smoke_list = this.session.create_task_list("smoke 清单".into());
+                    this.start_task_list_rename(smoke_list, window, cx);
+                    this.task_list_name_draft = "桌面回归清单".into();
+                    this.task_list_name_input.update(cx, |input, cx| {
+                        let name = "桌面回归清单";
+                        input.reset(name.into(), Vec::new(), name.len(), cx)
+                    });
+                    this.commit_task_list_rename(window, cx);
+                    assert_eq!(
+                        this.session.organizer.list(smoke_list).unwrap().name,
+                        "桌面回归清单"
+                    );
+                    this.set_task_list_color(smoke_list, ColorKind::Purple, window, cx);
+                    assert_eq!(
+                        this.session.organizer.list(smoke_list).unwrap().color,
+                        ColorKind::Purple
+                    );
+                    assert!(this.session.undo_organizer());
+                    assert_ne!(
+                        this.session.organizer.list(smoke_list).unwrap().color,
+                        ColorKind::Purple
+                    );
+                    assert!(this.session.redo_organizer());
+                    assert!(this.session.undo_organizer());
+                    assert!(this.session.undo_organizer());
+                    assert_ne!(
+                        this.session.organizer.list(smoke_list).unwrap().name,
+                        "桌面回归清单"
+                    );
+                    assert!(this.session.redo_organizer());
+                    assert!(this.session.redo_organizer());
+                    assert!(this.session.delete_task_list(smoke_list).is_some());
+                    this.selected_task_list = quire_core::core::organizer::ListId::INBOX;
+                    eprintln!("SMOKE: organizer list rename, color and undo/redo passed");
+
                     this.organizer_trash = true;
                     this.organizer_tasks = false;
                     let first = this.session.create_note();
@@ -5752,6 +5817,81 @@ impl Workspace {
         self.selected_task_smart_view = None;
         self.selected_task = None;
         self.schedule_save(true, window, cx);
+    }
+    fn start_task_list_rename(
+        &mut self,
+        list: quire_core::core::organizer::ListId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(name) = self
+            .session
+            .organizer
+            .list(list)
+            .map(|list| list.name.clone())
+        else {
+            return;
+        };
+        self.task_list_editing = Some(list);
+        self.task_list_name_draft = name.clone();
+        self.task_list_name_input.update(cx, |input, cx| {
+            input.reset(name.clone(), Vec::new(), name.len(), cx)
+        });
+        window.focus(&self.task_list_name_input.read(cx).focus);
+        cx.notify();
+    }
+    fn cancel_task_list_rename(&mut self, cx: &mut Context<Self>) {
+        self.task_list_editing = None;
+        self.task_list_name_draft.clear();
+        cx.notify();
+    }
+    fn commit_task_list_rename(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(id) = self.task_list_editing.take() else {
+            return;
+        };
+        let Some(list) = self.session.organizer.list(id) else {
+            return;
+        };
+        let name = self.task_list_name_draft.trim().to_owned();
+        if name.is_empty() {
+            self.status = "清单名称不能为空".into();
+            self.error = true;
+            cx.notify();
+            return;
+        }
+        if self.session.update_task_list(id, name, list.color) {
+            self.status = "清单名称已更新（Ctrl+Z 可撤销）".into();
+            self.error = false;
+            self.schedule_save(true, window, cx);
+        }
+        cx.notify();
+    }
+    fn toggle_task_list_color_picker(
+        &mut self,
+        id: quire_core::core::organizer::ListId,
+        cx: &mut Context<Self>,
+    ) {
+        self.task_list_color_open = (self.task_list_color_open != Some(id)).then_some(id);
+        cx.notify();
+    }
+    fn set_task_list_color(
+        &mut self,
+        id: quire_core::core::organizer::ListId,
+        color: ColorKind,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(list) = self.session.organizer.list(id) else {
+            return;
+        };
+        let name = list.name.clone();
+        self.task_list_color_open = None;
+        if self.session.update_task_list(id, name, color) {
+            self.status = "清单颜色已更新（Ctrl+Z 可撤销）".into();
+            self.error = false;
+            self.schedule_save(true, window, cx);
+        }
+        cx.notify();
     }
     fn delete_task_list(
         &mut self,
@@ -12956,6 +13096,9 @@ impl Render for Workspace {
             .into_iter()
             .map(|list| {
                 let id = list.id;
+                let list_name = list.name.clone();
+                let list_color = list.color;
+                let editing = self.task_list_editing == Some(id);
                 let count = self
                     .session
                     .organizer
@@ -12971,11 +13114,89 @@ impl Render for Workspace {
                             && !organizer_tags_exclude(&task.tags, &self.organizer_excluded_tags)
                     })
                     .count();
-                div()
+                let row = div()
                     .id(SharedString::from(format!("organizer-list-row-{id:?}")))
                     .flex()
                     .items_center()
                     .gap(px(3.))
+                    .child(
+                        div()
+                            .id(SharedString::from(format!("organizer-list-color-{id:?}")))
+                            .w(px(20.))
+                            .h(px(25.))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .cursor_pointer()
+                            .text_size(px(12.))
+                            .text_color(
+                                Palette::load(&self.theme_choice).block_text(list_color.slot()),
+                            )
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.toggle_task_list_color_picker(id, cx)
+                            }))
+                            .child("●"),
+                    )
+                    .when(editing, |row| {
+                        row.flex_1().child(
+                            div()
+                                .id(SharedString::from(format!("organizer-list-rename-{id:?}")))
+                                .flex_1()
+                                .h(px(28.))
+                                .px(px(5.))
+                                .rounded(px(4.))
+                                .bg(Palette::color(&p.bg).opacity(0.25))
+                                .child(self.task_list_name_input.clone()),
+                        )
+                    })
+                    .when(!editing, |row| {
+                        row.child(
+                            div()
+                                .id(SharedString::from(format!("organizer-list-{id:?}")))
+                                .flex_1()
+                                .min_w_0()
+                                .px(px(8.))
+                                .py(px(5.))
+                                .rounded(px(5.))
+                                .cursor_pointer()
+                                .text_color(
+                                    if self.selected_task_smart_view.is_none()
+                                        && self.selected_task_list == id
+                                    {
+                                        accent
+                                    } else {
+                                        muted
+                                    },
+                                )
+                                .when(
+                                    self.selected_task_smart_view.is_none()
+                                        && self.selected_task_list == id,
+                                    |chip| chip.bg(Palette::color(&p.elevated)),
+                                )
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    this.select_task_list(id, window, cx)
+                                }))
+                                .child(format!("{} · {count}", list_name)),
+                        )
+                    })
+                    .when(!editing, |row| {
+                        row.child(
+                            div()
+                                .id(SharedString::from(format!(
+                                    "organizer-list-rename-button-{id:?}"
+                                )))
+                                .px(px(4.))
+                                .py(px(4.))
+                                .rounded(px(4.))
+                                .cursor_pointer()
+                                .text_color(muted)
+                                .hover(|button| button.text_color(accent))
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    this.start_task_list_rename(id, window, cx)
+                                }))
+                                .child("✎"),
+                        )
+                    })
                     .child(
                         div()
                             .id(SharedString::from(format!("organizer-list-{id:?}")))
@@ -13017,7 +13238,43 @@ impl Render for Workspace {
                                 this.delete_task_list(id, window, cx)
                             }))
                             .child("×"),
-                    )
+                    );
+                div()
+                    .id(SharedString::from(format!(
+                        "organizer-list-container-{id:?}"
+                    )))
+                    .flex()
+                    .flex_col()
+                    .child(row)
+                    .when(self.task_list_color_open == Some(id), |container| {
+                        container.child(
+                            div()
+                                .id(SharedString::from(format!("organizer-list-colors-{id:?}")))
+                                .flex()
+                                .items_center()
+                                .justify_between()
+                                .ml(px(22.))
+                                .mr(px(26.))
+                                .mb(px(4.))
+                                .children(ColorKind::ALL.into_iter().map(|color| {
+                                    let color_id = id;
+                                    div()
+                                        .id(SharedString::from(format!(
+                                            "organizer-list-color-{id:?}-{}",
+                                            color.slot()
+                                        )))
+                                        .w(px(14.))
+                                        .h(px(14.))
+                                        .rounded(px(7.))
+                                        .bg(Palette::load(&self.theme_choice)
+                                            .block_text(color.slot()))
+                                        .cursor_pointer()
+                                        .on_click(cx.listener(move |this, _, window, cx| {
+                                            this.set_task_list_color(color_id, color, window, cx)
+                                        }))
+                                })),
+                        )
+                    })
             })
             .collect::<Vec<_>>();
         let mut organizer_item_tags = Vec::<Vec<String>>::new();
