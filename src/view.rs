@@ -2105,6 +2105,39 @@ impl Workspace {
                     {
                         panic!("UI input/core smoke mismatch: {texts:?}");
                     }
+                    let blocks = this.session.blocks();
+                    let find_target = blocks[blocks.len() / 2].clone();
+                    this.open_find(&Find, window, cx);
+                    this.find_query = find_target.text.clone();
+                    this.find_input.update(cx, |input, cx| {
+                        let len = find_target.text.len();
+                        input.reset(find_target.text.clone(), Vec::new(), len, cx);
+                    });
+                    this.refresh_find_matches();
+                    assert_eq!(this.find_matches.len(), 1);
+                    this.move_find(1, window, cx);
+                    let find_target_id = find_target.id;
+                    let find_target_range = 0..find_target.text.len();
+                    cx.spawn_in(window, async move |weak, cx| {
+                        cx.background_executor()
+                            .timer(Duration::from_millis(300))
+                            .await;
+                        let _ = weak.update_in(cx, |this, window, cx| {
+                            assert_eq!(this.active, Some(find_target_id));
+                            assert_eq!(
+                                this.inputs
+                                    .get(&find_target_id.0)
+                                    .expect("find should mount an offscreen block editor")
+                                    .read(cx)
+                                    .buffer
+                                    .selection,
+                                find_target_range,
+                                "find should select the UTF-8 range in an offscreen block"
+                            );
+                            this.close_find(window, cx);
+                            eprintln!("SMOKE: Ctrl+F match selection and offscreen virtual-list navigation passed");
+                        });
+                        let _ = weak.update_in(cx, |this, window, cx| {
                     let note_text = "速记冒烟回归 #gpui-smoke";
                     if !this.save_quick_note(note_text.to_owned(), cx) {
                         panic!("quick note smoke save failed");
@@ -2242,6 +2275,9 @@ impl Workspace {
                                 });
                             })
                             .detach();
+                        });
+                    })
+                    .detach();
                         });
                     })
                     .detach();
@@ -6382,6 +6418,76 @@ impl Workspace {
             });
         }
     }
+    fn focus_selection(
+        &mut self,
+        id: BlockId,
+        selection: Range<usize>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(input) = self.inputs.get(&id.0).cloned() {
+            self.set_active_block(id, cx);
+            input.update(cx, |input, cx| {
+                input.buffer.selection = selection;
+                input.buffer.reversed = false;
+                window.focus(&input.focus);
+                cx.notify();
+            });
+            return;
+        }
+        let Some(index) = self
+            .document_list_ids
+            .iter()
+            .position(|candidate| *candidate == id)
+        else {
+            return;
+        };
+        self.set_active_block(id, cx);
+        self.document_list.scroll_to(ListOffset {
+            item_ix: index + 1,
+            offset_in_item: px(0.),
+        });
+        cx.notify();
+        cx.spawn_in(window, async move |weak, cx| {
+            // A virtual row may need more than one frame to mount after a long
+            // scroll. Keep the request alive until that editor exists instead
+            // of silently dropping the find selection on the first frame.
+            for _ in 0..100 {
+                cx.background_executor()
+                    .timer(Duration::from_millis(16))
+                    .await;
+                let mounted = weak
+                    .update_in(cx, |this, window, cx| {
+                        if let Some(input) = this.inputs.get(&id.0).cloned() {
+                            if let Some(index) = this
+                                .document_list_ids
+                                .iter()
+                                .position(|candidate| *candidate == id)
+                            {
+                                this.document_list.splice_focusable(
+                                    index + 1..index + 2,
+                                    [Some(input.read(cx).focus.clone())],
+                                );
+                            }
+                            input.update(cx, |input, cx| {
+                                input.buffer.selection = selection.clone();
+                                input.buffer.reversed = false;
+                                window.focus(&input.focus);
+                                cx.notify();
+                            });
+                            true
+                        } else {
+                            false
+                        }
+                    })
+                    .unwrap_or(false);
+                if mounted {
+                    break;
+                }
+            }
+        })
+        .detach();
+    }
     fn set_active_block(&mut self, id: BlockId, cx: &mut Context<Self>) {
         let previous = self.active.replace(id);
         if previous == Some(id) {
@@ -6426,10 +6532,12 @@ impl Workspace {
         self.find_matches = if self.find_query.is_empty() {
             Vec::new()
         } else {
-            self.session
-                .blocks()
-                .iter()
-                .filter(|block| self.session.editable(block.id))
+            self.visible_document_blocks()
+                .into_iter()
+                .filter_map(|(_, id)| {
+                    let block = self.session.document.block(id)?;
+                    self.session.editable(id).then_some(block)
+                })
                 .flat_map(|block| {
                     find_matches_in(&block.text, &self.find_query)
                         .into_iter()
@@ -6486,16 +6594,7 @@ impl Workspace {
         );
         self.find_index = Some(target);
         let (id, range) = self.find_matches[target].clone();
-        if let Some(input) = self.inputs.get(&id.0) {
-            let focus = input.read(cx).focus.clone();
-            input.update(cx, |input, cx| {
-                input.buffer.selection = range;
-                input.buffer.reversed = false;
-                cx.notify();
-            });
-            self.active = Some(id);
-            window.focus(&focus);
-        }
+        self.focus_selection(id, range, window, cx);
         cx.notify();
     }
     fn find_next_action(&mut self, _: &FindNext, window: &mut Window, cx: &mut Context<Self>) {
