@@ -4720,6 +4720,7 @@ impl Workspace {
                     | InputEvent::ToggleMark(_)
                     | InputEvent::RemoveBlock
                     | InputEvent::DuplicateBlock
+                    | InputEvent::MoveBlock(_)
             )
         {
             if matches!(event, InputEvent::Edited { .. })
@@ -5054,6 +5055,7 @@ impl Workspace {
             }
             InputEvent::RemoveBlock => self.delete_block(id, window, cx),
             InputEvent::DuplicateBlock => self.duplicate_block(id, window, cx),
+            InputEvent::MoveBlock(delta) => self.move_block(id, *delta, window, cx),
             InputEvent::DismissSlash => {
                 let block_menu_closed = self.block_menu_open.take().is_some();
                 let filter_menu_closed = self.database_filter_open.take().is_some();

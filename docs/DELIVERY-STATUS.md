@@ -1412,3 +1412,10 @@
 - 这轮 GPUI 的单文件 Release 重编约为 Slint 的 1/12.5，编译峰值 Private Bytes 约低 69%；GPUI warm no-op 略快。运行时 GPUI 的主窗句柄出现较慢，10k Private Bytes 峰值多约 63 MiB；空闲 CPU 明显高于 Slint。两次样本的 handle-up 波动较大（例如空白 Slint 为 898.6–1136.3 ms），所以启动时间差异不作稳定性结论。GPUI 的 10k 样本来自持久化 SQLite，Slint 是内存 fixture，数据加载路径不完全相同。
 - 这是同机本地回归数据，不代表多机或统计级结论；每项只有两轮，未测键入延迟、连续滚动帧率、GPU 专用内存或干净依赖冷构建。同步/托盘定时器会产生周期性 CPU 样本，8 秒窗口对 GPUI 空闲占用尤其敏感。
 - 可复跑工具：`tools/measure-build.ps1`、`tools/measure-runtime.ps1`。Slint/core 源码内容均未修改，旧版 Git 工作树保持干净；所有运行数据库均在 `%TEMP%` 的隔离目录内。
+
+## 第二百二十八轮：编辑器块移动快捷键
+
+- 给 GPUI 编辑器补上 `Ctrl+Shift+↑/↓`，接入既有 `MoveBlock` 事件处理：页面锁定时拒绝，组合输入时不触发，操作保持块焦点并进入 core 撤销历史。
+- 人工语义 sidecar 已补充快捷键说明，重跑 `tools/extract-parity.mjs` 后矩阵保持 246 callbacks / 261 properties / 188 scenes。快捷键真人按键验收仍未做。
+- `cargo fmt --all -- --check`、`cargo test --locked -j 8`（102 项：50 library + 50 binary + 1 MCP stdio + 1 sync loopback）、`cargo check --locked -j 8` 与 `cargo build --release --locked -j 8` 通过。Release GUI smoke 在全新隔离 SQLite 和 1000 个合成块下通过，托盘/速记、MCP 16 工具、数据库视图、最大化还原和虚拟滚动路径继续通过。
+- 本次改动会影响最终应用二进制；GPUI/Slint 性能数据需在剩余实现收尾后再按同脚本复测。未访问真实用户库，未修改 Slint/core/冻结参考树。

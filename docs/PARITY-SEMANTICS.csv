@@ -6,7 +6,7 @@ palette-move,已实现,未验证,命令面板焦点输入框的上下键移动�
 palette-query-changed,已实现,未验证,输入文本实时筛选命令和页面标题,与页面搜索共用单行输入实体；面板打开时事件只更新命令查询状态
 palette-open-requested,已实现,未验证,Ctrl+K 打开面板并聚焦命令输入框,关闭其他页面搜索层并重置查询及选择索引
 duplicate-block,已实现,未验证,Ctrl+D 或行尾副本入口复制当前块；表格/分栏保留网格子块，普通容器复制完整子树；界面交互待验,普通块含子块时以单条 InsertForest 历史项复制并重映射 parent；表格和分栏复用 core DuplicateBlock 专用结构复制
-move-block,已实现,未验证,编辑块悬停操作中的上下箭头在当前页面内移动块；界面交互待桌面验收,调用 core MoveBlock 并保持当前编辑焦点
+move-block,已实现,未验证,编辑块悬停操作中的上下箭头及 Ctrl+Shift+↑/↓ 在当前页面内移动块；界面交互待桌面验收,快捷键经 TextInput 事件路由到 core MoveBlock，保持当前编辑焦点并进入同一撤销历史；组合输入期间不触发
 block-menu-action,已实现,未验证,块菜单增加“移动到页面”子菜单、“复制块/粘贴到下方”和图片宽度 25/50/100% 子页；复制块保留格式与嵌套子块，数据库/表格单元格/分栏列块不开放粘贴,调用 core MoveBlockToPage 一次移动整棵子树并单步撤销；内部复制使用 InsertForest 保留标记/格式并生成新 ID，一次撤销整棵子树；Ctrl+V 结构化 Markdown 保留 marks/checked/lang，以 InsertForest + 可选空行删除形成一个 undo entry；纯文本/inline-only 内容走原生插入，图片 clipboard entry 进入附件存储；图片宽度走 core SetImageWidth 并持久化；ScratchDir 覆盖块与 Markdown 粘贴、撤销和重开持久化，菜单鼠标仍待桌面验收
 block-drag-hover,已实现,未验证,GPUI 拖动手柄按目标行上/下半区分别放到前/后，并显示相应行缘落点线；core 拒绝跨兄弟范围、子树内部或自身的无效落点,纯 Session 回归覆盖有效/无效落点、撤销/重做和 SQLite 重开；真实鼠标拖动仍待验收
 block-plus,已实现,未验证,块悬停手柄“＋”在当前块后插入空段落并打开块类型菜单；整行文字过滤、上下键选择、Enter 转换类型，Escape 只关闭菜单并保留空段落,GPUI 通过 core InsertBlockAfter 插入 Paragraph；insert-mode 按整行过滤，普通 slash 转换仍忽略开头斜线；插入与类型转换分别撤销；隔离 Release GUI smoke 直接执行 Workspace 路径并验证 h2 过滤、Enter 选择 Heading2 和两步撤销；真实鼠标命中与菜单位置仍待视觉验收
