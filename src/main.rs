@@ -410,6 +410,7 @@ fn pull_lan_pages(session: &mut Session, url: &str) -> Result<usize> {
     let pages =
         quire_core::services::lan_client::pull_workspace(url).map_err(anyhow::Error::msg)?;
     let count = pages.len();
+    let selected_page = session.page.id;
     for (title, markdown) in pages {
         let safe_title = if title.trim().is_empty() {
             "已导入".to_owned()
@@ -419,6 +420,9 @@ fn pull_lan_pages(session: &mut Session, url: &str) -> Result<usize> {
         session.import_markdown(safe_title, &markdown);
     }
     if count > 0 {
+        // LAN import creates sibling pages but must not navigate away from the
+        // page the user was reading when the pull began (same as the Slint UI).
+        let _ = session.select_page(selected_page);
         session.persistence.force_flush()?;
     }
     Ok(count)
@@ -522,6 +526,7 @@ mod window_geometry_tests {
         let scratch = quire_core::testing::ScratchDir::new("gpui-lan-pull");
         let path = scratch.path().join("destination.sqlite3");
         let mut session = quire_gpui::session::Session::open(&path).unwrap();
+        let selected_before = session.page.id;
         let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
         let port = listener.local_addr().unwrap().port();
         let server = std::thread::spawn(move || {
@@ -543,6 +548,7 @@ mod window_geometry_tests {
             .expect("loopback LAN pull succeeds");
         server.join().unwrap();
         assert_eq!(count, 1);
+        assert_eq!(session.page.id, selected_before);
         assert!(
             session
                 .pages
