@@ -215,7 +215,8 @@ pub fn execute(session: &mut Session, name: &str, args: &Value) -> Result<Value,
                 (include_trashed || !n.is_trashed()) && !session.note_delete_is_pending(n.id)
             }).map(|n| json!({
                 "id": n.id.0, "note_id": n.id.0, "title": n.title, "body": n.body, "tags": n.tags,
-                "pinned": n.pinned, "trashed": n.is_trashed(), "created": n.created, "edited": n.edited
+                "pinned": n.pinned, "trashed": n.is_trashed(), "created": n.created, "edited": n.edited,
+                "ref_note": n.ref_note.map(|parent| parent.0)
             })).collect::<Vec<_>>();
             Ok(json!({"notes": rows}))
         }
@@ -702,9 +703,19 @@ mod tests {
         assert_eq!(created["id"], id);
         let note = session.organizer.note(NoteId(id)).unwrap();
         assert_eq!(note.tags, ["工作", "项目"]);
+        let reply = session
+            .create_note_reply(NoteId(id), "MCP 可见评论".into())
+            .unwrap();
         let listed = execute(&mut session, "list_notes", &json!({})).unwrap();
         assert_eq!(listed["notes"][0]["id"], id);
         assert_eq!(listed["notes"][0]["note_id"], id);
+        let listed_reply = listed["notes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|note| note["id"] == reply.0)
+            .unwrap();
+        assert_eq!(listed_reply["ref_note"], id);
         execute(
             &mut session,
             "update_note",
@@ -716,13 +727,10 @@ mod tests {
             "MCP note"
         );
         execute(&mut session, "trash_note", &json!({"note_id": id})).unwrap();
-        assert_eq!(
-            execute(&mut session, "list_notes", &json!({})).unwrap()["notes"]
-                .as_array()
-                .unwrap()
-                .len(),
-            0
-        );
+        let remaining = execute(&mut session, "list_notes", &json!({})).unwrap();
+        assert_eq!(remaining["notes"].as_array().unwrap().len(), 1);
+        assert_eq!(remaining["notes"][0]["id"], reply.0);
+        assert_eq!(remaining["notes"][0]["ref_note"], id);
         execute(&mut session, "restore_note", &json!({"note_id": id})).unwrap();
         assert!(!session.organizer.note(NoteId(id)).unwrap().is_trashed());
     }

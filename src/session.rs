@@ -3996,6 +3996,44 @@ impl Session {
         self.apply_organizer_entry(entry);
         id
     }
+    pub fn create_note_reply(&mut self, parent: NoteId, body: String) -> Option<NoteId> {
+        self.organizer.note(parent)?;
+        let id = NoteId(
+            self.organizer
+                .notes
+                .iter()
+                .map(|note| note.id.0)
+                .max()
+                .unwrap_or(0)
+                .saturating_add(1)
+                .max(1),
+        );
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default();
+        let millis = now.as_millis().min(i64::MAX as u128) as i64;
+        let seconds = now.as_secs().min(i64::MAX as u64) as i64;
+        let note = Note {
+            id,
+            uuid: organizer::new_uuid(),
+            title: String::new(),
+            body,
+            pinned: false,
+            tags: Vec::new(),
+            created: seconds,
+            edited: seconds,
+            ref_note: Some(parent),
+            deleted_at: None,
+            rev: organizer::rev(millis, "quire-gpui"),
+        };
+        let entry = command::plan(
+            &mut self.document,
+            ORGANIZER_STACK,
+            Command::CreateNote { note },
+        )?;
+        self.apply_organizer_entry(entry);
+        Some(id)
+    }
     pub fn update_note_content(&mut self, id: NoteId, title: String, body: String) -> bool {
         let Some(tags) = self.organizer.note(id).map(|note| note.tags.clone()) else {
             return false;
@@ -7226,6 +7264,40 @@ mod tests {
         assert!(!note.uuid.is_empty());
         assert!(note.pinned);
         assert!(note.is_trashed());
+        Ok(())
+    }
+
+    #[test]
+    fn organizer_note_reply_is_threaded_undoable_and_persistent() -> Result<()> {
+        let scratch = quire_core::testing::ScratchDir::new("gpui-organizer-note-reply");
+        let path = scratch.path().join("test.db");
+        let parent = {
+            let mut session = Session::open(&path)?;
+            let parent = session.create_note();
+            assert_eq!(
+                session.create_note_reply(NoteId(9999), "orphan".into()),
+                None
+            );
+            let reply = session
+                .create_note_reply(parent, "第一条评论".into())
+                .expect("existing parent accepts a reply");
+            let note = session.organizer.note(reply).unwrap();
+            assert_eq!(note.body, "第一条评论");
+            assert_eq!(note.ref_note, Some(parent));
+            assert!(session.undo_organizer());
+            assert!(session.organizer.note(reply).is_none());
+            assert!(session.redo_organizer());
+            session.persistence.force_flush()?;
+            parent
+        };
+        let reopened = Session::open(&path)?;
+        let replies = reopened
+            .organizer
+            .live_notes()
+            .filter(|note| note.ref_note == Some(parent))
+            .collect::<Vec<_>>();
+        assert_eq!(replies.len(), 1);
+        assert_eq!(replies[0].body, "第一条评论");
         Ok(())
     }
 

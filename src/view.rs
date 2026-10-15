@@ -1664,6 +1664,7 @@ pub struct Workspace {
     link_target_input: Entity<TextInput>,
     note_title_input: Entity<TextInput>,
     note_body_input: Entity<TextInput>,
+    note_reply_input: Entity<TextInput>,
     task_title_input: Entity<TextInput>,
     task_list_name_input: Entity<TextInput>,
     task_due_input: Entity<TextInput>,
@@ -1685,6 +1686,7 @@ pub struct Workspace {
     find_subscription: Option<Subscription>,
     note_title_subscription: Option<Subscription>,
     note_body_subscription: Option<Subscription>,
+    note_reply_subscription: Option<Subscription>,
     task_title_subscription: Option<Subscription>,
     task_list_name_subscription: Option<Subscription>,
     task_due_subscription: Option<Subscription>,
@@ -1898,6 +1900,11 @@ impl Workspace {
         let note_body_input =
             cx.new(|cx| TextInput::new(String::new(), Vec::new(), 15., window, cx));
         note_body_input.update(cx, |input, _| input.placeholder = Some("写点什么…".into()));
+        let note_reply_input =
+            cx.new(|cx| TextInput::new(String::new(), Vec::new(), 12., window, cx));
+        note_reply_input.update(cx, |input, _| {
+            input.placeholder = Some("写一条评论…".into())
+        });
         let task_title_input =
             cx.new(|cx| TextInput::new(String::new(), Vec::new(), 13., window, cx));
         task_title_input.update(cx, |input, _| {
@@ -1966,6 +1973,7 @@ impl Workspace {
             sync_name_input.clone(),
             note_title_input.clone(),
             note_body_input.clone(),
+            note_reply_input.clone(),
             task_title_input.clone(),
             task_list_name_input.clone(),
             task_due_input.clone(),
@@ -2060,6 +2068,7 @@ impl Workspace {
             link_target_input,
             note_title_input,
             note_body_input,
+            note_reply_input,
             task_title_input,
             task_list_name_input,
             task_due_input,
@@ -2081,6 +2090,7 @@ impl Workspace {
             find_subscription: None,
             note_title_subscription: None,
             note_body_subscription: None,
+            note_reply_subscription: None,
             task_title_subscription: None,
             task_list_name_subscription: None,
             task_due_subscription: None,
@@ -2359,6 +2369,20 @@ impl Workspace {
                 InputEvent::Split(_) => this.note_body_input.update(cx, |input, cx| {
                     input.insert_newline(cx);
                 }),
+                _ => {}
+            },
+        ));
+        let note_reply_input = this.note_reply_input.clone();
+        this.note_reply_subscription = Some(cx.subscribe_in(
+            &note_reply_input,
+            window,
+            |this, _, event, window, cx| match event {
+                InputEvent::Edited { .. } => cx.notify(),
+                InputEvent::Split(_) => {
+                    if let Some(note) = this.selected_note {
+                        this.submit_note_reply(note, window, cx);
+                    }
+                }
                 _ => {}
             },
         ));
@@ -2866,6 +2890,42 @@ impl Workspace {
                             && this.session.organizer.note(*id).is_some_and(|note| !note.is_trashed())
                     }));
                     eprintln!("SMOKE: organizer note multi-select, select-all and undoable batch trash passed");
+
+                    this.note_multi_select = false;
+                    this.organizer_trash = false;
+                    let reply_parent = this.session.create_note();
+                    this.select_note(reply_parent, window, cx);
+                    this.note_reply_input.update(cx, |input, cx| {
+                        let text = "整理区评论 smoke";
+                        input.reset(text.into(), Vec::new(), text.len(), cx);
+                    });
+                    this.submit_note_reply(reply_parent, window, cx);
+                    let reply_id = this
+                        .session
+                        .organizer
+                        .live_notes()
+                        .find(|note| note.ref_note == Some(reply_parent))
+                        .expect("submitted reply should point to its parent")
+                        .id;
+                    assert_eq!(
+                        this.session.organizer.note(reply_id).unwrap().body,
+                        "整理区评论 smoke"
+                    );
+                    assert_eq!(
+                        this.session
+                            .organizer
+                            .live_notes()
+                            .filter(|note| note.ref_note.is_none())
+                            .count(),
+                        this.session.organizer.live_notes().count() - 1,
+                        "replies are nested under their parent rather than shown as top-level notes"
+                    );
+                    let reply_frame = this.render(window, cx);
+                    drop(reply_frame);
+                    assert!(this.session.undo_organizer());
+                    assert!(this.session.organizer.note(reply_id).is_none());
+                    assert!(this.session.redo_organizer());
+                    eprintln!("SMOKE: organizer note replies render as a threaded, undoable comment");
 
                     let restore_notes = [this.session.create_note(), this.session.create_note()];
                     assert!(this.session.set_notes_trashed(&restore_notes, true));
@@ -6788,6 +6848,9 @@ impl Workspace {
         self.note_body_input.update(cx, |input, cx| {
             input.reset(String::new(), Vec::new(), 0, cx);
         });
+        self.note_reply_input.update(cx, |input, cx| {
+            input.reset(String::new(), Vec::new(), 0, cx);
+        });
         self.organizer_tags_input.update(cx, |input, cx| {
             input.reset(String::new(), Vec::new(), 0, cx);
         });
@@ -6843,6 +6906,24 @@ impl Workspace {
         self.note_body_draft.clear();
         cx.notify();
     }
+    fn submit_note_reply(
+        &mut self,
+        parent: quire_core::core::organizer::NoteId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let body = self.note_reply_input.read(cx).buffer.text.clone();
+        if body.trim().is_empty() {
+            return;
+        }
+        if self.session.create_note_reply(parent, body).is_some() {
+            self.note_reply_input.update(cx, |input, cx| {
+                input.reset(String::new(), Vec::new(), 0, cx);
+            });
+            self.schedule_save(true, window, cx);
+            cx.notify();
+        }
+    }
     fn select_note(
         &mut self,
         id: quire_core::core::organizer::NoteId,
@@ -6862,6 +6943,9 @@ impl Workspace {
         };
         self.selected_task = None;
         self.selected_note = Some(id);
+        self.note_reply_input.update(cx, |input, cx| {
+            input.reset(String::new(), Vec::new(), 0, cx);
+        });
         self.task_due_draft.clear();
         self.organizer_tags_draft = note.tags.join(", ");
         let tags = self.organizer_tags_draft.clone();
@@ -7307,6 +7391,9 @@ impl Workspace {
             input.reset(String::new(), Vec::new(), 0, cx);
         });
         self.note_body_input.update(cx, |input, cx| {
+            input.reset(String::new(), Vec::new(), 0, cx);
+        });
+        self.note_reply_input.update(cx, |input, cx| {
             input.reset(String::new(), Vec::new(), 0, cx);
         });
         self.task_due_input.update(cx, |input, cx| {
@@ -16328,7 +16415,8 @@ impl Render for Workspace {
         .into_iter()
         .cloned()
         .filter(|note| {
-            (self.organizer_trash || !self.session.note_delete_is_pending(note.id))
+            note.ref_note.is_none()
+                && (self.organizer_trash || !self.session.note_delete_is_pending(note.id))
                 && self.organizer_tag.as_ref().is_none_or(|path| {
                     note.tags
                         .iter()
@@ -16565,6 +16653,71 @@ impl Render for Workspace {
                     })
             })
             .collect::<Vec<_>>();
+        let mut note_replies = self
+            .selected_note
+            .map(|parent| {
+                self.session
+                    .organizer
+                    .live_notes()
+                    .filter(|note| {
+                        note.ref_note == Some(parent)
+                            && !self.session.note_delete_is_pending(note.id)
+                    })
+                    .cloned()
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        note_replies.sort_by_key(|reply| (reply.created, reply.id));
+        let now_seconds = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+        let note_reply_views = note_replies
+            .into_iter()
+            .map(|reply| {
+                let body = if reply.body.trim().is_empty() {
+                    reply.title
+                } else {
+                    reply.body
+                };
+                let age = now_seconds.saturating_sub(reply.created).max(0);
+                let when = if age < 60 {
+                    "刚刚".to_owned()
+                } else if age < 3600 {
+                    format!("{} 分钟前", age / 60)
+                } else if age < 86400 {
+                    format!("{} 小时前", age / 3600)
+                } else {
+                    format!("{} 天前", age / 86400)
+                };
+                let tags = reply.tags;
+                div()
+                    .id(SharedString::from(format!(
+                        "organizer-note-reply-{:?}",
+                        reply.id
+                    )))
+                    .w_full()
+                    .px(px(9.))
+                    .py(px(7.))
+                    .rounded(px(6.))
+                    .bg(Palette::color(&p.bg).opacity(0.28))
+                    .flex()
+                    .flex_col()
+                    .gap(px(3.))
+                    .child(div().text_size(px(12.)).text_color(text).child(body))
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(6.))
+                            .text_size(px(10.))
+                            .text_color(muted)
+                            .child(when)
+                            .children(tags.into_iter().map(|tag| div().child(format!("#{tag}")))),
+                    )
+            })
+            .collect::<Vec<_>>();
+        let note_reply_count = note_reply_views.len();
         let mut tasks = (if self.organizer_trash {
             self.session.organizer.trashed_tasks().collect::<Vec<_>>()
         } else {
@@ -18808,7 +18961,81 @@ impl Render for Workspace {
                                                 .child(self.organizer_tags_input.clone()),
                                         ),
                                 )
-                                .child(div().id("organizer-note-body-scroll").flex_1().min_h_0().overflow_y_scroll().child(self.note_body_input.clone())),
+                                .child(div().id("organizer-note-body-scroll").flex_1().min_h_0().overflow_y_scroll().child(self.note_body_input.clone()))
+                                .when_some(self.selected_note, |detail, id| {
+                                    detail.child(
+                                        div()
+                                            .id("organizer-note-replies")
+                                            .h(px(212.))
+                                            .flex()
+                                            .flex_col()
+                                            .gap(px(6.))
+                                            .child(
+                                                div()
+                                                    .text_size(px(12.))
+                                                    .font_weight(FontWeight::SEMIBOLD)
+                                                    .text_color(muted)
+                                                    .child(format!("评论 · {note_reply_count}")),
+                                            )
+                                            .child(
+                                                div()
+                                                    .h(px(32.))
+                                                    .flex()
+                                                    .items_center()
+                                                    .gap(px(6.))
+                                                    .child(
+                                                        div()
+                                                            .flex_1()
+                                                            .h(px(30.))
+                                                            .px(px(8.))
+                                                            .rounded(px(5.))
+                                                            .border_1()
+                                                            .border_color(Palette::color(&p.border))
+                                                            .child(self.note_reply_input.clone()),
+                                                    )
+                                                    .child(
+                                                        div()
+                                                            .id("organizer-note-reply-submit")
+                                                            .px(px(10.))
+                                                            .py(px(5.))
+                                                            .rounded(px(5.))
+                                                            .cursor_pointer()
+                                                            .text_color(accent)
+                                                            .hover(|button| {
+                                                                button.bg(Palette::color(&p.elevated))
+                                                            })
+                                                            .on_click(cx.listener(
+                                                                move |this, _, window, cx| {
+                                                                    this.submit_note_reply(
+                                                                        id, window, cx,
+                                                                    )
+                                                                },
+                                                            ))
+                                                            .child("评论"),
+                                                    ),
+                                            )
+                                            .child(
+                                                div()
+                                                    .id("organizer-note-reply-list")
+                                                    .flex_1()
+                                                    .min_h_0()
+                                                    .overflow_y_scroll()
+                                                    .flex()
+                                                    .flex_col()
+                                                    .gap(px(5.))
+                                                    .when(note_reply_count == 0, |list| {
+                                                        list.child(
+                                                            div()
+                                                                .px(px(2.))
+                                                                .text_size(px(11.))
+                                                                .text_color(muted)
+                                                                .child("暂无评论"),
+                                                        )
+                                                    })
+                                                    .children(note_reply_views),
+                                            ),
+                                    )
+                                }),
                         )
                     }),
                 );
