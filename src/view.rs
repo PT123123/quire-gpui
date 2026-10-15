@@ -1435,8 +1435,10 @@ pub struct Workspace {
     smoke_board_cards_rendered: bool,
     smoke_gallery_rendered: bool,
     smoke_calendar_rendered: bool,
+    smoke_timeline_rendered: bool,
     database_calendar_month: (i32, u32),
     database_calendar_property_open: Option<(u64, u64)>,
+    database_timeline_end_property_open: Option<(u64, u64)>,
     startup_notice: Option<String>,
     active: Option<BlockId>,
     save_task: Option<gpui::Task<()>>,
@@ -1791,8 +1793,10 @@ impl Workspace {
             smoke_board_cards_rendered: false,
             smoke_gallery_rendered: false,
             smoke_calendar_rendered: false,
+            smoke_timeline_rendered: false,
             database_calendar_month: current_utc_month(),
             database_calendar_property_open: None,
+            database_timeline_end_property_open: None,
             startup_notice,
             active: None,
             save_task: None,
@@ -2507,9 +2511,31 @@ impl Workspace {
                         .set_database_view_layout(
                             block.id,
                             view,
+                            quire_core::core::database::ViewLayout::Timeline,
+                        )
+                        .expect("timeline layout should be available after calendar smoke");
+                    this.schedule_save(true, window, cx);
+                });
+                cx.background_executor()
+                    .timer(Duration::from_millis(300))
+                    .await;
+                let _ = weak.update_in(cx, |this, window, cx| {
+                    assert!(this.smoke_timeline_rendered, "timeline should query and render dated rows");
+                    let block = this
+                        .session
+                        .blocks()
+                        .iter()
+                        .find(|block| block.kind == BlockKind::Database)
+                        .expect("timeline smoke database block should remain available");
+                    let database = block.db_ref.expect("timeline smoke database reference");
+                    let view = this.session.databases.views_of(database).next().unwrap().id;
+                    this.session
+                        .set_database_view_layout(
+                            block.id,
+                            view,
                             quire_core::core::database::ViewLayout::Board,
                         )
-                        .expect("board layout should restore after calendar smoke");
+                        .expect("board layout should restore after timeline smoke");
                     this.schedule_save(true, window, cx);
                 });
                 cx.background_executor()
@@ -9713,6 +9739,9 @@ impl Workspace {
                                             != quire_core::core::database::ViewLayout::Gallery
                                         && active_layout
                                             != quire_core::core::database::ViewLayout::Calendar;
+                                    let show_table_header = show_table_header
+                                        && active_layout
+                                            != quire_core::core::database::ViewLayout::Timeline;
                                     let row_sorts = view_sorts.clone();
                                     let row_filter = view_filter.clone();
                                     let row_group_data = group_data.clone();
@@ -9737,6 +9766,12 @@ impl Workspace {
                                     let calendar_filter = row_filter.clone();
                                     let calendar_search = row_search.clone();
                                     let calendar_properties = all_database_properties.clone();
+                                    let timeline_repo = repo.clone();
+                                    let timeline_columns_source = query_columns.clone();
+                                    let timeline_sorts_source = row_sorts.clone();
+                                    let timeline_filter_source = row_filter.clone();
+                                    let timeline_search_source = row_search.clone();
+                                    let timeline_properties = all_database_properties.clone();
                                     let table_rows = uniform_list(
                                         SharedString::from(format!("database-rows-{}", db_id.0)),
                                         list_total,
@@ -10361,6 +10396,311 @@ impl Workspace {
                                             .child(month_header)
                                             .child(weekday_row)
                                             .children(weeks)
+                                            .into_any_element()
+                                    } else if active_layout
+                                        == quire_core::core::database::ViewLayout::Timeline
+                                    {
+                                        let view_definition = selected_view
+                                            .and_then(|view_id| views.iter().find(|view| view.id == view_id))
+                                            .map(|view| quire_core::core::database_view::ViewDefinition::parse(&view.definition));
+                                        let date_property = view_definition
+                                            .as_ref()
+                                            .and_then(|definition| definition.date_column())
+                                            .and_then(|property_id| timeline_properties.iter().find(|property| property.id == property_id && property.kind == quire_core::core::database::PropertyKind::Date).cloned())
+                                            .or_else(|| timeline_properties.iter().find(|property| property.kind == quire_core::core::database::PropertyKind::Date).cloned());
+                                        let end_property = view_definition
+                                            .as_ref()
+                                            .and_then(|definition| definition.end_column())
+                                            .and_then(|property_id| timeline_properties.iter().find(|property| property.id == property_id && property.kind == quire_core::core::database::PropertyKind::Date).cloned());
+                                        let date_options = timeline_properties
+                                            .iter()
+                                            .filter(|property| property.kind == quire_core::core::database::PropertyKind::Date)
+                                            .cloned()
+                                            .collect::<Vec<_>>();
+                                        let mut timeline_columns = timeline_columns_source.clone();
+                                        if let Some(property) = &date_property {
+                                            if !timeline_columns.iter().any(|column| column.id == property.id) {
+                                                timeline_columns.push(property.clone());
+                                            }
+                                        }
+                                        if let Some(property) = &end_property {
+                                            if !timeline_columns.iter().any(|column| column.id == property.id) {
+                                                timeline_columns.push(property.clone());
+                                            }
+                                        }
+                                        let start_column_index = date_property.as_ref().and_then(|property| timeline_columns.iter().position(|column| column.id == property.id));
+                                        let end_column_index = end_property.as_ref().and_then(|property| timeline_columns.iter().position(|column| column.id == property.id));
+                                        let calendar_month = self.database_calendar_month;
+                                        let days_in_month = quire_core::core::database_view::days_in_month(calendar_month.0, calendar_month.1) as usize;
+                                        let month_start = quire_core::core::database_view::month_key(calendar_month.0, calendar_month.1);
+                                        let (next_year, next_month) = quire_core::core::database_view::shift_month(calendar_month.0, calendar_month.1, 1);
+                                        let month_end = quire_core::core::database_view::month_key(next_year, next_month);
+                                        let date_clause = |property, op, value: String| {
+                                            quire_core::core::database_view::FilterNode::Clause(
+                                                quire_core::core::database_view::FilterClause {
+                                                    property,
+                                                    kind: quire_core::core::database::PropertyKind::Date,
+                                                    op,
+                                                    value: quire_core::core::database_view::FilterValue::Text(value),
+                                                },
+                                            )
+                                        };
+                                        let month_filter = date_property.as_ref().map(|property| {
+                                            let start_in_month = quire_core::core::database_view::FilterNode::All(vec![
+                                                date_clause(property.id, quire_core::core::database_view::FilterOp::Gte, month_start.clone()),
+                                                date_clause(property.id, quire_core::core::database_view::FilterOp::Lt, month_end.clone()),
+                                            ]);
+                                            if let Some(end_property) = &end_property {
+                                                quire_core::core::database_view::FilterNode::All(vec![
+                                                    date_clause(property.id, quire_core::core::database_view::FilterOp::Lt, month_end.clone()),
+                                                    quire_core::core::database_view::FilterNode::Any(vec![
+                                                        date_clause(property.id, quire_core::core::database_view::FilterOp::Gte, month_start.clone()),
+                                                        date_clause(end_property.id, quire_core::core::database_view::FilterOp::Gte, month_start.clone()),
+                                                    ]),
+                                                ])
+                                            } else {
+                                                start_in_month
+                                            }
+                                        });
+                                        let timeline_filter = match (timeline_filter_source.clone(), month_filter) {
+                                            (Some(filter), Some(month_filter)) => Some(quire_core::core::database_view::FilterNode::All(vec![filter, month_filter])),
+                                            (Some(filter), None) => Some(filter),
+                                            (None, Some(month_filter)) => Some(month_filter),
+                                            (None, None) => None,
+                                        };
+                                        let mut timeline_sorts = timeline_sorts_source.clone();
+                                        if timeline_sorts.is_empty() {
+                                            if let Some(property) = &date_property {
+                                                if let Some(sort) = quire_core::core::database::SortSpec::of(property, false) {
+                                                    timeline_sorts.push(sort);
+                                                }
+                                            }
+                                        }
+                                        let count_request = quire_core::core::database::RowRequest {
+                                            db: db_id,
+                                            title,
+                                            columns: &timeline_columns,
+                                            sorts: &timeline_sorts,
+                                            filter: timeline_filter.as_ref(),
+                                            search: timeline_search_source.as_deref(),
+                                        };
+                                        let timeline_total = if start_column_index.is_some() {
+                                            timeline_repo.filtered_count(&count_request).unwrap_or(0)
+                                        } else {
+                                            0
+                                        };
+                                        if self.smoke_mode {
+                                            assert_eq!(
+                                                timeline_total,
+                                                3,
+                                                "timeline month query must include one record spanning into the visible month"
+                                            );
+                                        }
+                                        let timeline_month_label = quire_core::core::database_view::month_label(calendar_month.0, calendar_month.1);
+                                        let previous_month = quire_core::core::database_view::shift_month(calendar_month.0, calendar_month.1, -1);
+                                        let next_month = quire_core::core::database_view::shift_month(calendar_month.0, calendar_month.1, 1);
+                                        let timeline_width = days_in_month as f32 * 28.;
+                                        let mut timeline_header = div()
+                                            .id(SharedString::from(format!("db-timeline-header-{}", db_id.0)))
+                                            .w_full()
+                                            .h(px(34.))
+                                            .flex()
+                                            .items_center()
+                                            .gap(px(7.));
+                                        timeline_header = timeline_header
+                                            .child(div().id(SharedString::from(format!("db-timeline-prev-{}", db_id.0))).px(px(8.)).py(px(3.)).rounded(px(4.)).text_color(muted).hover(|button| button.bg(db_hover)).cursor_pointer().on_click(cx.listener(move |this, _, _, cx| { this.database_calendar_month = previous_month; cx.notify(); })).child("‹"))
+                                            .child(div().id(SharedString::from(format!("db-timeline-next-{}", db_id.0))).px(px(8.)).py(px(3.)).rounded(px(4.)).text_color(muted).hover(|button| button.bg(db_hover)).cursor_pointer().on_click(cx.listener(move |this, _, _, cx| { this.database_calendar_month = next_month; cx.notify(); })).child("›"))
+                                            .child(div().text_size(px(13.)).font_weight(FontWeight::SEMIBOLD).text_color(text).child(timeline_month_label));
+                                        let start_picker_key = (block_id.0, active_view_id.0);
+                                        let start_picker_open = self.database_calendar_property_open == Some(start_picker_key);
+                                        let mut start_picker = div()
+                                            .id(SharedString::from(format!("db-timeline-start-picker-{}", db_id.0)))
+                                            .relative()
+                                            .ml(px(8.))
+                                            .px(px(8.))
+                                            .py(px(4.))
+                                            .rounded(px(4.))
+                                            .text_size(px(10.))
+                                            .text_color(if start_picker_open { accent } else { muted })
+                                            .hover(|button| button.bg(db_hover))
+                                            .child(date_property.as_ref().map_or_else(|| "开始：选择日期轴".to_owned(), |property| format!("开始：{} ▾", property.name)));
+                                        if !self.session.page.locked {
+                                            start_picker = start_picker.cursor_pointer().on_click(cx.listener(move |this, _, _, cx| {
+                                                this.database_calendar_property_open = if this.database_calendar_property_open == Some(start_picker_key) { None } else { Some(start_picker_key) };
+                                                cx.notify();
+                                            }));
+                                        }
+                                        if start_picker_open {
+                                            let mut menu = div().id(SharedString::from(format!("db-timeline-start-menu-{}", db_id.0))).absolute().top(px(28.)).left(px(0.)).min_w(px(170.)).max_h(px(200.)).overflow_y_scroll().flex().flex_col().gap(px(2.)).p(px(5.)).rounded(px(6.)).border_1().border_color(db_border).bg(elevated).shadow_lg().on_click(cx.listener(|_, _, _, cx| cx.stop_propagation()));
+                                            if date_options.is_empty() {
+                                                menu = menu.child(div().px(px(7.)).py(px(6.)).text_size(px(10.)).text_color(muted).child("请先添加 Date 属性"));
+                                            } else {
+                                                menu = menu.children(date_options.iter().map(|property| {
+                                                    let property_id = property.id;
+                                                    let property_name = property.name.clone();
+                                                    let selected = date_property.as_ref().is_some_and(|current| current.id == property_id);
+                                                    div().id(SharedString::from(format!("db-timeline-start-option-{}-{}", db_id.0, property_id.0))).w_full().px(px(7.)).py(px(5.)).rounded(px(4.)).text_size(px(11.)).text_color(if selected { accent } else { text }).when(selected, |item| item.bg(accent.opacity(0.16))).hover(|item| item.bg(db_hover)).cursor_pointer().on_click(cx.listener(move |this, _, window, cx| {
+                                                        if let Some(view) = this.session.databases.views.iter().find(|view| view.id == active_view_id && view.db == db_id) {
+                                                            let mut definition = quire_core::core::database_view::ViewDefinition::parse(&view.definition);
+                                                            definition.set_date(Some(property_id));
+                                                            match this.session.set_database_view_definition(block_id, active_view_id, definition.to_text()) {
+                                                                Ok(true) => { this.database_calendar_property_open = None; this.schedule_save(true, window, cx); cx.notify(); }
+                                                                Ok(false) => {}
+                                                                Err(error) => { this.status = format!("时间线开始日期保存失败：{error}"); this.error = true; cx.notify(); }
+                                                            }
+                                                        }
+                                                    })).child(property_name)
+                                                }));
+                                            }
+                                            start_picker = start_picker.child(menu);
+                                        }
+                                        timeline_header = timeline_header.child(start_picker);
+
+                                        let end_picker_key = start_picker_key;
+                                        let end_picker_open = self.database_timeline_end_property_open == Some(end_picker_key);
+                                        let mut end_picker = div().id(SharedString::from(format!("db-timeline-end-picker-{}", db_id.0))).relative().ml(px(2.)).px(px(8.)).py(px(4.)).rounded(px(4.)).text_size(px(10.)).text_color(if end_picker_open { accent } else { muted }).hover(|button| button.bg(db_hover)).child(end_property.as_ref().map_or_else(|| "结束：无 ▾".to_owned(), |property| format!("结束：{} ▾", property.name)));
+                                        if !self.session.page.locked {
+                                            end_picker = end_picker.cursor_pointer().on_click(cx.listener(move |this, _, _, cx| {
+                                                this.database_timeline_end_property_open = if this.database_timeline_end_property_open == Some(end_picker_key) { None } else { Some(end_picker_key) };
+                                                cx.notify();
+                                            }));
+                                        }
+                                        if end_picker_open {
+                                            let mut menu = div().id(SharedString::from(format!("db-timeline-end-menu-{}", db_id.0))).absolute().top(px(28.)).left(px(0.)).min_w(px(170.)).max_h(px(200.)).overflow_y_scroll().flex().flex_col().gap(px(2.)).p(px(5.)).rounded(px(6.)).border_1().border_color(db_border).bg(elevated).shadow_lg().on_click(cx.listener(|_, _, _, cx| cx.stop_propagation()));
+                                            let clear_selected = end_property.is_none();
+                                            menu = menu.child(div().id(SharedString::from(format!("db-timeline-end-clear-{}", db_id.0))).w_full().px(px(7.)).py(px(5.)).rounded(px(4.)).text_size(px(11.)).text_color(if clear_selected { accent } else { text }).when(clear_selected, |item| item.bg(accent.opacity(0.16))).hover(|item| item.bg(db_hover)).cursor_pointer().on_click(cx.listener(move |this, _, window, cx| {
+                                                if let Some(view) = this.session.databases.views.iter().find(|view| view.id == active_view_id && view.db == db_id) {
+                                                    let mut definition = quire_core::core::database_view::ViewDefinition::parse(&view.definition);
+                                                    definition.set_end(None);
+                                                    match this.session.set_database_view_definition(block_id, active_view_id, definition.to_text()) {
+                                                        Ok(true) => { this.database_timeline_end_property_open = None; this.schedule_save(true, window, cx); cx.notify(); }
+                                                        Ok(false) => {}
+                                                        Err(error) => { this.status = format!("时间线结束日期保存失败：{error}"); this.error = true; cx.notify(); }
+                                                    }
+                                                }
+                                            })).child("不使用结束日期"));
+                                            menu = menu.children(date_options.iter().map(|property| {
+                                                let property_id = property.id;
+                                                let property_name = property.name.clone();
+                                                let selected = end_property.as_ref().is_some_and(|current| current.id == property_id);
+                                                div().id(SharedString::from(format!("db-timeline-end-option-{}-{}", db_id.0, property_id.0))).w_full().px(px(7.)).py(px(5.)).rounded(px(4.)).text_size(px(11.)).text_color(if selected { accent } else { text }).when(selected, |item| item.bg(accent.opacity(0.16))).hover(|item| item.bg(db_hover)).cursor_pointer().on_click(cx.listener(move |this, _, window, cx| {
+                                                    if let Some(view) = this.session.databases.views.iter().find(|view| view.id == active_view_id && view.db == db_id) {
+                                                        let mut definition = quire_core::core::database_view::ViewDefinition::parse(&view.definition);
+                                                        definition.set_end(Some(property_id));
+                                                        match this.session.set_database_view_definition(block_id, active_view_id, definition.to_text()) {
+                                                            Ok(true) => { this.database_timeline_end_property_open = None; this.schedule_save(true, window, cx); cx.notify(); }
+                                                            Ok(false) => {}
+                                                            Err(error) => { this.status = format!("时间线结束日期保存失败：{error}"); this.error = true; cx.notify(); }
+                                                        }
+                                                    }
+                                                })).child(property_name)
+                                            }));
+                                            end_picker = end_picker.child(menu);
+                                        }
+                                        timeline_header = timeline_header.child(end_picker);
+
+                                        let day_labels = (1..=days_in_month)
+                                            .map(|day| div().w(px(28.)).h(px(22.)).flex_shrink_0().flex().items_center().justify_center().text_size(px(9.)).text_color(muted).child(day.to_string()))
+                                            .collect::<Vec<_>>();
+                                        let axis_header = div()
+                                            .id(SharedString::from(format!("db-timeline-axis-{}", db_id.0)))
+                                            .w_full()
+                                            .h(px(24.))
+                                            .flex()
+                                            .items_center()
+                                            .border_b_1()
+                                            .border_color(db_border)
+                                            .child(div().w(px(200.)).flex_shrink_0().text_size(px(10.)).text_color(muted).child("记录"))
+                                            .child(div().w(px(timeline_width)).flex().children(day_labels));
+
+                                        let timeline_row_repo = timeline_repo.clone();
+                                        let timeline_row_columns = timeline_columns.clone();
+                                        let timeline_row_sorts = timeline_sorts.clone();
+                                        let timeline_row_filter = timeline_filter.clone();
+                                        let timeline_row_search = timeline_search_source.clone();
+                                        let timeline_row_date_index = start_column_index;
+                                        let timeline_row_end_index = end_column_index;
+                                        let timeline_row_days = days_in_month;
+                                        let timeline_row_month = calendar_month;
+                                        let timeline_row_width = timeline_width;
+                                        let timeline_rows = uniform_list(
+                                            SharedString::from(format!("db-timeline-rows-{}", db_id.0)),
+                                            timeline_total,
+                                            cx.processor(move |this, range: Range<usize>, _window, cx| {
+                                                let request = quire_core::core::database::RowRequest {
+                                                    db: db_id,
+                                                    title,
+                                                    columns: &timeline_row_columns,
+                                                    sorts: &timeline_row_sorts,
+                                                    filter: timeline_row_filter.as_ref(),
+                                                    search: timeline_row_search.as_deref(),
+                                                };
+                                                let rows = timeline_row_repo
+                                                    .window_rows(&request, quire_core::core::database::RowWindow { start: range.start, end: range.end })
+                                                    .unwrap_or_default();
+                                                if this.smoke_mode && !this.smoke_timeline_rendered && !rows.is_empty() {
+                                                    this.smoke_timeline_rendered = true;
+                                                    eprintln!("SMOKE: timeline month window rendered dated lanes");
+                                                }
+                                                rows.into_iter()
+                                                    .map(|row| {
+                                                        let record = row.record;
+                                                        let title_text = if row.title.trim().is_empty() { "（无标题）".to_owned() } else { row.title.clone() };
+                                                        let start_day = timeline_row_date_index
+                                                            .and_then(|index| row.cells.get(index))
+                                                            .and_then(|value| quire_core::core::database_view::month_of(value).map(|(year, month)| {
+                                                                if (year, month) < timeline_row_month { 1 }
+                                                                else { quire_core::core::database_view::day_of(value).unwrap_or(1) }
+                                                            }))
+                                                            .map(|day| day as usize);
+                                                        let end_day = timeline_row_end_index
+                                                            .and_then(|index| row.cells.get(index))
+                                                            .and_then(|value| quire_core::core::database_view::month_of(value).map(|(year, month)| {
+                                                                if (year, month) < timeline_row_month { 1 }
+                                                                else if (year, month) > timeline_row_month { timeline_row_days as u32 }
+                                                                else { quire_core::core::database_view::day_of(value).unwrap_or(1) }
+                                                            }))
+                                                            .or_else(|| start_day.map(|day| day as u32))
+                                                            .map(|day| day as usize);
+                                                        let selected = this.selected_database_record == Some((block_id.0, db_id.0, record));
+                                                        let mut track = div().id(SharedString::from(format!("db-timeline-track-{}-{record}", db_id.0))).w(px(timeline_row_width)).h(px(36.)).flex_shrink_0().relative().border_b_1().border_color(db_border.opacity(0.5));
+                                                        if let Some(start_day) = start_day {
+                                                            let start_day = start_day.clamp(1, timeline_row_days);
+                                                            let end_day = end_day.unwrap_or(start_day).clamp(start_day, timeline_row_days);
+                                                            let left = (start_day - 1) as f32 * 28.;
+                                                            let width = if end_property.is_some() { ((end_day - start_day + 1) as f32 * 28.).max(12.) } else { 16. };
+                                                            track = track.child(div().id(SharedString::from(format!("db-timeline-bar-{}-{record}", db_id.0))).absolute().left(px(left)).top(px(9.)).w(px(width)).h(px(18.)).rounded(px(4.)).bg(Palette::color(&this.palette.accent).opacity(0.8)).child(" "));
+                                                        }
+                                                        div()
+                                                            .id(SharedString::from(format!("db-timeline-row-{}-{record}", db_id.0)))
+                                                            .w_full()
+                                                            .h(px(36.))
+                                                            .flex()
+                                                            .items_center()
+                                                            .border_b_1()
+                                                            .border_color(db_border.opacity(0.5))
+                                                            .bg(if selected { Palette::color(&this.palette.accent).opacity(0.1) } else { Palette::color(&this.palette.bg) })
+                                                            .cursor_pointer()
+                                                            .on_click(cx.listener(move |this, _, _, cx| { this.selected_database_record = Some((block_id.0, db_id.0, record)); cx.notify(); }))
+                                                            .child(div().id(SharedString::from(format!("db-timeline-title-{}-{record}", db_id.0))).w(px(200.)).h_full().flex_shrink_0().flex().items_center().px(px(6.)).text_size(px(10.)).text_color(text).child(title_text))
+                                                            .child(track)
+                                                            .into_any_element()
+                                                    })
+                                                    .collect::<Vec<_>>()
+                                            }),
+                                        )
+                                        .h(px(288.))
+                                        .w_full();
+                                        div()
+                                            .id(SharedString::from(format!("db-timeline-{}", db_id.0)))
+                                            .w_full()
+                                            .h(px(370.))
+                                            .flex()
+                                            .flex_col()
+                                            .overflow_x_scroll()
+                                            .child(timeline_header)
+                                            .child(axis_header)
+                                            .child(timeline_rows)
                                             .into_any_element()
                                     } else if active_layout
                                         == quire_core::core::database::ViewLayout::Gallery
@@ -11593,6 +11933,7 @@ impl Workspace {
                                                                 quire_core::core::database::ViewLayout::Board => "看板",
                                                                 quire_core::core::database::ViewLayout::Gallery => "画廊",
                                                                 quire_core::core::database::ViewLayout::Calendar => "日历",
+                                                                quire_core::core::database::ViewLayout::Timeline => "时间线",
                                                                 _ => "表格",
                                                             };
                                                             let mut button = div()
@@ -11621,6 +11962,9 @@ impl Workspace {
                                                                             }
                                                                             quire_core::core::database::ViewLayout::Gallery => {
                                                                                 quire_core::core::database::ViewLayout::Calendar
+                                                                            }
+                                                                            quire_core::core::database::ViewLayout::Calendar => {
+                                                                                quire_core::core::database::ViewLayout::Timeline
                                                                             }
                                                                             _ => {
                                                                                 quire_core::core::database::ViewLayout::Table

@@ -172,6 +172,13 @@ fn run() -> Result<()> {
                 quire_core::core::database::PropertyKind::Date,
             )
             .context("cannot add the calendar smoke property")?;
+        let end_date_property = session
+            .add_database_property(
+                board_block,
+                "结束日期".into(),
+                quire_core::core::database::PropertyKind::Date,
+            )
+            .context("cannot add the timeline smoke end date")?;
         let view = session
             .databases
             .views_of(database)
@@ -180,19 +187,26 @@ fn run() -> Result<()> {
             .id;
         let mut definition = quire_core::core::database_view::ViewDefinition::new();
         definition.set_group(Some(checkbox_property));
+        definition.set_date(Some(date_property));
+        definition.set_end(Some(end_date_property));
         session.set_database_view_definition(board_block, view, definition.to_text())?;
         session.set_database_view_layout(
             board_block,
             view,
             quire_core::core::database::ViewLayout::Board,
         )?;
-        for (title, checked) in [("未完成示例", "false"), ("已完成示例", "true")] {
+        for (title, checked, start, end) in [
+            ("未完成示例", "false", "2026-10-15T14:30", "2026-11-04"),
+            ("已完成示例", "true", "2026-10-15T14:30", "2026-11-04"),
+            ("跨月任务", "false", "2026-09-28", "2026-10-05"),
+        ] {
             let record = session
                 .add_database_record(board_block)
                 .context("cannot add a board smoke record")?;
             session.set_database_cell(board_block, record, title_property, title)?;
             session.set_database_cell(board_block, record, checkbox_property, checked)?;
-            session.set_database_cell(board_block, record, date_property, "2026-10-15T14:30")?;
+            session.set_database_cell(board_block, record, date_property, start)?;
+            session.set_database_cell(board_block, record, end_date_property, end)?;
         }
         session.persistence.force_flush()?;
         eprintln!("Seeded a grouped, two-column board in the isolated smoke database");
@@ -288,7 +302,10 @@ fn run() -> Result<()> {
                         window.on_window_should_close(cx, move |window, cx| {
                             if let Some(view) = weak.upgrade() {
                                 view.update(cx, |view, cx| {
-                                    if tray_available {
+                                    if smoke {
+                                        view.request_close(window, cx);
+                                        cx.quit();
+                                    } else if tray_available {
                                         view.hide_to_tray(window, cx);
                                     } else {
                                         view.request_close(window, cx);
