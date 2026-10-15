@@ -1029,3 +1029,8 @@
 
 - 在当前 Release 可执行文件上启动独立隔离数据库，并通过官方 `@modelcontextprotocol/client@2.3.1` 的 `StreamableHTTPClientTransport` 实际建立 Bearer 鉴权连接。自动协商得到 `2026-07-28`，`tools/list` 返回 16 个工具，调用 `create_note` 后由 `list_notes` 读回中文标题/正文/标签；再以官方客户端强制 legacy 模式协商 `2025-11-25`，列出相同工具并实际调用 `list_pages`、`create_page`，两种传输协议代均通过。
 - 客户端依官方文档使用标准 `Client.connect()` 握手与 Streamable HTTP transport；测试进程结束后关闭临时应用。库与 npm 安装均位于 `%TEMP%`，没有打开默认用户库或改动 Slint 参考树。真实 MCP 调用闭环已由本轮复核；更早版本 SDK 二进制、长时间连接稳定性与宿主应用重启后的客户端自动重连尚未验收。
+
+## 第一百六十三轮：复核同步传输超时边界
+
+- 直接检查 Cargo 锁定的 quire-core `b73af898f88eaa35620b654c6d9b78d8022f56c4` `services/sync/transport.rs`：`connect()` 接收每个操作的 timeout 并传给 `connect_timeout`，但成功建连后把 socket read/write timeout 固定设为 30 秒。因 `sync_with` 对 snapshot/attachment 请求传入 60–120 秒，慢速或大型同步的实际 I/O 仍可能在 30 秒无进展时提前失败。loopback 小数据端到端通过不能覆盖该边界。
+- 该代码属于 GPUI 当前复用的共享 core，不属于本仓库；本轮没有擅改依赖 revision，也没有改动 Slint/core 仓库。同步项与 P6 追踪已标明这一实测代码缺口；需后续通过更新共享 core 或 GPUI 专用网络传输修正，并以限速/大附件回归验证。没有访问真实用户库。
