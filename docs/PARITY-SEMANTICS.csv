@@ -1,7 +1,7 @@
-﻿回调名,实现状态,验证状态,差异,人工语义
+回调名,实现状态,验证状态,差异,人工语义
 toggle-mark,已实现,未验证,工具条和快捷键支持粗体、斜体、删除线、行内代码；选中文字可创建或替换链接目标，Ctrl+点击可打开网页或跳转本地页面；数学块提供 core LaTeX 子集 Unicode 预览,富文本工具条对链接选区以单条可撤销历史项更新 Link 标记，同时保留所选范围外的旧链接片段；其他格式按 UTF-8 字节范围调用 core ToggleMark
 open-link,已实现,未验证,Ctrl+点击普通链接或 @页面提及可打开网页/跳转目标页；Embed 卡片使用同一安全地址校验打开外链,@页面由 core InsertReference 原子命令写入 page URI；外链只允许 http/https/mailto 交给系统打开
-command-invoked,已实现,未验证,"Ctrl+K 打开可过滤的命令面板；Enter 或点击运行当前选择，Escape 关闭，页面命令可跳转","命令、页面列表按名称和分区筛选，键盘最多选择前八条；新建/搜索/侧栏/主题/设置/整理区/页面复制删除/Markdown 导入导出/页面历史前进后退/HTML 默认浏览器打开均路由至现有应用操作"
+command-invoked,已实现,未验证,Ctrl+K 打开可过滤的命令面板；Enter 或点击运行当前选择，Escape 关闭，页面命令可跳转,命令、页面列表按名称和分区筛选，键盘最多选择前八条；新建/搜索/侧栏/主题/设置/整理区/页面复制删除/Markdown 导入导出/页面历史前进后退/HTML 默认浏览器打开均路由至现有应用操作
 palette-move,已实现,未验证,命令面板焦点输入框的上下键移动当前命令选择,"按过滤后的列表索引夹取在 0 到 min(结果数,8)-1"
 palette-query-changed,已实现,未验证,输入文本实时筛选命令和页面标题,与页面搜索共用单行输入实体；面板打开时事件只更新命令查询状态
 palette-open-requested,已实现,未验证,Ctrl+K 打开面板并聚焦命令输入框,关闭其他页面搜索层并重置查询及选择索引
@@ -9,7 +9,7 @@ duplicate-block,已实现,未验证,Ctrl+D 或行尾副本入口复制当前块�
 move-block,已实现,未验证,编辑块悬停操作中的上下箭头在当前页面内移动块；界面交互待桌面验收,调用 core MoveBlock 并保持当前编辑焦点
 block-menu-action,已实现,未验证,块菜单增加“移动到页面”子菜单、“复制块/粘贴到下方”和图片宽度 25/50/100% 子页；复制块保留格式与嵌套子块，数据库/表格单元格/分栏列块不开放粘贴,调用 core MoveBlockToPage 一次移动整棵子树并单步撤销；内部复制使用 InsertForest 保留标记/格式并生成新 ID，一次撤销整棵子树；Ctrl+V 结构化 Markdown 保留 marks/checked/lang，以 InsertForest + 可选空行删除形成一个 undo entry；纯文本/inline-only 内容走原生插入，图片 clipboard entry 进入附件存储；图片宽度走 core SetImageWidth 并持久化；ScratchDir 覆盖块与 Markdown 粘贴、撤销和重开持久化，菜单鼠标仍待桌面验收
 block-drag-hover,已实现,未验证,GPUI 拖动手柄可拖放到可见块行之前；core 拒绝跨兄弟范围、子树内部或自身的无效落点；当前没有旧版的前/后半行区分与拖动落点线,纯 Session 回归覆盖有效/无效落点、撤销/重做和 SQLite 重开；真实鼠标拖动仍待验收
-block-plus,已实现,未验证,"块悬停手柄“＋”在当前块后插入空段落并打开块类型菜单；整行文字过滤、上下键选择、Enter 转换类型，Escape 只关闭菜单并保留空段落","GPUI 通过 core InsertBlockAfter 插入 Paragraph；insert-mode 按整行过滤，普通 slash 转换仍忽略开头斜线；插入与类型转换分别撤销；隔离 Release GUI smoke 直接执行 Workspace 路径并验证 h2 过滤、Enter 选择 Heading2 和两步撤销；真实鼠标命中与菜单位置仍待视觉验收"
+block-plus,已实现,未验证,块悬停手柄“＋”在当前块后插入空段落并打开块类型菜单；整行文字过滤、上下键选择、Enter 转换类型，Escape 只关闭菜单并保留空段落,GPUI 通过 core InsertBlockAfter 插入 Paragraph；insert-mode 按整行过滤，普通 slash 转换仍忽略开头斜线；插入与类型转换分别撤销；隔离 Release GUI smoke 直接执行 Workspace 路径并验证 h2 过滤、Enter 选择 Heading2 和两步撤销；真实鼠标命中与菜单位置仍待视觉验收
 block-dropped,已实现,未验证,在块行上释放时重排到该行之前；文档末尾空白区释放时追加到末尾；不允许锁定页面、跨页或破坏子树,使用 core MoveBlockTo 单步写入并防抖持久化，焦点/光标按 BlockId 恢复
 find-start,已实现,已验证,Ctrl+F 打开当前页面查找浮条；搜索块正文，不包含页面标题、折叠子树与不可编辑容器内容,可从当前文本选区预填查询；命中按可见块顺序枚举，ASCII 大小写不敏感
 find-step,已实现,已验证,查找浮条提供上/下一个并显示命中位置；定位块并选中 UTF-8 文本区间,每次移动重扫当前页；虚拟列表视口外命中会先滚动，等待编辑器挂载后再选中，循环遍历并聚焦
@@ -70,11 +70,11 @@ db-view-added,已实现,未验证,加号创建“表格 N”视图并立即选�
 zoom-in,已实现,未验证,外观设置提供 50%–300% 的整体缩放、加减和复位；不是只放大正文文字。,GPUI 根尺度以原子系数统一换算 view/input 的 px token，旧版阶梯 50/67/75/80/90/100/110/125/150/175/200/250/300%；gpui.ui-scale 持久化，开窗时读取。
 zoom-out,已实现,未验证,整体界面缩小，范围下限 75%，边界时禁用。,同一全局 px 换算路径，值持久化到独立 GPUI 设置。
 zoom-reset,已实现,未验证,一键恢复 100% 界面缩放。,将全局 px 系数和 gpui.ui-scale 同时重置为 1.00。
-"db-cell-activated","已实现","未验证","普通可编辑属性单击后进入内联编辑；Select/Status/MultiSelect 使用选项选择器，Relation 使用目标记录搜索/多选，Files 提供附件入口；锁定页面与派生属性只读","通过 uniform_list 虚拟行按 database/record/property 标识激活；Formula/自动计算属性可配置公式但结果只读"
-"db-cell-changed","已实现","未验证","输入内容经 core database_property::parse_one 校验；Enter 或失焦用 SetDatabaseCell 写入并进入页面撤销栈，非法输入显示错误且不落库","文本/数字/日期/Checkbox/URL/邮箱/电话/Select/Status/MultiSelect/Relation/Files 均有对应显示或编辑入口；附件导入和多值选择的真窗口操作仍待逐项验收"
-"db-cell-closed","已实现","未验证","Enter/失焦提交；Esc 放弃当前输入；非法失焦放弃错误草稿并保留旧值","撤销与重做沿用 core SetDatabaseCell 历史"
-"db-cell-toggled","已实现","未验证","checkbox 属性绘为勾选/未勾选控件，点击直接切换 typed Flag 并保存；锁定页面禁用","点击调用 core SetDatabaseCell，进入同一页面撤销栈；使用 16px 自绘圆角方框与主题强调色勾选；点击事件、命中范围仍待真人操作确认"
-db-column-resized,已实现,未验证,"拖动列头右侧 6px 把手可调整该视图的列宽；拖动中表头与可见行同步预览，松开后持久化；列宽按数据库网格千分比保存并随窗口宽度缩放","复用 core ViewDefinition::width/set_width；mousemove 只更新内存预览，mouseup 通过 SetDatabaseViewDefinition 写入单条可撤销历史并触发自动保存"
+db-cell-activated,已实现,未验证,普通可编辑属性单击后进入内联编辑；Select/Status/MultiSelect 使用选项选择器，Relation 使用目标记录搜索/多选，Files 提供附件入口；锁定页面与派生属性只读,通过 uniform_list 虚拟行按 database/record/property 标识激活；Formula/自动计算属性可配置公式但结果只读
+db-cell-changed,已实现,未验证,输入内容经 core database_property::parse_one 校验；Enter 或失焦用 SetDatabaseCell 写入并进入页面撤销栈，非法输入显示错误且不落库,文本/数字/日期/Checkbox/URL/邮箱/电话/Select/Status/MultiSelect/Relation/Files 均有对应显示或编辑入口；附件导入和多值选择的真窗口操作仍待逐项验收
+db-cell-closed,已实现,未验证,Enter/失焦提交；Esc 放弃当前输入；非法失焦放弃错误草稿并保留旧值,撤销与重做沿用 core SetDatabaseCell 历史
+db-cell-toggled,已实现,未验证,checkbox 属性绘为勾选/未勾选控件，点击直接切换 typed Flag 并保存；锁定页面禁用,点击调用 core SetDatabaseCell，进入同一页面撤销栈；使用 16px 自绘圆角方框与主题强调色勾选；点击事件、命中范围仍待真人操作确认
+db-column-resized,已实现,未验证,拖动列头右侧 6px 把手可调整该视图的列宽；拖动中表头与可见行同步预览，松开后持久化；列宽按数据库网格千分比保存并随窗口宽度缩放,复用 core ViewDefinition::width/set_width；mousemove 只更新内存预览，mouseup 通过 SetDatabaseViewDefinition 写入单条可撤销历史并触发自动保存
 undo-requested,已实现,未验证,Ctrl+Z 撤销当前编辑历史；整理区使用独立撤销栈；IME 组合期间不抢走输入法撤销,应用 core 历史后同步输入控件并恢复焦点；页面与整理区分别沿各自持久化历史撤销
 redo-requested,已实现,未验证,Ctrl+Shift+Z 或 Ctrl+Y 重做；整理区使用独立重做栈,应用 core 历史后同步输入控件并恢复焦点；IME 组合期间忽略快捷键
 toggle-sidebar,已实现,未验证,工具栏快捷键和顶栏入口可折叠/展开侧栏；过渡动画沿用 220ms,侧栏宽度状态保留并使用宽度动画；顶栏与侧栏共同绘制为连续表面
@@ -145,12 +145,11 @@ versions-close,已实现,已验证,关闭版本历史面板并恢复编辑焦点
 org-task-moved,已实现,未验证,任务详情支持移至其他清单且任务多选可批量移动或拖到目标清单侧栏,批量按钮和拖放均通过 set_tasks_list 写入单条 core organizer batch 并保持当前可见顺序；ScratchDir 覆盖撤销重做和重开，隔离 Release GUI smoke 覆盖多选拖放 endpoint；真人拖动仍待桌面验收
 org-bin-restored,已实现,未验证,整理区回收站支持笔记与任务多选并批量恢复当前可见所选项,通过 Session set_notes_trashed/set_tasks_trashed 执行单条 organizer batch；隔离 Release GUI smoke 覆盖双项恢复及单步 undo/redo，真实鼠标操作仍待桌面验收
 org-card-dropped,已实现,未验证,拖动任务单项或已选任务组到清单侧栏或看板列以移动清单,列表行与看板卡片均可拖到收集箱或目标清单；拒绝同清单与回收站目标，所选组按可见顺序使用单条撤销批次；隔离 Release smoke 覆盖移动 endpoint，真实鼠标拖放待桌面验收
-
 org-mode-picked,已实现,未验证,在列表与按清单分列的任务看板间切换,看板显示收集箱和所有清单中的开放任务并保留搜索/标签筛选；卡片支持完成、打开详情、拖至其他列及在本列新建；真实鼠标布局待桌面验收
 org-reply-submitted,已实现,未验证,在笔记详情创建一条指向当前笔记的评论并按时间显示,在线父笔记下创建 title 为空且 ref_note 指向父项的 note；评论独立入 organizer history、支持 undo/redo 与 SQLite 重开；被引用评论从顶层列表过滤并由 MCP list_notes 暴露 ref_note；隔离 smoke 构造完整详情视图树，真人提交/布局待验收
 column-item-move,已实现,未验证,多栏布局内 Tab / Shift+Tab 按列从左至右及列内树序切换内容块焦点；边界停留不触发列表缩进，表格单元格仍优先执行表格导航,跳过 Column 容器，折叠块不遍历隐藏后代，嵌套 Column 不重复计入
 lock-nudge,已实现,未验证,锁定页上的文本编辑、拆分合并、缩进、格式化、删除或复制输入会恢复原文并在状态栏说明如何解锁,core 继续拒绝所有修改；GPUI 阻止输入框暂态文本与持久内容分离
-empty-page-started,已实现,未验证,空白文档区点击或标题输入框按 Enter 会创建首个空段落并将焦点置于起点,锁定空页显示解锁提示；创建后进入普通编辑与持久化流程column-added,已实现,未验证,分栏块最多三列，可通过加列控制继续扩展,新增列和其首个段落由 core 命令写入并可撤销
+empty-page-started,已实现,未验证,空白文档区点击或标题输入框按 Enter 会创建首个空段落并将焦点置于起点,锁定空页显示解锁提示；创建后进入普通编辑与持久化流程column-added
 column-removed,已实现,未验证,仅在超过两列时可移除最右侧列,删除列时 core 将其内容并入前一列并维持块内容
 column-fill,已实现,未验证,空列显示整块可点击的空状态，点击后创建并聚焦首个段落,入口复用 ColumnsAddBlock 并保存；下方添加内容按钮仍可用
 toggle-fold,已实现,未验证,Toggle 块与可折叠标题可切换折叠状态并隐藏/展开后代,写入 core page history 后更新虚拟文档列表
@@ -231,3 +230,15 @@ db-gallery-shaped,已实现,未验证,画廊根据正文区宽度自适应显示
 db-open-record,已实现,未验证,表格标题快捷入口与画廊/日历/时间线/看板记录入口打开记录关联页面，无页面的记录首次打开时延迟创建子页面并绑定记录,页面创建/首段落/RecordPageSet 写入同一持久化批次；隔离 Session 覆盖首次创建、重复打开复用及重启读回
 db-template-saved,已实现,未验证,选中数据库行可设为后续新记录的默认模板,使用 core database_template typed 编解码并通过 DatabaseTemplateSet 持久化；表单创建会合并模板默认值与用户本次输入
 menu-action,已实现,未验证,GPUI 的块/页面/固定侧栏菜单项直接绑定各自的类型化动作处理器，执行转换、颜色、复制/删除/移动、页面管理或导航命令,泛化整数 menu-action 被每个菜单专属闭包替代；源码中各菜单项都有点击处理及边界/锁定校验，真人逐项菜单验收未做
+org-field-edited,已实现,未验证,笔记标题/正文、任务标题/备注/标签/截止日期与子任务输入通过 TextInput 编辑事件更新草稿；按现有失焦/防抖/提交路径写入 Session。,
+org-command-opened,已实现,未验证,笔记列表和任务列表新增“指令…”入口；记录打开时所在页签，清空 JSON 草稿并聚焦多行输入框。,
+org-command-closed,已实现,未验证,取消按钮、遮罩或 Escape 关闭浮层、丢弃输入草稿并将焦点还给主界面。,
+org-command-run,已实现,未验证,通过 GPUI Session 执行 JSON operations，逐项显示成功/失败数；格式错误时保持面板与输入原样，成功解析后保存并关闭。各操作进入现有 core organizer history。,GPUI 按操作逐项写入历史；一次批量执行可能需要多次 Ctrl+Z，和旧版“整个批次一步撤销”不同。运行中操作仍可能部分成功，报告会计数但没有整体回滚。
+org-open-requested,已实现,未验证,整理区侧栏笔记/任务入口和 Ctrl+K 命令路由可切换对应页签；保持当前 Session 与筛选数据。,
+org-command-example,已实现,未验证,按笔记/任务页签复制对应 JSON 示例到系统剪贴板，面板保持打开供粘贴 AI 返回内容。,
+org-query-changed,已实现,未验证,整理区搜索输入事件更新共享查询并即时过滤笔记/任务结果；清空后恢复当前筛选下的列表。,
+org-task-menu-requested,已实现,未验证,任务行新增“⋯”及右键菜单：打开详情、复制内容和唯一 ID、标记完成/未完成、移入回收站；回收站与多选时不弹该菜单。,GPUI 用右键作为触屏长按以外的等价入口；回收站继续展示行内恢复/彻底删除按钮。
+org-note-menu-requested,已实现,未验证,笔记卡片/列表行新增“⋯”及右键菜单：打开详情、复制内容和唯一 ID、置顶/取消置顶、转为任务、移入回收站；回收站与多选时不弹该菜单。,GPUI 用右键替代旧版长按手势；回收站继续展示行内恢复/彻底删除按钮。
+link-apply,已实现,未验证,链接编辑器可添加链接或替换已有链接目标；选中文字或将光标置于既有链接内后应用 URL。,沿用 core ToggleMark；保留选区外的链接片段；URL 仅允许 http/https/mailto/quire://page。
+link-remove,已实现,未验证,链接编辑器新增“移除”；光标在链接内时移除所在链接，选区相交时移除所有相交的完整链接标记。,按链接标记的完整 UTF-8 范围调用 core ToggleMark，避免部分选区留下链接。
+link-cancel,已实现,未验证,链接编辑器提供“取消”，Escape 同样关闭且丢弃 URL 草稿并恢复编辑器焦点。,取消不修改文档；输入框草稿重置。

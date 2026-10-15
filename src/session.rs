@@ -73,6 +73,56 @@ fn snap_left(text: &str, byte: usize) -> usize {
         .map_or(0, |(start, _)| start)
 }
 
+fn resolve_organizer_note(
+    catalog: &OrganizerCatalog,
+    op: &serde_json::Value,
+) -> std::result::Result<NoteId, String> {
+    if let Some(name) = op.get("uuid").and_then(serde_json::Value::as_str) {
+        if let Some(id) = name
+            .strip_prefix("local:")
+            .and_then(|raw| raw.parse::<u64>().ok())
+        {
+            if catalog.note(NoteId(id)).is_some() {
+                return Ok(NoteId(id));
+            }
+        }
+        if let Some(note) = catalog.notes.iter().find(|note| note.uuid == name) {
+            return Ok(note.id);
+        }
+    }
+    if let Some(id) = op.get("id").and_then(serde_json::Value::as_u64) {
+        if catalog.note(NoteId(id)).is_some() {
+            return Ok(NoteId(id));
+        }
+    }
+    Err("需要提供 id 或 uuid 定位笔记".to_owned())
+}
+
+fn resolve_organizer_task(
+    catalog: &OrganizerCatalog,
+    op: &serde_json::Value,
+) -> std::result::Result<TaskId, String> {
+    if let Some(name) = op.get("uuid").and_then(serde_json::Value::as_str) {
+        if let Some(id) = name
+            .strip_prefix("local:")
+            .and_then(|raw| raw.parse::<u64>().ok())
+        {
+            if catalog.task(TaskId(id)).is_some() {
+                return Ok(TaskId(id));
+            }
+        }
+        if let Some(task) = catalog.tasks.iter().find(|task| task.uuid == name) {
+            return Ok(task.id);
+        }
+    }
+    if let Some(id) = op.get("id").and_then(serde_json::Value::as_u64) {
+        if catalog.task(TaskId(id)).is_some() {
+            return Ok(TaskId(id));
+        }
+    }
+    Err("需要提供 id 或 uuid 定位任务".to_owned())
+}
+
 fn split_marks(marks: &[Mark], at: usize) -> (Vec<Mark>, Vec<Mark>) {
     let mut left = Vec::new();
     let mut right = Vec::new();
@@ -4913,6 +4963,412 @@ impl Session {
             task.deleted_at = trashed.then_some(now);
         })
     }
+
+    /// Apply the organizer's JSON command envelope. Each accepted operation goes
+    /// through the same core-backed session methods as a direct edit, so it is
+    /// persisted and undoable. Errors are reported per operation; malformed JSON
+    /// leaves the caller's editor intact.
+    pub fn apply_organizer_commands(&mut self, is_task: bool, json: &str) -> Result<String> {
+        let value: serde_json::Value = serde_json::from_str(json)?;
+        let operations = value
+            .get("operations")
+            .and_then(serde_json::Value::as_array)
+            .filter(|ops| !ops.is_empty())
+            .context("缺少非空 operations 数组")?;
+        let mut succeeded = 0usize;
+        let mut failures = Vec::new();
+        for (index, op) in operations.iter().enumerate() {
+            match self.apply_organizer_operation(is_task, op) {
+                Ok(true) => succeeded += 1,
+                Ok(false) => failures.push(format!("第{}项未产生更改", index + 1)),
+                Err(reason) => failures.push(format!("第{}项：{reason}", index + 1)),
+            }
+        }
+        let mut result = format!("指令完成：成功 {succeeded} / 失败 {}", failures.len());
+        if let Some(first) = failures.first() {
+            result.push_str(&format!("（{first}）"));
+        }
+        Ok(result)
+    }
+
+    fn apply_organizer_operation(
+        &mut self,
+        is_task: bool,
+        op: &serde_json::Value,
+    ) -> std::result::Result<bool, String> {
+        let string = |key: &str| {
+            op.get(key)
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned)
+        };
+        let tags = || {
+            op.get("tags")
+                .and_then(serde_json::Value::as_array)
+                .map(|items| {
+                    items
+                        .iter()
+                        .filter_map(serde_json::Value::as_str)
+                        .map(str::to_owned)
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default()
+        };
+        let action = string("action").ok_or_else(|| "缺少 action 字段".to_owned())?;
+        if is_task && (action == "create" || action == "update" || action == "set_due") {
+            let date = string("due_date");
+            let clear = op.get("clear_due").and_then(serde_json::Value::as_bool) == Some(true);
+            if action == "set_due" && date.is_none() && !clear {
+                return Err("set_due 需要 due_date 或 clear_due".to_owned());
+            }
+            if !clear
+                && date
+                    .as_deref()
+                    .is_some_and(|value| !quire_core::core::date::is_iso_date(value))
+            {
+                return Err("due_date 必须是 YYYY-MM-DD".to_owned());
+            }
+        }
+        if is_task {
+            if let Some(priority) = op.get("priority").and_then(serde_json::Value::as_i64) {
+                if !(0..=3).contains(&priority) {
+                    return Err("priority 必须是 0–3".to_owned());
+                }
+            }
+            if (action == "move" || action == "update")
+                && (op.get("list_id").is_some() || op.get("list_name").is_some())
+            {
+                let list = if let Some(raw) = op.get("list_id").and_then(serde_json::Value::as_u64)
+                {
+                    ListId(raw)
+                } else {
+                    let name =
+                        string("list_name").ok_or_else(|| "move 需要 list_name".to_owned())?;
+                    if name == "收集箱" {
+                        ListId::INBOX
+                    } else {
+                        self.organizer
+                            .lists
+                            .iter()
+                            .find(|list| list.name == name)
+                            .map(|list| list.id)
+                            .ok_or_else(|| format!("清单不存在：{name}"))?
+                    }
+                };
+                if !list.is_inbox() && self.organizer.list(list).is_none() {
+                    return Err(format!("清单不存在：{}", list.0));
+                }
+            }
+        }
+        if !is_task && action == "create" {
+            let id = self.create_note_with_content(
+                string("title").unwrap_or_default(),
+                string("content").unwrap_or_default(),
+                tags(),
+            );
+            if op.get("pinned").and_then(serde_json::Value::as_bool) == Some(true) {
+                self.set_note_pinned(id, true);
+            }
+            return Ok(self.organizer.note(id).is_some());
+        }
+        if is_task && action == "create" {
+            let title = string("title").ok_or_else(|| "创建任务需要 title".to_owned())?;
+            let list = if let Some(raw) = op.get("list_id").and_then(serde_json::Value::as_u64) {
+                ListId(raw)
+            } else if let Some(name) = string("list_name") {
+                self.organizer
+                    .lists
+                    .iter()
+                    .find(|list| list.name == name)
+                    .map(|list| list.id)
+                    .ok_or_else(|| format!("清单不存在：{name}"))?
+            } else {
+                ListId::INBOX
+            };
+            if !list.is_inbox() && self.organizer.list(list).is_none() {
+                return Err(format!("清单不存在：{}", list.0));
+            }
+            let id = self.create_task_in(list, title);
+            if let Some(content) = string("content") {
+                self.update_task_content(
+                    id,
+                    self.organizer
+                        .task(id)
+                        .map(|t| t.title.clone())
+                        .unwrap_or_default(),
+                    content,
+                );
+            }
+            self.set_task_tags(id, tags());
+            if let Some(priority) = op.get("priority").and_then(serde_json::Value::as_i64) {
+                if !(0..=3).contains(&priority) {
+                    return Err("priority 必须是 0–3".to_owned());
+                }
+                self.set_task_priority(id, Priority::from_slot(priority as i32));
+            }
+            if op.get("due_date").is_some() {
+                self.set_task_due(id, string("due_date"));
+            }
+            if op.get("completed").and_then(serde_json::Value::as_bool) == Some(true) {
+                self.set_task_done(id, true);
+            }
+            return Ok(self.organizer.task(id).is_some());
+        }
+        if is_task {
+            let id = resolve_organizer_task(&self.organizer, op)?;
+            let before = self
+                .organizer
+                .task(id)
+                .cloned()
+                .ok_or_else(|| "任务不存在".to_owned())?;
+            match action.as_str() {
+                "update" => {
+                    let title = string("title").unwrap_or(before.title.clone());
+                    let notes = string("content").unwrap_or(before.notes.clone());
+                    self.update_task_content(id, title, notes);
+                    if let Some(repeat) =
+                        string("repeat").and_then(|value| Repeat::try_from_str(&value))
+                    {
+                        self.set_task_repeat(id, repeat);
+                    }
+                    if op.get("tags").is_some() {
+                        self.set_task_tags(id, tags());
+                    }
+                    if let Some(priority) = op.get("priority").and_then(serde_json::Value::as_i64) {
+                        if !(0..=3).contains(&priority) {
+                            return Err("priority 必须是 0–3".to_owned());
+                        }
+                        self.set_task_priority(id, Priority::from_slot(priority as i32));
+                    }
+                    if op.get("due_date").is_some() || op.get("clear_due").is_some() {
+                        self.set_task_due(
+                            id,
+                            if op.get("clear_due").and_then(serde_json::Value::as_bool)
+                                == Some(true)
+                            {
+                                None
+                            } else {
+                                string("due_date")
+                            },
+                        );
+                    }
+                    if op
+                        .get("completed")
+                        .and_then(serde_json::Value::as_bool)
+                        .is_some()
+                    {
+                        self.set_task_done(id, op["completed"].as_bool().unwrap_or(false));
+                    }
+                    if op.get("list_id").is_some() || op.get("list_name").is_some() {
+                        let list = if let Some(raw) =
+                            op.get("list_id").and_then(serde_json::Value::as_u64)
+                        {
+                            ListId(raw)
+                        } else {
+                            let name = string("list_name")
+                                .ok_or_else(|| "move 需要 list_name".to_owned())?;
+                            if name == "收集箱" {
+                                ListId::INBOX
+                            } else {
+                                self.organizer
+                                    .lists
+                                    .iter()
+                                    .find(|list| list.name == name)
+                                    .map(|list| list.id)
+                                    .ok_or_else(|| format!("清单不存在：{name}"))?
+                            }
+                        };
+                        if !list.is_inbox() && self.organizer.list(list).is_none() {
+                            return Err(format!("清单不存在：{}", list.0));
+                        }
+                        self.set_task_list(id, list);
+                    }
+                }
+                "add_tags" | "remove_tags" | "set_tags" => {
+                    let mut next = before.tags.clone();
+                    for tag in tags() {
+                        match action.as_str() {
+                            "add_tags" if !next.contains(&tag) => next.push(tag),
+                            "remove_tags" => next.retain(|old| old != &tag),
+                            _ => {}
+                        }
+                    }
+                    if action == "set_tags" {
+                        next = tags();
+                    }
+                    self.set_task_tags(id, next);
+                }
+                "set_completed" => {
+                    self.set_task_done(
+                        id,
+                        op.get("completed")
+                            .and_then(serde_json::Value::as_bool)
+                            .ok_or_else(|| "set_completed 需要 completed".to_owned())?,
+                    );
+                }
+                "move" => {
+                    let list =
+                        if let Some(raw) = op.get("list_id").and_then(serde_json::Value::as_u64) {
+                            ListId(raw)
+                        } else {
+                            let name = string("list_name")
+                                .ok_or_else(|| "move 需要 list_id 或 list_name".to_owned())?;
+                            if name == "收集箱" {
+                                ListId::INBOX
+                            } else {
+                                self.organizer
+                                    .lists
+                                    .iter()
+                                    .find(|l| l.name == name)
+                                    .map(|l| l.id)
+                                    .ok_or_else(|| format!("清单不存在：{name}"))?
+                            }
+                        };
+                    if !list.is_inbox() && self.organizer.list(list).is_none() {
+                        return Err(format!("清单不存在：{}", list.0));
+                    }
+                    self.set_task_list(id, list);
+                }
+                "set_priority" => {
+                    self.set_task_priority(
+                        id,
+                        Priority::from_slot({
+                            let priority =
+                                op.get("priority")
+                                    .and_then(serde_json::Value::as_i64)
+                                    .ok_or_else(|| "set_priority 需要 priority".to_owned())?;
+                            if !(0..=3).contains(&priority) {
+                                return Err("priority 必须是 0–3".to_owned());
+                            }
+                            priority as i32
+                        }),
+                    );
+                }
+                "set_due" => {
+                    if op.get("clear_due").and_then(serde_json::Value::as_bool) == Some(true) {
+                        self.set_task_due(id, None);
+                    } else {
+                        self.set_task_due(
+                            id,
+                            Some(
+                                string("due_date").ok_or_else(|| {
+                                    "set_due 需要 due_date 或 clear_due".to_owned()
+                                })?,
+                            ),
+                        );
+                    }
+                }
+                "add_subtask" => {
+                    self.add_subtask(id, string("title").unwrap_or_default());
+                }
+                "set_subtask" => {
+                    let subtask_id = op
+                        .get("subtask_id")
+                        .and_then(serde_json::Value::as_u64)
+                        .ok_or_else(|| "set_subtask 需要 subtask_id".to_owned())?;
+                    if !before
+                        .subtasks
+                        .iter()
+                        .any(|subtask| subtask.id == subtask_id)
+                    {
+                        return Err(format!("子任务不存在：{subtask_id}"));
+                    }
+                    let mut changed = false;
+                    if let Some(done) = op.get("completed").and_then(serde_json::Value::as_bool) {
+                        changed |= self.set_subtask_done(id, subtask_id, done);
+                    }
+                    if let Some(title) = string("title") {
+                        changed |= self.set_subtask_title(id, subtask_id, title);
+                    }
+                    if !changed {
+                        return Ok(false);
+                    }
+                }
+                "remove_subtask" => {
+                    let subtask_id = op
+                        .get("subtask_id")
+                        .and_then(serde_json::Value::as_u64)
+                        .ok_or_else(|| "remove_subtask 需要 subtask_id".to_owned())?;
+                    if !before
+                        .subtasks
+                        .iter()
+                        .any(|subtask| subtask.id == subtask_id)
+                    {
+                        return Err(format!("子任务不存在：{subtask_id}"));
+                    }
+                    self.delete_subtask(id, subtask_id);
+                }
+                "comment" => {
+                    let text =
+                        string("content").ok_or_else(|| "comment 需要 content".to_owned())?;
+                    let note = if before.notes.trim().is_empty() {
+                        text
+                    } else {
+                        format!("{}\n\n{}", before.notes, text)
+                    };
+                    self.update_task_content(id, before.title, note);
+                }
+                "delete" => {
+                    self.set_task_trashed(id, true);
+                }
+                "restore" => {
+                    self.set_task_trashed(id, false);
+                }
+                other => return Err(format!("任务不支持动作 {other}")),
+            }
+            return Ok(self.organizer.task(id).is_some());
+        }
+        let id = resolve_organizer_note(&self.organizer, op)?;
+        let before = self
+            .organizer
+            .note(id)
+            .cloned()
+            .ok_or_else(|| "笔记不存在".to_owned())?;
+        match action.as_str() {
+            "update" => {
+                self.update_note_editor(
+                    id,
+                    string("title").unwrap_or(before.title.clone()),
+                    string("content").unwrap_or(before.body.clone()),
+                    if op.get("tags").is_some() {
+                        tags()
+                    } else {
+                        before.tags.clone()
+                    },
+                );
+                if let Some(pinned) = op.get("pinned").and_then(serde_json::Value::as_bool) {
+                    self.set_note_pinned(id, pinned);
+                }
+            }
+            "add_tags" | "remove_tags" | "set_tags" => {
+                let mut next = before.tags.clone();
+                for tag in tags() {
+                    match action.as_str() {
+                        "add_tags" if !next.contains(&tag) => next.push(tag),
+                        "remove_tags" => next.retain(|old| old != &tag),
+                        _ => {}
+                    }
+                }
+                if action == "set_tags" {
+                    next = tags();
+                }
+                self.set_note_tags(id, next);
+            }
+            "comment" => {
+                self.create_note_reply(
+                    id,
+                    string("content").ok_or_else(|| "comment 需要 content".to_owned())?,
+                );
+            }
+            "delete" => {
+                self.set_note_trashed(id, true);
+            }
+            "restore" => {
+                self.set_note_trashed(id, false);
+            }
+            other => return Err(format!("笔记不支持动作 {other}")),
+        };
+        Ok(self.organizer.note(id).is_some())
+    }
     fn update_task(&mut self, id: TaskId, update: impl FnOnce(&mut Task)) -> bool {
         let Some(before) = self.organizer.task(id).cloned() else {
             return false;
@@ -7838,6 +8294,90 @@ mod tests {
         assert!(!note.uuid.is_empty());
         assert!(note.pinned);
         assert!(note.is_trashed());
+        Ok(())
+    }
+
+    #[test]
+    fn organizer_json_commands_apply_and_report_per_operation() -> Result<()> {
+        let scratch = quire_core::testing::ScratchDir::new("gpui-organizer-json-commands");
+        let path = scratch.path().join("test.db");
+        let note_id;
+        {
+            let mut session = Session::open(&path)?;
+            let report = session.apply_organizer_commands(
+                false,
+                r#"{"operations":[
+                {"action":"create","title":"Inbox note","content":"first","tags":["work"]}
+            ]}"#,
+            )?;
+            assert!(report.contains("成功 1 / 失败 0"), "{report}");
+            note_id = session.organizer.live_notes().next().unwrap().id;
+            let uuid = session.organizer.note(note_id).unwrap().uuid.clone();
+            let report = session.apply_organizer_commands(
+                false,
+                &format!(
+                    r#"{{"operations":[
+                {{"action":"update","uuid":"{uuid}","title":"Updated","content":"body"}},
+                {{"action":"add_tags","uuid":"{uuid}","tags":["important"]}},
+                {{"action":"comment","uuid":"{uuid}","content":"reviewed"}},
+                {{"action":"unsupported","uuid":"{uuid}"}}
+            ]}}"#
+                ),
+            )?;
+            assert!(report.contains("成功 3 / 失败 1"), "{report}");
+            assert!(report.contains("笔记不支持动作 unsupported"), "{report}");
+            let note = session.organizer.note(note_id).unwrap();
+            assert_eq!(note.title, "Updated");
+            assert_eq!(note.body, "body");
+            assert_eq!(note.tags, ["work", "important"]);
+            assert!(session.set_note_trashed(note_id, true));
+            let report = session.apply_organizer_commands(
+                false,
+                &format!(
+                    r#"{{"operations":[
+                {{"action":"restore","uuid":"{uuid}"}}
+            ]}}"#
+                ),
+            )?;
+            assert!(report.contains("成功 1 / 失败 0"), "{report}");
+            assert!(!session.organizer.note(note_id).unwrap().is_trashed());
+            let report = session.apply_organizer_commands(true, r#"{"operations":[
+                {"action":"create","title":"Task from JSON","content":"notes","tags":["triage"],"priority":2},
+                {"action":"add_subtask","id":1,"title":"Check"},
+                {"action":"set_subtask","id":1,"subtask_id":1,"completed":true},
+                {"action":"set_completed","id":1,"completed":true}
+            ]}"#)?;
+            assert!(report.contains("成功 4 / 失败 0"), "{report}");
+            let task = session
+                .organizer
+                .live_tasks()
+                .find(|task| task.title == "Task from JSON")
+                .unwrap();
+            assert_eq!(task.priority, Priority::Medium);
+            assert!(task.done);
+            assert_eq!(task.subtasks.len(), 1);
+            assert!(task.subtasks[0].done);
+            let invalid_report = session.apply_organizer_commands(
+                true,
+                r#"{"operations":[
+                {"action":"create","title":"Must not be created","due_date":"not-a-date"}
+            ]}"#,
+            )?;
+            assert!(
+                invalid_report.contains("成功 0 / 失败 1"),
+                "{invalid_report}"
+            );
+            assert!(
+                !session
+                    .organizer
+                    .live_tasks()
+                    .any(|task| task.title == "Must not be created")
+            );
+            session.persistence.force_flush()?;
+        }
+        let mut reopened = Session::open(&path)?;
+        assert_eq!(reopened.organizer.note(note_id).unwrap().title, "Updated");
+        assert!(reopened.apply_organizer_commands(false, "{").is_err());
         Ok(())
     }
 

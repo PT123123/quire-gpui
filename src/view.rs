@@ -88,6 +88,40 @@ fn organizer_notes_copy_payload(notes: &[OrganizerNote]) -> (String, usize) {
     (rows.join("\n\n"), rows.len())
 }
 
+const NOTE_COMMAND_EXAMPLE: &str = r#"{
+  "operations": [
+    {"action": "create", "title": "新笔记", "content": "正文", "tags": ["项目/工作"]},
+    {"action": "update", "uuid": "在此填笔记ID", "title": "改后标题", "content": "改后的正文"},
+    {"action": "add_tags", "uuid": "在此填笔记ID", "tags": ["重要"]},
+    {"action": "remove_tags", "uuid": "在此填笔记ID", "tags": ["待办"]},
+    {"action": "set_tags", "uuid": "在此填笔记ID", "tags": ["项目", "重要"]},
+    {"action": "comment", "uuid": "在此填笔记ID", "content": "追加评论"},
+    {"action": "delete", "uuid": "在此填笔记ID"},
+    {"action": "restore", "uuid": "在此填笔记ID"}
+  ]
+}"#;
+
+const TASK_COMMAND_EXAMPLE: &str = r#"{
+  "operations": [
+    {"action": "create", "title": "新任务", "content": "备注", "tags": ["项目/工作"], "priority": 2, "due_date": "2026-10-01", "list_id": 0},
+    {"action": "update", "uuid": "在此填任务ID", "title": "改后标题", "content": "改后备注"},
+    {"action": "add_tags", "uuid": "在此填任务ID", "tags": ["重要"]},
+    {"action": "remove_tags", "uuid": "在此填任务ID", "tags": ["重要"]},
+    {"action": "set_tags", "uuid": "在此填任务ID", "tags": ["项目", "重要"]},
+    {"action": "set_completed", "uuid": "在此填任务ID", "completed": true},
+    {"action": "move", "uuid": "在此填任务ID", "list_name": "工作"},
+    {"action": "set_priority", "uuid": "在此填任务ID", "priority": 3},
+    {"action": "set_due", "uuid": "在此填任务ID", "due_date": "2026-10-01"},
+    {"action": "set_due", "uuid": "在此填任务ID", "clear_due": true},
+    {"action": "add_subtask", "uuid": "在此填任务ID", "title": "子任务 1"},
+    {"action": "set_subtask", "uuid": "在此填任务ID", "subtask_id": 1, "completed": true},
+    {"action": "remove_subtask", "uuid": "在此填任务ID", "subtask_id": 1},
+    {"action": "comment", "uuid": "在此填任务ID", "content": "追加到备注"},
+    {"action": "delete", "uuid": "在此填任务ID"},
+    {"action": "restore", "uuid": "在此填任务ID"}
+  ]
+}"#;
+
 fn sort_organizer_notes(notes: &mut [OrganizerNote], mode: u8) {
     notes.sort_by(|a, b| {
         b.pinned.cmp(&a.pinned).then_with(|| match mode {
@@ -1164,12 +1198,12 @@ mod view_tests {
         capture_tags, columns_layout_item_ids, database_filter_value_from_text,
         database_group_identity, database_group_label, database_property_kind_choices,
         evaluate_database_formula, evaluate_database_rollup, find_matches_in,
-        gallery_columns_for_width, link_target_range, mention_date_matches,
-        notes_auto_input_enabled, order_database_groups, organizer_notes_copy_payload,
-        organizer_tag_matches_path, organizer_tag_tree_rows, organizer_tags_exclude,
-        organizer_task_drop_accepted, palette_matches, parse_mcp_port, parse_organizer_tags,
-        push_history, settings_matches, settings_section_visible, slash_query,
-        sort_organizer_notes, sort_organizer_tasks, sync_peer_is_recent, sync_targets,
+        gallery_columns_for_width, link_ranges_for_removal, link_target_range,
+        mention_date_matches, notes_auto_input_enabled, order_database_groups,
+        organizer_notes_copy_payload, organizer_tag_matches_path, organizer_tag_tree_rows,
+        organizer_tags_exclude, organizer_task_drop_accepted, palette_matches, parse_mcp_port,
+        parse_organizer_tags, push_history, settings_matches, settings_section_visible,
+        slash_query, sort_organizer_notes, sort_organizer_tasks, sync_peer_is_recent, sync_targets,
         system_palette_id_for_appearance, toc_headings,
     };
     use gpui::WindowAppearance;
@@ -1845,6 +1879,12 @@ mod view_tests {
         assert_eq!(link_target_range(&(0..0), 7, 14, &marks), Some((5, 10)));
         assert_eq!(link_target_range(&(0..0), 12, 12, &marks), None);
         assert_eq!(link_target_range(&(0..0), 4, 14, &marks), None);
+        assert_eq!(link_ranges_for_removal(&(6..7), 6, 14, &marks), [(5, 10)]);
+        assert_eq!(
+            link_ranges_for_removal(&(9..11), 9, 14, &marks),
+            [(5, 10), (10, 14)]
+        );
+        assert_eq!(link_ranges_for_removal(&(0..0), 7, 14, &marks), [(5, 10)]);
     }
 
     #[test]
@@ -1945,6 +1985,28 @@ fn link_target_range(
                 && caret <= mark.end
         })
         .map(|mark| (mark.start, mark.end))
+}
+
+fn link_ranges_for_removal(
+    selection: &Range<usize>,
+    caret: usize,
+    text_len: usize,
+    marks: &[Mark],
+) -> Vec<(usize, usize)> {
+    marks
+        .iter()
+        .filter(|mark| mark.kind == MarkKind::Link && mark.start < mark.end && mark.end <= text_len)
+        .filter(|mark| {
+            if selection.is_empty() {
+                mark.start <= caret && caret <= mark.end
+            } else {
+                mark.start < selection.end && mark.end > selection.start
+            }
+        })
+        .map(|mark| (mark.start, mark.end))
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect()
 }
 
 fn slash_items() -> &'static [(&'static str, &'static str, BlockKind)] {
@@ -2118,6 +2180,7 @@ pub struct Workspace {
     note_body_input: Entity<TextInput>,
     note_reply_input: Entity<TextInput>,
     organizer_capture_input: Entity<TextInput>,
+    organizer_command_input: Entity<TextInput>,
     task_title_input: Entity<TextInput>,
     task_list_name_input: Entity<TextInput>,
     task_due_input: Entity<TextInput>,
@@ -2166,6 +2229,7 @@ pub struct Workspace {
     hovered_page: Option<quire_core::core::types::PageId>,
     page_context_menu: Option<(quire_core::core::types::PageId, f32, f32)>,
     fixed_context_menu: Option<(u8, f32, f32)>,
+    organizer_context_menu: Option<(u8, u64, f32, f32)>,
     hovered_note: Option<quire_core::core::organizer::NoteId>,
     hovered_task: Option<quire_core::core::organizer::TaskId>,
     inputs: BTreeMap<u64, Entity<TextInput>>,
@@ -2217,6 +2281,8 @@ pub struct Workspace {
     mention_selection: usize,
     organizer_open: bool,
     organizer_capture_open: bool,
+    organizer_commands_open: bool,
+    organizer_command_tasks: bool,
     organizer_capture_draft: String,
     organizer_capture_suggestions: Vec<String>,
     organizer_capture_selected: usize,
@@ -2376,6 +2442,11 @@ impl Workspace {
             cx.new(|cx| TextInput::new(String::new(), Vec::new(), 14., window, cx));
         organizer_capture_input.update(cx, |input, _| {
             input.placeholder = Some("写下笔记…（#标签会加入笔记标签）".into());
+        });
+        let organizer_command_input =
+            cx.new(|cx| TextInput::new(String::new(), Vec::new(), 12., window, cx));
+        organizer_command_input.update(cx, |input, _| {
+            input.placeholder = Some("在此粘贴 JSON…".into());
         });
         let task_title_input =
             cx.new(|cx| TextInput::new(String::new(), Vec::new(), 13., window, cx));
@@ -2542,6 +2613,7 @@ impl Workspace {
             note_body_input,
             note_reply_input,
             organizer_capture_input,
+            organizer_command_input,
             task_title_input,
             task_list_name_input,
             task_due_input,
@@ -2590,6 +2662,7 @@ impl Workspace {
             hovered_page: None,
             page_context_menu: None,
             fixed_context_menu: None,
+            organizer_context_menu: None,
             hovered_note: None,
             hovered_task: None,
             inputs: BTreeMap::new(),
@@ -2645,6 +2718,8 @@ impl Workspace {
             mention_selection: 0,
             organizer_open: startup_organizer,
             organizer_capture_open: false,
+            organizer_commands_open: false,
+            organizer_command_tasks: false,
             organizer_capture_draft: String::new(),
             organizer_capture_suggestions: Vec::new(),
             organizer_capture_selected: 0,
@@ -2764,9 +2839,7 @@ impl Workspace {
             window,
             |this, _, event, window, cx| {
                 if matches!(event, InputEvent::DismissSlash) && this.link_editor_open {
-                    this.link_editor_open = false;
-                    this.restore_focus(window, cx);
-                    cx.notify();
+                    this.cancel_link_editor(window, cx);
                 }
             },
         ));
@@ -2893,6 +2966,19 @@ impl Workspace {
                     if let Some(tag) = this.organizer_capture_current_suggestion() {
                         this.pick_organizer_capture_suggestion(tag, window, cx);
                     }
+                }
+                _ => {}
+            },
+        ));
+        let organizer_command_input = this.organizer_command_input.clone();
+        this.subscriptions.push(cx.subscribe_in(
+            &organizer_command_input,
+            window,
+            |this, entity, event, window, cx| match event {
+                InputEvent::Edited { .. } => cx.notify(),
+                InputEvent::Split(_) => entity.update(cx, |input, cx| input.insert_newline(cx)),
+                InputEvent::DismissSlash if this.organizer_commands_open => {
+                    this.close_organizer_commands(window, cx)
                 }
                 _ => {}
             },
@@ -3673,6 +3759,39 @@ impl Workspace {
                     this.note_sort_mode = 0;
                     cx.notify();
                     eprintln!("SMOKE: organizer note created, updated and content sorts rendered");
+                    this.open_organizer_commands(false, window, cx);
+                    assert!(this.organizer_commands_open);
+                    let command_frame = this.render(window, cx);
+                    drop(command_frame);
+                    let command_json = r#"{"operations":[{"action":"create","title":"GPUI command smoke","content":"created by batch command","tags":["smoke"]}]}"#;
+                    this.organizer_command_input.update(cx, |input, cx| {
+                        input.reset("{".into(), Vec::new(), 1, cx);
+                    });
+                    this.run_organizer_commands(window, cx);
+                    assert!(this.organizer_commands_open, "invalid JSON keeps the command dialog open");
+                    assert_eq!(this.organizer_command_input.read(cx).buffer.text, "{");
+                    this.organizer_command_input.update(cx, |input, cx| {
+                        input.reset(command_json.into(), Vec::new(), command_json.len(), cx);
+                    });
+                    this.run_organizer_commands(window, cx);
+                    assert!(!this.organizer_commands_open);
+                    assert!(this.session.organizer.live_notes().any(|note| note.title == "GPUI command smoke"));
+                    eprintln!("SMOKE: organizer JSON command overlay and note batch execution passed");
+                    let menu_note = this.session.create_note_with_content("GPUI menu smoke".into(), "copyable menu note".into(), Vec::new());
+                    this.open_organizer_context_menu(0, menu_note.0, 80., 80., window, cx);
+                    let menu_frame = this.render(window, cx);
+                    drop(menu_frame);
+                    assert!(this.organizer_context_menu.is_some());
+                    this.run_organizer_context_action(0, menu_note.0, 2, window, cx);
+                    assert!(this.session.organizer.note(menu_note).unwrap().pinned);
+                    let menu_task = this.session.create_task("GPUI task menu smoke".into());
+                    this.open_organizer_context_menu(1, menu_task.0, 80., 80., window, cx);
+                    let menu_frame = this.render(window, cx);
+                    drop(menu_frame);
+                    this.run_organizer_context_action(1, menu_task.0, 2, window, cx);
+                    assert!(this.session.organizer.task(menu_task).unwrap().done);
+                    this.schedule_save(true, window, cx);
+                    eprintln!("SMOKE: organizer note/task context menus and their actions passed");
                     assert!(this.command_palette_open);
                     assert_eq!(this.command_palette_query, "设置");
                     assert_eq!(this.palette_items().len(), 1);
@@ -6027,6 +6146,61 @@ impl Workspace {
         self.focus(id, end, window, cx);
         self.schedule_save(false, window, cx);
     }
+    fn cancel_link_editor(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.link_editor_open = false;
+        self.link_target_input.update(cx, |input, cx| {
+            input.reset(String::new(), Vec::new(), 0, cx);
+        });
+        self.restore_focus(window, cx);
+        cx.notify();
+    }
+    fn remove_link(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.composing(cx) || self.closing {
+            return;
+        }
+        let Some(id) = self.active else {
+            return;
+        };
+        let Some(input) = self.inputs.get(&id.0) else {
+            return;
+        };
+        let (selection, caret, marks) = {
+            let input = input.read(cx);
+            (
+                input.buffer.selection.clone(),
+                input.buffer.caret(),
+                input.marks.clone(),
+            )
+        };
+        let text_len = self
+            .session
+            .blocks()
+            .iter()
+            .find(|block| block.id == id)
+            .map(|block| block.text.len())
+            .unwrap_or(0);
+        let ranges = link_ranges_for_removal(&selection, caret, text_len, &marks);
+        if ranges.is_empty() {
+            self.status = "将光标放在链接上或选中要移除的链接".into();
+            cx.notify();
+            return;
+        }
+        let focus_at = ranges.iter().map(|(_, end)| *end).max().unwrap_or(caret);
+        for (start, end) in ranges {
+            self.session.execute(Command::ToggleMark {
+                id,
+                start,
+                end,
+                kind: MarkKind::Link,
+                url: String::new(),
+                date: None,
+            });
+        }
+        self.link_editor_open = false;
+        self.sync_inputs(window, cx);
+        self.focus(id, focus_at, window, cx);
+        self.schedule_save(false, window, cx);
+    }
     fn apply_palette(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
         self.transition_palette = Some(self.palette.clone());
         self.palette = Palette::load(id);
@@ -7996,6 +8170,67 @@ impl Workspace {
         self.refresh_organizer_capture_suggestions(caret, cx);
         window.focus(&self.organizer_capture_input.read(cx).focus);
         cx.notify();
+    }
+    fn open_organizer_commands(
+        &mut self,
+        tasks: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.commit_note_draft(window, cx);
+        self.organizer_command_tasks = tasks;
+        self.organizer_commands_open = true;
+        self.organizer_command_input.update(cx, |input, cx| {
+            input.reset(String::new(), Vec::new(), 0, cx);
+        });
+        window.focus(&self.organizer_command_input.read(cx).focus);
+        cx.notify();
+    }
+    fn close_organizer_commands(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.organizer_commands_open = false;
+        self.organizer_command_input.update(cx, |input, cx| {
+            input.reset(String::new(), Vec::new(), 0, cx);
+        });
+        self.restore_focus(window, cx);
+        cx.notify();
+    }
+    fn copy_organizer_command_example(&mut self, cx: &mut Context<Self>) {
+        let example = if self.organizer_command_tasks {
+            TASK_COMMAND_EXAMPLE
+        } else {
+            NOTE_COMMAND_EXAMPLE
+        };
+        cx.write_to_clipboard(ClipboardItem::new_string(example.to_owned()));
+        self.status = "示例已复制到剪贴板".into();
+        self.error = false;
+        cx.notify();
+    }
+    fn run_organizer_commands(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.commit_note_draft(window, cx);
+        let json = self.organizer_command_input.read(cx).buffer.text.clone();
+        if json.trim().is_empty() {
+            self.status = "指令为空；可点“复制示例”获取模板".into();
+            self.error = true;
+            cx.notify();
+            return;
+        }
+        match self
+            .session
+            .apply_organizer_commands(self.organizer_command_tasks, &json)
+        {
+            Ok(message) => {
+                self.status = message;
+                self.error = false;
+                self.close_organizer_commands(window, cx);
+                self.schedule_save(true, window, cx);
+                cx.notify();
+            }
+            Err(error) => {
+                self.status = format!("指令无法解析：{error}");
+                self.error = true;
+                cx.notify();
+            }
+        }
     }
     fn close_organizer_capture(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.organizer_capture_open = false;
@@ -10106,6 +10341,137 @@ impl Workspace {
         self.fixed_context_menu = Some((target, x, y));
         cx.stop_propagation();
         cx.notify();
+    }
+    fn open_organizer_context_menu(
+        &mut self,
+        kind: u8,
+        id: u64,
+        x: f32,
+        y: f32,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.organizer_trash || self.note_multi_select || self.task_multi_select {
+            return;
+        }
+        let scale = quire_gpui::ui_scale::get();
+        let bounds = window.bounds().size;
+        let width = 196.;
+        let height = if kind == 0 { 170. } else { 142. };
+        self.organizer_context_menu = Some((
+            kind,
+            id,
+            (x / scale).clamp(0., (f32::from(bounds.width) / scale - width).max(0.)),
+            (y / scale).clamp(0., (f32::from(bounds.height) / scale - height).max(0.)),
+        ));
+        cx.stop_propagation();
+        cx.notify();
+    }
+    fn open_organizer_context_from_mouse(
+        &mut self,
+        kind: u8,
+        id: u64,
+        event: &MouseDownEvent,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_organizer_context_menu(
+            kind,
+            id,
+            f32::from(event.position.x),
+            f32::from(event.position.y),
+            window,
+            cx,
+        );
+    }
+    fn open_organizer_context_from_click(
+        &mut self,
+        kind: u8,
+        id: u64,
+        event: &ClickEvent,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_organizer_context_menu(
+            kind,
+            id,
+            f32::from(event.position().x),
+            f32::from(event.position().y),
+            window,
+            cx,
+        );
+    }
+    fn run_organizer_context_action(
+        &mut self,
+        kind: u8,
+        id: u64,
+        action: u8,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.organizer_context_menu = None;
+        if kind == 0 {
+            let id = quire_core::core::organizer::NoteId(id);
+            match action {
+                0 => self.select_note(id, window, cx),
+                1 => {
+                    if let Some(note) = self.session.organizer.note(id) {
+                        let content = if note.body.trim().is_empty() {
+                            note.title.as_str()
+                        } else {
+                            note.body.as_str()
+                        };
+                        let uid = if note.uuid.trim().is_empty() {
+                            format!("local:{}", id.0)
+                        } else {
+                            note.uuid.clone()
+                        };
+                        cx.write_to_clipboard(ClipboardItem::new_string(format!(
+                            "{content}\nID: {uid}"
+                        )));
+                        self.status = "笔记已复制（含唯一 ID）".into();
+                        self.error = false;
+                        cx.notify();
+                    }
+                }
+                2 => self.toggle_note_pin(id, window, cx),
+                3 => self.convert_note_to_task(id, window, cx),
+                4 => self.trash_note(id, window, cx),
+                5 => self.restore_note(id, window, cx),
+                6 => self.purge_note(id, window, cx),
+                _ => {}
+            }
+        } else {
+            let id = quire_core::core::organizer::TaskId(id);
+            match action {
+                0 => self.select_task(id, window, cx),
+                1 => {
+                    if let Some(task) = self.session.organizer.task(id) {
+                        let content = if task.notes.trim().is_empty() {
+                            task.title.clone()
+                        } else {
+                            format!("{}\n\n{}", task.title, task.notes)
+                        };
+                        let uid = if task.uuid.trim().is_empty() {
+                            format!("local:{}", id.0)
+                        } else {
+                            task.uuid.clone()
+                        };
+                        cx.write_to_clipboard(ClipboardItem::new_string(format!(
+                            "{content}\n\nID: {uid}"
+                        )));
+                        self.status = "任务已复制（含唯一 ID）".into();
+                        self.error = false;
+                        cx.notify();
+                    }
+                }
+                2 => self.toggle_task_done(id, window, cx),
+                4 => self.trash_task(id, window, cx),
+                5 => self.restore_task(id, window, cx),
+                6 => self.purge_task(id, window, cx),
+                _ => {}
+            }
+        }
     }
     fn run_fixed_context_action(
         &mut self,
@@ -17865,6 +18231,151 @@ impl Render for Workspace {
                         .child(*label)
                 }))
         });
+        let organizer_command_overlay = self.organizer_commands_open.then(|| {
+            div()
+                .id("organizer-command-overlay")
+                .absolute()
+                .top_0()
+                .right_0()
+                .bottom_0()
+                .left_0()
+                .flex()
+                .items_center()
+                .justify_center()
+                .bg(hsla(0., 0., 0., 0.46))
+                .on_mouse_down(MouseButton::Left, cx.listener(|this, _, window, cx| {
+                    this.close_organizer_commands(window, cx)
+                }))
+                .child(
+                    div()
+                        .id("organizer-command-card")
+                        .w(px(680.))
+                        .h(px(470.))
+                        .max_w(px(760.))
+                        .max_h(px(620.))
+                        .flex()
+                        .flex_col()
+                        .gap(px(10.))
+                        .p(px(18.))
+                        .rounded(px(10.))
+                        .border_1()
+                        .border_color(Palette::color(&p.border))
+                        .bg(linear_gradient(
+                            180.,
+                            linear_color_stop(Palette::color(&p.bg), 0.),
+                            linear_color_stop(Palette::color(&p.grad2), 1.),
+                        ).color_space(ColorSpace::Srgb))
+                        .shadow_lg()
+                        .on_mouse_down(MouseButton::Left, cx.listener(|_, _, _, cx| cx.stop_propagation()))
+                        .child(div().h(px(24.)).text_size(px(16.)).font_weight(FontWeight::SEMIBOLD).text_color(text)
+                            .child(if self.organizer_command_tasks { "批量操作指令（任务）" } else { "批量操作指令（笔记）" }))
+                        .child(div().text_size(px(11.)).text_color(muted)
+                            .child(if self.organizer_command_tasks {
+                                "粘贴 JSON：create / update / delete / restore / add_tags / remove_tags / set_tags / set_completed / move / set_priority / set_due / add_subtask / set_subtask / remove_subtask / comment。目标可用 uuid（推荐）或 id。"
+                            } else {
+                                "粘贴 JSON：create / update / delete / restore / add_tags / remove_tags / set_tags / comment。目标可用 uuid（推荐）或 id。"
+                            }))
+                        .child(div().id("organizer-command-textbox").flex_1().min_h(px(90.)).p(px(8.))
+                            .rounded(px(7.)).border_1().border_color(Palette::color(&p.border))
+                            .bg(Palette::color(&p.elevated)).child(self.organizer_command_input.clone()))
+                        .child(div().flex().items_center().gap(px(8.))
+                            .child(div().id("organizer-command-example").px(px(10.)).py(px(7.)).rounded(px(6.))
+                                .cursor_pointer().text_color(accent).hover(|button| button.bg(Palette::color(&p.elevated)))
+                                .on_click(cx.listener(|this, _, _, cx| this.copy_organizer_command_example(cx)))
+                                .child("复制示例"))
+                            .child(div().flex_1())
+                            .child(div().id("organizer-command-cancel").px(px(10.)).py(px(7.)).rounded(px(6.))
+                                .cursor_pointer().text_color(muted).hover(|button| button.bg(Palette::color(&p.elevated)))
+                                .on_click(cx.listener(|this, _, window, cx| this.close_organizer_commands(window, cx)))
+                                .child("取消"))
+                            .child(div().id("organizer-command-run").px(px(12.)).py(px(7.)).rounded(px(6.))
+                                .cursor_pointer().text_color(Palette::color(&p.bg)).bg(accent)
+                                .hover(|button| button.opacity(0.85))
+                                .on_click(cx.listener(|this, _, window, cx| this.run_organizer_commands(window, cx)))
+                                .child("执行")))
+                )
+        });
+        let organizer_context_overlay = self.organizer_context_menu.map(|(kind, id, x, y)| {
+            let actions: Vec<(&str, u8)> = if self.organizer_trash {
+                vec![("恢复", 5), ("彻底删除", 6)]
+            } else if kind == 0 {
+                let pinned = self
+                    .session
+                    .organizer
+                    .note(quire_core::core::organizer::NoteId(id))
+                    .is_some_and(|note| note.pinned);
+                vec![
+                    ("打开详情", 0),
+                    ("复制内容和 ID", 1),
+                    (if pinned { "取消置顶" } else { "置顶" }, 2),
+                    ("转为任务", 3),
+                    ("移入回收站", 4),
+                ]
+            } else {
+                let done = self
+                    .session
+                    .organizer
+                    .task(quire_core::core::organizer::TaskId(id))
+                    .is_some_and(|task| task.done);
+                vec![
+                    ("打开详情", 0),
+                    ("复制内容和 ID", 1),
+                    (
+                        if done {
+                            "设为未完成"
+                        } else {
+                            "标记完成"
+                        },
+                        2,
+                    ),
+                    ("移入回收站", 4),
+                ]
+            };
+            div()
+                .id("organizer-item-context-menu")
+                .absolute()
+                .left(px(x))
+                .top(px(y))
+                .w(px(196.))
+                .p(px(5.))
+                .rounded(px(8.))
+                .border_1()
+                .border_color(Palette::color(&p.border))
+                .bg(Palette::color(&p.elevated))
+                .shadow_lg()
+                .flex()
+                .flex_col()
+                .gap(px(2.))
+                .on_mouse_down_out(cx.listener(|_, _, window, cx| {
+                    cx.defer_in(window, |this, _, cx| {
+                        this.organizer_context_menu = None;
+                        cx.notify();
+                    });
+                }))
+                .children(actions.into_iter().map(|(label, action)| {
+                    div()
+                        .id(SharedString::from(format!(
+                            "organizer-context-{kind}-{id}-{action}"
+                        )))
+                        .h(px(29.))
+                        .px(px(9.))
+                        .flex()
+                        .items_center()
+                        .rounded(px(4.))
+                        .cursor_pointer()
+                        .text_size(px(12.))
+                        .text_color(if action == 4 || action == 6 {
+                            Hsla::from(rgb(0xe5534b))
+                        } else {
+                            text
+                        })
+                        .hover(|row| row.bg(Palette::color(&p.bg).opacity(0.38)))
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.run_organizer_context_action(kind, id, action, window, cx)
+                        }))
+                        .child(label)
+                }))
+        });
         let kind_buttons =
             [
                 ("段落", BlockKind::Paragraph),
@@ -17966,6 +18477,32 @@ impl Render for Workspace {
                         .flex_1()
                         .min_w_0()
                         .child(self.link_target_input.clone()),
+                )
+                .child(
+                    div()
+                        .id("remove-link")
+                        .px(px(8.))
+                        .py(px(4.))
+                        .rounded(px(4.))
+                        .cursor_pointer()
+                        .text_color(rgb(0xe06c75))
+                        .hover(|button| button.bg(Palette::color(&p.elevated)))
+                        .on_click(cx.listener(|this, _, window, cx| this.remove_link(window, cx)))
+                        .child("移除"),
+                )
+                .child(
+                    div()
+                        .id("cancel-link")
+                        .px(px(8.))
+                        .py(px(4.))
+                        .rounded(px(4.))
+                        .cursor_pointer()
+                        .text_color(muted)
+                        .hover(|button| button.bg(Palette::color(&p.elevated)))
+                        .on_click(
+                            cx.listener(|this, _, window, cx| this.cancel_link_editor(window, cx)),
+                        )
+                        .child("取消"),
                 )
                 .child(
                     div()
@@ -18131,6 +18668,9 @@ impl Render for Workspace {
                     .on_click(
                         cx.listener(move |this, _, window, cx| this.select_note(id, window, cx)),
                     )
+                    .on_mouse_down(MouseButton::Right, cx.listener(move |this, event, window, cx| {
+                        this.open_organizer_context_from_mouse(0, id.0, event, window, cx)
+                    }))
                     .on_hover(cx.listener(move |this, hovered, _, cx| {
                         if *hovered {
                             this.hovered_note = Some(id);
@@ -18245,6 +18785,19 @@ impl Render for Workspace {
                                                         },
                                                     ))
                                                     .child("×"),
+                                            )
+                                        })
+                                        .when(!self.organizer_trash && !self.note_multi_select, |header| {
+                                            header.child(
+                                                div()
+                                                    .id(SharedString::from(format!("organizer-note-menu-{id:?}")))
+                                                    .px(px(3.))
+                                                    .text_color(muted)
+                                                    .cursor_pointer()
+                                                    .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
+                                                        this.open_organizer_context_from_click(0, id.0, event, window, cx)
+                                                    }))
+                                                    .child("⋯"),
                                             )
                                         })
                                 },
@@ -18489,6 +19042,12 @@ impl Render for Workspace {
                     .on_click(
                         cx.listener(move |this, _, window, cx| this.select_task(id, window, cx)),
                     )
+                    .on_mouse_down(
+                        MouseButton::Right,
+                        cx.listener(move |this, event, window, cx| {
+                            this.open_organizer_context_from_mouse(1, id.0, event, window, cx)
+                        }),
+                    )
                     .on_hover(cx.listener(move |this, hovered, _, cx| {
                         if *hovered {
                             this.hovered_task = Some(id);
@@ -18618,6 +19177,25 @@ impl Render for Workspace {
                                             this.purge_task(id, window, cx)
                                         }))
                                         .child("×"),
+                                )
+                            })
+                            .when(!self.organizer_trash && !self.task_multi_select, |row| {
+                                row.child(
+                                    div()
+                                        .id(SharedString::from(format!(
+                                            "organizer-task-menu-{id:?}"
+                                        )))
+                                        .px(px(3.))
+                                        .text_color(muted)
+                                        .cursor_pointer()
+                                        .on_click(cx.listener(
+                                            move |this, event: &ClickEvent, window, cx| {
+                                                this.open_organizer_context_from_click(
+                                                    1, id.0, event, window, cx,
+                                                )
+                                            },
+                                        ))
+                                        .child("⋯"),
                                 )
                             }),
                     )
@@ -19704,6 +20282,12 @@ impl Render for Workspace {
                                                 this.copy_all_visible_notes(&ids, cx)
                                             }))
                                             .child("复制全部"),
+                                    ).child(
+                                        div().id("organizer-note-command-open").px(px(8.)).py(px(6.))
+                                            .rounded(px(5.)).cursor_pointer().text_color(accent)
+                                            .hover(|button| button.bg(Palette::color(&p.bg).opacity(0.25)))
+                                            .on_click(cx.listener(|this, _, window, cx| this.open_organizer_commands(false, window, cx)))
+                                            .child("指令…"),
                                     )
                                 })
                                 .child(div().flex_1())
@@ -19841,6 +20425,11 @@ impl Render for Workspace {
                                     _ => "排序：手动顺序",
                                 }),
                         )
+                        .child(div().id("organizer-task-command-open").px(px(8.)).py(px(5.))
+                            .rounded(px(5.)).cursor_pointer().text_size(px(11.)).text_color(accent)
+                            .hover(|button| button.bg(Palette::color(&p.elevated)))
+                            .on_click(cx.listener(|this, _, window, cx| this.open_organizer_commands(true, window, cx)))
+                            .child("批量操作指令…"))
                         .when(!self.selected_task_ids.is_empty(), |list| {
                             let all_ids = visible_task_ids.clone();
                             let copy_ids = visible_task_ids.clone();
@@ -21807,6 +22396,8 @@ impl Render for Workspace {
                 root.child(command_overlay)
             })
             .when_some(settings_overlay, |root, overlay| root.child(overlay))
+            .when_some(organizer_command_overlay, |root, overlay| root.child(overlay))
+            .when_some(organizer_context_overlay, |root, overlay| root.child(overlay))
             .when_some(page_context_overlay, |root, overlay| root.child(overlay))
             .when_some(fixed_context_overlay, |root, overlay| root.child(overlay))
             .when(self.organizer_capture_open, |root| {

@@ -1354,3 +1354,22 @@
 
 - 根据 GPUI 菜单渲染与点击处理逐项核对 F166 `menu-action`：块菜单的转换/颜色/复制/删除/跨页移动、页面节点管理菜单及固定侧栏入口均通过菜单专属闭包进入真实操作；GPUI 不保留旧版整数菜单动作回调。状态从“未开始”更正为“已实现/未验证”，真人逐项右键验收仍未完成。
 - `tools/extract-parity.mjs` 重生成 246 callbacks / 261 properties / 188 scenes，人工语义 sidecar 成功合并 228 个回调。本轮只有矩阵状态更正，复用刚通过的 101 项测试、dev check、Release build、格式检查与隔离 Release GUI smoke；未访问真实用户库或修改 Slint/core/冻结参考树。
+
+## 第二百二十三轮：整理区 JSON 批量指令面板
+
+- 补齐 F198–F201：笔记/任务列表提供“指令…”入口；面板按打开页签展示操作说明和多行 JSON 输入，支持复制对应示例、执行、取消、遮罩关闭与 Escape。解析失败保持面板和原输入，成功解析后显示成功/失败计数、写入后关闭并恢复焦点。
+- Session 通过现有 core organizer 写入方法执行 note/task `operations`；支持创建、更新、标签增删/覆盖、笔记评论/任务备注评论、软删除/恢复、任务完成、清单移动、优先级、截止日期和子任务增改删。按 uuid（含 `local:<id>`）或 id 定位；校验 JSON、动作、字段、日期、优先级和清单后反馈逐项错误。未支持的 action 会明确拒绝，不会悄悄跳过。
+- 隔离 Session 测试验证笔记与任务动作、逐项计数、错误 JSON、稳定 ID 操作和 SQLite 重开读回。Release GUI smoke 实际挂载该浮层，验证错误 JSON 不清空草稿、随后创建笔记并关闭；此前 MCP/速记/托盘/最大化/虚拟滚动 smoke 同样通过。
+- 确认并记录差异：旧版把整组批量操作作为一个 undo entry；GPUI 当前每项调用 Session 写入，单批可能要多次 Ctrl+Z，若中途出现单项错误则已成功的前序操作保留。后续应合并为 core `exec_all` 原子历史项，并补真人逐行操作验收。
+- `cargo fmt --all -- --check` 通过；本轮全量 `cargo test --locked` 通过（102 项：50 library + 50 binary + 1 MCP stdio + 1 sync loopback）。dev `cargo check --locked` 通过。Release GUI smoke 使用新的随机 `%TEMP%` 子目录和 1000 合成块，完整通过；最初在 `%TEMP%` 根目录被既有 `mcp.json` 安全拒绝，没有覆盖文件，改用隔离子目录后通过。矩阵生成 246 callbacks / 261 properties / 188 scenes，人工语义合并 235 回调。没有访问真实用户库，也未改 Slint/core/冻结参考树。性能报告（编译时间、编译内存、运行时 CPU/内存及与 Slint 对比）按用户要求留到功能实现完成后。
+
+### 第二百二十三轮补充：笔记与任务行菜单
+
+- 补齐 F186/F222：笔记与任务 live 行/卡片现在都有“⋯”入口和鼠标右键菜单，分别提供打开详情、复制唯一 ID、置顶/转任务、完成/移回收站等对应动作；回收站与多选模式不弹该菜单，回收站沿用行内恢复/彻底删除入口。
+- smoke 在隔离 Release 窗口中挂载笔记和任务菜单并调用置顶、完成动作；测试及 GUI smoke 通过后再回填为已实现/未验证。右键输入、真实指针坐标、菜单外点击关闭仍需真人桌面验收。
+
+## 第二百二十四轮：链接标记移除与取消
+
+- 补齐 F038–F040：链接编辑器提供应用/替换链接、移除链接和取消按钮；Escape 取消并恢复编辑器焦点。移除按链接标记完整范围操作，选区只要与链接相交就会删除该链接，避免用部分选区调用 core ToggleMark 后意外添加空 URL 链接。
+- 新增范围选择单测覆盖部分选中、跨边界选中及光标落在链接内；全量测试 103 项通过（50 library + 51 binary + 1 MCP stdio + 1 sync loopback），`cargo check --locked`、`cargo fmt --all -- --check`、Release build 与 `git diff --check` 通过。新建临时目录中的 Release GUI smoke（1000 块）通过，覆盖整理区指令/上下文菜单、速记、托盘、MCP、数据库视图、最大化/还原及虚拟滚动。仅使用隔离数据库。
+- 未访问真实用户库，未修改 Slint/core/冻结参考树。性能评测及 Slint 对照按用户要求留待功能完成后。
