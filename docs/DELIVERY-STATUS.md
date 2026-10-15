@@ -1065,3 +1065,9 @@
 - Ctrl+V 在聚焦编辑块时先检查 GPUI 剪贴板条目：有结构标记的 Markdown 由 core importer 解析成独立块，保留 inline marks、待办 checked 和代码语言；粘贴到空白段落时一并移除占位行，整个结构粘贴只产生一个 undo entry。普通文本和 inline-only Markdown 保持 TextInput 原生光标/选区粘贴；没有文本的图片条目进入现有附件存储并插成 Image block。剪贴板解析或块插入失败时不吞掉普通文本输入。
 - ScratchDir 测试覆盖多块解析、标记/待办/代码语言保留、单步 undo、空白行恢复、重开持久化，以及真实 PNG 字节经隔离附件目录写入并重开读回。参考树未改动。
 - 验证：`cargo fmt --all -- --check`、全量 `cargo test -j 8`（78 项：40 库 + 36 二进制 + 2 集成）、`cargo check -j 8`、`cargo build --release -j 8` 与 `git diff --check` 通过。全新随机临时库 Release GUI smoke（1000 块）通过，覆盖 16 个 MCP 工具、速记提交、托盘隐藏/唤回、最大化/还原和虚拟滚动。Ctrl+V 的 GPUI capture handler 已编译；操作系统实际剪贴板事件/图片格式仍需真人桌面交互验收。没有访问默认用户库或修改 Slint/core。
+
+## 第一百六十九轮：图片块宽度菜单
+
+- 图片块“⋮”菜单新增“图片宽度…”子页，显示旧版一致的 25%、50%、100% 三档及当前选择；选择后菜单保留打开并刷新勾选，宽度命令走 core `SetImageWidth`，沿用已有强制保存路径。图片下方快捷档位继续可用。
+- 扩展隔离附件测试：复制入测试 PNG 后选择 25%，验证 undo/redo、flush/reopen 后附件和宽度均保留。菜单真实鼠标点选尚未在自动化 smoke 中覆盖。
+- 验证：`cargo fmt --all -- --check`、全量 `cargo test -j 8`（78 项：40 库 + 36 二进制 + 2 集成）、`cargo check -j 8`、`cargo build --release -j 8`、`git diff --check` 通过。全新随机临时 SQLite 的 Release GUI smoke（1000 块）通过，覆盖速记提交、托盘隐藏/唤回、MCP 工具鉴权写入、最大化/还原和虚拟滚动。图片宽度子菜单选项的真人鼠标命中仍未自动化；宽度 command 的 undo/redo/reopen 由 ScratchDir 附件测试验证。未访问默认用户库或修改 Slint/core。

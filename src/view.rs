@@ -197,6 +197,7 @@ enum BlockMenuMode {
     Actions,
     Convert,
     MoveToPage,
+    ImageWidth,
 }
 
 #[derive(Clone, Copy)]
@@ -10633,6 +10634,39 @@ impl Workspace {
                                     .into_any_element()
                             })
                             .collect::<Vec<_>>()
+                    } else if mode == BlockMenuMode::ImageWidth {
+                        let selected = self
+                            .session
+                            .document
+                            .block(block_id)
+                            .map(|block| block.img_percent);
+                        [25u16, 50, 100]
+                            .into_iter()
+                            .map(|percent| {
+                                let is_selected = selected == Some(percent);
+                                div()
+                                    .id(SharedString::from(format!(
+                                        "block-menu-image-width-{block_id:?}-{percent}"
+                                    )))
+                                    .w_full()
+                                    .h(px(28.))
+                                    .px(px(9.))
+                                    .flex()
+                                    .items_center()
+                                    .justify_between()
+                                    .rounded(px(4.))
+                                    .cursor_pointer()
+                                    .text_size(px(12.))
+                                    .text_color(text)
+                                    .hover(|item| item.bg(Palette::color(&p.bg).opacity(0.3)))
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        this.set_image_width(block_id, percent, window, cx);
+                                    }))
+                                    .child(format!("{percent}%"))
+                                    .when(is_selected, |row| row.child("✓"))
+                                    .into_any_element()
+                            })
+                            .collect::<Vec<_>>()
                     } else if mode == BlockMenuMode::MoveToPage {
                         self.session
                             .pages
@@ -10666,7 +10700,11 @@ impl Workspace {
                             })
                             .collect::<Vec<_>>()
                     } else {
-                        let mut actions = vec![
+                        let mut actions = Vec::new();
+                        if kind == BlockKind::Image {
+                            actions.push(("图片宽度…", 8));
+                        }
+                        actions.extend([
                             ("转换为…", 0),
                             ("文字颜色", 1),
                             ("背景颜色", 2),
@@ -10674,7 +10712,7 @@ impl Workspace {
                             ("复制块", 6),
                             ("删除", 4),
                             ("移动到页面…", 5),
-                        ];
+                        ]);
                         if !self.session.page.locked
                             && self
                                 .block_clipboard
@@ -10735,6 +10773,10 @@ impl Workspace {
                                             }
                                             7 => this
                                                 .paste_block_from_clipboard(block_id, window, cx),
+                                            8 => {
+                                                this.block_menu_open =
+                                                    Some((block_id, BlockMenuMode::ImageWidth));
+                                            }
                                             _ => {}
                                         }
                                         cx.notify();

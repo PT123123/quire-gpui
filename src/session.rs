@@ -7524,12 +7524,22 @@ mod tests {
         assert_eq!(block.kind, BlockKind::Image);
         let attachment = block.attachment.unwrap();
         assert!(session.attachment_path(attachment).unwrap().exists());
+        session.execute(Command::SetImageWidth {
+            id: image,
+            percent: 25,
+        });
+        assert_eq!(session.document.block(image).unwrap().img_percent, 25);
+        session.undo();
+        assert_eq!(session.document.block(image).unwrap().img_percent, 100);
+        session.redo();
+        assert_eq!(session.document.block(image).unwrap().img_percent, 25);
         session.persistence.force_flush()?;
         drop(session);
         let reopened = Session::open(&path)?;
         let image = reopened.document.block(image).unwrap();
         assert_eq!(image.kind, BlockKind::Image);
         assert_eq!(image.attachment, Some(attachment));
+        assert_eq!(image.img_percent, 25);
         assert!(reopened.attachment_path(attachment).unwrap().exists());
         Ok(())
     }
