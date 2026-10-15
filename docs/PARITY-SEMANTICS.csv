@@ -239,7 +239,7 @@ menu-action,已实现,未验证,GPUI 的块/页面/固定侧栏菜单项直接�
 org-field-edited,已实现,未验证,笔记标题/正文、任务标题/备注/标签/截止日期与子任务输入通过 TextInput 编辑事件更新草稿；按现有失焦/防抖/提交路径写入 Session。,
 org-command-opened,已实现,未验证,笔记列表和任务列表新增“指令…”入口；记录打开时所在页签，清空 JSON 草稿并聚焦多行输入框。,
 org-command-closed,已实现,未验证,取消按钮、遮罩或 Escape 关闭浮层、丢弃输入草稿并将焦点还给主界面。,
-org-command-run,已实现,未验证,通过 GPUI Session 执行 JSON operations，逐项显示成功/失败数；格式错误时保持面板与输入原样，成功解析后保存并关闭。各操作进入现有 core organizer history。,GPUI 按操作逐项写入历史；一次批量执行可能需要多次 Ctrl+Z，和旧版“整个批次一步撤销”不同。运行中操作仍可能部分成功，报告会计数但没有整体回滚。
+org-command-run,已实现,未验证,通过 GPUI Session 执行 JSON operations，逐项显示成功/失败数；格式错误时保持面板与输入原样，成功解析后保存并关闭。所有成功项合为一个 core organizer undo/redo entry。,运行中错误仍允许前序成功操作保留并计数，与旧版成功子集语义相同；一次 Ctrl+Z 撤销全部成功项。
 org-open-requested,已实现,未验证,整理区侧栏笔记/任务入口和 Ctrl+K 命令路由可切换对应页签；保持当前 Session 与筛选数据。,
 org-command-example,已实现,未验证,按笔记/任务页签复制对应 JSON 示例到系统剪贴板，面板保持打开供粘贴 AI 返回内容。,
 org-query-changed,已实现,未验证,整理区搜索输入事件更新共享查询并即时过滤笔记/任务结果；清空后恢复当前筛选下的列表。,

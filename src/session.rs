@@ -55,6 +55,7 @@ pub struct Session {
     attachment_store: AttachmentStore,
     next_attachment_id: u64,
     history: History,
+    organizer_batch: Option<Entry>,
     page_versions: BTreeMap<u64, Vec<(i64, String)>>,
     typing: Option<(BlockId, Entry, Instant)>,
     pending_organizer_delete: Option<PendingOrganizerDelete>,
@@ -779,6 +780,7 @@ impl Session {
             attachment_store,
             next_attachment_id,
             history: History::default(),
+            organizer_batch: None,
             page_versions,
             typing: None,
             pending_organizer_delete: None,
@@ -4964,10 +4966,10 @@ impl Session {
         })
     }
 
-    /// Apply the organizer's JSON command envelope. Each accepted operation goes
-    /// through the same core-backed session methods as a direct edit, so it is
-    /// persisted and undoable. Errors are reported per operation; malformed JSON
-    /// leaves the caller's editor intact.
+    /// Apply the organizer's JSON command envelope. Accepted operations go
+    /// through the same core-backed session methods as direct edits and are
+    /// combined into one undo entry. Errors are reported per operation;
+    /// malformed JSON leaves the caller's editor intact.
     pub fn apply_organizer_commands(&mut self, is_task: bool, json: &str) -> Result<String> {
         let value: serde_json::Value = serde_json::from_str(json)?;
         let operations = value
@@ -4975,6 +4977,11 @@ impl Session {
             .and_then(serde_json::Value::as_array)
             .filter(|ops| !ops.is_empty())
             .context("缺少非空 operations 数组")?;
+        debug_assert!(self.organizer_batch.is_none());
+        self.organizer_batch = Some(Entry {
+            apply: Vec::new(),
+            revert: Vec::new(),
+        });
         let mut succeeded = 0usize;
         let mut failures = Vec::new();
         for (index, op) in operations.iter().enumerate() {
@@ -4983,6 +4990,11 @@ impl Session {
                 Ok(false) => failures.push(format!("第{}项未产生更改", index + 1)),
                 Err(reason) => failures.push(format!("第{}项：{reason}", index + 1)),
             }
+        }
+        if let Some(batch) = self.organizer_batch.take()
+            && !batch.apply.is_empty()
+        {
+            self.history.push(ORGANIZER_STACK, batch);
         }
         let mut result = format!("指令完成：成功 {succeeded} / 失败 {}", failures.len());
         if let Some(first) = failures.first() {
@@ -5397,7 +5409,14 @@ impl Session {
         self.document.apply(&entry.apply);
         self.apply_organizer_changes(&entry.apply);
         self.persistence.record(entry.apply.clone());
-        self.history.push(ORGANIZER_STACK, entry);
+        if let Some(batch) = &mut self.organizer_batch {
+            batch.apply.extend(entry.apply);
+            let mut revert = entry.revert;
+            revert.append(&mut batch.revert);
+            batch.revert = revert;
+        } else {
+            self.history.push(ORGANIZER_STACK, entry);
+        }
     }
     fn apply_organizer_changes(&mut self, changes: &[Change]) {
         for change in changes {
@@ -8330,6 +8349,16 @@ mod tests {
             assert_eq!(note.title, "Updated");
             assert_eq!(note.body, "body");
             assert_eq!(note.tags, ["work", "important"]);
+            assert!(session.undo_organizer());
+            let note = session.organizer.note(note_id).unwrap();
+            assert_eq!(note.title, "Inbox note");
+            assert_eq!(note.body, "first");
+            assert_eq!(note.tags, ["work"]);
+            assert!(session.redo_organizer());
+            let note = session.organizer.note(note_id).unwrap();
+            assert_eq!(note.title, "Updated");
+            assert_eq!(note.body, "body");
+            assert_eq!(note.tags, ["work", "important"]);
             assert!(session.set_note_trashed(note_id, true));
             let report = session.apply_organizer_commands(
                 false,
@@ -8357,6 +8386,11 @@ mod tests {
             assert!(task.done);
             assert_eq!(task.subtasks.len(), 1);
             assert!(task.subtasks[0].done);
+            let task_id = task.id;
+            assert!(session.undo_organizer());
+            assert!(session.organizer.task(task_id).is_none());
+            assert!(session.redo_organizer());
+            assert!(session.organizer.task(task_id).is_some());
             let invalid_report = session.apply_organizer_commands(
                 true,
                 r#"{"operations":[

@@ -71,8 +71,8 @@
 
 - 旧版：笔记和任务页签均可打开“指令…”面板，粘贴 AI 返回的 `{"operations":[...]}`；逐项报告成功/失败，整个成功子集经一个 `exec_all` 历史项提交，因此一次 Ctrl+Z 撤销整个批次。
 - GPUI：已提供同类入口、页签专属示例复制、多行 JSON 输入、操作说明、逐项执行计数、错误保留与关闭后焦点恢复。Session 通过 core organizer 操作持久化笔记/任务的创建、编辑、标签、评论、回收站及任务完成/移动/优先级/截止日期/子任务。
-- 当前差异：GPUI 暂按每个操作调用 Session 公共写入 API，一个 JSON 批次可能产生多个 undo step；运行中失败不会回滚前序成功操作。旧版批次也是容许部分拒绝，但把成功操作作为一条撤销历史。应将解析与命令构建拆开，使用 core `command::exec_all` 组合每条独立命令后再一并提交。
-- 验收：隔离 SQLite Session 测试覆盖 note/task 操作、失败计数与重开读回；Release GUI smoke 挂载输入浮层、先验证错误 JSON 保留原稿，再运行创建笔记的 JSON 并确认关闭。真人鼠标/键盘操作仍待用户桌面反馈。未访问真实用户库。
+- 当前差异：GPUI 与旧版一样保留成功子集、逐项报告失败；Session 暂存各 core-backed 操作的 apply/revert changes，最后合成一条 organizer undo entry。无效操作不会变更；一次 Ctrl+Z 撤销本批所有成功操作，Ctrl+Shift+Z 重做整批。
+- 验收：隔离 SQLite Session 测试覆盖 note 多操作、task 创建及子任务/状态组合的一次撤销和重做，以及失败计数与重开读回；Release GUI smoke 挂载输入浮层、验证错误 JSON 保留原稿，再运行创建笔记的 JSON 并确认关闭。真人鼠标/键盘操作仍待用户桌面反馈。未访问真实用户库。
 
 ## 整理区笔记与任务行菜单（2026-10-16）
 

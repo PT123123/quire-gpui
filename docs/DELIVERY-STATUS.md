@@ -1378,3 +1378,9 @@
 
 - 复核了此前标为“未开始”的数据库列显隐、属性类型选择/返回、主窗口和速记保存；当前 GPUI 已有真实操作路径，这些条目状态已更正为“已实现/未验证”。F049 是旧版桌面未接线的触屏底栏占位回调，GPUI 桌面通过内容块“+”和末尾 Enter 插入，标为不适用。
 - F145 `cancel-editing` 同样依赖旧版“只读/编辑”双状态；GPUI 内容块始终直接编辑，因此没有该状态可取消。Escape 保留给弹层/选择器关闭和明确的草稿取消，不拦截正文或 IME 输入。矩阵标为不适用，并记录架构差异。生成器重跑后人工语义 sidecar 覆盖 246 个回调；这不表示真人逐项验收完成。
+
+## 第二百二十五轮：整理区 JSON 批次单步撤销
+
+- 修复已记录的行为差异：`apply_organizer_commands` 现在在 Session 内暂存每项 core 写入的 apply/revert changes，执行结束后按顺序合成单条 organizer history entry。成功操作仍可部分接受、失败继续逐项反馈；撤销/重做分别一次作用于整批成功操作，不再要多次 Ctrl+Z。
+- 扩展隔离 Session 测试：笔记更新、标签和评论批次一次撤销/重做后字段一致；任务创建、优先级、子任务和完成状态组合一次撤销可整体删除、重做可整体恢复。定向 `cargo test --locked organizer_json_commands_apply_and_report_per_operation` 通过。
+- 全量 `cargo fmt --all -- --check`、`cargo test --locked`（103 项：50 library + 51 binary + 1 MCP stdio + 1 sync loopback）、`cargo check --locked`、`cargo build --release --locked` 与 `git diff --check` 通过。全新临时目录中的 Release GUI smoke（1000 块）通过，覆盖 JSON 指令执行、速记保存、托盘隐藏/唤回、MCP 16 工具、数据库视图、最大化/还原及虚拟滚动。不修改 core、Slint 或冻结参考树；性能比较继续留到最后。
