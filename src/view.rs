@@ -45,6 +45,26 @@ struct DatabaseBoardDragPreview {
 }
 
 #[derive(Clone)]
+struct OrganizerTaskDrag {
+    tasks: Vec<quire_core::core::organizer::TaskId>,
+    source_lists: Vec<quire_core::core::organizer::ListId>,
+    title: String,
+}
+
+struct OrganizerTaskDragPreview {
+    title: String,
+    count: usize,
+}
+
+fn organizer_task_drop_accepted(
+    drag: &OrganizerTaskDrag,
+    target: quire_core::core::organizer::ListId,
+    in_trash: bool,
+) -> bool {
+    !in_trash && drag.source_lists.iter().any(|source| *source != target)
+}
+
+#[derive(Clone)]
 struct EditorBlockDrag {
     block: BlockId,
     page: quire_core::core::types::PageId,
@@ -89,6 +109,26 @@ impl Render for DatabaseBoardDragPreview {
             .text_size(px(11.))
             .text_color(gpui::white())
             .child(self.title.clone())
+    }
+}
+
+impl Render for OrganizerTaskDragPreview {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .max_w(px(280.))
+            .px(px(10.))
+            .py(px(7.))
+            .rounded(px(6.))
+            .border_1()
+            .border_color(rgb(0x5d9dff))
+            .bg(rgb(0x242a35))
+            .text_color(rgb(0xf1f4fa))
+            .text_size(px(12.))
+            .child(if self.count > 1 {
+                format!("{}（另有 {} 项）", self.title, self.count - 1)
+            } else {
+                self.title.clone()
+            })
     }
 }
 
@@ -892,18 +932,19 @@ fn block_clipboard_pasteable(blocks: &[Block]) -> bool {
 #[cfg(test)]
 mod view_tests {
     use super::{
-        capture_tag_replacement, capture_tags, database_filter_value_from_text,
+        OrganizerTaskDrag, capture_tag_replacement, capture_tags, database_filter_value_from_text,
         database_group_identity, database_group_label, database_property_kind_choices,
         evaluate_database_formula, evaluate_database_rollup, find_matches_in, link_target_range,
         mention_date_matches, order_database_groups, organizer_tag_matches_path,
-        organizer_tag_tree_rows, organizer_tags_exclude, palette_matches, parse_mcp_port,
-        parse_organizer_tags, push_history, settings_matches, settings_section_visible,
-        slash_query, sync_peer_is_recent, sync_targets, system_palette_id_for_appearance,
-        toc_headings,
+        organizer_tag_tree_rows, organizer_tags_exclude, organizer_task_drop_accepted,
+        palette_matches, parse_mcp_port, parse_organizer_tags, push_history, settings_matches,
+        settings_section_visible, slash_query, sync_peer_is_recent, sync_targets,
+        system_palette_id_for_appearance, toc_headings,
     };
     use gpui::WindowAppearance;
     use quire_core::core::database::PropertyKind;
     use quire_core::core::database_view::FilterValue;
+    use quire_core::core::organizer::{ListId, TaskId};
     use quire_core::core::types::{
         Block, BlockId, BlockKind, ColorKind, Lang, Mark, MarkKind, OrderKey, PageId,
     };
@@ -934,6 +975,25 @@ mod view_tests {
             parse_organizer_tags(" 设计,复刻， 设计 ,,桌面端 "),
             ["设计", "复刻", "桌面端"]
         );
+    }
+
+    #[test]
+    fn organizer_task_drop_rejects_same_list_and_trash_but_accepts_mixed_selection() {
+        let drag = OrganizerTaskDrag {
+            tasks: vec![TaskId(1), TaskId(2)],
+            source_lists: vec![ListId::INBOX, ListId(8)],
+            title: "第一项".into(),
+        };
+        assert!(organizer_task_drop_accepted(&drag, ListId(9), false));
+        assert!(organizer_task_drop_accepted(&drag, ListId::INBOX, false));
+        assert!(!organizer_task_drop_accepted(&drag, ListId::INBOX, true));
+
+        let same_list = OrganizerTaskDrag {
+            tasks: vec![TaskId(3)],
+            source_lists: vec![ListId(9)],
+            title: "同列任务".into(),
+        };
+        assert!(!organizer_task_drop_accepted(&same_list, ListId(9), false));
     }
 
     #[test]
@@ -2851,6 +2911,25 @@ impl Workspace {
                     );
                     assert!(this.session.redo_organizer());
                     eprintln!("SMOKE: organizer task multi-select move and single-step undo/redo passed");
+
+                    let drag_target = this.session.create_task_list("拖放目标".into());
+                    let drag_tasks = vec![move_a, move_b];
+                    let drag = OrganizerTaskDrag {
+                        tasks: drag_tasks.clone(),
+                        source_lists: vec![move_target, move_target],
+                        title: "批量拖放".into(),
+                    };
+                    assert!(organizer_task_drop_accepted(&drag, drag_target, false));
+                    this.move_tasks_to_list(&drag.tasks, drag_target, window, cx);
+                    assert!(drag_tasks.iter().all(|id| {
+                        this.session.organizer.task(*id).unwrap().list == drag_target
+                    }));
+                    assert!(this.session.undo_organizer());
+                    assert!(drag_tasks.iter().all(|id| {
+                        this.session.organizer.task(*id).unwrap().list == move_target
+                    }));
+                    assert!(this.session.redo_organizer());
+                    eprintln!("SMOKE: organizer selected-task drag payload moves the group atomically");
 
                     let restore_tasks = [
                         this.session.create_task("恢复任务 A".into()),
@@ -7312,7 +7391,16 @@ impl Workspace {
             .copied()
             .filter(|id| self.selected_task_ids.contains(id))
             .collect::<Vec<_>>();
-        if self.session.set_tasks_list(&ids, list) {
+        self.move_tasks_to_list(&ids, list, window, cx);
+    }
+    fn move_tasks_to_list(
+        &mut self,
+        ids: &[quire_core::core::organizer::TaskId],
+        list: quire_core::core::organizer::ListId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.session.set_tasks_list(ids, list) {
             self.selected_task_ids.clear();
             self.task_multi_select = false;
             self.task_bulk_move_open = false;
@@ -16580,7 +16668,21 @@ impl Render for Workspace {
                 } else {
                     task.title
                 };
-                div()
+                let drag_title = title.clone();
+                let drag_tasks = if self.task_multi_select && self.selected_task_ids.contains(&id) {
+                    visible_task_ids
+                        .iter()
+                        .copied()
+                        .filter(|id| self.selected_task_ids.contains(id))
+                        .collect::<Vec<_>>()
+                } else {
+                    vec![id]
+                };
+                let drag_source_lists = drag_tasks
+                    .iter()
+                    .filter_map(|id| self.session.organizer.task(*id).map(|task| task.list))
+                    .collect::<Vec<_>>();
+                let mut row = div()
                     .id(SharedString::from(format!("organizer-task-{id:?}")))
                     .w_full()
                     .px(px(9.))
@@ -16746,7 +16848,21 @@ impl Render for Workspace {
                                     meta.child(format!("✓ {subtask_done}/{subtask_total}"))
                                 }),
                         )
-                    })
+                    });
+                if !self.organizer_trash {
+                    let drag = OrganizerTaskDrag {
+                        tasks: drag_tasks,
+                        source_lists: drag_source_lists,
+                        title: drag_title,
+                    };
+                    row = row.on_drag(drag, |drag, _, _, cx| {
+                        cx.new(|_| OrganizerTaskDragPreview {
+                            title: drag.title.clone(),
+                            count: drag.tasks.len(),
+                        })
+                    });
+                }
+                row
             })
             .collect::<Vec<_>>();
         let task_summary = self.selected_task.and_then(|id| {
@@ -16803,7 +16919,7 @@ impl Render for Workspace {
                             || view != 4 && (!task.done || self.show_task_done))
                 })
                 .count();
-            div()
+            let mut chip = div()
                 .id(SharedString::from(format!("organizer-smart-view-{view}")))
                 .px(px(8.))
                 .py(px(5.))
@@ -16819,8 +16935,31 @@ impl Render for Workspace {
                 })
                 .on_click(cx.listener(move |this, _, window, cx| {
                     this.select_task_smart_view(view, window, cx)
-                }))
-                .child(format!("{label} · {count}"))
+                }));
+            if view == 0 {
+                let is_trash = self.organizer_trash;
+                chip = chip
+                    .can_drop(move |value, _, _| {
+                        value
+                            .downcast_ref::<OrganizerTaskDrag>()
+                            .is_some_and(|drag| {
+                                organizer_task_drop_accepted(
+                                    drag,
+                                    quire_core::core::organizer::ListId::INBOX,
+                                    is_trash,
+                                )
+                            })
+                    })
+                    .on_drop(cx.listener(|this, drag: &OrganizerTaskDrag, window, cx| {
+                        this.move_tasks_to_list(
+                            &drag.tasks,
+                            quire_core::core::organizer::ListId::INBOX,
+                            window,
+                            cx,
+                        )
+                    }));
+            }
+            chip.child(format!("{label} · {count}"))
         })
         .collect::<Vec<_>>();
         let task_list_buttons = task_lists
@@ -16830,6 +16969,7 @@ impl Render for Workspace {
                 let list_name = list.name.clone();
                 let list_color = list.color;
                 let editing = self.task_list_editing == Some(id);
+                let is_trash = self.organizer_trash;
                 let menu_open = self.task_list_menu_open == Some(id);
                 let color_menu_open = self.task_list_color_open == Some(id);
                 let count = self
@@ -16847,89 +16987,100 @@ impl Render for Workspace {
                             && !organizer_tags_exclude(&task.tags, &self.organizer_excluded_tags)
                     })
                     .count();
-                let row = div()
-                    .id(SharedString::from(format!("organizer-list-row-{id:?}")))
-                    .flex()
-                    .items_center()
-                    .gap(px(3.))
-                    .child(
-                        div()
-                            .id(SharedString::from(format!("organizer-list-color-{id:?}")))
-                            .w(px(20.))
-                            .h(px(25.))
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .text_size(px(12.))
-                            .text_color(
-                                Palette::load(&self.theme_choice).block_text(list_color.slot()),
-                            )
-                            .child("●"),
-                    )
-                    .when(editing, |row| {
-                        row.flex_1().child(
+                let row =
+                    div()
+                        .id(SharedString::from(format!("organizer-list-row-{id:?}")))
+                        .flex()
+                        .items_center()
+                        .gap(px(3.))
+                        .child(
                             div()
-                                .id(SharedString::from(format!("organizer-list-rename-{id:?}")))
-                                .flex_1()
-                                .h(px(28.))
-                                .px(px(5.))
-                                .rounded(px(4.))
-                                .bg(Palette::color(&p.bg).opacity(0.25))
-                                .child(self.task_list_name_input.clone()),
-                        )
-                    })
-                    .when(!editing, |row| {
-                        row.child(
-                            div()
-                                .id(SharedString::from(format!("organizer-list-{id:?}")))
-                                .flex_1()
-                                .min_w_0()
-                                .px(px(8.))
-                                .py(px(5.))
-                                .rounded(px(5.))
-                                .cursor_pointer()
-                                .text_color(
-                                    if self.selected_task_smart_view.is_none()
-                                        && self.selected_task_list == id
-                                    {
-                                        accent
-                                    } else {
-                                        muted
-                                    },
-                                )
-                                .when(
-                                    self.selected_task_smart_view.is_none()
-                                        && self.selected_task_list == id,
-                                    |chip| chip.bg(Palette::color(&p.elevated)),
-                                )
-                                .on_click(cx.listener(move |this, _, window, cx| {
-                                    this.select_task_list(id, window, cx)
-                                }))
-                                .child(format!("{} · {count}", list_name)),
-                        )
-                    })
-                    .when(!editing, |row| {
-                        row.child(
-                            div()
-                                .id(SharedString::from(format!(
-                                    "organizer-list-menu-button-{id:?}"
-                                )))
-                                .w(px(24.))
+                                .id(SharedString::from(format!("organizer-list-color-{id:?}")))
+                                .w(px(20.))
                                 .h(px(25.))
-                                .px(px(8.))
-                                .rounded(px(5.))
-                                .cursor_pointer()
                                 .flex()
                                 .items_center()
                                 .justify_center()
-                                .text_color(if menu_open { accent } else { muted })
-                                .hover(|button| button.text_color(accent))
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    this.toggle_task_list_menu(id, cx)
-                                }))
-                                .child("⋯"),
+                                .text_size(px(12.))
+                                .text_color(
+                                    Palette::load(&self.theme_choice).block_text(list_color.slot()),
+                                )
+                                .child("●"),
                         )
-                    });
+                        .when(editing, |row| {
+                            row.flex_1().child(
+                                div()
+                                    .id(SharedString::from(format!("organizer-list-rename-{id:?}")))
+                                    .flex_1()
+                                    .h(px(28.))
+                                    .px(px(5.))
+                                    .rounded(px(4.))
+                                    .bg(Palette::color(&p.bg).opacity(0.25))
+                                    .child(self.task_list_name_input.clone()),
+                            )
+                        })
+                        .when(!editing, |row| {
+                            row.child(
+                                div()
+                                    .id(SharedString::from(format!("organizer-list-{id:?}")))
+                                    .flex_1()
+                                    .min_w_0()
+                                    .px(px(8.))
+                                    .py(px(5.))
+                                    .rounded(px(5.))
+                                    .cursor_pointer()
+                                    .text_color(
+                                        if self.selected_task_smart_view.is_none()
+                                            && self.selected_task_list == id
+                                        {
+                                            accent
+                                        } else {
+                                            muted
+                                        },
+                                    )
+                                    .when(
+                                        self.selected_task_smart_view.is_none()
+                                            && self.selected_task_list == id,
+                                        |chip| chip.bg(Palette::color(&p.elevated)),
+                                    )
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        this.select_task_list(id, window, cx)
+                                    }))
+                                    .can_drop(move |value, _, _| {
+                                        value.downcast_ref::<OrganizerTaskDrag>().is_some_and(
+                                            |drag| organizer_task_drop_accepted(drag, id, is_trash),
+                                        )
+                                    })
+                                    .on_drop(cx.listener(
+                                        move |this, drag: &OrganizerTaskDrag, window, cx| {
+                                            this.move_tasks_to_list(&drag.tasks, id, window, cx)
+                                        },
+                                    ))
+                                    .child(format!("{} · {count}", list_name)),
+                            )
+                        })
+                        .when(!editing, |row| {
+                            row.child(
+                                div()
+                                    .id(SharedString::from(format!(
+                                        "organizer-list-menu-button-{id:?}"
+                                    )))
+                                    .w(px(24.))
+                                    .h(px(25.))
+                                    .px(px(8.))
+                                    .rounded(px(5.))
+                                    .cursor_pointer()
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .text_color(if menu_open { accent } else { muted })
+                                    .hover(|button| button.text_color(accent))
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        this.toggle_task_list_menu(id, cx)
+                                    }))
+                                    .child("⋯"),
+                            )
+                        });
                 div()
                     .id(SharedString::from(format!(
                         "organizer-list-container-{id:?}"

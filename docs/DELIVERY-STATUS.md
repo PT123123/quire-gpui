@@ -1132,3 +1132,9 @@
 
 - 回收站此前只有逐项恢复入口，多选模式只对活动项目开放。现在笔记/任务回收站都可开启多选、全选当前可见项，并一次性恢复所选记录；GPUI 使用现有 core organizer 批量状态变更，因此整个恢复操作可单步撤销/重做。
 - 隔离 Release GUI smoke 覆盖笔记与任务的双项恢复和 undo/redo。验证：`cargo fmt --all -- --check`、`cargo test --locked`（85 项：42 库 + 41 二进制 + 1 stdio + 1 sync loopback）、`cargo check --locked`、`cargo build --release --locked` 与 `git diff --check` 通过；全新 `%TEMP%` 隔离 SQLite Release GUI smoke（1000 块）通过，并覆盖整理区批量恢复、批量移动、速记、托盘、MCP、窗口最大化/还原和虚拟滚动。没有访问真实用户库，未改 Slint/core/冻结参考树。
+
+## 第一百八十一轮：整理区任务拖放移动
+
+- 任务列表行现可拖到侧栏中的收集箱或任意清单。单项拖动只移动该任务；若拖动多选中任务，则按当前可见顺序移动整组。源清单与目标相同、回收站状态均拒绝 drop；落地复用 set_tasks_list 原子批次，支持单步撤销/重做并保留重开持久化。拖动预览显示任务标题及选中数量。
+- 隔离 Release smoke 调用同一 payload/drop 更新路径覆盖多选移动与撤销/重做；纯逻辑测试覆盖同清单拒绝、回收站拒绝、跨清单和收集箱目标。真人鼠标拖放布局仍待桌面验收。参考树与真实用户库未访问。
+- 验证：`cargo fmt --all -- --check`、`cargo test --locked`（86 项：42 库 + 42 二进制 + 1 stdio + 1 sync loopback）、`cargo check --locked`、`cargo build --release --locked` 与 `git diff --check` 均通过。全新 `%TEMP%` 隔离 SQLite 的 Release GUI smoke（1000 块）通过拖放组移动 endpoint 及撤销/重做，并覆盖速记、托盘、MCP、最大化/还原和虚拟滚动。
