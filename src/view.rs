@@ -55,6 +55,12 @@ struct EditorBlockDragPreview {
     title: String,
 }
 
+#[derive(Clone)]
+enum MentionOption {
+    Date(String),
+    Page(quire_core::core::types::Page),
+}
+
 impl Render for EditorBlockDragPreview {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
         div()
@@ -856,6 +862,10 @@ fn slash_query(text: &str, insert_mode: bool) -> String {
     query.to_lowercase()
 }
 
+fn mention_date_matches(query: &str, today: &str) -> bool {
+    query.is_empty() || "today".contains(query) || today.contains(query)
+}
+
 fn block_clipboard_pasteable(blocks: &[Block]) -> bool {
     blocks.iter().any(|block| {
         block.parent.is_none()
@@ -872,9 +882,9 @@ mod view_tests {
         capture_tag_replacement, capture_tags, database_filter_value_from_text,
         database_group_identity, database_group_label, database_property_kind_choices,
         evaluate_database_formula, evaluate_database_rollup, find_matches_in, link_target_range,
-        order_database_groups, organizer_tag_matches_path, organizer_tag_tree_rows,
-        organizer_tags_exclude, palette_matches, parse_mcp_port, parse_organizer_tags,
-        push_history, slash_query, sync_peer_is_recent, sync_targets,
+        mention_date_matches, order_database_groups, organizer_tag_matches_path,
+        organizer_tag_tree_rows, organizer_tags_exclude, palette_matches, parse_mcp_port,
+        parse_organizer_tags, push_history, slash_query, sync_peer_is_recent, sync_targets,
         system_palette_id_for_appearance, toc_headings,
     };
     use gpui::WindowAppearance;
@@ -1019,6 +1029,15 @@ mod view_tests {
         assert_eq!(slash_query("标题", true), "标题");
         assert_eq!(slash_query("/标题", true), "/标题");
         assert_eq!(slash_query("Heading", true), "heading");
+    }
+
+    #[test]
+    fn mention_picker_keeps_today_available_for_empty_today_and_iso_queries() {
+        let today = "2026-10-15";
+        assert!(mention_date_matches("", today));
+        assert!(mention_date_matches("tod", today));
+        assert!(mention_date_matches("2026-10", today));
+        assert!(!mention_date_matches("project", today));
     }
 
     #[test]
@@ -2618,6 +2637,35 @@ impl Workspace {
                     eprintln!("SMOKE: persisted MCP startup, HTTP auth, UI dispatch and note write passed");
                 });
                 let _ = weak.update_in(cx, |this, window, cx| {
+                    this.session.execute(Command::AppendBlock {
+                        kind: BlockKind::Paragraph,
+                        text: "@today".into(),
+                    });
+                    let date_block = this.session.blocks().last().unwrap().id;
+                    let today = quire_core::core::today_iso();
+                    this.mention_menu = Some((date_block, 0, "today".into()));
+                    let date_option = this
+                        .mention_matches()
+                        .into_iter()
+                        .find(|option| matches!(option, MentionOption::Date(_)))
+                        .expect("@today should offer the current date");
+                    this.select_mention(date_block, 0, date_option, window, cx);
+                    let inserted = this.session.document.block(date_block).unwrap();
+                    assert_eq!(inserted.text, today);
+                    assert!(inserted.marks.iter().any(|mark| {
+                        mark.kind == MarkKind::Date && mark.date.as_deref() == Some(today.as_str())
+                    }));
+                    this.session.undo();
+                    assert_eq!(
+                        this.session.document.block(date_block).unwrap().text,
+                        "@today",
+                        "the date atom and trigger undo together"
+                    );
+                    this.session.execute(Command::DeleteBlock { id: date_block });
+                    this.sync_inputs(window, cx);
+                    this.mention_menu = None;
+                    eprintln!("SMOKE: @today inserts a Date atom and undoes atomically");
+
                     let smoke_list = this.session.create_task_list("smoke 清单".into());
                     this.toggle_task_list_menu(smoke_list, cx);
                     assert_eq!(this.task_list_menu_open, Some(smoke_list));
@@ -3696,11 +3744,11 @@ impl Workspace {
                     .filter(|(mention_id, _, _)| *mention_id == id)
                 {
                     let matches = self.mention_matches();
-                    if let Some(page) = matches
+                    if let Some(option) = matches
                         .get(self.mention_selection.min(matches.len().saturating_sub(1)))
                         .cloned()
                     {
-                        self.select_mention(mention_id, at, page, window, cx);
+                        self.select_mention(mention_id, at, option, window, cx);
                         return;
                     }
                 }
@@ -4527,25 +4575,34 @@ impl Workspace {
         self.focus(inserted, 0, window, cx);
         self.schedule_save(false, window, cx);
     }
-    fn mention_matches(&self) -> Vec<quire_core::core::types::Page> {
+    fn mention_matches(&self) -> Vec<MentionOption> {
         let Some((_, _, query)) = &self.mention_menu else {
             return Vec::new();
         };
-        self.session
-            .pages
-            .iter()
-            .filter(|page| {
-                !page.template && (query.is_empty() || page.title.to_lowercase().contains(query))
-            })
-            .take(20)
-            .cloned()
-            .collect()
+        let today = quire_core::core::today_iso();
+        let mut matches = Vec::new();
+        if mention_date_matches(query, &today) {
+            matches.push(MentionOption::Date(today));
+        }
+        matches.extend(
+            self.session
+                .pages
+                .iter()
+                .filter(|page| {
+                    !page.template
+                        && (query.is_empty() || page.title.to_lowercase().contains(query))
+                })
+                .take(20)
+                .cloned()
+                .map(MentionOption::Page),
+        );
+        matches
     }
     fn select_mention(
         &mut self,
         id: BlockId,
         at: usize,
-        page: quire_core::core::types::Page,
+        option: MentionOption,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -4553,14 +4610,23 @@ impl Workspace {
             return;
         }
         self.mention_menu = None;
-        let caret = at + page.title.len();
+        let (label, kind, url, date) = match option {
+            MentionOption::Date(date) => (date.clone(), MarkKind::Date, String::new(), Some(date)),
+            MentionOption::Page(page) => (
+                page.title,
+                MarkKind::Mention,
+                quire_core::core::page_uri(page.id),
+                None,
+            ),
+        };
+        let caret = at + label.len();
         self.session.execute(Command::InsertReference {
             id,
             at,
-            label: page.title,
-            kind: quire_core::core::types::MarkKind::Mention,
-            url: quire_core::core::page_uri(page.id),
-            date: None,
+            label,
+            kind,
+            url,
+            date,
         });
         self.sync_inputs(window, cx);
         self.focus(id, caret, window, cx);
@@ -10277,18 +10343,26 @@ impl Workspace {
                         .flex()
                         .items_center()
                         .text_color(muted)
-                        .child("没有匹配页面"),
+                        .child("没有匹配的日期或页面"),
                 ]
             } else {
                 matches
                     .into_iter()
                     .enumerate()
-                    .map(|(option_index, page)| {
-                        let page_id = page.id;
-                        let title = page.title.clone();
+                    .map(|(option_index, option)| {
+                        let (id, label, hint) = match &option {
+                            MentionOption::Date(date) => {
+                                (format!("date-{date}"), date.clone(), "今天".to_owned())
+                            }
+                            MentionOption::Page(page) => (
+                                format!("page-{}", page.id.0),
+                                page.title.clone(),
+                                "页面".to_owned(),
+                            ),
+                        };
                         div()
                             .id(SharedString::from(format!(
-                                "mention-option-{block_id:?}-{page_id:?}"
+                                "mention-option-{block_id:?}-{id}"
                             )))
                             .w_full()
                             .h(px(28.))
@@ -10303,10 +10377,10 @@ impl Workspace {
                                 option.bg(Palette::color(&p.elevated))
                             })
                             .on_click(cx.listener(move |this, _, window, cx| {
-                                this.select_mention(block_id, at, page.clone(), window, cx)
+                                this.select_mention(block_id, at, option.clone(), window, cx)
                             }))
-                            .child(title)
-                            .child(div().text_size(px(10.)).text_color(muted).child("页面"))
+                            .child(label)
+                            .child(div().text_size(px(10.)).text_color(muted).child(hint))
                     })
                     .collect::<Vec<_>>()
             }

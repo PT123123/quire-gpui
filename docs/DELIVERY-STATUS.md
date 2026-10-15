@@ -1077,3 +1077,9 @@
 - 按用户最新优先级复核速记窗口、托盘/主窗口生命周期、同步 UI 与 MCP 服务的当前实现；托盘现在同时响应 Windows Shell 的左键单击和双击唤回主界面，避免 Shell 只投递双击通知时无法恢复窗口。
 - 本轮没有更改速记、同步和 MCP 业务路径；隔离 Release GUI smoke 已实际启动临时 SQLite 窗口，并通过 16 个 MCP 工具发现、Bearer HTTP 写笔记、速记输入/标签抽取/提交、托盘隐藏/ShowMain 唤回、窗口最大化/还原及 1000 块虚拟滚动。全部 `cargo test --locked`（78 项：40 库 + 36 二进制 + 1 stdio + 1 sync 集成）、`cargo fmt --all -- --check`、`cargo check --locked`、`cargo build --release --locked` 通过。
 - 双击分支已编译通过，但 Shell 的真实托盘单/双击、菜单及多屏行为仍需真人桌面验收；同步仍需两台实体设备与真实网络验证，MCP 外部宿主长连接/重启恢复也未声称通过。未访问默认用户库或修改 Slint/core。
+
+## 第一百七十一轮：补齐 @今天日期引用
+
+- 对照冻结 Slint 旧版的 mention picker，发现 GPUI 之前只列页面、缺少首项“今天”日期。现在 `@` 菜单会按空查询、`today` 或当前 ISO 日期匹配显示日期项；选择时通过 core `InsertReference` 写入 `MarkKind::Date` 与 ISO date payload，页面项仍写入 `MarkKind::Mention`。支持鼠标与既有上下键/Enter 选择；一次撤销恢复触发文本。
+- 新增隔离 Session 回归，验证日期标记 undo/redo 与 SQLite 重开；Release GUI smoke 直接运行 Workspace picker/选择路径，断言日期文本、标记类型、payload 和原子撤销。更正了计划中已落地的 Markdown 导入导出、Relation/Rollup 与页面引用状态；不更改 Slint/core/参考树。
+- 验证：`cargo fmt --all -- --check`、`cargo test --locked`（80 项：41 库 + 37 二进制 + 1 stdio 集成 + 1 双 Session 同步集成）、`cargo check --locked`、`cargo build --release --locked` 与新建随机临时库 Release GUI smoke（1000 块）通过。Smoke 同时覆盖 MCP HTTP 鉴权写入、速记、托盘隐藏/唤回、最大化/还原和虚拟滚动。真实候选框布局、多屏/缩放外观仍需桌面验收；没有访问真实用户库。

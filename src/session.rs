@@ -7019,6 +7019,47 @@ mod tests {
     }
 
     #[test]
+    fn date_mention_is_atomic_and_survives_reopen() -> Result<()> {
+        let scratch = quire_core::testing::ScratchDir::new("gpui-date-mention");
+        let path = scratch.path().join("test.db");
+        let block_id;
+        let today = quire_core::core::today_iso();
+        {
+            let mut session = Session::open(&path)?;
+            block_id = session.blocks()[0].id;
+            session.execute(Command::ReplaceText {
+                id: block_id,
+                text: "@today".into(),
+            });
+            session.execute(Command::InsertReference {
+                id: block_id,
+                at: 0,
+                label: today.clone(),
+                kind: quire_core::core::types::MarkKind::Date,
+                url: String::new(),
+                date: Some(today.clone()),
+            });
+            let block = session.document.block(block_id).unwrap();
+            assert_eq!(block.text, today);
+            assert_eq!(block.marks.len(), 1);
+            assert_eq!(block.marks[0].kind, quire_core::core::types::MarkKind::Date);
+            assert_eq!(block.marks[0].date.as_deref(), Some(today.as_str()));
+            session.undo();
+            assert_eq!(session.document.block(block_id).unwrap().text, "@today");
+            assert!(session.document.block(block_id).unwrap().marks.is_empty());
+            session.redo();
+            session.persistence.force_flush()?;
+        }
+        let reopened = Session::open(&path)?;
+        let block = reopened.document.block(block_id).unwrap();
+        assert_eq!(block.text, today);
+        assert_eq!(block.marks.len(), 1);
+        assert_eq!(block.marks[0].kind, quire_core::core::types::MarkKind::Date);
+        assert_eq!(block.marks[0].date.as_deref(), Some(today.as_str()));
+        Ok(())
+    }
+
+    #[test]
     fn organizer_capture_suggestions_match_full_or_leaf_tags_and_cap_results() -> Result<()> {
         let scratch = quire_core::testing::ScratchDir::new("gpui-capture-tags");
         let mut session = Session::open(&scratch.path().join("capture.db"))?;
