@@ -1007,6 +1007,10 @@ fn settings_matches(query: &str, keywords: &str) -> bool {
     query.is_empty() || keywords.to_lowercase().contains(&query)
 }
 
+fn notes_auto_input_enabled(value: Option<&str>) -> bool {
+    value.is_none_or(|value| !matches!(value, "0" | "false"))
+}
+
 fn settings_section_visible(query: &str, selected_tab: usize, tab: usize, keywords: &str) -> bool {
     if query.trim().is_empty() {
         selected_tab == tab
@@ -1075,12 +1079,12 @@ mod view_tests {
         OrganizerTaskDrag, capture_tag_replacement, capture_tags, columns_layout_item_ids,
         database_filter_value_from_text, database_group_identity, database_group_label,
         database_property_kind_choices, evaluate_database_formula, evaluate_database_rollup,
-        find_matches_in, link_target_range, mention_date_matches, order_database_groups,
-        organizer_notes_copy_payload, organizer_tag_matches_path, organizer_tag_tree_rows,
-        organizer_tags_exclude, organizer_task_drop_accepted, palette_matches, parse_mcp_port,
-        parse_organizer_tags, push_history, settings_matches, settings_section_visible,
-        slash_query, sort_organizer_notes, sort_organizer_tasks, sync_peer_is_recent, sync_targets,
-        system_palette_id_for_appearance, toc_headings,
+        find_matches_in, link_target_range, mention_date_matches, notes_auto_input_enabled,
+        order_database_groups, organizer_notes_copy_payload, organizer_tag_matches_path,
+        organizer_tag_tree_rows, organizer_tags_exclude, organizer_task_drop_accepted,
+        palette_matches, parse_mcp_port, parse_organizer_tags, push_history, settings_matches,
+        settings_section_visible, slash_query, sort_organizer_notes, sort_organizer_tasks,
+        sync_peer_is_recent, sync_targets, system_palette_id_for_appearance, toc_headings,
     };
     use gpui::WindowAppearance;
     use quire_core::core::database::PropertyKind;
@@ -1091,6 +1095,15 @@ mod view_tests {
     use quire_core::core::types::{
         Block, BlockId, BlockKind, ColorKind, Lang, Mark, MarkKind, OrderKey, PageId,
     };
+
+    #[test]
+    fn notes_auto_input_defaults_on_and_honors_persisted_off_values() {
+        assert!(notes_auto_input_enabled(None));
+        assert!(notes_auto_input_enabled(Some("1")));
+        assert!(notes_auto_input_enabled(Some("true")));
+        assert!(!notes_auto_input_enabled(Some("0")));
+        assert!(!notes_auto_input_enabled(Some("false")));
+    }
 
     #[test]
     fn system_palette_tracks_gpui_light_and_dark_appearances() {
@@ -2155,6 +2168,9 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) -> Self {
         let startup_notice = session.startup_notice.take();
+        let startup_organizer = session.startup_area == "organizer";
+        let startup_note_capture =
+            startup_organizer && notes_auto_input_enabled(session.setting("notes.auto_input"));
         if smoke && startup_notice.is_some() {
             eprintln!("SMOKE: Workspace mounted the database recovery warning banner");
         }
@@ -2479,7 +2495,7 @@ impl Workspace {
             slash_insert_mode: None,
             mention_menu: None,
             mention_selection: 0,
-            organizer_open: false,
+            organizer_open: startup_organizer,
             organizer_capture_open: false,
             organizer_capture_draft: String::new(),
             organizer_capture_suggestions: Vec::new(),
@@ -4141,11 +4157,17 @@ impl Workspace {
             }
         })
         .detach();
-        if this
-            .session
-            .setting("gpui.quick-note-on-start")
-            .unwrap_or("false")
-            == "true"
+        if startup_note_capture {
+            this.organizer_open = true;
+            this.organizer_tasks = false;
+            this.open_organizer_capture(window, cx);
+        }
+        if !this.organizer_capture_open
+            && this
+                .session
+                .setting("gpui.quick-note-on-start")
+                .unwrap_or("false")
+                == "true"
         {
             this.open_quick_note(cx);
         }
@@ -7710,6 +7732,7 @@ impl Workspace {
         self.commit_note_draft(window, cx);
         let id = self.session.create_note();
         self.organizer_open = true;
+        self.mark_current_area("organizer", window, cx);
         self.selected_note = None;
         self.select_note(id, window, cx);
         self.schedule_save(true, window, cx);
@@ -7983,6 +8006,7 @@ impl Workspace {
             .create_task_in(self.selected_task_list, "新任务".into());
         self.organizer_open = true;
         self.organizer_tasks = true;
+        self.mark_current_area("organizer", window, cx);
         self.selected_note = None;
         self.selected_task = None;
         self.select_task(id, window, cx);
@@ -8022,6 +8046,9 @@ impl Workspace {
         self.task_list_menu_open = None;
         self.task_list_color_open = None;
         self.organizer_tasks = tasks;
+        if self.organizer_open {
+            self.mark_current_area("organizer", window, cx);
+        }
         self.search_query.clear();
         self.search_input.update(cx, |input, cx| {
             input.placeholder = Some(
@@ -8804,6 +8831,11 @@ impl Workspace {
         self.commit_note_draft(window, cx);
         self.organizer_open = !self.organizer_open;
         if self.organizer_open {
+            self.mark_current_area("organizer", window, cx);
+        } else {
+            self.mark_current_area("docs", window, cx);
+        }
+        if self.organizer_open {
             self.search_query.clear();
             let placeholder = if self.organizer_tasks {
                 "搜索任务…"
@@ -8856,6 +8888,22 @@ impl Workspace {
         });
         self.restore_focus(window, cx);
         cx.notify();
+    }
+    fn mark_current_area(
+        &mut self,
+        area: &'static str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.session.startup_area != area {
+            if area == "organizer" {
+                self.session.mark_home_area();
+            } else {
+                self.session.mark_document_area();
+            }
+            self.session.startup_area = area.to_owned();
+            self.schedule_save(false, window, cx);
+        }
     }
     fn open_data_folder(&mut self, cx: &mut Context<Self>) {
         let Some(directory) = self.session.path.parent() else {
@@ -9102,7 +9150,16 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if id == self.session.page.id || self.closing || self.composing(cx) {
+        if self.closing || self.composing(cx) {
+            return;
+        }
+        if id == self.session.page.id {
+            if self.organizer_open {
+                self.organizer_open = false;
+                self.mark_current_area("docs", window, cx);
+                self.restore_focus(window, cx);
+                cx.notify();
+            }
             return;
         }
         if self
@@ -9168,6 +9225,8 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         if self.session.select_page(id) {
+            self.organizer_open = false;
+            self.mark_current_area("docs", window, cx);
             self.session.visit_page(id);
             self.mention_menu = None;
             self.find_index = None;
@@ -9754,6 +9813,7 @@ impl Workspace {
             (0, 2) => self.toggle_theme_picker(window, cx),
             (1, 0) => {
                 self.organizer_open = true;
+                self.mark_current_area("organizer", window, cx);
                 self.toggle_organizer_tab(false, window, cx);
             }
             (1, 1) => {
@@ -9762,6 +9822,7 @@ impl Workspace {
             }
             (2, 0) => {
                 self.organizer_open = true;
+                self.mark_current_area("organizer", window, cx);
                 self.toggle_organizer_tab(true, window, cx);
             }
             (2, 1) => self.create_task(window, cx),
@@ -9864,6 +9925,8 @@ impl Workspace {
         let Some(duplicate) = self.session.duplicate_page(id) else {
             return;
         };
+        self.organizer_open = false;
+        self.mark_current_area("docs", window, cx);
         Self::push_page_history(&mut self.page_history_back, previous_page);
         self.page_history_forward.clear();
         self.session.visit_page(duplicate);
@@ -9942,6 +10005,8 @@ impl Workspace {
         }
         let previous = self.session.page.id;
         self.session.create_page(None);
+        self.organizer_open = false;
+        self.mark_current_area("docs", window, cx);
         let id = self.session.page.id;
         Self::push_page_history(&mut self.page_history_back, previous);
         self.page_history_forward.clear();
@@ -9964,6 +10029,8 @@ impl Workspace {
         }
         let previous = self.session.page.id;
         self.session.create_page(Some(parent));
+        self.organizer_open = false;
+        self.mark_current_area("docs", window, cx);
         let id = self.session.page.id;
         Self::push_page_history(&mut self.page_history_back, previous);
         self.page_history_forward.clear();
@@ -10531,6 +10598,21 @@ impl Workspace {
             "启动时自动弹出速记{}",
             if next { "已开启" } else { "已关闭" }
         );
+        self.schedule_save(false, window, cx);
+    }
+    fn toggle_notes_auto_input(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let enabled = self
+            .session
+            .setting("notes.auto_input")
+            .is_none_or(|value| !matches!(value, "0" | "false"));
+        let next = !enabled;
+        self.session
+            .set_setting("notes.auto_input", if next { "1" } else { "0" });
+        self.status = format!(
+            "笔记区启动时自动弹出输入框已{}",
+            if next { "开启" } else { "关闭" }
+        );
+        self.error = false;
         self.schedule_save(false, window, cx);
     }
     fn toggle_lan_sharing(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -15867,6 +15949,7 @@ impl Render for Workspace {
             .setting("gpui.quick-note-on-start")
             .unwrap_or("false")
             == "true";
+        let notes_auto_input = notes_auto_input_enabled(self.session.setting("notes.auto_input"));
         let hotkey_notice = self.hotkey_notice.clone();
         let tray_available = self.tray_available;
         let lan_share_enabled = self.session.setting("lan.share") == Some("1");
@@ -16214,19 +16297,28 @@ impl Render for Workspace {
                                 .child("整个界面一起放大或缩小 · Ctrl+= / Ctrl+- 步进，Ctrl+0 复位"),
                                 ))
                         ))
-                        .when(settings_section_visible(&self.search_query, self.settings_tab, 1, "通用 启动 自动弹出 新建笔记 速记 全局 Alt+N Alt+M 主界面 局域网 共享 端口 5877 托盘 startup hotkey"), |dialog| dialog.child(
+                        .when(settings_section_visible(&self.search_query, self.settings_tab, 1, "通用 启动 自动弹出 新建笔记 笔记 notes 速记 全局 Alt+N Alt+M 主界面 局域网 共享 端口 5877 托盘 startup hotkey"), |dialog| dialog.child(
                             div().flex().flex_col().gap(px(14.))
                                 .when(settings_matches(&self.search_query, "通用 当前工作区"), |panel| panel.child(
                                     div().text_size(px(12.)).text_color(muted).child("通用 · 当前工作区"),
                                 ))
                                 .when(settings_matches(&self.search_query, "启动 startup 自动弹出 新建笔记 速记 capture"), |panel| panel.child(
                                     div().flex().justify_between().items_center()
-                                        .child("启动时自动弹出新建笔记输入框")
+                                        .child("启动时自动打开独立速记小窗")
                                         .child(div().id("quick-note-on-start").px(px(8.)).py(px(4.)).rounded(px(4.))
                                             .border_1().border_color(Palette::color(&p.border)).cursor_pointer()
                                             .text_color(if quick_note_on_start { accent } else { muted })
                                             .on_click(cx.listener(|this, _, window, cx| this.toggle_quick_note_on_start(window, cx)))
                                             .child(if quick_note_on_start { "● 已开启" } else { "○ 已关闭" })),
+                                ))
+                                .when(settings_matches(&self.search_query, "笔记 notes 启动 startup 自动弹出输入框 organizer"), |panel| panel.child(
+                                    div().flex().justify_between().items_center()
+                                        .child("上次停留在笔记区时，启动后自动打开新建笔记")
+                                        .child(div().id("notes-auto-input").px(px(8.)).py(px(4.)).rounded(px(4.))
+                                            .border_1().border_color(Palette::color(&p.border)).cursor_pointer()
+                                            .text_color(if notes_auto_input { accent } else { muted })
+                                            .on_click(cx.listener(|this, _, window, cx| this.toggle_notes_auto_input(window, cx)))
+                                            .child(if notes_auto_input { "● 已开启" } else { "○ 已关闭" })),
                                 ))
                                 .when(settings_matches(&self.search_query, "全局 alt+n 速记 快捷键 hotkey"), |panel| panel.child(
                                     div().flex().justify_between().items_center()

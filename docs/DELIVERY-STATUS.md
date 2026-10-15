@@ -1261,3 +1261,8 @@
 
 - 逐项核验并回填 F041、F176、F187、F209/F210：启动存储提示可关闭；设置通过遮罩或 Escape 退出并恢复内容焦点；整理区待提交删除支持撤销；Alt+N/Alt+M 先注册或注销平台热键，成功后持久化，失败不保存并给出提示。
 - 这些路径均已存在，F187 另有 Session 延迟提交/撤销回归测试，设置关闭路径已有 Release smoke 调用。`tools/extract-parity.mjs` 重生成矩阵并成功合并 sidecar。代码未改，复用刚通过的完整验证；真人点击/热键设备验收仍未做。
+
+## 第二百零六轮：恢复上次所在区域与笔记区启动输入
+
+- 对齐旧版 `current-area` / `current-page` 元数据：GPUI 启动时恢复上次文档页；若上次停留在整理区，则回到笔记页。进入文档/整理区都会更新旧版兼容元数据。笔记区启动捕获受共享设置 `notes.auto_input` 控制，缺省开启；设置页将其与独立 GPUI 速记小窗启动选项区分显示。选中当前文档时点击侧栏行也能从整理区返回文档。
+- 新增隔离 SQLite 重开测试，覆盖文档页恢复、整理区恢复及切回文档后的恢复；设置默认/关闭值测试通过。`cargo fmt --all -- --check`、`cargo test --locked`（96 项：47 库 + 47 二进制 + 1 stdio + 1 sync loopback）、`cargo check --locked`、`cargo build --release --locked` 和 `git diff --check` 均通过。唯一临时目录和 SQLite 的 1000 块 Release GUI smoke 退出码 0；smoke 走默认文档启动路径，启动落点与自动输入条件由隔离 SQLite/设置单测覆盖。未访问真实用户库，也没有修改 Slint/core/冻结参考树。

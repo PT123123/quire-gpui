@@ -42,6 +42,7 @@ pub struct PendingOrganizerDelete {
 pub struct Session {
     pub path: PathBuf,
     pub startup_notice: Option<String>,
+    pub startup_area: String,
     pub pages: Vec<Page>,
     settings: BTreeMap<String, String>,
     pub page: Page,
@@ -627,6 +628,16 @@ impl Session {
             .context("无法打开库；不会覆盖或重建已有文件")?;
         let repo = Arc::new(repo);
         let loaded = repo.load()?;
+        let startup_area = loaded
+            .meta
+            .get("current-area")
+            .cloned()
+            .unwrap_or_else(|| "docs".to_owned());
+        let restored_current = loaded
+            .meta
+            .get("current-page")
+            .and_then(|id| id.parse::<u64>().ok())
+            .map(PageId);
         let mut page_versions: BTreeMap<u64, Vec<(i64, String)>> = BTreeMap::new();
         for (page, created, label) in loaded.meta.iter().filter_map(|(key, label)| {
             quire_core::storage::versions::parse_key(key)
@@ -659,9 +670,9 @@ impl Session {
         let attachment_store = AttachmentStore::for_db(Some(path));
         let mut pages = loaded.pages.clone();
         pages.sort_by_key(|p| p.order);
-        let selected = pages
-            .iter()
-            .find(|p| !p.template && p.parent.is_none())
+        let selected = restored_current
+            .and_then(|id| pages.iter().find(|page| page.id == id && !page.template))
+            .or_else(|| pages.iter().find(|p| !p.template && p.parent.is_none()))
             .cloned()
             .or_else(|| pages.iter().find(|p| !p.template).cloned());
         let create_initial_page = selected.is_none();
@@ -705,6 +716,7 @@ impl Session {
         let mut session = Self {
             path: path.into(),
             startup_notice: open_report_notice(&open_report, repo.path().unwrap_or(path)),
+            startup_area,
             pages,
             settings: loaded.settings,
             page,
@@ -3226,6 +3238,24 @@ impl Session {
     pub fn setting(&self, key: &str) -> Option<&str> {
         self.settings.get(key).map(String::as_str)
     }
+    pub fn mark_home_area(&self) {
+        self.persistence.record(vec![Change::MetaSet {
+            key: "current-area".into(),
+            value: "organizer".into(),
+        }]);
+    }
+    pub fn mark_document_area(&self) {
+        self.persistence.record(vec![
+            Change::MetaSet {
+                key: "current-page".into(),
+                value: self.page.id.0.to_string(),
+            },
+            Change::MetaSet {
+                key: "current-area".into(),
+                value: "docs".into(),
+            },
+        ]);
+    }
     pub fn recent_pages(&self) -> Vec<PageId> {
         self.setting("gpui.recent-pages")
             .unwrap_or_default()
@@ -5731,6 +5761,36 @@ mod tests {
         assert!(notice.contains("启动备份"));
         assert!(notice.contains(r"C:\old\appdata"));
         assert!(notice.contains(r"C:\QuireGPUI\quire.db"));
+    }
+
+    #[test]
+    fn startup_restores_last_area_and_open_document_from_core_metadata() -> Result<()> {
+        let scratch = quire_core::testing::ScratchDir::new("gpui-startup-area");
+        let path = scratch.path().join("quire.db");
+        let (expected_page, expected_title);
+        {
+            let mut session = Session::open(&path)?;
+            expected_page = session.create_page(None);
+            expected_title = session.page.title.clone();
+            session.mark_document_area();
+            session.persistence.force_flush()?;
+            session.mark_home_area();
+            session.persistence.force_flush()?;
+        }
+
+        let reopened = Session::open(&path)?;
+        assert_eq!(reopened.startup_area, "organizer");
+        assert_eq!(reopened.page.id, expected_page);
+        assert_eq!(reopened.page.title, expected_title);
+
+        let mut reopened = reopened;
+        reopened.mark_document_area();
+        reopened.persistence.force_flush()?;
+        drop(reopened);
+        let reopened = Session::open(&path)?;
+        assert_eq!(reopened.startup_area, "docs");
+        assert_eq!(reopened.page.id, expected_page);
+        Ok(())
     }
 
     #[test]
