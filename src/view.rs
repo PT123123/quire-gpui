@@ -9554,6 +9554,9 @@ impl Workspace {
                                         );
                                     let list_layout =
                                         active_layout == quire_core::core::database::ViewLayout::List;
+                                    let show_table_header = !list_layout
+                                        && active_layout
+                                            != quire_core::core::database::ViewLayout::Board;
                                     let row_sorts = view_sorts.clone();
                                     let row_filter = view_filter.clone();
                                     let row_group_data = group_data.clone();
@@ -11208,11 +11211,7 @@ impl Workspace {
                                         .when_some(filter_picker, |view, picker| {
                                             view.child(picker)
                                         })
-                                        .when(
-                                            active_layout
-                                                == quire_core::core::database::ViewLayout::Table,
-                                            |view| view.child(header),
-                                        )
+                                        .when(show_table_header, |view| view.child(header))
                                         .child(rows)
                                 } else {
                                     view.rounded(px(7.))
