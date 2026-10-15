@@ -936,3 +936,8 @@ GPUI 已覆盖主编辑器、整理区、独立速记与标签建议、Windows �
 
 - 看板卡片加入 GPUI 类型化 `on_drag` 与轻量拖动预览；目标分组列接收同数据库、同分组属性且属性类型一致的载荷，并忽略当前所在列。移动仍通过既有 `move_database_record_to_group` / typed Session cell command 实施，支持 Checkbox、Select、Status 的目标值与空组，不允许跨数据库或跨字段落下；原有快捷移动按钮继续可用。
 - 隔离 Release smoke 在唯一临时 SQLite 中，将“未完成示例”按 Checkbox 移到“已完成”组，强制 flush 并读回 `Flag(true)`；完整窗口 smoke 同时继续覆盖表单、图表、MCP、速记、托盘、最大化还原与 1000 块虚拟滚动。`cargo test -j 8`（68 项）、Release build 和新隔离目录 GUI smoke 通过。当前 smoke 验证了 drop 最终调用的分组写入路径，但没有模拟真人鼠标拖动过列边界；后续真窗口可用性回归仍需实际拖放确认。
+
+## 第一百四十六轮：系统外观变化时跟随主题
+
+- “跟随系统”启动时以 GPUI 窗口当前 `WindowAppearance` 选择 Light 或 Midnight；监听 `observe_window_appearance`，系统亮暗变化时更新主题调色板、输入文本色及主题过渡，不改写用户保存的 `system` 选择、不清搜索内容。显式选定的主题不受系统外观影响；主题选择入口现在同步更新托盘主题模式，Windows 托盘菜单继续实时查询系统亮暗。
+- 映射函数覆盖 Light/VibrantLight 与 Dark/VibrantDark 的单元测试通过；`cargo fmt --all -- --check`、全量 `cargo test -j 8`（68 项）与 `cargo build --release -j 8` 通过。尚未通过真实 Windows 设置切换来验证 GPUI 收到外观通知以及托盘菜单的实机联动；隔离 GUI smoke 不模拟 OS 主题变化。没有访问默认用户数据库。

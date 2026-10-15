@@ -21,6 +21,7 @@ fn main() {
 fn run() -> Result<()> {
     let mut path = None;
     let mut theme: Option<String> = None;
+    let mut theme_overridden = false;
     let mut dump = false;
     let mut smoke = false;
     let mut smoke_recovery = false;
@@ -30,7 +31,10 @@ fn run() -> Result<()> {
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--db" => path = Some(PathBuf::from(args.next().context("--db 需要路径")?)),
-            "--theme" => theme = Some(args.next().context("--theme 需要 ID")?),
+            "--theme" => {
+                theme_overridden = true;
+                theme = Some(args.next().context("--theme 需要 ID")?);
+            }
             "--dump-state" => dump = true,
             "--smoke-test" => smoke = true,
             "--smoke-recovery" => smoke_recovery = true,
@@ -47,6 +51,10 @@ fn run() -> Result<()> {
                     "quire-gpui [--db PATH] [--theme ID] [--dump-state]\nquire-gpui --stdio [--db PATH]: bridge MCP stdio to the running Quire HTTP service. The database path locates its adjacent mcp.json pointer.\n--smoke-test: requires a NEW --db path and refuses an existing adjacent mcp.json; exercises isolated UI/MCP paths, NOT real OS IME.\n--smoke-recovery: with --smoke-test only, requires an existing isolated database that recovers from a backup.\n--smoke-blocks N: with --smoke-test, add N synthetic paragraph blocks (max 10000) to the isolated test page."
                 );
                 return Ok(());
+            }
+            _ if arg.starts_with("--theme=") => {
+                theme_overridden = true;
+                theme = Some(arg[8..].to_owned());
             }
             _ if arg.starts_with("--db=") => path = Some(PathBuf::from(&arg[5..])),
             _ => bail!("未知参数：{arg}"),
@@ -277,6 +285,7 @@ fn run() -> Result<()> {
                     view::Workspace::new(
                         session,
                         &theme,
+                        theme_overridden,
                         smoke,
                         tray_available,
                         sync_listener_warning.clone(),

@@ -823,13 +823,34 @@ mod view_tests {
         evaluate_database_formula, evaluate_database_rollup, find_matches_in, link_target_range,
         order_database_groups, organizer_tag_matches_path, organizer_tag_tree_rows,
         organizer_tags_exclude, palette_matches, parse_mcp_port, parse_organizer_tags,
-        push_history, sync_targets, toc_headings,
+        push_history, sync_targets, system_palette_id_for_appearance, toc_headings,
     };
+    use gpui::WindowAppearance;
     use quire_core::core::database::PropertyKind;
     use quire_core::core::database_view::FilterValue;
     use quire_core::core::types::{
         Block, BlockId, BlockKind, ColorKind, Lang, Mark, MarkKind, OrderKey, PageId,
     };
+
+    #[test]
+    fn system_palette_tracks_gpui_light_and_dark_appearances() {
+        assert_eq!(
+            system_palette_id_for_appearance(WindowAppearance::Light),
+            "light"
+        );
+        assert_eq!(
+            system_palette_id_for_appearance(WindowAppearance::VibrantLight),
+            "light"
+        );
+        assert_eq!(
+            system_palette_id_for_appearance(WindowAppearance::Dark),
+            "midnight"
+        );
+        assert_eq!(
+            system_palette_id_for_appearance(WindowAppearance::VibrantDark),
+            "midnight"
+        );
+    }
 
     #[test]
     fn organizer_tag_entry_trims_deduplicates_and_accepts_fullwidth_commas() {
@@ -1448,6 +1469,13 @@ fn system_palette_id() -> &'static str {
     }
 }
 
+fn system_palette_id_for_appearance(appearance: WindowAppearance) -> &'static str {
+    match appearance {
+        WindowAppearance::Light | WindowAppearance::VibrantLight => "light",
+        WindowAppearance::Dark | WindowAppearance::VibrantDark => "midnight",
+    }
+}
+
 pub struct Workspace {
     session: Session,
     page_history_back: Vec<quire_core::core::types::PageId>,
@@ -1631,6 +1659,7 @@ impl Workspace {
     pub fn new(
         mut session: Session,
         theme: &str,
+        theme_overridden: bool,
         smoke: bool,
         tray_available: bool,
         sync_listener_warning: Option<String>,
@@ -1643,7 +1672,11 @@ impl Workspace {
         if smoke && startup_notice.is_some() {
             eprintln!("SMOKE: Workspace mounted the database recovery warning banner");
         }
-        let theme_choice = session.setting("gpui.theme").unwrap_or(theme).to_owned();
+        let theme_choice = if theme_overridden {
+            theme.to_owned()
+        } else {
+            session.setting("gpui.theme").unwrap_or(theme).to_owned()
+        };
         let ui_zoom = session
             .setting("gpui.ui-scale")
             .and_then(|value| value.parse::<f32>().ok())
@@ -1902,7 +1935,11 @@ impl Workspace {
             database_property_name_draft: String::new(),
             database_header_click_seq: 0,
             subscriptions: Vec::new(),
-            palette: Palette::load(&theme_choice),
+            palette: Palette::load(if theme_choice == "system" {
+                system_palette_id_for_appearance(window.appearance())
+            } else {
+                &theme_choice
+            }),
             transition_palette: None,
             theme_choice,
             ui_zoom,
@@ -2006,6 +2043,19 @@ impl Workspace {
             }
         });
         this.subscriptions.push(bounds_subscription);
+        let follow_system_appearance = !theme_overridden && this.theme_choice == "system";
+        let appearance_subscription =
+            cx.observe_window_appearance(window, move |this, window, cx| {
+                if follow_system_appearance && this.theme_choice == "system" {
+                    this.apply_palette(
+                        system_palette_id_for_appearance(window.appearance()),
+                        window,
+                        cx,
+                    );
+                    crate::platform::set_theme("system");
+                }
+            });
+        this.subscriptions.push(appearance_subscription);
         let link_target_input = this.link_target_input.clone();
         this.subscriptions.push(cx.subscribe_in(
             &link_target_input,
@@ -4429,10 +4479,9 @@ impl Workspace {
         self.focus(id, end, window, cx);
         self.schedule_save(false, window, cx);
     }
-    fn select_theme(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
+    fn apply_palette(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
         self.transition_palette = Some(self.palette.clone());
         self.palette = Palette::load(id);
-        self.theme_choice = id.to_owned();
         let fg = Palette::color(&self.palette.fg);
         for input in [
             self.title_input.clone(),
@@ -4452,6 +4501,19 @@ impl Workspace {
             input.update(cx, |input, _| input.text_color = Some(fg));
         }
         self.sync_inputs(window, cx);
+        cx.notify();
+    }
+    fn select_theme(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
+        self.theme_choice = id.to_owned();
+        self.apply_palette(
+            if id == "system" {
+                system_palette_id_for_appearance(window.appearance())
+            } else {
+                id
+            },
+            window,
+            cx,
+        );
         self.theme_picker_open = false;
         self.search_query.clear();
         self.search_input.update(cx, |input, cx| {
@@ -4460,6 +4522,7 @@ impl Workspace {
         });
         self.session
             .set_setting("gpui.theme", self.theme_choice.clone());
+        crate::platform::set_theme(&self.theme_choice);
         self.schedule_save(true, window, cx);
     }
     fn set_ui_zoom(&mut self, zoom: f32, window: &mut Window, cx: &mut Context<Self>) {
