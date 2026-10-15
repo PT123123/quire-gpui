@@ -2103,6 +2103,45 @@ impl Workspace {
                     eprintln!("SMOKE: persisted MCP startup, HTTP auth, UI dispatch and note write passed");
                 });
                 let _ = weak.update_in(cx, |this, window, cx| {
+                    this.organizer_trash = true;
+                    this.organizer_tasks = false;
+                    let first = this.session.create_note();
+                    assert!(this.session.set_note_trashed(first, true));
+                    this.purge_note(first, window, cx);
+                    assert!(this.session.organizer.note(first).is_none());
+                    assert!(this.session.undo_organizer());
+                    assert!(this.session.organizer.note(first).unwrap().is_trashed());
+                    assert!(this.session.redo_organizer());
+                    assert!(this.session.organizer.note(first).is_none());
+                    assert!(this.session.undo_organizer());
+                    for _ in 0..2 {
+                        let id = this.session.create_note();
+                        assert!(this.session.set_note_trashed(id, true));
+                    }
+                    this.empty_organizer_bin(window, cx);
+                    assert!(this.session.organizer.trashed_notes().next().is_none());
+                    assert!(this.session.undo_organizer());
+                    assert_eq!(this.session.organizer.trashed_notes().count(), 3);
+                    assert!(this.session.redo_organizer());
+                    assert!(this.session.organizer.trashed_notes().next().is_none());
+
+                    this.organizer_tasks = true;
+                    for title in ["回收站任务 A", "回收站任务 B"] {
+                        let id = this.session.create_task(title.into());
+                        assert!(this.session.set_task_trashed(id, true));
+                    }
+                    this.empty_organizer_bin(window, cx);
+                    assert!(this.session.organizer.trashed_tasks().next().is_none());
+                    assert!(this.session.undo_organizer());
+                    assert_eq!(this.session.organizer.trashed_tasks().count(), 2);
+                    assert!(this.session.redo_organizer());
+                    assert!(this.session.organizer.trashed_tasks().next().is_none());
+                    this.organizer_trash = false;
+                    this.organizer_tasks = false;
+                    this.schedule_save(true, window, cx);
+                    eprintln!("SMOKE: organizer single purge, batch empty and undo/redo passed");
+                });
+                let _ = weak.update_in(cx, |this, window, cx| {
                     this.open_command_palette(window, cx);
                     this.search_input.update(cx, |input, cx| {
                         input.replace_text_in_range(None, "设置", window, cx);
@@ -5858,6 +5897,70 @@ impl Workspace {
         if self.session.set_task_trashed(id, false) {
             self.status = "任务已恢复".into();
             self.schedule_save(true, window, cx);
+        }
+    }
+    fn purge_note(
+        &mut self,
+        id: quire_core::core::organizer::NoteId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.commit_note_draft(window, cx);
+        let Some(title) = self
+            .session
+            .organizer
+            .note(id)
+            .map(|note| note.title.clone())
+        else {
+            return;
+        };
+        if self.session.purge_organizer_note(id) {
+            if self.selected_note == Some(id) {
+                self.selected_note = None;
+                self.reset_organizer_item_inputs(cx);
+            }
+            self.status = format!("已彻底删除「{title}」— Ctrl+Z 可撤销");
+            self.schedule_save(true, window, cx);
+        }
+    }
+    fn purge_task(
+        &mut self,
+        id: quire_core::core::organizer::TaskId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(title) = self
+            .session
+            .organizer
+            .task(id)
+            .map(|task| task.title.clone())
+        else {
+            return;
+        };
+        if self.session.purge_organizer_task(id) {
+            if self.selected_task == Some(id) {
+                self.selected_task = None;
+            }
+            self.status = format!("已彻底删除「{title}」— Ctrl+Z 可撤销");
+            self.schedule_save(true, window, cx);
+        }
+    }
+    fn empty_organizer_bin(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.commit_note_draft(window, cx);
+        let count = self.session.empty_organizer_bin(self.organizer_tasks);
+        self.selected_note = None;
+        self.selected_task = None;
+        self.selected_task_ids.clear();
+        self.reset_organizer_item_inputs(cx);
+        self.status = if count == 0 {
+            "回收站已经是空的".into()
+        } else {
+            format!("已清空回收站，{count} 项 — Ctrl+Z 可撤销")
+        };
+        if count > 0 {
+            self.schedule_save(true, window, cx);
+        } else {
+            cx.notify();
         }
     }
     fn toggle_organizer(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -12312,40 +12415,73 @@ impl Render for Workspace {
                                     .font_weight(FontWeight::SEMIBOLD)
                                     .child(title),
                             )
-                            .when(self.hovered_note == Some(id), |header| {
-                                header
-                                    .child(
-                                        div()
-                                            .id(SharedString::from(format!("organizer-pin-{id:?}")))
-                                            .px(px(3.))
-                                            .text_color(if pinned { accent } else { muted })
-                                            .cursor_pointer()
-                                            .on_click(cx.listener(move |this, _, window, cx| {
-                                                this.toggle_note_pin(id, window, cx)
-                                            }))
-                                            .when(!self.organizer_trash, |button| {
-                                                button.child(if pinned { "★" } else { "☆" })
-                                            }),
-                                    )
-                                    .child(
-                                        div()
-                                            .id(SharedString::from(format!(
-                                                "organizer-trash-{id:?}"
-                                            )))
-                                            .px(px(3.))
-                                            .text_color(muted)
-                                            .cursor_pointer()
-                                            .hover(|button| button.text_color(rgb(0xe5534b)))
-                                            .on_click(cx.listener(move |this, _, window, cx| {
-                                                if this.organizer_trash {
-                                                    this.restore_note(id, window, cx)
+                            .when(
+                                self.organizer_trash || self.hovered_note == Some(id),
+                                |header| {
+                                    header
+                                        .child(
+                                            div()
+                                                .id(SharedString::from(format!(
+                                                    "organizer-pin-{id:?}"
+                                                )))
+                                                .px(px(3.))
+                                                .text_color(if pinned { accent } else { muted })
+                                                .cursor_pointer()
+                                                .on_click(cx.listener(
+                                                    move |this, _, window, cx| {
+                                                        this.toggle_note_pin(id, window, cx)
+                                                    },
+                                                ))
+                                                .when(!self.organizer_trash, |button| {
+                                                    button.child(if pinned { "★" } else { "☆" })
+                                                }),
+                                        )
+                                        .child(
+                                            div()
+                                                .id(SharedString::from(format!(
+                                                    "organizer-trash-{id:?}"
+                                                )))
+                                                .px(px(3.))
+                                                .text_color(muted)
+                                                .cursor_pointer()
+                                                .hover(|button| button.text_color(rgb(0xe5534b)))
+                                                .on_click(cx.listener(
+                                                    move |this, _, window, cx| {
+                                                        if this.organizer_trash {
+                                                            this.restore_note(id, window, cx)
+                                                        } else {
+                                                            this.trash_note(id, window, cx)
+                                                        }
+                                                    },
+                                                ))
+                                                .child(if self.organizer_trash {
+                                                    "↩"
                                                 } else {
-                                                    this.trash_note(id, window, cx)
-                                                }
-                                            }))
-                                            .child(if self.organizer_trash { "↩" } else { "×" }),
-                                    )
-                            }),
+                                                    "×"
+                                                }),
+                                        )
+                                        .when(self.organizer_trash, |header| {
+                                            header.child(
+                                                div()
+                                                    .id(SharedString::from(format!(
+                                                        "organizer-note-purge-{id:?}"
+                                                    )))
+                                                    .px(px(3.))
+                                                    .text_color(Hsla::from(rgb(0xe5534b)))
+                                                    .cursor_pointer()
+                                                    .hover(|button| {
+                                                        button.text_color(rgb(0xff8179))
+                                                    })
+                                                    .on_click(cx.listener(
+                                                        move |this, _, window, cx| {
+                                                            this.purge_note(id, window, cx)
+                                                        },
+                                                    ))
+                                                    .child("×"),
+                                            )
+                                        })
+                                },
+                            ),
                     )
                     .when(!preview.is_empty(), |card| {
                         card.child(
@@ -12625,7 +12761,23 @@ impl Render for Workspace {
                                             })
                                         },
                                     ),
-                            ),
+                            )
+                            .when(self.organizer_trash, |row| {
+                                row.child(
+                                    div()
+                                        .id(SharedString::from(format!(
+                                            "organizer-task-purge-{id:?}"
+                                        )))
+                                        .px(px(3.))
+                                        .text_color(Hsla::from(rgb(0xe5534b)))
+                                        .cursor_pointer()
+                                        .hover(|button| button.text_color(rgb(0xff8179)))
+                                        .on_click(cx.listener(move |this, _, window, cx| {
+                                            this.purge_task(id, window, cx)
+                                        }))
+                                        .child("×"),
+                                )
+                            }),
                     )
                     .when(!task_tags.is_empty() || subtask_total > 0, |row| {
                         row.child(
@@ -12962,6 +13114,8 @@ impl Render for Workspace {
                             .justify_between()
                             .child(div().font_weight(FontWeight::SEMIBOLD).child(if self.organizer_tasks {
                                 format!("{task_view_title}  {task_count} 项待办")
+                            } else if self.organizer_trash {
+                                format!("回收站 · {note_count} 项")
                             } else {
                                 format!("全部笔记 · {note_count} 条")
                             }))
@@ -12983,8 +13137,15 @@ impl Render for Workspace {
                                             }
                                         }))
                                     })
+                                    .when(self.organizer_trash, |button| {
+                                        button
+                                            .text_color(Hsla::from(rgb(0xe5534b)))
+                                            .on_click(cx.listener(|this, _, window, cx| {
+                                                this.empty_organizer_bin(window, cx)
+                                            }))
+                                    })
                                     .child(if self.organizer_trash {
-                                        "回收站"
+                                        "清空回收站"
                                     } else if self.organizer_tasks {
                                         "＋"
                                     } else {

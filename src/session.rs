@@ -3673,6 +3673,82 @@ impl Session {
             .collect::<Vec<_>>();
         self.apply_organizer_batch(commands)
     }
+    pub fn purge_organizer_note(&mut self, id: NoteId) -> bool {
+        self.commit_pending_organizer_delete_if_any();
+        let Some(note) = self
+            .organizer
+            .note(id)
+            .filter(|note| note.is_trashed())
+            .cloned()
+        else {
+            return false;
+        };
+        let Some(entry) = command::plan(
+            &mut self.document,
+            ORGANIZER_STACK,
+            Command::DeleteNote { note },
+        ) else {
+            return false;
+        };
+        self.apply_organizer_entry(entry);
+        true
+    }
+    pub fn purge_organizer_task(&mut self, id: TaskId) -> bool {
+        self.commit_pending_organizer_delete_if_any();
+        let Some(task) = self
+            .organizer
+            .task(id)
+            .filter(|task| task.is_trashed())
+            .cloned()
+        else {
+            return false;
+        };
+        let Some(entry) = command::plan(
+            &mut self.document,
+            ORGANIZER_STACK,
+            Command::DeleteTask { task },
+        ) else {
+            return false;
+        };
+        self.apply_organizer_entry(entry);
+        true
+    }
+    pub fn empty_organizer_bin(&mut self, is_task: bool) -> usize {
+        self.commit_pending_organizer_delete_if_any();
+        let commands = if is_task {
+            self.organizer
+                .trashed_tasks()
+                .cloned()
+                .map(|task| Command::DeleteTask { task })
+                .collect()
+        } else {
+            self.organizer
+                .trashed_notes()
+                .cloned()
+                .map(|note| Command::DeleteNote { note })
+                .collect()
+        };
+        let Some(changes) = command::exec_all(
+            &mut self.document,
+            &mut self.history,
+            ORGANIZER_STACK,
+            commands,
+        ) else {
+            return 0;
+        };
+        let count = changes
+            .iter()
+            .filter(|change| {
+                matches!(
+                    change,
+                    Change::NoteDeleted { .. } | Change::TaskDeleted { .. }
+                )
+            })
+            .count();
+        self.apply_organizer_changes(&changes);
+        self.persistence.record(changes);
+        count
+    }
     fn apply_organizer_batch(&mut self, commands: Vec<Command>) -> bool {
         let Some(changes) = command::exec_all(
             &mut self.document,
@@ -6139,6 +6215,60 @@ mod tests {
                 .text,
             "Nested"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn organizer_bin_purge_and_empty_are_undoable_and_persist() -> Result<()> {
+        let scratch = quire_core::testing::ScratchDir::new("gpui-organizer-bin-purge");
+        let path = scratch.path().join("test.db");
+        let (note_a, note_b, task_a, task_b);
+        {
+            let mut session = Session::open(&path)?;
+            note_a = session.create_note();
+            note_b = session.create_note();
+            task_a = session.create_task("第一项".into());
+            task_b = session.create_task("第二项".into());
+            assert!(session.set_note_trashed(note_a, true));
+            assert!(session.set_note_trashed(note_b, true));
+            assert!(session.set_task_trashed(task_a, true));
+            assert!(session.set_task_trashed(task_b, true));
+
+            assert!(session.purge_organizer_note(note_a));
+            assert!(session.organizer.note(note_a).is_none());
+            assert!(session.undo_organizer());
+            assert!(session.organizer.note(note_a).unwrap().is_trashed());
+            assert!(session.redo_organizer());
+            assert!(session.organizer.note(note_a).is_none());
+            assert!(session.undo_organizer());
+
+            assert_eq!(session.empty_organizer_bin(false), 2);
+            assert!(session.organizer.trashed_notes().next().is_none());
+            assert_eq!(session.organizer.trashed_tasks().count(), 2);
+            assert!(session.undo_organizer());
+            assert_eq!(session.organizer.trashed_notes().count(), 2);
+
+            assert!(session.purge_organizer_task(task_a));
+            assert!(session.organizer.task(task_a).is_none());
+            assert!(session.undo_organizer());
+            assert!(session.organizer.task(task_a).unwrap().is_trashed());
+            assert!(session.redo_organizer());
+            assert!(session.organizer.task(task_a).is_none());
+            assert!(session.undo_organizer());
+
+            assert_eq!(session.empty_organizer_bin(true), 2);
+            assert!(session.organizer.trashed_tasks().next().is_none());
+            assert!(session.undo_organizer());
+            assert_eq!(session.organizer.trashed_tasks().count(), 2);
+            assert_eq!(session.empty_organizer_bin(true), 2);
+            assert!(session.organizer.trashed_tasks().next().is_none());
+            session.persistence.force_flush()?;
+        }
+        let reopened = Session::open(&path)?;
+        assert_eq!(reopened.organizer.trashed_notes().count(), 2);
+        assert!(reopened.organizer.trashed_tasks().next().is_none());
+        assert!(reopened.organizer.task(task_a).is_none());
+        assert!(reopened.organizer.task(task_b).is_none());
         Ok(())
     }
 }

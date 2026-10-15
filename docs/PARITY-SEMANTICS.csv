@@ -40,6 +40,8 @@ org-view-picked,已实现,未验证,任务区域提供收集箱、今天、最�
 org-show-done-toggled,已实现,未验证,任务清单提供显示/隐藏已完成开关；已完成视图固定只显示完成项,过滤仅作用于实时列表投影，不修改任务完成状态
 org-note-deleted,已实现,未验证,笔记列表移入回收站后可从回收站恢复,通过 core organizer deleted_at 软删除；恢复走同一 UpdateNote 历史命令，可撤销并持久化
 org-task-deleted,已实现,未验证,任务列表移入回收站后可从回收站恢复,通过 core organizer deleted_at 软删除；恢复走同一 UpdateTask 历史命令，可撤销并持久化
+org-bin-purged,已实现,已验证,笔记或任务回收站行可恢复或逐项彻底删除,仅允许对已在回收站的项目执行 DeleteNote/DeleteTask；删除纳入 organizer 独立撤销栈，Ctrl+Z 可恢复原项目并持久化读回
+org-bin-emptied,已实现,已验证,笔记或任务回收站可按当前页签一键清空,core exec_all 将当前类型全部回收站项目作为单条 organizer 历史命令；空回收站安全无操作，Ctrl+Z 一次恢复整批
 org-task-repeat-set,已实现,未验证,任务详情可循环设置不重复/每天/工作日/每周/每月重复规则,用 core Repeat 受控枚举更新任务行；完成重复任务的自动滚动生成尚未实现
 org-task-tags-set,已实现,未验证,任务详情支持逗号分隔标签编辑，侧栏标签可筛选任务,解析时去首尾空格、忽略空项并按首次输入去重；更新与标题/备注/截止日期作为单条 UpdateTask
 org-note-tags-set,已实现,未验证,笔记详情支持逗号分隔标签编辑，侧栏标签可筛选笔记,更新与标题/正文作为单条 UpdateNote；标签过滤为单选精确匹配
