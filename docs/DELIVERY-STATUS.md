@@ -975,3 +975,8 @@
 - 为任务清单锚定菜单及颜色子页添加 GPUI `on_mouse_down_out` 处理；鼠标在当前弹层外按下时同时关闭菜单/子页，子页内部操作不会触发关闭。Escape 原有的子页返回/菜单关闭层级保留。
 - Release GUI smoke 打开主菜单及颜色子页后调用同一关闭状态迁移，断言两级状态清空，再继续验证改名、选色与撤销/重做。该 smoke 没有模拟真实鼠标命中；原生点按位置仍待桌面交互验收。
 - 验证：`cargo fmt --all`、全量 `cargo test -j 8`（70 项）、`cargo check -j 8`、`cargo build --release -j 8`、`git diff --check` 与全新临时 SQLite 的 Release GUI smoke 通过。未访问默认用户数据库或修改 Slint 参考树。
+
+## 第一百五十三轮：编辑器浮层点击外部关闭
+
+- 为正文块文字/背景颜色面板、块操作菜单、页面图标选择器及页面搜索面板增加 `on_mouse_down_out` 收起行为；关闭延迟到当前点击事件处理之后，避免触发控件在事件派发中被卸载，也保留点击菜单自身触发按钮正常切换的机会。整理区清单菜单同步采用同一延迟关闭顺序。
+- 验证：全量 `cargo test -j 8`（70 项）、`cargo check -j 8`、`cargo build --release -j 8`、格式检查及 `git diff --check` 通过。新隔离 SQLite 的 Release GUI smoke 覆盖 MCP 16 工具与写入、整理区菜单、速记提交、托盘隐藏/唤回、窗口最大化/还原和 1000 块虚拟滚动。Smoke 验证浮层挂载及既有高优先级路径，没有模拟真实鼠标点按这些新浮层；原生点击关闭仍需桌面交互验收。未访问默认用户数据库或修改 Slint 参考树。

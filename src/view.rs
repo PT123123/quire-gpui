@@ -4400,6 +4400,39 @@ impl Workspace {
         };
         cx.notify();
     }
+    fn dismiss_color_picker(&mut self, id: BlockId, background: bool, cx: &mut Context<Self>) {
+        if self.color_picker == Some((id, background)) {
+            self.color_picker = None;
+            cx.notify();
+        }
+    }
+    fn dismiss_color_picker_after_mouse_down(
+        &mut self,
+        id: BlockId,
+        background: bool,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) {
+        cx.defer_in(window, move |this, _, cx| {
+            this.dismiss_color_picker(id, background, cx)
+        });
+    }
+    fn dismiss_block_menu_after_mouse_down(
+        &mut self,
+        id: BlockId,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) {
+        cx.defer_in(window, move |this, _, cx| {
+            if this
+                .block_menu_open
+                .is_some_and(|(open_id, _)| open_id == id)
+            {
+                this.block_menu_open = None;
+                cx.notify();
+            }
+        });
+    }
     fn set_block_color(
         &mut self,
         id: BlockId,
@@ -6673,6 +6706,19 @@ impl Workspace {
             cx.notify();
         }
     }
+    fn dismiss_task_list_menu_after_mouse_down(
+        &mut self,
+        id: quire_core::core::organizer::ListId,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) {
+        // Let the target handle this same click first. In particular, clicking
+        // the menu's own trigger must toggle it closed instead of having the
+        // outside handler close and immediately reopen it.
+        cx.defer_in(window, move |this, _, cx| {
+            this.dismiss_task_list_menu(id, cx)
+        });
+    }
     fn task_list_menu_key_down(
         &mut self,
         event: &KeyDownEvent,
@@ -7108,6 +7154,14 @@ impl Workspace {
         self.icon_picker_open = !self.icon_picker_open;
         self.theme_picker_open = false;
         cx.notify();
+    }
+    fn dismiss_icon_picker_after_mouse_down(&mut self, window: &Window, cx: &mut Context<Self>) {
+        cx.defer_in(window, |this, _, cx| {
+            if this.icon_picker_open {
+                this.icon_picker_open = false;
+                cx.notify();
+            }
+        });
     }
     fn select_page_icon(&mut self, icon: &str, window: &mut Window, cx: &mut Context<Self>) {
         if self.composing(cx) || self.session.page.icon == icon {
@@ -9833,6 +9887,11 @@ impl Workspace {
                         .child(
                             div()
                                 .w(px(222.))
+                                .on_mouse_down_out(cx.listener(move |this, _, window, cx| {
+                                    this.dismiss_color_picker_after_mouse_down(
+                                        block_id, background, window, cx,
+                                    )
+                                }))
                                 .flex()
                                 .flex_wrap()
                                 .gap(px(5.))
@@ -10042,6 +10101,9 @@ impl Workspace {
                         .child(
                             div()
                                 .id(SharedString::from(format!("block-menu-{block_id:?}")))
+                                .on_mouse_down_out(cx.listener(move |this, _, window, cx| {
+                                    this.dismiss_block_menu_after_mouse_down(block_id, window, cx)
+                                }))
                                 .w(px(184.))
                                 .max_h(px(320.))
                                 .overflow_y_scroll()
@@ -14260,6 +14322,9 @@ impl Render for Workspace {
         let icon_options = if self.icon_picker_open {
             div()
                 .id("page-icon-popover")
+                .on_mouse_down_out(cx.listener(|this, _, window, cx| {
+                    this.dismiss_icon_picker_after_mouse_down(window, cx)
+                }))
                 .w(px(224.))
                 .p(px(7.))
                 .rounded(px(8.))
@@ -14625,6 +14690,9 @@ impl Render for Workspace {
             .child(
                 div()
                     .id("page-search-panel")
+                    .on_mouse_down_out(cx.listener(|_, _, window, cx| {
+                        cx.defer_in(window, |this, window, cx| this.close_search(window, cx));
+                    }))
                     .w(px(620.))
                     .max_w_full()
                     .p(px(10.))
@@ -15761,9 +15829,13 @@ impl Render for Workspace {
                                         .flex()
                                         .flex_col()
                                         .gap(px(2.))
-                                        .on_mouse_down_out(cx.listener(move |this, _, _, cx| {
-                                            this.dismiss_task_list_menu(id, cx)
-                                        }))
+                                        .on_mouse_down_out(cx.listener(
+                                            move |this, _, window, cx| {
+                                                this.dismiss_task_list_menu_after_mouse_down(
+                                                    id, window, cx,
+                                                )
+                                            },
+                                        ))
                                         .child(
                                             div()
                                                 .id(SharedString::from(format!(
@@ -15864,9 +15936,13 @@ impl Render for Workspace {
                                         .flex()
                                         .flex_col()
                                         .gap(px(2.))
-                                        .on_mouse_down_out(cx.listener(move |this, _, _, cx| {
-                                            this.dismiss_task_list_menu(id, cx)
-                                        }))
+                                        .on_mouse_down_out(cx.listener(
+                                            move |this, _, window, cx| {
+                                                this.dismiss_task_list_menu_after_mouse_down(
+                                                    id, window, cx,
+                                                )
+                                            },
+                                        ))
                                         .child(
                                             div()
                                                 .id(SharedString::from(format!(
