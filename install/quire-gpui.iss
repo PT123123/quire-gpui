@@ -2,7 +2,7 @@
 ; install/build-release.ps1; pass -BuildInstaller to also compile this file.
 
 #define AppExe "..\target\release\quire-gpui.exe"
-#define AppVersion Copy(GetFileVersion(AppExe), 1, RPos(".", GetFileVersion(AppExe)) - 1)
+#define AppVersion Copy(GetVersionNumbersString(AppExe), 1, RPos(".", GetVersionNumbersString(AppExe)) - 1)
 
 [Setup]
 AppId={{E8318F69-823B-4F7F-A386-01559641E134}

@@ -1105,3 +1105,8 @@
 
 - 给 GPUI 单独嵌入 Quire 品牌 ICO 与由 Cargo 版本生成的 Windows 文件版本信息；托盘图标现从 exe 的 `IDI_MAIN` 资源读取。启动时设置独立 `PT123123.Quire.GPUI` AppUserModelID，避免与 Slint 版任务栏分组混淆。新增可复现便携 ZIP 脚本及可选 per-user Inno Setup 6 定义，默认安装/解压路径与 Slint 版分离，卸载不处理数据目录。
 - 执行 `install/build-release.ps1` 生成 `dist/Quire-GPUI-0.1.0-windows-x64.zip`；Windows 文件属性读回 FileVersion `0.1.0.0`、ProductName `Quire GPUI`，`ExtractAssociatedIcon` 成功。`cargo fmt --all -- --check`、`cargo test --locked`（82 项）、`cargo check --locked`、Release 构建及 `git diff --check` 通过。ZIP 解压后运行 release `--smoke-test --db <新临时库> --smoke-blocks 100` 通过，覆盖 MCP、速记、托盘隐藏/恢复、窗口最大化/还原与虚拟滚动。未安装 Inno Setup，故安装器编译、安装/卸载尚未验证；没有访问真实用户库，也未改 Slint/core/冻结参考树。
+
+## 第一百七十六轮：安装器隔离安装与卸载往返
+
+- 确认 Inno Setup 6 实际安装在标准 per-user 目录但不在 PATH；打包脚本增加该目录回退查找。安装定义改用当前 Inno 推荐的版本读取函数，去除编译弃用警告。
+- `install/build-release.ps1 -SkipBuild -BuildInstaller` 成功生成安装器。使用随机 `%TEMP%` 目录完成静默安装、安装后 `quire-gpui.exe --help` 启动、静默卸载；验证程序和卸载注册表项清理。先行脚本检查因 GUI 子系统安装器的 PowerShell `$LASTEXITCODE` 为空而中断读取，日志确认安装成功后改用等待进程句柄重跑，最终往返通过。过程未启动应用主窗口、未创建数据库、未访问真实用户数据；Slint/core 未改。

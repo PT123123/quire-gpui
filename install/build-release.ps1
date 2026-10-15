@@ -40,9 +40,13 @@ Compress-Archive -Path (Join-Path $stage '*') -DestinationPath $zip -Compression
 Write-Output "Portable package: $zip"
 
 if ($BuildInstaller) {
-    $iscc = Get-Command 'ISCC.exe' -ErrorAction SilentlyContinue
-    if (-not $iscc) { throw 'Inno Setup was requested but ISCC.exe is not on PATH. Install Inno Setup 6 and retry.' }
+    $iscc = (Get-Command 'ISCC.exe' -ErrorAction SilentlyContinue).Source
+    if (-not $iscc) {
+        $userInstall = Join-Path $env:LOCALAPPDATA 'Programs\Inno Setup 6\ISCC.exe'
+        if (Test-Path -LiteralPath $userInstall -PathType Leaf) { $iscc = $userInstall }
+    }
+    if (-not $iscc) { throw 'Inno Setup was requested but ISCC.exe was not found on PATH or in the standard per-user install directory.' }
     $iss = Join-Path $PSScriptRoot 'quire-gpui.iss'
-    & $iscc.Source $iss
+    & $iscc $iss
     if ($LASTEXITCODE -ne 0) { throw "ISCC failed with exit code $LASTEXITCODE" }
 }
