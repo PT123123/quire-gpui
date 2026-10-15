@@ -1385,6 +1385,13 @@
 - 扩展隔离 Session 测试：笔记更新、标签和评论批次一次撤销/重做后字段一致；任务创建、优先级、子任务和完成状态组合一次撤销可整体删除、重做可整体恢复。定向 `cargo test --locked organizer_json_commands_apply_and_report_per_operation` 通过。
 - 全量 `cargo fmt --all -- --check`、`cargo test --locked`（103 项：50 library + 51 binary + 1 MCP stdio + 1 sync loopback）、`cargo check --locked`、`cargo build --release --locked` 与 `git diff --check` 通过。全新临时目录中的 Release GUI smoke（1000 块）通过，覆盖 JSON 指令执行、速记保存、托盘隐藏/唤回、MCP 16 工具、数据库视图、最大化/还原及虚拟滚动。不修改 core、Slint 或冻结参考树；性能比较继续留到最后。
 
+## 第二百二十七轮：正文块拖动目标反馈与矩阵更正
+
+- 正文块拖动经过同页合法目标时，行现在以当前主题强调色显示轻量背景，提供可见目标反馈；core 落点校验与此前的“放到目标行之前”语义保持不变。前/后半行决定落点及精确线条仍属待补差异，真人鼠标拖动未验收。
+- 复核整理区功能边界后更正计划：旧版没有笔记拖放排序入口，因此不再把它列为 GPUI 待实现功能。更新人工 parity sidecar 并重跑生成器，矩阵仍为 246 callbacks / 261 properties / 188 scenes。
+- `cargo fmt --all -- --check`、`cargo check --locked`、`cargo test --locked`（103 项）与 `cargo build --release --locked` 通过。全新临时目录 Release GUI smoke（1000 个合成块）通过，覆盖 JSON 指令、速记、托盘隐藏/唤回、MCP 16 工具、数据库视图、最大化/还原与虚拟滚动；测试库位于 `%TEMP%` 并与用户数据隔离。此前对照测量仍是基线，最终代码收尾后按用户要求再做性能复测。
+- 未访问真实用户库，未修改 Slint、core 或冻结参考树。
+
 ## 第二百二十六轮：GPUI 与 Slint 性能基线
 
 - 同机、同 Rust 1.98.0、Windows 11 build 26200、Intel Core Ultra 9 185H（16 核 / 22 线程，32 GiB）测量。GPUI commit `84edf6f4136d` / Slint commit `911246743cf7`；Slint 版为 v0.1.26。两边分别运行 `cargo build --release --locked`，Release 产物已更新；二进制大小为 GPUI 25,708,544 B、Slint 38,415,872 B。
