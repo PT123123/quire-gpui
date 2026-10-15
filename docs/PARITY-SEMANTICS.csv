@@ -182,3 +182,24 @@ db-filter-not-toggled,已实现,未验证,每条规则可切换否定匹配,反�
 db-filter-cleared,已实现,未验证,全部清空按钮移除当前筛选规则但保留其他视图配置,通过 core 数据库视图命令写入撤销历史
 db-group-opened,已实现,未验证,数据库工具栏分组按钮打开当前视图的分组属性选择器,鼠标点外部或打开其他数据库工具时关闭
 db-group-picked,已实现,未验证,分组属性选择器可选择允许分组的属性或无分组,配置持久化到当前数据库视图并刷新分组数据
+db-option-picked,已实现,未验证,Select/Status/MultiSelect 单元格可从选项菜单选择属性值,持久化选项 ID；MultiSelect 切换单个选项并保留其他已选值
+db-form-text,已实现,未验证,数据库表单各可见字段提供受属性类型限制的输入,草稿与提交状态分离；无效值保留并提示
+db-form-submitted,已实现,未验证,表单校验通过后一次创建数据库记录及全部字段,以单条 core 变更写入页面撤销历史；Release GUI smoke 覆盖提交及读回
+db-form-cleared,已实现,未验证,表单清空操作重置所有输入草稿,仅清理尚未提交的表单状态
+db-chart-kind,已实现,未验证,图表视图可选择柱状/折线/饼图并持久化当前图表类型,SetDatabaseViewDefinition 更新当前视图；chart kind 的 Session 测试覆盖重开与 undo/redo
+db-formula-opened,已实现,未验证,点击 Formula 属性可打开属性设置中的公式编辑器,公式结果仍只读并由可见行计算
+db-formula-text-changed,已实现,未验证,公式编辑器维护公式草稿并即时重算预览,仅编辑草稿时不写入数据库
+db-formula-accepted,已实现,未验证,保存公式会校验、写入属性配置并触发视图刷新,通过 core 数据库属性设置记录可撤销变更
+db-formula-closed,已实现,未验证,取消公式编辑关闭编辑器且不提交未保存草稿,重置公式编辑状态并保留此前已保存配置
+db-relation-opened,已实现,未验证,Relation 属性在配置区编辑关联目标数据库与双向列,单元格关系值则提供搜索与目标记录多选
+db-relation-closed,已实现,未验证,关系单元格搜索失焦/确认后关闭编辑；属性配置以内联面板显示,单元格写入由 core SetDatabaseCell 原子提交；无需独立配置弹层关闭事件
+db-relation-panel-set,已实现,未验证,关系值编辑可在搜索/结果区域中筛选当前关联数据库记录,列表按输入更新且支持多选
+db-relation-text-set,已实现,未验证,关系值编辑文本更新候选记录搜索,搜索草稿不写入数据直至选择目标
+db-relation-database-picked,已实现,未验证,关系属性可选择目标数据库,更换目标时通过 core 更新关系配置并刷新属性选择器
+db-relation-mirror-picked,已实现,未验证,关系属性可选择目标库中的反向关系列,由 core 保持关联配置与双向单元格一致
+db-relation-toggled,已实现,未验证,关系单元格可切换一个或多个目标记录,目标 ID 以 typed relation cell 保存并支持撤销
+db-rollup-opened,已实现,未验证,Rollup 属性在属性设置区域常驻内联显示配置入口,源关系、目标列及聚合函数均可独立设置
+db-rollup-panel-set,已实现,未验证,Rollup 配置编辑区域显示当前关联、目标列与聚合选项,依据关联目标数据库的列动态生成选择项
+db-rollup-relation-picked,已实现,未验证,Rollup 可选源关系列,选择关系时清空旧目标列并重设聚合为空
+db-rollup-column-picked,已实现,未验证,Rollup 可选关联目标数据库中的可汇总属性列,选择即写入当前聚合配置
+db-rollup-aggregate-picked,已实现,未验证,Rollup 支持 None/Count/Sum/Average/Min/Max 等类型适配聚合,core 配置校验与 typed 计算覆盖关联记录聚合
