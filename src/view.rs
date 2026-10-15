@@ -29,6 +29,36 @@ struct DatabaseColumnDrag {
     preview_width: f32,
 }
 
+#[derive(Clone)]
+struct DatabaseBoardDrag {
+    block: u64,
+    database: u64,
+    record: u64,
+    property: u64,
+    kind: quire_core::core::database::PropertyKind,
+    title: String,
+    source: Option<quire_core::core::database_view::GroupKey>,
+}
+
+struct DatabaseBoardDragPreview {
+    title: String,
+}
+
+impl Render for DatabaseBoardDragPreview {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .px(px(10.))
+            .py(px(7.))
+            .rounded(px(6.))
+            .border_1()
+            .border_color(gpui::hsla(0.42, 0.52, 0.55, 0.9))
+            .bg(gpui::hsla(0.42, 0.28, 0.16, 0.94))
+            .text_size(px(11.))
+            .text_color(gpui::white())
+            .child(self.title.clone())
+    }
+}
+
 #[derive(Clone, Copy)]
 enum SidebarGlyph {
     Search,
@@ -2743,6 +2773,26 @@ impl Workspace {
                         let stored = this.session.databases.views.iter().find(|candidate| candidate.id == view).unwrap();
                         assert_eq!(quire_core::core::database_view::ViewDefinition::parse(&stored.definition).chart_kind(), kind);
                     }
+                    let checkbox = this.session.databases.properties_of(database)
+                        .find(|property| property.name == "完成").unwrap().id;
+                    let record = this.session.repo.records_named(database, "未完成示例", 10)
+                        .expect("board drag smoke should find its source record").into_iter()
+                        .find(|(_, title)| title == "未完成示例").unwrap().0;
+                    this.move_database_record_to_group(
+                        block_id.0,
+                        database.0,
+                        record,
+                        checkbox.0,
+                        quire_core::core::database::PropertyKind::Checkbox,
+                        quire_core::core::database_view::GroupKey::Checked,
+                        window,
+                        cx,
+                    );
+                    this.session.persistence.force_flush().expect("board move should persist");
+                    assert_eq!(this.session.repo.cell(
+                        quire_core::core::database::RecordId(record), checkbox
+                    ).expect("moved record should be queryable"), quire_core::core::database::CellValue::Flag(true));
+                    eprintln!("SMOKE: board drag destination applies the checked group value and persists");
                     this.session.set_database_view_layout(block_id, view, quire_core::core::database::ViewLayout::Board)
                         .expect("board layout should restore after chart smoke");
                     this.schedule_save(true, window, cx);
@@ -11601,7 +11651,7 @@ impl Workspace {
                                                                         }));
                                                                         Some(controls.into_any_element())
                                                                     });
-                                                                    div()
+                                                                    let mut card = div()
                                                                         .id(SharedString::from(format!(
                                                                             "db-board-card-{}-{record}",
                                                                             card_db.0
@@ -11641,11 +11691,27 @@ impl Workspace {
                                                                                 .text_size(px(12.))
                                                                                 .font_weight(FontWeight::SEMIBOLD)
                                                                                 .text_color(Palette::color(&this.palette.fg))
-                                                                                .child(title_text),
+                                                                                .child(title_text.clone()),
                                                                         )
                                                                         .children(properties)
-                                                                        .children(move_controls)
-                                                                        .into_any_element()
+                                                                        .children(move_controls);
+                                                                    if let Some(property) = &card_group_property {
+                                                                        let drag = DatabaseBoardDrag {
+                                                                            block: card_block.0,
+                                                                            database: card_db.0,
+                                                                            record,
+                                                                            property: property.id.0,
+                                                                            kind: property.kind,
+                                                                            title: title_text,
+                                                                            source: card_group_key.clone(),
+                                                                        };
+                                                                        card = card.on_drag(drag, |drag, _, _, cx| {
+                                                                            cx.new(|_| DatabaseBoardDragPreview {
+                                                                                title: drag.title.clone(),
+                                                                            })
+                                                                        });
+                                                                    }
+                                                                    card.into_any_element()
                                                                 })
                                                                 .collect::<Vec<_>>()
                                                         },
@@ -11655,7 +11721,7 @@ impl Workspace {
                                                 .w(px(240.))
                                                 .flex_1()
                                                 .min_h(px(80.));
-                                                div()
+                                                let mut column = div()
                                                     .id(SharedString::from(format!(
                                                         "db-board-column-{}-{group_index}",
                                                         db_id.0
@@ -11683,7 +11749,37 @@ impl Workspace {
                                                             .child(label)
                                                             .child(format!("{count}")),
                                                     )
-                                                    .child(cards)
+                                                    .child(cards);
+                                                if let (Some(spec), Some(destination)) =
+                                                    (&board_spec, group_key.clone())
+                                                {
+                                                    let drop_block = block_id.0;
+                                                    let drop_db = db_id.0;
+                                                    let drop_property = spec.property.0;
+                                                    let drop_kind = spec.kind;
+                                                    column = column.on_drop(cx.listener(
+                                                        move |this, drag: &DatabaseBoardDrag, window, cx| {
+                                                            if drag.block == drop_block
+                                                                && drag.database == drop_db
+                                                                && drag.property == drop_property
+                                                                && drag.kind == drop_kind
+                                                                && drag.source.as_ref() != Some(&destination)
+                                                            {
+                                                                this.move_database_record_to_group(
+                                                                    drag.block,
+                                                                    drag.database,
+                                                                    drag.record,
+                                                                    drag.property,
+                                                                    drag.kind,
+                                                                    destination.clone(),
+                                                                    window,
+                                                                    cx,
+                                                                );
+                                                            }
+                                                        },
+                                                    ));
+                                                }
+                                                column
                                             })
                                             .collect::<Vec<_>>();
                                         div()

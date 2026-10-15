@@ -931,3 +931,8 @@ GPUI 已覆盖主编辑器、整理区、独立速记与标签建议、Windows �
 
 - 数据库布局选择加入 Chart。图表复用当前视图的 SQL `group_counts`（因此筛选、搜索与分组配置仍生效），不读取/实例化记录；绘制柱状、折线和饼图，展示类别数量图例。柱/线/饼切换使用 core `ChartKind`，将选择写入当前 view definition 的 `chart` 键，经 Session 命令持久化并进入撤销历史；没有分组时提示使用上方分组入口，空分组结果与无记录状态分别显示。
 - 隔离 Release GUI smoke 在 1000 段文档运行期间从 Form 切至 Chart，断言聚合分组数据已渲染，再逐一写入/读回 Bar、Line、Pie 类型并恢复 Board；同期速记、托盘、MCP 16 工具、窗口最大化/还原与虚拟滚动仍通过。验证：`cargo check -j 8`、全量 `cargo test -j 8`（68 项）、Release build 与新建临时目录 SQLite 的 `--smoke-test --smoke-blocks 1000` 通过。看板卡片拖放仍未完成；图表当前使用 GPUI canvas 几何绘制，未做真人窗口截图的像素级视觉复核。
+
+## 第一百四十五轮：看板卡片跨分组拖放
+
+- 看板卡片加入 GPUI 类型化 `on_drag` 与轻量拖动预览；目标分组列接收同数据库、同分组属性且属性类型一致的载荷，并忽略当前所在列。移动仍通过既有 `move_database_record_to_group` / typed Session cell command 实施，支持 Checkbox、Select、Status 的目标值与空组，不允许跨数据库或跨字段落下；原有快捷移动按钮继续可用。
+- 隔离 Release smoke 在唯一临时 SQLite 中，将“未完成示例”按 Checkbox 移到“已完成”组，强制 flush 并读回 `Flag(true)`；完整窗口 smoke 同时继续覆盖表单、图表、MCP、速记、托盘、最大化还原与 1000 块虚拟滚动。`cargo test -j 8`（68 项）、Release build 和新隔离目录 GUI smoke 通过。当前 smoke 验证了 drop 最终调用的分组写入路径，但没有模拟真人鼠标拖动过列边界；后续真窗口可用性回归仍需实际拖放确认。
