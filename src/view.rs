@@ -17374,6 +17374,15 @@ impl Render for Workspace {
                         header.child(
                             div()
                                 .id("page-options-popover")
+                                .on_mouse_down_out(cx.listener(|_, _, window, cx| {
+                                    cx.defer_in(window, |this, _, cx| {
+                                        if this.page_options_open {
+                                            this.page_options_open = false;
+                                            this.icon_picker_open = false;
+                                            cx.notify();
+                                        }
+                                    });
+                                }))
                                 .absolute()
                                 .top(px(40.))
                                 .right(px(142.))
