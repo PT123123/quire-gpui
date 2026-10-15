@@ -221,11 +221,6 @@ pub fn execute(session: &mut Session, name: &str, args: &Value) -> Result<Value,
             Ok(json!({"notes": rows}))
         }
         "create_note" => {
-            let body = args
-                .get("body")
-                .and_then(Value::as_str)
-                .unwrap_or("")
-                .to_owned();
             if let Some(parent) = args.get("parent_note_id") {
                 let parent = NoteId(
                     parent
@@ -238,13 +233,22 @@ pub fn execute(session: &mut Session, name: &str, args: &Value) -> Result<Value,
                 if args.get("title").is_some() || args.get("tags").is_some() {
                     return Err("评论只接受 body 和 parent_note_id".into());
                 }
+                let body = required_string(args, "body")?.trim();
+                if body.is_empty() {
+                    return Err("评论正文不能为空".into());
+                }
                 let id = session
-                    .create_note_reply(parent, body)
+                    .create_note_reply(parent, body.to_owned())
                     .ok_or_else(|| format!("找不到父笔记 {}", parent.0))?;
                 return Ok(json!({"ok": true, "id": id.0, "note_id": id.0, "ref_note": parent.0}));
             }
             let title = args
                 .get("title")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_owned();
+            let body = args
+                .get("body")
                 .and_then(Value::as_str)
                 .unwrap_or("")
                 .to_owned();
@@ -490,6 +494,30 @@ fn schema(props: Value, required: &[&str]) -> Value {
 
 /// 全部工具。名字用英文（Agent 的调用面），描述里写清中文语境。
 pub fn tool_defs() -> Vec<ToolDef> {
+    let mut create_note_schema = schema(
+        json!({
+            "title": { "type": "string" },
+            "body": { "type": "string" },
+            "tags": { "type": "string", "description": "逗号分隔，如 \"工作,项目\"" },
+            "parent_note_id": { "type": "integer", "minimum": 0, "description": "可选；指定后创建指向此笔记的评论，只写 body" }
+        }),
+        &[],
+    );
+    create_note_schema["oneOf"] = json!([
+        {
+            "required": ["title"],
+            "not": { "required": ["parent_note_id"] }
+        },
+        {
+            "required": ["parent_note_id", "body"],
+            "not": {
+                "anyOf": [
+                    { "required": ["title"] },
+                    { "required": ["tags"] }
+                ]
+            }
+        }
+    ]);
     vec![
         ToolDef {
             name: "list_pages",
@@ -544,15 +572,7 @@ pub fn tool_defs() -> Vec<ToolDef> {
         ToolDef {
             name: "create_note",
             description: "新建一条笔记；提供 parent_note_id 时在该笔记下创建评论。普通笔记的 tags 用逗号分隔，评论只接受 body 与 parent_note_id。",
-            input_schema: schema(
-                json!({
-                    "title": { "type": "string" },
-                    "body": { "type": "string" },
-                    "tags": { "type": "string", "description": "逗号分隔，如 \"工作,项目\"" },
-                    "parent_note_id": { "type": "integer", "minimum": 0, "description": "可选；指定后创建指向此笔记的评论，只写 body" }
-                }),
-                &["title"],
-            ),
+            input_schema: create_note_schema,
         },
         ToolDef {
             name: "update_note",
@@ -709,6 +729,26 @@ mod tests {
     #[test]
     fn note_tools_create_update_trash_restore_and_list() {
         let (_scratch, mut session) = session();
+        let create_note_schema = tool_defs()
+            .into_iter()
+            .find(|tool| tool.name == "create_note")
+            .unwrap()
+            .input_schema;
+        assert!(create_note_schema.get("required").is_none());
+        let alternatives = create_note_schema["oneOf"].as_array().unwrap();
+        assert_eq!(alternatives[0]["required"], json!(["title"]));
+        assert_eq!(
+            alternatives[1]["required"],
+            json!(["parent_note_id", "body"])
+        );
+        assert_eq!(
+            alternatives[1]["not"]["anyOf"][0]["required"],
+            json!(["title"])
+        );
+        assert_eq!(
+            alternatives[1]["not"]["anyOf"][1]["required"],
+            json!(["tags"])
+        );
         let created = execute(
             &mut session,
             "create_note",
@@ -738,6 +778,15 @@ mod tests {
                 &mut session,
                 "create_note",
                 &json!({"body": "orphan", "parent_note_id": -1}),
+            )
+            .is_err()
+        );
+        assert!(execute(&mut session, "create_note", &json!({"parent_note_id": id}),).is_err());
+        assert!(
+            execute(
+                &mut session,
+                "create_note",
+                &json!({"body": "   ", "parent_note_id": id}),
             )
             .is_err()
         );

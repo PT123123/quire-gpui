@@ -1156,3 +1156,8 @@
 - MCP `create_note` 增加可选 `parent_note_id`。带父项时仅接受 `body`，创建 `ref_note` 关联的评论；父项必须是非负整数且存在，等候撤销删除中的父项拒绝提交。普通笔记的既有参数与响应保持兼容，工具目录说明新增评论用法。
 - 隔离 MCP 工具测试覆盖创建响应和 `list_notes.ref_note` 关联、负数父项拒绝、带评论模式多余字段拒绝，以及父笔记移入回收站后评论保留。数据使用测试 Session，不访问真实库。
 - 验证：`cargo fmt --all -- --check`、`cargo check --locked`、全量 `cargo test --locked`（87 项：43 库 + 42 二进制 + 1 stdio + 1 sync loopback）、`cargo build --release --locked` 与 `git diff --check` 通过。全新随机 `%TEMP%` SQLite 的 Release GUI smoke（1000 块）通过，确认 MCP 工具目录、评论 UI、速记、托盘、窗口最大化/还原和虚拟滚动路径；没有访问真实用户库或修改 Slint/core/冻结参考树。
+
+## 第一百八十五轮：修正 MCP 评论输入 schema
+
+- `create_note` 的运行时支持 `{body, parent_note_id}` 评论，但此前 `tools/list` schema 仍全局要求普通笔记的 `title`，会被遵循 schema 的客户端在调用前拒绝。现以 `oneOf` 描述互斥的普通笔记/评论参数，评论分支要求父 ID 和正文、拒绝 title/tags；运行时也拒绝缺正文或纯空白正文。
+- 隔离 MCP 工具测试核验 schema 分支、普通笔记/评论创建、非法分支字段和空评论拒绝。`cargo fmt --all -- --check`、`cargo test --locked`（87 项：43 库 + 42 二进制 + 1 stdio + 1 sync loopback）、`cargo check --locked`、`cargo build --release --locked` 和 `git diff --check` 均通过；全新 `%TEMP%` SQLite Release GUI smoke（1000 块）确认 MCP 工具发现/HTTP 写入，以及速记、托盘、窗口最大化还原和虚拟滚动回归。未访问真实用户库，未改 Slint/core/冻结参考树。
