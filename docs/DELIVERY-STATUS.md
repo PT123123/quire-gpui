@@ -1422,5 +1422,5 @@
 ## 第二百二十九轮：编辑器文档首尾快捷导航
 
 - 编辑器新增 `Ctrl+Home` / `Ctrl+End`，分别跳到当前页面首个可编辑块的起始处、末个可编辑块的末尾；跳转跳过不可编辑容器，并沿用虚拟列表 focus/scroll 路径。输入法组合期间不发出文档导航事件。
-- 验证：`cargo fmt --all`、`cargo check --locked -j 8`、全量 `cargo test --locked -j 8`（102 项：50 库 + 50 二进制 + MCP stdio + sync loopback）通过。完整真人快捷键和 IME 场景仍待桌面回归；本轮未运行性能评测。
+- 验证：`cargo fmt --all`、`cargo check --locked -j 8`、全量 `cargo test --locked -j 8`（102 项：50 库 + 50 二进制 + MCP stdio + sync loopback）、`cargo build --release --locked -j 8` 均通过。Release 隔离 GUI smoke 在新临时 SQLite 和 1000 个合成块下通过，覆盖 MCP、速记/托盘、最大化还原、数据库视图、虚拟列表跳转及保存；完整真人快捷键和 IME 场景仍待桌面回归。本轮未运行性能评测。
 
