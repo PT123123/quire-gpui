@@ -838,8 +838,12 @@ fn sync_targets(
 ) -> Vec<quire_core::services::sync::engine::PeerRecord> {
     peers
         .into_iter()
-        .filter(|peer| now.saturating_sub(peer.last_seen) <= 60 && !pending.contains(&peer.id))
+        .filter(|peer| sync_peer_is_recent(peer.last_seen, now) && !pending.contains(&peer.id))
         .collect()
+}
+
+fn sync_peer_is_recent(last_seen: u64, now: u64) -> bool {
+    now.saturating_sub(last_seen) <= 60
 }
 
 #[cfg(test)]
@@ -850,7 +854,8 @@ mod view_tests {
         evaluate_database_formula, evaluate_database_rollup, find_matches_in, link_target_range,
         order_database_groups, organizer_tag_matches_path, organizer_tag_tree_rows,
         organizer_tags_exclude, palette_matches, parse_mcp_port, parse_organizer_tags,
-        push_history, sync_targets, system_palette_id_for_appearance, toc_headings,
+        push_history, sync_peer_is_recent, sync_targets, system_palette_id_for_appearance,
+        toc_headings,
     };
     use gpui::WindowAppearance;
     use quire_core::core::database::PropertyKind;
@@ -984,6 +989,8 @@ mod view_tests {
                 .collect::<Vec<_>>(),
             ["boundary"]
         );
+        assert!(sync_peer_is_recent(now - 60, now));
+        assert!(!sync_peer_is_recent(now - 61, now));
     }
 
     #[test]
@@ -14681,6 +14688,9 @@ impl Render for Workspace {
                                     let id_for_forget = peer.id.clone();
                                     let peer_id = peer.id.clone();
                                     let peer_name = peer.name.clone();
+                                    let peer_last_seen = peer.last_seen;
+                                    let now = quire_core::services::sync::engine::now_unix();
+                                    let sync_available = sync_peer_is_recent(peer_last_seen, now);
                                     let last_sync = if peer.last_sync.is_empty() { "尚未同步".to_owned() } else { peer.last_sync.clone() };
                                     let online = quire_core::services::sync::engine::now_unix().saturating_sub(peer.last_seen) <= 15;
                                     div().flex().items_center().justify_between().gap(px(6.)).px(px(7.)).py(px(5.))
@@ -14690,8 +14700,15 @@ impl Render for Workspace {
                                             .child(div().text_size(px(9.)).text_color(muted).child(format!("{}:{} · {}", peer.ip, peer.port, last_sync))))
                                         .child(div().flex().gap(px(5.))
                                             .child(div().id(SharedString::from(format!("sync-peer-{peer_id}"))).px(px(7.)).py(px(4.)).rounded(px(4.))
-                                                .bg(Palette::color(&p.accent)).text_color(Palette::color(&p.fg)).cursor_pointer().text_size(px(9.))
+                                                .when(sync_available, |button| button.bg(Palette::color(&p.accent)).text_color(Palette::color(&p.fg)).cursor_pointer())
+                                                .when(!sync_available, |button| button.text_color(muted))
+                                                .text_size(px(9.))
                                                 .on_click(cx.listener(move |this, _, _, cx| {
+                                                    if !sync_peer_is_recent(peer_last_seen, quire_core::services::sync::engine::now_unix()) {
+                                                        this.sync_status = format!("{peer_name} 已离线超过 60 秒，发现设备重新上线后才能同步");
+                                                        cx.notify();
+                                                        return;
+                                                    }
                                                     if !this.sync_pending.insert(peer_key.clone()) {
                                                         this.sync_status = "该设备的同步仍在进行中".into();
                                                         cx.notify();
@@ -14705,7 +14722,7 @@ impl Render for Workspace {
                                                     }
                                                     cx.notify();
                                                 }))
-                                                .child("同步"))
+                                                .child(if sync_available { "同步" } else { "离线" }))
                                             .child(div().id(SharedString::from(format!("forget-peer-{peer_id}"))).px(px(7.)).py(px(4.))
                                                 .border_1().border_color(Palette::color(&p.border)).cursor_pointer().text_size(px(9.))
                                                 .on_click(cx.listener(move |this, _, window, cx| {
@@ -14796,7 +14813,7 @@ impl Render for Workspace {
                                             cx.notify();
                                         }))
                                         .child("复制 Agent 提示词")))
-                                .child(div().text_size(px(10.)).text_color(muted).child("服务仅监听本机 127.0.0.1；工具可以读取和修改笔记/任务，删除只进入回收站。令牌保存在当前库目录的 mcp.json。"))
+                                .child(div().text_size(px(10.)).text_color(muted).child("服务仅监听本机 127.0.0.1；工具可搜索/读取页面、创建和改名页面、编辑简单正文块，并管理笔记与任务。删除进入回收站；复杂块编辑会被安全拒绝。令牌保存在当前库目录的 mcp.json。"))
                                 .child(div().h(px(1.)).bg(Palette::color(&p.border)))
                                 .child(div().flex().items_center().justify_between()
                                     .child(div().font_weight(FontWeight::SEMIBOLD).text_size(px(12.)).child(format!("调用日志 · {} 条记录", mcp_logs.len())))

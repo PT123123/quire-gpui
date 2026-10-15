@@ -1040,3 +1040,10 @@
 - 以本仓库的 GPUI 出站 client worker 替换 core 的 `SyncWith` worker 调用，同时继续由 core Engine 提供 UDP discovery、入站同步 server 和设备广播；仍复用 core 的 `Job`/`SyncSnapshot`、Session merge、附件落库及对端协议，不改共享依赖 revision。每个 HTTP 请求的连接、读与写现在都使用传入的 5/60/120 秒 timeout，避免 pinned core 的固定 30 秒 socket 限制。
 - 新增 timeout socket 配置测试和 loopback 假 peer 端到端测试，执行 `/sync/info`、snapshot pull、附件获取、UI job merge/reply 与 merged snapshot push；原有双 Session 集成仍覆盖真实 server/Session 合并与重开。`cargo test -j 8` 74 项、`cargo check -j 8`、Release 构建、隔离 Release GUI smoke（1000 块、速记/托盘/MCP/最大化还原）及 `git diff --check` 均通过。没有访问真实用户库或修改 Slint/core。
 - 真实双机 UDP、防火墙/网络往返、断线重连及大附件慢速链路仍未做物理设备验收；loopback 假 peer 证明实现路径，不冒充这些环境验证。
+
+## 第一百六十五轮：速记、托盘、同步与 MCP 优先收尾
+
+- 复核用户优先级下的既有主路径：速记窗口共用活动 Session、支持标签建议和保存重试；托盘事件在主线程处理并支持资源管理器重启后重建图标；同步 UI 覆盖发现、手动/自动 pull-merge-push；MCP 16 工具已有官方 TypeScript SDK 实连验证。
+- 修复同步列表中陈旧 peer 仍可点击“同步”的问题。单设备按钮现在与全部/自动同步共用 60 秒最近广播规则，列表标记“离线”，点击时还会再检查一次以覆盖列表渲染后的设备过期竞态。补充边界测试；MCP 设置页说明更新为实际支持的页面、简单块、笔记与任务范围，并明确复杂块编辑会安全拒绝。
+- 本轮尚未覆盖：真人托盘菜单/全局热键点验，真实两机网络和防火墙路径，MCP 客户端长连接及宿主重启后的自动恢复；这些需要用户桌面与网络环境，loopback/隔离 smoke 不替代实机验收。
+- 验证：`cargo fmt --all -- --check`、`cargo test -j 8`（74 项）、`cargo check -j 8`、`cargo build --release -j 8`、`git diff --check` 通过；全新随机临时目录 SQLite 的 Release GUI smoke 通过，包含 1000 块虚拟滚动、速记提交、托盘隐藏/唤回以及 MCP 服务工具目录与 Bearer 写入。首次 smoke 指向已有 MCP 指针的临时父目录时被安全拒绝，随后改用全新目录成功。未访问默认用户库或修改 Slint/core。
