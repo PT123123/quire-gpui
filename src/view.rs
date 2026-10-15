@@ -126,6 +126,8 @@ actions!(
         FindNext,
         FindPrevious,
         SearchPages,
+        NavigateBack,
+        NavigateForward,
         ZoomIn,
         ZoomOut,
         ZoomReset
@@ -147,6 +149,9 @@ enum PaletteCommand {
     ExportMarkdown,
     ImportMarkdown,
     CopyMarkdown,
+    NavigateBack,
+    NavigateForward,
+    OpenHtml,
     OpenPage(quire_core::core::types::PageId),
 }
 
@@ -168,6 +173,16 @@ fn palette_matches(query: &str, name: &str, section: &str) -> bool {
     query
         .split_whitespace()
         .all(|term| name.contains(term) || section.contains(term))
+}
+
+fn push_history<T: Copy + PartialEq>(history: &mut Vec<T>, value: T) {
+    const LIMIT: usize = 50;
+    if history.last() != Some(&value) {
+        history.push(value);
+        if history.len() > LIMIT {
+            history.remove(0);
+        }
+    }
 }
 
 fn find_matches_in(text: &str, query: &str) -> Vec<Range<usize>> {
@@ -567,7 +582,7 @@ mod view_tests {
         database_group_identity, database_group_label, database_property_kind_choices,
         evaluate_database_formula, evaluate_database_rollup, find_matches_in, link_target_range,
         order_database_groups, organizer_tag_matches_path, organizer_tags_exclude, palette_matches,
-        parse_mcp_port, parse_organizer_tags, sync_targets, toc_headings,
+        parse_mcp_port, parse_organizer_tags, push_history, sync_targets, toc_headings,
     };
     use quire_core::core::database::PropertyKind;
     use quire_core::core::database_view::FilterValue;
@@ -663,6 +678,19 @@ mod view_tests {
         assert!(palette_matches("跳转", "项目计划", "跳转到页面"));
         assert!(!palette_matches("附件", "设置", "导航"));
         assert!(palette_matches("", "任意命令", "界面"));
+    }
+
+    #[test]
+    fn page_history_suppresses_consecutive_duplicates_and_keeps_latest_fifty() {
+        let mut history = Vec::new();
+        push_history(&mut history, 1_u8);
+        push_history(&mut history, 1_u8);
+        for page in 2..=60 {
+            push_history(&mut history, page);
+        }
+        assert_eq!(history.len(), 50);
+        assert_eq!(history.first(), Some(&11));
+        assert_eq!(history.last(), Some(&60));
     }
 
     #[test]
@@ -1156,6 +1184,8 @@ fn system_palette_id() -> &'static str {
 
 pub struct Workspace {
     session: Session,
+    page_history_back: Vec<quire_core::core::types::PageId>,
+    page_history_forward: Vec<quire_core::core::types::PageId>,
     title_input: Entity<TextInput>,
     title_subscription: Option<Subscription>,
     title_edit_original: Option<String>,
@@ -1483,6 +1513,8 @@ impl Workspace {
         let sync_cmd_tx = quire_core::services::sync::engine::Engine::start(sync_self, sync_job_tx);
         let mut this = Self {
             session,
+            page_history_back: Vec::new(),
+            page_history_forward: Vec::new(),
             title_input,
             title_subscription: None,
             title_edit_original: None,
@@ -2087,8 +2119,28 @@ impl Workspace {
                     assert!(this.theme_picker_open);
                     this.close_settings(window, cx);
                     eprintln!("SMOKE: Ctrl+K command palette filtering and settings action passed");
-                    this.smoke_input(window, cx);
+                    let original_page = this.session.page.id;
+                    this.add_page(window, cx);
+                    let created_page = this.session.page.id;
+                    assert_ne!(created_page, original_page);
+                    this.navigate_page_history(false, window, cx);
+                    assert_eq!(this.session.page.id, original_page);
+                    this.navigate_page_history(true, window, cx);
+                    assert_eq!(this.session.page.id, created_page);
+                    this.navigate_page_history(false, window, cx);
+                    assert_eq!(this.session.page.id, original_page);
+                    this.add_page(window, cx);
+                    let branch_page = this.session.page.id;
+                    this.navigate_page_history(true, window, cx);
+                    assert_eq!(this.session.page.id, branch_page);
+                    this.navigate_page_history(false, window, cx);
+                    assert_eq!(this.session.page.id, original_page);
+                    eprintln!("SMOKE: page history back/forward and branch reset passed");
                 });
+                cx.background_executor()
+                    .timer(Duration::from_millis(150))
+                    .await;
+                let _ = weak.update_in(cx, |this, window, cx| this.smoke_input(window, cx));
                 cx.background_executor()
                     .timer(Duration::from_millis(800))
                     .await;
@@ -3135,6 +3187,29 @@ impl Workspace {
             }
             Err(error) => {
                 self.status = format!("导出 Markdown 失败：{error}");
+                self.error = true;
+            }
+        }
+        cx.notify();
+    }
+    fn open_html_in_browser(&mut self, cx: &mut Context<Self>) {
+        if self.closing {
+            return;
+        }
+        let Some(path) = rfd::FileDialog::new()
+            .set_title("在浏览器中打开 HTML")
+            .add_filter("HTML", &["html", "htm"])
+            .pick_file()
+        else {
+            return;
+        };
+        match crate::platform::open_with_default(&path) {
+            Ok(()) => {
+                self.status = format!("已在默认浏览器中打开：{}", path.display());
+                self.error = false;
+            }
+            Err(error) => {
+                self.status = format!("打开 HTML 失败：{error}");
                 self.error = true;
             }
         }
@@ -5909,6 +5984,68 @@ impl Workspace {
         if id == self.session.page.id || self.closing || self.composing(cx) {
             return;
         }
+        if self
+            .session
+            .pages
+            .iter()
+            .any(|page| page.id == id && !page.template)
+        {
+            Self::push_page_history(&mut self.page_history_back, self.session.page.id);
+            self.page_history_forward.clear();
+        }
+        self.activate_page_without_history(id, window, cx);
+    }
+    fn push_page_history(
+        history: &mut Vec<quire_core::core::types::PageId>,
+        page: quire_core::core::types::PageId,
+    ) {
+        push_history(history, page);
+    }
+    fn navigate_page_history(
+        &mut self,
+        forward: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.closing || self.composing(cx) {
+            return;
+        }
+        let target = {
+            let history = if forward {
+                &mut self.page_history_forward
+            } else {
+                &mut self.page_history_back
+            };
+            loop {
+                let Some(candidate) = history.pop() else {
+                    break None;
+                };
+                if self
+                    .session
+                    .pages
+                    .iter()
+                    .any(|page| page.id == candidate && !page.template)
+                {
+                    break Some(candidate);
+                }
+            }
+        };
+        let Some(target) = target else { return };
+        let current = self.session.page.id;
+        let opposite = if forward {
+            &mut self.page_history_back
+        } else {
+            &mut self.page_history_forward
+        };
+        Self::push_page_history(opposite, current);
+        self.activate_page_without_history(target, window, cx);
+    }
+    fn activate_page_without_history(
+        &mut self,
+        id: quire_core::core::types::PageId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if self.session.select_page(id) {
             self.session.visit_page(id);
             self.mention_menu = None;
@@ -6041,6 +6178,27 @@ impl Workspace {
                 icon: "⧉",
                 action: PaletteCommand::CopyMarkdown,
             },
+            PaletteItem {
+                name: "后退".into(),
+                hint: "Alt+←",
+                section: "导航",
+                icon: "←",
+                action: PaletteCommand::NavigateBack,
+            },
+            PaletteItem {
+                name: "前进".into(),
+                hint: "Alt+→",
+                section: "导航",
+                icon: "→",
+                action: PaletteCommand::NavigateForward,
+            },
+            PaletteItem {
+                name: "在浏览器中打开 HTML…".into(),
+                hint: "",
+                section: "页面",
+                icon: "↗",
+                action: PaletteCommand::OpenHtml,
+            },
         ];
         let mut pages = self
             .session
@@ -6160,6 +6318,9 @@ impl Workspace {
                 self.error = false;
                 cx.notify();
             }
+            PaletteCommand::NavigateBack => self.navigate_page_history(false, window, cx),
+            PaletteCommand::NavigateForward => self.navigate_page_history(true, window, cx),
+            PaletteCommand::OpenHtml => self.open_html_in_browser(cx),
             PaletteCommand::OpenPage(page_id) => self.activate_page(page_id, window, cx),
         }
     }
@@ -6173,6 +6334,22 @@ impl Workspace {
         });
         cx.notify();
         window.focus(&self.search_input.read(cx).focus);
+    }
+    fn navigate_back_action(
+        &mut self,
+        _: &NavigateBack,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.navigate_page_history(false, window, cx);
+    }
+    fn navigate_forward_action(
+        &mut self,
+        _: &NavigateForward,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.navigate_page_history(true, window, cx);
     }
     fn new_page_action(&mut self, _: &NewPage, window: &mut Window, cx: &mut Context<Self>) {
         self.add_page(window, cx);
@@ -6269,9 +6446,12 @@ impl Workspace {
         if self.closing || self.composing(cx) {
             return;
         }
+        let previous_page = self.session.page.id;
         let Some(duplicate) = self.session.duplicate_page(id) else {
             return;
         };
+        Self::push_page_history(&mut self.page_history_back, previous_page);
+        self.page_history_forward.clear();
         self.session.visit_page(duplicate);
         self.find_index = None;
         self.refresh_find_matches();
@@ -6346,8 +6526,11 @@ impl Workspace {
         if self.closing || self.session.page.locked {
             return;
         }
+        let previous = self.session.page.id;
         self.session.create_page(None);
         let id = self.session.page.id;
+        Self::push_page_history(&mut self.page_history_back, previous);
+        self.page_history_forward.clear();
         self.session.visit_page(id);
         self.find_index = None;
         self.refresh_find_matches();
@@ -6365,8 +6548,11 @@ impl Workspace {
         if self.closing || self.session.page.locked {
             return;
         }
+        let previous = self.session.page.id;
         self.session.create_page(Some(parent));
         let id = self.session.page.id;
+        Self::push_page_history(&mut self.page_history_back, previous);
+        self.page_history_forward.clear();
         self.session.visit_page(id);
         self.find_index = None;
         self.refresh_find_matches();
@@ -13664,6 +13850,8 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::find_next_action))
             .on_action(cx.listener(Self::find_previous_action))
             .on_action(cx.listener(Self::open_search))
+            .on_action(cx.listener(Self::navigate_back_action))
+            .on_action(cx.listener(Self::navigate_forward_action))
             .on_action(cx.listener(Self::zoom_in))
             .on_action(cx.listener(Self::zoom_out))
             .on_action(cx.listener(Self::zoom_reset))
@@ -14842,6 +15030,8 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("ctrl-g", FindNext, Some("Quire")),
         KeyBinding::new("ctrl-shift-g", FindPrevious, Some("Quire")),
         KeyBinding::new("ctrl-p", SearchPages, Some("Quire")),
+        KeyBinding::new("alt-left", NavigateBack, Some("Quire")),
+        KeyBinding::new("alt-right", NavigateForward, Some("Quire")),
         KeyBinding::new("ctrl-=", ZoomIn, Some("Quire")),
         KeyBinding::new("ctrl--", ZoomOut, Some("Quire")),
         KeyBinding::new("ctrl-0", ZoomReset, Some("Quire")),

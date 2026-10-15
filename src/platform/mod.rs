@@ -1,3 +1,4 @@
+use std::path::Path;
 use std::sync::mpsc::Sender;
 
 pub enum ShellEvent {
@@ -137,6 +138,56 @@ pub fn main_window_visible(window: &gpui::Window) -> bool {
     {
         let _ = window;
         true
+    }
+}
+
+/// Open a local file with the operating system's registered default handler.
+pub fn open_with_default(path: &Path) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::OsStrExt;
+        let path = path
+            .as_os_str()
+            .encode_wide()
+            .chain(Some(0))
+            .collect::<Vec<_>>();
+        let operation = "open".encode_utf16().chain(Some(0)).collect::<Vec<_>>();
+        unsafe extern "system" {
+            fn ShellExecuteW(
+                hwnd: isize,
+                operation: *const u16,
+                file: *const u16,
+                parameters: *const u16,
+                directory: *const u16,
+                show: i32,
+            ) -> isize;
+        }
+        let result = unsafe {
+            ShellExecuteW(
+                0,
+                operation.as_ptr(),
+                path.as_ptr(),
+                std::ptr::null(),
+                std::ptr::null(),
+                1,
+            )
+        };
+        if result as usize <= 32 {
+            Err(format!(
+                "Windows 无法打开文件（错误码 {}）",
+                result as usize
+            ))
+        } else {
+            Ok(())
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        std::process::Command::new("xdg-open")
+            .arg(path)
+            .spawn()
+            .map(|_| ())
+            .map_err(|error| error.to_string())
     }
 }
 
