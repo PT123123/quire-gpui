@@ -1025,17 +1025,61 @@ fn block_clipboard_pasteable(blocks: &[Block]) -> bool {
     })
 }
 
+fn columns_layout_item_ids(blocks: &[Block], layout_id: BlockId) -> Vec<BlockId> {
+    fn visit(blocks: &[Block], id: BlockId, depth: usize, output: &mut Vec<BlockId>) {
+        if depth >= 8 {
+            return;
+        }
+        let Some(block) = blocks.iter().find(|block| block.id == id) else {
+            return;
+        };
+        if block.kind == BlockKind::Column || block.kind == BlockKind::TableCell {
+            return;
+        }
+        output.push(id);
+        if block.folded {
+            return;
+        }
+        let mut children = blocks
+            .iter()
+            .filter(|child| child.parent == Some(id) && child.kind != BlockKind::Column)
+            .collect::<Vec<_>>();
+        children.sort_by_key(|child| child.order);
+        for child in children {
+            visit(blocks, child.id, depth + 1, output);
+        }
+    }
+
+    let mut columns = blocks
+        .iter()
+        .filter(|block| block.parent == Some(layout_id) && block.kind == BlockKind::Column)
+        .collect::<Vec<_>>();
+    columns.sort_by_key(|column| column.order);
+    let mut output = Vec::new();
+    for column in columns {
+        let mut children = blocks
+            .iter()
+            .filter(|block| block.parent == Some(column.id))
+            .collect::<Vec<_>>();
+        children.sort_by_key(|block| block.order);
+        for child in children {
+            visit(blocks, child.id, 0, &mut output);
+        }
+    }
+    output
+}
+
 #[cfg(test)]
 mod view_tests {
     use super::{
-        OrganizerTaskDrag, capture_tag_replacement, capture_tags, database_filter_value_from_text,
-        database_group_identity, database_group_label, database_property_kind_choices,
-        evaluate_database_formula, evaluate_database_rollup, find_matches_in, link_target_range,
-        mention_date_matches, order_database_groups, organizer_notes_copy_payload,
-        organizer_tag_matches_path, organizer_tag_tree_rows, organizer_tags_exclude,
-        organizer_task_drop_accepted, palette_matches, parse_mcp_port, parse_organizer_tags,
-        push_history, settings_matches, settings_section_visible, slash_query,
-        sort_organizer_notes, sort_organizer_tasks, sync_peer_is_recent, sync_targets,
+        OrganizerTaskDrag, capture_tag_replacement, capture_tags, columns_layout_item_ids,
+        database_filter_value_from_text, database_group_identity, database_group_label,
+        database_property_kind_choices, evaluate_database_formula, evaluate_database_rollup,
+        find_matches_in, link_target_range, mention_date_matches, order_database_groups,
+        organizer_notes_copy_payload, organizer_tag_matches_path, organizer_tag_tree_rows,
+        organizer_tags_exclude, organizer_task_drop_accepted, palette_matches, parse_mcp_port,
+        parse_organizer_tags, push_history, settings_matches, settings_section_visible,
+        slash_query, sort_organizer_notes, sort_organizer_tasks, sync_peer_is_recent, sync_targets,
         system_palette_id_for_appearance, toc_headings,
     };
     use gpui::WindowAppearance;
@@ -1579,6 +1623,24 @@ mod view_tests {
             db_ref: None,
             sync_ref: None,
         }
+    }
+
+    #[test]
+    fn columns_tab_order_flattens_columns_and_respects_folded_blocks() {
+        let blocks = vec![
+            block(1, BlockKind::Columns, "", None, false),
+            block(2, BlockKind::Column, "", Some(BlockId(1)), false),
+            block(3, BlockKind::Column, "", Some(BlockId(1)), false),
+            block(4, BlockKind::Paragraph, "first", Some(BlockId(2)), false),
+            block(5, BlockKind::Paragraph, "nested", Some(BlockId(4)), false),
+            block(6, BlockKind::Paragraph, "second", Some(BlockId(3)), false),
+            block(7, BlockKind::Heading1, "folded", Some(BlockId(3)), true),
+            block(8, BlockKind::Paragraph, "hidden", Some(BlockId(7)), false),
+        ];
+        assert_eq!(
+            columns_layout_item_ids(&blocks, BlockId(1)),
+            [BlockId(4), BlockId(5), BlockId(6), BlockId(7)]
+        );
     }
 
     #[test]
@@ -4536,6 +4598,8 @@ impl Workspace {
                     .is_some_and(|block| block.kind == BlockKind::TableCell)
                 {
                     self.navigate_table_cell(id, 1, window, cx);
+                } else if self.navigate_columns_item(id, 1, window, cx) {
+                    return;
                 } else {
                     self.session.execute(Command::IndentList { id });
                     self.sync_inputs(window, cx);
@@ -4550,6 +4614,8 @@ impl Workspace {
                     .is_some_and(|block| block.kind == BlockKind::TableCell)
                 {
                     self.navigate_table_cell(id, -1, window, cx);
+                } else if self.navigate_columns_item(id, -1, window, cx) {
+                    return;
                 } else {
                     self.session.execute(Command::OutdentList { id });
                     self.sync_inputs(window, cx);
@@ -5062,6 +5128,56 @@ impl Workspace {
             }
             self.schedule_save(false, window, cx);
         }
+    }
+    fn navigate_columns_item(
+        &mut self,
+        id: BlockId,
+        delta: i32,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let blocks = self.session.blocks();
+        let mut ancestor = blocks
+            .iter()
+            .find(|block| block.id == id)
+            .and_then(|block| block.parent);
+        let mut layout_id = None;
+        let mut guard = 0;
+        while let Some(parent_id) = ancestor {
+            let Some(parent) = blocks.iter().find(|block| block.id == parent_id) else {
+                break;
+            };
+            if parent.kind == BlockKind::Columns {
+                layout_id = Some(parent_id);
+                break;
+            }
+            ancestor = parent.parent;
+            guard += 1;
+            if guard >= 32 {
+                break;
+            }
+        }
+        let Some(layout_id) = layout_id else {
+            return false;
+        };
+        let items = columns_layout_item_ids(&blocks, layout_id);
+        if let Some(index) = items.iter().position(|candidate| *candidate == id) {
+            let next = index as i64 + i64::from(delta);
+            if next >= 0
+                && let Some(target) = items.get(next as usize)
+            {
+                let caret = if delta < 0 {
+                    blocks
+                        .iter()
+                        .find(|block| block.id == *target)
+                        .map_or(0, |block| block.text.len())
+                } else {
+                    0
+                };
+                self.focus(*target, caret, window, cx);
+            }
+        }
+        true
     }
     fn add_columns_column(&mut self, id: BlockId, window: &mut Window, cx: &mut Context<Self>) {
         if self.session.page.locked {

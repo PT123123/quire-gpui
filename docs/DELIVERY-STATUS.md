@@ -1206,3 +1206,8 @@
 
 - 补上旧版 F139/F140：页面可拖到其他页面上成为其子页，也可拖到“工作区”根目标解除父级关系。预先计算合法拖放源，拒绝模板、同父无操作、缺失目标、自身及后代循环；移动子树通过现有 `PageMoved` 写入并展开目标父级，不改变当前打开页。页面仍可用显式上下按钮调整同级顺序。
 - Session 隔离 SQLite 测试覆盖移入子级、循环拒绝、拖回根级和重开后的父级关系。全量 `cargo test --locked`（93 项：46 库 + 45 二进制 + 1 stdio + 1 sync loopback）、`cargo check --locked`、Release 构建、格式及 diff 检查通过；唯一临时目录的 1000 块 Release GUI smoke 退出码 0，继续覆盖 MCP、速记、托盘、最大化/还原和既有数据库视图。F139/F140 已更新为已实现/未验证；尚无真人鼠标拖放验收。未访问真实用户库或修改 Slint/core。
+
+## 第一百九十五轮：多栏布局 Tab 焦点遍历
+
+- 补齐旧版 F067：多栏布局内 Tab / Shift+Tab 依列顺序及列内块树顺序切换焦点，首尾处停留且不会意外缩进列表；表格单元格继续使用表格导航。遍历忽略 Column 容器并尊重折叠状态。
+- 单测验证跨列、嵌套块顺序和折叠后代隐藏；功能矩阵更新为已实现/未验证。`cargo test --locked`（94 项：46 库 + 46 二进制 + 1 stdio + 1 sync loopback）、`cargo check --locked`、Release 构建、`cargo fmt --all -- --check` 和 `git diff --check` 全部通过。唯一新建临时目录及 SQLite 的 Release GUI smoke 退出码 0，覆盖速记、托盘隐藏/唤回、MCP 16 工具、最大化/窗口化还原、1000 块虚拟滚动和数据库视图。未访问真实用户库或修改 Slint/core。
