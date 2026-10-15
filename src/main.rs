@@ -318,6 +318,7 @@ fn run() -> Result<()> {
         .or_else(|| session.setting("gpui.theme").map(str::to_owned))
         .unwrap_or_else(|| "midnight".into());
     platform::set_theme(&theme);
+    platform::set_application_id();
     let (shell_tx, shell_rx) = std::sync::mpsc::channel();
     let platform_services = platform::install(shell_tx);
     let tray_available = platform_services.tray_available;

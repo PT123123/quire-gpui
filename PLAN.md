@@ -81,7 +81,7 @@
 - [~] MCP 已接本机 HTTP JSON-RPC（仅绑定 127.0.0.1，默认 5880，Bearer token），新库默认启用以匹配旧版；可启停/重启服务、自定义端口、复制 HTTP 与 stdio 客户端配置及 Agent 提示词、清空日志。stdio 子命令只把 stdin/stdout 转发到活动应用，不打开第二个数据库写者。16 个工具覆盖页面列表/搜索/读取/Markdown 新建（支持 parent_id 创建子页）/改名、安全替换简单页面正文与安全编辑普通纯文本块，以及整理区笔记和任务 CRUD；organizer 响应保留旧版 `id`/`list` 字段并附带更明确的 `note_id`/`task_id`/`list_id` 别名，任务列表含子任务详情；锁定页面拒绝修改，复杂块拒绝可能破坏结构或格式的编辑。所有写入经主线程唯一 Session 并立即 flush，最多保留 50 条不含成功调用正文的日志。协议、桥接、HTTP 鉴权、请求体上限、Origin 校验、Streamable HTTP 2025-11-25 协议版本/Accept 头、2026-07-28 无握手 `server/discover` 与逐请求 `_meta` /标准头校验、严格指针校验、同端口停启以及隔离 Release 窗口默认启动服务并经 Bearer HTTP → UI 线程 → 唯一 Session 创建笔记的完整路径均有自动回归；官方 TypeScript SDK 2.3.1 在 modern 自动协商和强制 legacy 两种模式下均完成隔离真实应用实连、工具列表及页面/笔记读写。更早版本的官方 SDK 二进制与长时间连接/宿主重启后自动重连仍未单独验收。
 - [~] Windows 托盘退出会触发 GPUI shutdown flush 并释放托盘/全局热键线程；重复触发速记会唤回现有窗口，避免多个独立草稿。隔离 Release smoke 现在启用持久化“启动时弹出速记”设置，验证启动弹窗、平台事件再次触发时复用同窗、提交落库与标签解析；同时验证主窗托盘隐藏/恢复。MCP server 随 workspace 释放停止；同步发现与入站服务由 core Engine 提供，GPUI 出站 worker 与 UI job pump 协作并按同步批次 flush。托盘初始化失败时通用设置提示关闭窗口会退出；全局热键启动注册失败显示系统原因；启动时预检同步监听端口并在设置页显示已占用诊断；异常退出与只读/损坏库提示尚未完整呈现。
 - 启动可靠性：GPUI 现在读取 core `OpenReport`，从备份恢复、启动备份写入失败或数据位置迁移都会在工作区显示可关闭的持续告警；库无法打开时 Windows 显示系统错误框，并明确不会覆盖/重建原文件。告警文案单测、真实隔离库损坏恢复及 Release 恢复窗口 smoke 均通过；系统错误框未做自动点击验收。
-- [ ] 安装包、资源、版本信息、独立应用标识。
+- [~] Windows 资源已加入 Quire 图标与由 Cargo 版本生成的文件版本信息，托盘改用嵌入品牌图标，进程设置与 Slint 分离的 AppUserModelID；新增便携 x64 ZIP 构建脚本及可选 per-user Inno Setup 定义。需验证 Release 资源读取、ZIP 解压运行和完整安装/卸载；当前机器未确认安装 Inno Setup。
 
 交付：两端实际同步结果、MCP 调用验证、异常与退出流程验证。
 

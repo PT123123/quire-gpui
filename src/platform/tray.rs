@@ -114,6 +114,7 @@ mod imp {
     const NIF_TIP: u32 = 4;
 
     const IMAGE_ICON: u32 = 1;
+    const IDI_MAIN: usize = 101;
     const LR_DEFAULTSIZE: u32 = 0x40;
     const LR_SHARED: u32 = 0x8000;
 
@@ -593,8 +594,8 @@ mod imp {
         if TASKBAR_CREATED.get() != 0 && msg == TASKBAR_CREATED.get() {
             unsafe {
                 let icon = LoadImageW(
-                    0,
-                    32512usize as *const u16,
+                    GetModuleHandleW(std::ptr::null()),
+                    IDI_MAIN as *const u16,
                     IMAGE_ICON,
                     0,
                     0,
@@ -667,8 +668,8 @@ mod imp {
                     allow_dark_mode(hwnd, app_is_dark());
                     set_preferred_app_mode();
                     let icon = LoadImageW(
-                        0,
-                        32512usize as *const u16,
+                        GetModuleHandleW(std::ptr::null()),
+                        IDI_MAIN as *const u16,
                         IMAGE_ICON,
                         0,
                         0,

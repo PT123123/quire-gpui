@@ -16,6 +16,9 @@ rfd = "=0.15.4"
 url = "=2.5.8"
 raw-window-handle = "=0.6.2"
 
+[build-dependencies]
+embed-resource = "=3.0.12"
+
 [patch.crates-io]
 gpui = { path = "vendor/gpui-0.2.2" }
 

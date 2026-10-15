@@ -4092,6 +4092,7 @@ name = "quire-gpui"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "embed-resource",
  "gpui",
  "quire-core",
  "raw-window-handle",

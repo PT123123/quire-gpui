@@ -1100,3 +1100,8 @@
 
 - 对照旧版 `note_row`、`task_row` 与创建响应，发现 GPUI 将通用 `id`/`list` 改成了 `note_id`/`task_id`/`list_id`，旧客户端按既有字段读取会失效。现在 list/create 响应同时提供旧字段和清晰别名，避免破坏当前 GPUI 客户端。
 - 隔离 MCP 工具测试断言笔记/任务创建及列表响应中的字段别名一致；`cargo fmt --all -- --check` 与 `cargo test --locked`（82 项）通过。无旧版/core/冻结参考树改动，不访问真实用户库。
+
+## 第一百七十五轮：Windows 候选包资源与便携分发
+
+- 给 GPUI 单独嵌入 Quire 品牌 ICO 与由 Cargo 版本生成的 Windows 文件版本信息；托盘图标现从 exe 的 `IDI_MAIN` 资源读取。启动时设置独立 `PT123123.Quire.GPUI` AppUserModelID，避免与 Slint 版任务栏分组混淆。新增可复现便携 ZIP 脚本及可选 per-user Inno Setup 6 定义，默认安装/解压路径与 Slint 版分离，卸载不处理数据目录。
+- 执行 `install/build-release.ps1` 生成 `dist/Quire-GPUI-0.1.0-windows-x64.zip`；Windows 文件属性读回 FileVersion `0.1.0.0`、ProductName `Quire GPUI`，`ExtractAssociatedIcon` 成功。`cargo fmt --all -- --check`、`cargo test --locked`（82 项）、`cargo check --locked`、Release 构建及 `git diff --check` 通过。ZIP 解压后运行 release `--smoke-test --db <新临时库> --smoke-blocks 100` 通过，覆盖 MCP、速记、托盘隐藏/恢复、窗口最大化/还原与虚拟滚动。未安装 Inno Setup，故安装器编译、安装/卸载尚未验证；没有访问真实用户库，也未改 Slint/core/冻结参考树。

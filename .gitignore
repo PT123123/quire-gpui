@@ -1,6 +1,7 @@
 # Rust build output (including future probe workspaces)
 target/
 target-*/
+dist/
 
 # Local runtime data and credentials
 appdata/

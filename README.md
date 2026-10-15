@@ -22,6 +22,16 @@ cargo run -- --db "$env:TEMP/quire-gpui-scratch/quire.db" --theme jade
 
 可用主题 ID 见 `src/palettes.json`。默认数据库位于 `%LOCALAPPDATA%/QuireGPUI/quire.db`。不要把旧版真实数据库作为 `--db` 参数；需先复制一份测试副本。开发构建已在本机通过，完整的窗口交互、输入法与关闭重开流程尚待使用反馈。
 
+## Windows 候选包
+
+生成可独立解压运行的 x64 ZIP（先执行锁文件 Release 构建）：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File install/build-release.ps1
+```
+
+产物位于 `dist/`，包含程序、README 与第三方许可。可选安装 Inno Setup 6 并将 `ISCC.exe` 加入 PATH，再加 `-BuildInstaller` 生成按当前用户安装的安装器。GPUI 使用独立的 Windows AppUserModelID、嵌入图标/版本信息、独立 `%LOCALAPPDATA%/QuireGPUI` 数据目录；卸载不会删除数据，也不会替换 Slint 版。
+
 ## 阅读顺序
 
 1. `AGENTS.md`：执行规则、完成定义与边界。

@@ -61,6 +61,28 @@ pub fn set_theme(theme: &str) {
 #[cfg(not(windows))]
 pub fn set_theme(_theme: &str) {}
 
+/// Give the GPUI build a stable Windows taskbar identity separate from Slint Quire.
+#[cfg(windows)]
+pub fn set_application_id() {
+    use std::os::windows::ffi::OsStrExt;
+
+    let app_id = std::ffi::OsStr::new("PT123123.Quire.GPUI")
+        .encode_wide()
+        .chain(Some(0))
+        .collect::<Vec<_>>();
+    #[link(name = "shell32")]
+    unsafe extern "system" {
+        fn SetCurrentProcessExplicitAppUserModelID(app_id: *const u16) -> i32;
+    }
+    let result = unsafe { SetCurrentProcessExplicitAppUserModelID(app_id.as_ptr()) };
+    if result < 0 {
+        eprintln!("Quire GPUI: could not set Windows AppUserModelID (HRESULT {result:#x})");
+    }
+}
+
+#[cfg(not(windows))]
+pub fn set_application_id() {}
+
 #[cfg(windows)]
 mod hotkeys;
 #[cfg(windows)]
