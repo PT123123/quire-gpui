@@ -2103,18 +2103,31 @@ impl Session {
         id
     }
     pub fn import_markdown(&mut self, title: String, source: &str) -> PageId {
+        self.import_markdown_under(title, source, None)
+    }
+    pub fn import_markdown_under(
+        &mut self,
+        title: String,
+        source: &str,
+        parent: Option<PageId>,
+    ) -> PageId {
         self.end_typing();
+        let parent = parent.filter(|id| {
+            self.pages
+                .iter()
+                .any(|page| page.id == *id && !page.template)
+        });
         let id = PageId(self.pages.iter().map(|page| page.id.0).max().unwrap_or(0) + 1);
         let last_order = self
             .pages
             .iter()
-            .filter(|page| page.parent.is_none() && !page.template)
+            .filter(|page| page.parent == parent && !page.template)
             .map(|page| page.order)
             .max();
         let page = Page {
             id,
             title,
-            parent: None,
+            parent,
             order: OrderKey::between(last_order, None).unwrap_or(OrderKey::FIRST),
             favorite: false,
             expanded: true,

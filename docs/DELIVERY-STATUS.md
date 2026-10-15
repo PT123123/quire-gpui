@@ -853,3 +853,9 @@ GPUI 已覆盖主编辑器、整理区、独立速记与标签建议、Windows �
 - 数据库无法打开时，在 Windows GUI 启动路径弹出系统错误框，解释程序不会覆盖或重建原文件，同时保留完整错误链供终端诊断。stdio 与 `--dump-state` 的命令行错误行为未改。
 - 新增 isolated 单测验证正常启动无提示，并验证恢复/备份失败/迁移字段全部出现在提示中；另在 ScratchDir 实际损坏主库、从 `.bak1` 恢复，重开后确认原页面标题仍在且提示进入 Session。新加 `--smoke-recovery` 隔离模式，Release 窗口确认告警横幅挂载并持续显示后自动退出；尝试复用全量烟测时发现其输入夹具假定空白正文，因此恢复模式改为只验收提示挂载，避免把旧备份内容误当空白库。本轮所有文件均在临时目录。
 - 验证：全量 64 项自动测试、`cargo check -j 8`、格式和 diff 检查、Release 构建、全新库 Release smoke 与真实损坏临时库 Release 恢复提示 smoke 均通过；未碰默认数据库或 Slint 工作树。Windows 原生错误框显示路径尚未自动化点验。
+
+## 第一百三十轮：MCP 子页面创建与重点链路回归
+
+- `create_page` 新增可选 `parent_id`，可在普通页面下创建子页面并以 Markdown 初始化正文；父页面不存在、ID 非正整数或目标为模板页时拒绝。创建结果返回父 ID，仍恢复调用前的当前页面选择。Session 通过 core 记录创建变更，页面树排序按父页分组。
+- ScratchDir 回归覆盖子页面层级、正文、当前选择保持和无效父页无部分写入。最新 Windows Release 窗口 smoke 在独立临时库中通过启动速记、重复触发复用、标签解析/提交、托盘隐藏/唤回、MCP Bearer HTTP → UI Session 创建笔记、最大化/还原及编辑器虚拟滚动路径；完整自动测试亦通过。未访问真实用户库；真人点按托盘菜单和两台实体设备 UDP 发现仍待桌面验收。
+- 验证：`cargo fmt --all -- --check`、全量 `cargo test -j 8`（65 项）、Release 构建及隔离 `--smoke-test` 通过。GPUI vendor float fallback 与 MCP `serve` dead-code 警告为既有警告。

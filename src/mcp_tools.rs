@@ -138,10 +138,23 @@ pub fn execute(session: &mut Session, name: &str, args: &Value) -> Result<Value,
                 return Err("页面标题不能为空".into());
             }
             let body = args.get("body").and_then(Value::as_str).unwrap_or("");
+            let parent = if args.get("parent_id").is_some() {
+                Some(PageId(integer(args, "parent_id")?))
+            } else {
+                None
+            };
+            if let Some(parent_id) = parent
+                && !session
+                    .pages
+                    .iter()
+                    .any(|page| page.id == parent_id && !page.template)
+            {
+                return Err(format!("找不到父页面 {}", parent_id.0));
+            }
             let current = session.page.id;
-            let id = session.import_markdown(title.to_owned(), body);
+            let id = session.import_markdown_under(title.to_owned(), body, parent);
             let _ = session.select_page(current);
-            Ok(json!({"ok": true, "page_id": id.0}))
+            Ok(json!({"ok": true, "page_id": id.0, "parent_id": parent.map(|id| id.0)}))
         }
         "update_page" => {
             let id = PageId(integer(args, "page_id")?);
@@ -449,9 +462,9 @@ pub fn tool_defs() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "create_page",
-            description: "新建顶层页面，可用 Markdown 正文初始化内容。",
+            description: "新建页面，可用 Markdown 正文初始化内容；可选 parent_id 在普通页面下创建子页面。",
             input_schema: schema(
-                json!({ "title": { "type": "string" }, "body": { "type": "string" } }),
+                json!({ "title": { "type": "string" }, "body": { "type": "string" }, "parent_id": { "type": "integer", "minimum": 1 } }),
                 &["title"],
             ),
         },
@@ -881,6 +894,52 @@ mod tests {
                 .iter()
                 .any(|block| block.text == "Edited one block")
         );
+    }
+
+    #[test]
+    fn create_page_can_add_a_child_without_changing_selection_and_rejects_invalid_parent() {
+        let (_scratch, mut session) = session();
+        let current = session.page.id;
+        let parent = execute(
+            &mut session,
+            "create_page",
+            &json!({"title":"Parent", "body":"parent body"}),
+        )
+        .unwrap()["page_id"]
+            .as_u64()
+            .unwrap();
+        let child = execute(
+            &mut session,
+            "create_page",
+            &json!({"title":"Child", "body":"child body", "parent_id":parent}),
+        )
+        .unwrap();
+        let child_id = child["page_id"].as_u64().unwrap();
+        assert_eq!(child["parent_id"], parent);
+        assert_eq!(session.page.id, current);
+        assert_eq!(
+            session
+                .pages
+                .iter()
+                .find(|page| page.id.0 == child_id)
+                .and_then(|page| page.parent)
+                .map(|id| id.0),
+            Some(parent)
+        );
+        assert_eq!(
+            session.document.page_blocks(PageId(child_id))[0].text,
+            "child body"
+        );
+        assert!(
+            execute(
+                &mut session,
+                "create_page",
+                &json!({"title":"Orphan", "parent_id":u64::MAX}),
+            )
+            .unwrap_err()
+            .contains("找不到父页面")
+        );
+        assert_eq!(session.page.id, current);
     }
 
     #[test]
