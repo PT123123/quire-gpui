@@ -946,3 +946,9 @@ GPUI 已覆盖主编辑器、整理区、独立速记与标签建议、Windows �
 
 - 清单“⋯”菜单及颜色子页改为 GPUI `anchored()` 浮层，采用本地锚点与窗口边界碰撞避让；菜单不再作为清单行容器的流式子项，因此打开菜单不会撑开整理区清单列表，也能在靠近窗口边缘时翻转/贴边。
 - `cargo check -j 8`、全量 `cargo test -j 8`（68 项）、`cargo build --release -j 8`、`cargo fmt --all -- --check` 和 `git diff --check` 均通过；全新 `%TEMP%` 库 Release UI smoke 通过，日志覆盖清单菜单/颜色子页、改名与撤销/重做，以及速记、托盘、MCP、最大化/还原和数据库视图。烟测验证既有交互路径，没有自动执行菜单按钮的真实鼠标点击或截图；点击外部关闭、焦点恢复及统一 OverlayHost 仍待实现。未访问真实用户数据库。
+
+## 第一百四十八轮：编辑器块工具浮层锚定
+
+- 正文块文字/背景颜色选择器从块行流式布局改为固定宽度 GPUI anchored 浮层；块操作（转换/复制/删除/跨页移动）菜单从行内 absolute 定位改为 anchored，并使用右上锚点，依靠 GPUI 默认碰撞处理在窗口边缘调整位置。保留原有颜色、块命令和撤销路径。
+- `cargo check -j 8` 已通过，随后将跑全量测试与 Release smoke。GPUI 容器避让/真实窗口点击位置尚未由鼠标自动化逐条验证；全局 OverlayHost、outside click 与焦点回收仍未完成。未访问真实用户数据库。
+- 收尾验证结果：`cargo test -j 8`（68 项）、`cargo build --release -j 8`、`cargo fmt --all -- --check`、`git diff --check` 及全新隔离 `%TEMP%` 库 Release GUI smoke 均通过；smoke 覆盖速记、托盘、MCP、最大化还原、数据库多布局和 1000 块虚拟滚动。Smoke 没有主动打开块颜色/操作弹层，因此其视觉位置与鼠标点选依然待实机检查。

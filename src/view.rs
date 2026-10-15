@@ -9742,33 +9742,47 @@ impl Workspace {
             self.color_picker
                 .filter(|(id, _)| *id == block_id)
                 .map(|(_, background)| {
-                    div()
-                        .w_full()
-                        .flex()
-                        .flex_wrap()
-                        .gap(px(5.))
-                        .pt(px(5.))
-                        .children(ColorKind::ALL.into_iter().enumerate().map(|(slot, _)| {
-                            let slot = slot as i32;
-                            let swatch = if background {
-                                self.palette.block_bg(slot)
-                            } else {
-                                self.palette.block_text(slot)
-                            };
+                    anchored()
+                        .position_mode(AnchoredPositionMode::Local)
+                        .offset(point(px(34.), px(28.)))
+                        .child(
                             div()
-                                .id(SharedString::from(format!(
-                                    "block-color-{block_id:?}-{background}-{slot}"
-                                )))
-                                .size(px(19.))
-                                .rounded(px(4.))
+                                .w(px(222.))
+                                .flex()
+                                .flex_wrap()
+                                .gap(px(5.))
+                                .p(px(7.))
+                                .rounded(px(7.))
                                 .border_1()
                                 .border_color(Palette::color(&p.border))
-                                .bg(swatch)
-                                .cursor_pointer()
-                                .on_click(cx.listener(move |this, _, window, cx| {
-                                    this.set_block_color(block_id, background, slot, window, cx)
-                                }))
-                        }))
+                                .bg(Palette::color(&p.elevated))
+                                .shadow_lg()
+                                .children(ColorKind::ALL.into_iter().enumerate().map(
+                                    |(slot, _)| {
+                                        let slot = slot as i32;
+                                        let swatch = if background {
+                                            self.palette.block_bg(slot)
+                                        } else {
+                                            self.palette.block_text(slot)
+                                        };
+                                        div()
+                                            .id(SharedString::from(format!(
+                                                "block-color-{block_id:?}-{background}-{slot}"
+                                            )))
+                                            .size(px(19.))
+                                            .rounded(px(4.))
+                                            .border_1()
+                                            .border_color(Palette::color(&p.border))
+                                            .bg(swatch)
+                                            .cursor_pointer()
+                                            .on_click(cx.listener(move |this, _, window, cx| {
+                                                this.set_block_color(
+                                                    block_id, background, slot, window, cx,
+                                                )
+                                            }))
+                                    },
+                                )),
+                        )
                 });
         let block_context_popup =
             self.block_menu_open
@@ -9936,23 +9950,26 @@ impl Workspace {
                                 .into_any_element(),
                         );
                     }
-                    div()
-                        .id(SharedString::from(format!("block-menu-{block_id:?}")))
-                        .absolute()
-                        .top(px(32.))
-                        .right(px(0.))
-                        .w(px(184.))
-                        .max_h(px(320.))
-                        .overflow_y_scroll()
-                        .p(px(4.))
-                        .flex()
-                        .flex_col()
-                        .gap(px(2.))
-                        .rounded(px(7.))
-                        .border_1()
-                        .border_color(Palette::color(&p.border))
-                        .bg(Palette::color(&p.elevated))
-                        .children(rows)
+                    anchored()
+                        .anchor(Corner::TopRight)
+                        .position_mode(AnchoredPositionMode::Local)
+                        .offset(point(px(0.), px(30.)))
+                        .child(
+                            div()
+                                .id(SharedString::from(format!("block-menu-{block_id:?}")))
+                                .w(px(184.))
+                                .max_h(px(320.))
+                                .overflow_y_scroll()
+                                .p(px(4.))
+                                .flex()
+                                .flex_col()
+                                .gap(px(2.))
+                                .rounded(px(7.))
+                                .border_1()
+                                .border_color(Palette::color(&p.border))
+                                .bg(Palette::color(&p.elevated))
+                                .children(rows),
+                        )
                 });
         div()
                     .id(("block", block.id.0))
