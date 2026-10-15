@@ -963,3 +963,9 @@
 - 修复速记窗口在打开后固定使用旧 palette 的问题。主工作区切换主题或因系统外观变化调用 `apply_palette` 时，已打开的速记小窗现在同步更新渐变背景、控件颜色及输入文字色；速记草稿、光标和候选状态保持不变。
 - 隔离 Release GUI smoke 在速记小窗打开期间切到 jade、断言子窗口已切换，再恢复原主题后继续验证复用、输入、标签抽取与提交；同次 smoke 通过 MCP 16 工具目录与写入、托盘隐藏/唤回、窗口最大化/还原和 1000 块虚拟滚动。
 - 验证：全量 `cargo test -j 8`（70 项）、`cargo check -j 8`、`cargo build --release -j 8`、格式检查、`git diff --check` 及新建临时 SQLite 的 Release GUI smoke 全部通过。没有访问默认用户库。托盘系统菜单真人点击、两台实体设备 UDP/防火墙互通和真实 MCP 客户端长期连接仍需桌面环境验收。
+
+## 第一百五十一轮：修正功能矩阵中的过期状态
+
+- 对照当前实现及第 128、137–145 轮的验证记录，修正了数据库矩阵仍称“仅表格 / 不支持删行和编辑”的过时说明，补记 Relation、MultiSelect、Files 的专用入口；将 `sync-now` 的证据更新为双 Session loopback 覆盖，同时保留实体设备 UDP/防火墙仍待验的界限。
+- 更新人工 sidecar 后重跑 `node tools/extract-parity.mjs`：246 callback、261 property、188 scene，合并 98 条人工语义；无未知回调名。此次只更新追踪文档，没有修改应用代码或 Slint 参考树。
+- 最新应用代码验证仍为上一轮结果：70 项自动测试和 Release GUI smoke 通过；本轮执行 parity 生成及 `git diff --check` 核验追踪文件。
