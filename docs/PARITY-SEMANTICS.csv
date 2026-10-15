@@ -65,6 +65,12 @@ db-row-added,已实现,未验证,可创建并编辑记录、删除选中记录�
 db-viewport,已实现,未验证,GPUI uniform_list 按可见 range 查询记录，未复刻旧版 pixel viewport 回调,窗口化查询使用 SqliteRepository::window_rows，单帧仅读取 uniform_list 传入的 range；需要大表 UI/性能验收
 db-view-picked,已实现,未验证,数据库块显示视图页签并支持切换；Table/Board/Gallery/Calendar/Timeline/Form/Chart 视图可用，所选 ViewId 跨重启恢复；配置按视图独立保存,页签来自 core DatabaseCatalog::views_of；非法/已删除 ViewId 会回退首视图；切换只改用户偏好、不进入文档 undo 历史；布局查询/写入覆盖见 DELIVERY-STATUS 第 137–145 轮。
 db-columns-opened,已实现,未验证,数据库工具栏“列 N/M”展开字段选择器；标题列保持固定显示，其他字段可隐藏/恢复，所选列顺序和字段状态由视图独立保存。,列集合用 core view_columns/all_columns 和 ViewDefinition hide/show 读写；SetDatabaseViewDefinition 纳入 undo/redo；SQLite 只查询当前可见列，排序或筛选引用隐藏列时由 core 生成 hidden join。
+db-column-toggled,已实现,未验证,列选择器逐项切换属性列的显示/隐藏；标题列固定显示，锁定页面禁用操作。,调用 core ViewDefinition::hide/show 并以 SetDatabaseViewDefinition 写入视图历史；保存失败提示错误。
+db-kind-opened,已实现,未验证,数据库列选择器中的属性类型标签展开 15 种属性类型；公式、选项、格式和关联属性显示对应配置入口。,复用 Session 属性类型写入及各类型专用配置控件；Formula/Select/Status/MultiSelect 自动进入进一步编辑。
+db-kind-back,已实现,未验证,属性类型面板支持返回列列表/收起设置面板。,关闭类型配置状态并保留已经保存的属性配置。
+db-kind-picked,已实现,未验证,选择属性类型后更新当前属性；派生或不可写属性按只读规则处理。,通过 core SetDatabasePropertyKind 写入单条可撤销命令；既有值不隐式转换。
+save-requested,已实现,未验证,主窗口 Ctrl+S 先提交笔记草稿、结束连续输入历史并强制立即保存；速记窗口 Ctrl+Enter/Alt+S 提交草稿。,复用 Session persistence force flush 与速记窗口保存重试；失败时保留待提交笔记 ID/速记草稿。
+insert-at-end-requested,不适用,已验证,这是旧版触屏底栏“+”入口的占位回调，桌面界面没有触发点；GPUI 桌面使用内容块“+”插入入口和末尾 Enter 新段落行为。,
 db-sort-cycled,已实现,未验证,数据库列头点击按无序→升序→降序→无序循环；多列排序保留优先级并在列头显示箭头/序号，按过滤后的记录数和排序结果绘制虚拟行。,使用 core ViewDefinition read-edit-write 保留视图规则并通过 SetDatabaseViewDefinition 保存/撤销；SQLite RowRequest 下推 sort/filter，UI 不做全表加载或本地排序；隔离测试覆盖定义撤销重做、重开读回与标题排序顺序。
 db-view-added,已实现,未验证,加号创建“表格 N”视图并立即选中；新视图默认 Table，之后可切换到其他支持的布局。,分配 ViewId 与 ord 后调用 core AddDatabaseView，写入 SQLite change stream，并纳入页面 undo/redo；隔离测试覆盖新增视图撤销/重做。
 zoom-in,已实现,未验证,外观设置提供 50%–300% 的整体缩放、加减和复位；不是只放大正文文字。,GPUI 根尺度以原子系数统一换算 view/input 的 px token，旧版阶梯 50/67/75/80/90/100/110/125/150/175/200/250/300%；gpui.ui-scale 持久化，开窗时读取。
@@ -224,7 +230,7 @@ db-rollup-aggregate-picked,已实现,未验证,Rollup 支持 None/Count/Sum/Aver
 block-activate,已实现,未验证,内容块点击即聚焦并将其设为活动块；页面引用点击打开目标页,同步块按 source 映射编辑焦点；GPUI 文本输入框常驻并在聚焦时进入编辑
 column-added,已实现,未验证,分栏工具区可新增至最多三列并可删除最右侧列,通过 ColumnsAddColumn/ColumnsDeleteColumn 纳入页面撤销历史；空列可点入首段落
 block-menu-opened,已实现,未验证,内容块拖拽把手可打开锚定于该行的块操作菜单,菜单包含块类型/颜色/复制/移动等操作并贴合窗口边界
-cancel-editing,未开始,未验证,旧版 Escape 将内容块从只读/编辑切换态退出,GPUI 没有独立编辑态；根节点焦点试验已撤回，需先设计不会改变 GPUI 焦点/编辑器模型的等价交互
+cancel-editing,不适用,已验证,GPUI 内容块始终直接编辑，没有旧版“只读/编辑”双状态；Escape 关闭当前弹层/选择器并取消带草稿的行内编辑，正文输入不另造编辑态切换。,GPUI 的直接编辑模型下不存在可退出的只读态；验证 Escape 路由覆盖 slash/属性选择器、速记建议及子任务编辑草稿。保留为架构差异，不拦截正文输入法 Escape。
 db-cal-month,已实现,未验证,Calendar 与 Timeline 均可用前后按钮跨月浏览并重查日期记录,GPUI 以年月状态和 core month_cells/shift_month 查询实现；含闰年及跨年边界需 GUI 回归
 db-gallery-shaped,已实现,未验证,画廊根据正文区宽度自适应显示一至四列虚拟卡片行并保持最小卡宽,列数边界有单测且隔离 GUI smoke 验证可视行记录查询；真实拖动窗口观察断点未做
 db-open-record,已实现,未验证,表格标题快捷入口与画廊/日历/时间线/看板记录入口打开记录关联页面，无页面的记录首次打开时延迟创建子页面并绑定记录,页面创建/首段落/RecordPageSet 写入同一持久化批次；隔离 Session 覆盖首次创建、重复打开复用及重启读回
