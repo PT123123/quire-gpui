@@ -23,6 +23,7 @@ fn run() -> Result<()> {
     let mut theme: Option<String> = None;
     let mut dump = false;
     let mut smoke = false;
+    let mut smoke_recovery = false;
     let mut smoke_blocks = 0usize;
     let mut stdio = false;
     let mut args = std::env::args().skip(1);
@@ -32,6 +33,7 @@ fn run() -> Result<()> {
             "--theme" => theme = Some(args.next().context("--theme 需要 ID")?),
             "--dump-state" => dump = true,
             "--smoke-test" => smoke = true,
+            "--smoke-recovery" => smoke_recovery = true,
             "--smoke-blocks" => {
                 smoke_blocks = args
                     .next()
@@ -42,7 +44,7 @@ fn run() -> Result<()> {
             "--stdio" | "mcp" => stdio = true,
             "--help" | "-h" => {
                 println!(
-                    "quire-gpui [--db PATH] [--theme ID] [--dump-state]\nquire-gpui --stdio [--db PATH]: bridge MCP stdio to the running Quire HTTP service. The database path locates its adjacent mcp.json pointer.\n--smoke-test: requires a NEW --db path and refuses an existing adjacent mcp.json; exercises isolated UI/MCP paths, NOT real OS IME.\n--smoke-blocks N: with --smoke-test, add N synthetic paragraph blocks (max 10000) to the isolated test page."
+                    "quire-gpui [--db PATH] [--theme ID] [--dump-state]\nquire-gpui --stdio [--db PATH]: bridge MCP stdio to the running Quire HTTP service. The database path locates its adjacent mcp.json pointer.\n--smoke-test: requires a NEW --db path and refuses an existing adjacent mcp.json; exercises isolated UI/MCP paths, NOT real OS IME.\n--smoke-recovery: with --smoke-test only, requires an existing isolated database that recovers from a backup.\n--smoke-blocks N: with --smoke-test, add N synthetic paragraph blocks (max 10000) to the isolated test page."
                 );
                 return Ok(());
             }
@@ -50,8 +52,18 @@ fn run() -> Result<()> {
             _ => bail!("未知参数：{arg}"),
         }
     }
-    if smoke && (path.is_none() || path.as_ref().is_some_and(|p| p.exists())) {
-        bail!("--smoke-test 只允许显式指定尚不存在的 --db 测试库");
+    if smoke_recovery && !smoke {
+        bail!("--smoke-recovery 只能与 --smoke-test 同用");
+    }
+    if smoke
+        && (path.is_none()
+            || path
+                .as_ref()
+                .is_some_and(|path| path.exists() != smoke_recovery))
+    {
+        bail!(
+            "--smoke-test 只允许显式隔离 --db；恢复模式须指定已存在的测试库，其余 smoke 须指定新路径"
+        );
     }
     if smoke_blocks > 10_000 {
         bail!("--smoke-blocks 最多支持 10000 块");
@@ -96,7 +108,22 @@ fn run() -> Result<()> {
         );
         return Ok(());
     }
-    let mut session = Session::open(&path)?;
+    let mut session = match Session::open(&path) {
+        Ok(session) => session,
+        Err(error) => {
+            crate::platform::show_startup_error(&format!(
+                "无法打开 Quire 数据库：\n{}\n\n程序不会覆盖或重建该文件。请检查文件权限、磁盘状态，或从备份恢复。",
+                error
+            ));
+            return Err(error);
+        }
+    };
+    if smoke_recovery && session.startup_notice.is_none() {
+        bail!("--smoke-recovery 数据库没有触发备份恢复");
+    }
+    if smoke_recovery {
+        eprintln!("SMOKE: isolated database recovery warning was received");
+    }
     if smoke {
         // Exercise the persisted startup preference in the same isolated
         // database as the rest of the window smoke. This also makes the later

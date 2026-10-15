@@ -846,3 +846,10 @@ GPUI 已覆盖主编辑器、整理区、独立速记与标签建议、Windows �
 - MCP 自动回归覆盖 2025-11-25 initialize/版本回传，以及 2026-07-28 `server/discover`、无握手工具调用、`resultType`、`result._meta` 与 `Mcp-Method` / `Mcp-Name` 一致性校验；HTTP 与 stdio 两种传输均走现代请求，stdio 子进程测试确认其转发的协议头。两代协议都覆盖拒绝恶意 Origin / 未知版本、鉴权、请求大小上限、notification 空响应与同端口重启。正式 TypeScript SDK `@modelcontextprotocol/client@2.3.1` 使用 modern 自动协商实连隔离 GPUI 窗口，通过 server discover、列出 16 个工具并调用 `list_pages`；协议解析实测促使将 server identity `_meta` 移入 JSON-RPC result。
 - 速记窗口、托盘隐藏/恢复与唯一草稿复用、同步 engine 的隔离双 Session HTTP 拉取/推送/合并已有 Release smoke 或自动测试；本轮未运行真人托盘点击，也未做两台 Windows 设备之间的 UDP 广播、防火墙和离线重连验收。所有测试使用新的临时库。
 - 验证：最新代码的全量测试、MCP 官方 TypeScript SDK 实连、`cargo check -j 8`、`cargo fmt --all -- --check`、`git diff --check`、Release 构建及新临时库 `--smoke-test --smoke-blocks 1000` 均通过。窗口 smoke 经 MCP 2026-07-28 `server/discover` → Bearer HTTP → UI Session 创建笔记，并继续覆盖速记启动/事件重触发复用/标签提交、托盘隐藏/恢复、同步和窗口路径；没有真人点击托盘菜单或两台实体设备 UDP 互通验收。
+
+## 第一百二十九轮：启动恢复与数据库错误反馈
+
+- Session 启动改用 core `SqliteRepository::open_with_report`，不再丢弃自动备份恢复、启动快照失败和旧数据位置迁移的结果；工作区顶部显示可关闭的持续提示，明确从哪个备份恢复、快照后的编辑可能丢失、备份无法写入或数据现位置。
+- 数据库无法打开时，在 Windows GUI 启动路径弹出系统错误框，解释程序不会覆盖或重建原文件，同时保留完整错误链供终端诊断。stdio 与 `--dump-state` 的命令行错误行为未改。
+- 新增 isolated 单测验证正常启动无提示，并验证恢复/备份失败/迁移字段全部出现在提示中；另在 ScratchDir 实际损坏主库、从 `.bak1` 恢复，重开后确认原页面标题仍在且提示进入 Session。新加 `--smoke-recovery` 隔离模式，Release 窗口确认告警横幅挂载并持续显示后自动退出；尝试复用全量烟测时发现其输入夹具假定空白正文，因此恢复模式改为只验收提示挂载，避免把旧备份内容误当空白库。本轮所有文件均在临时目录。
+- 验证：全量 64 项自动测试、`cargo check -j 8`、格式和 diff 检查、Release 构建、全新库 Release smoke 与真实损坏临时库 Release 恢复提示 smoke 均通过；未碰默认数据库或 Slint 工作树。Windows 原生错误框显示路径尚未自动化点验。

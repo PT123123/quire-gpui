@@ -21,7 +21,7 @@ use quire_core::{
     },
     services::attachment_store::AttachmentStore,
     services::persistence::PersistenceService,
-    storage::SqliteRepository,
+    storage::{SqliteRepository, backup::OpenReport},
 };
 use std::{
     collections::{BTreeMap, BTreeSet, HashSet},
@@ -41,6 +41,7 @@ pub struct PendingOrganizerDelete {
 
 pub struct Session {
     pub path: PathBuf,
+    pub startup_notice: Option<String>,
     pub pages: Vec<Page>,
     settings: BTreeMap<String, String>,
     pub page: Page,
@@ -621,8 +622,9 @@ impl Session {
         instance_lock
             .try_lock()
             .context("此库已被另一个 Quire GPUI 实例打开")?;
-        let repo =
-            Arc::new(SqliteRepository::open(path).context("无法打开库；不会覆盖或重建已有文件")?);
+        let (repo, open_report) = SqliteRepository::open_with_report(path)
+            .context("无法打开库；不会覆盖或重建已有文件")?;
+        let repo = Arc::new(repo);
         let loaded = repo.load()?;
         let organizer = repo.load_organizer()?;
         let databases = repo.load_databases()?;
@@ -689,6 +691,7 @@ impl Session {
         }
         let mut session = Self {
             path: path.into(),
+            startup_notice: open_report_notice(&open_report, repo.path().unwrap_or(path)),
             pages,
             settings: loaded.settings,
             page,
@@ -4576,6 +4579,27 @@ impl Session {
     }
 }
 
+fn open_report_notice(report: &OpenReport, current_path: &Path) -> Option<String> {
+    let mut notices = Vec::new();
+    if let Some(from) = &report.recovered_from {
+        notices.push(format!(
+            "数据库无法读取，已从备份恢复（{}）。最近一次备份后的修改可能丢失；损坏文件已保留为 .corrupt。",
+            from.display()
+        ));
+    }
+    if report.backup_failed {
+        notices.push("无法写入本次启动备份；请检查数据库目录的磁盘空间和写入权限。".into());
+    }
+    if let Some(from) = &report.migrated_from {
+        notices.push(format!(
+            "数据库已从旧位置迁移：{}。当前数据位置为 {}。",
+            from.display(),
+            current_path.display()
+        ));
+    }
+    (!notices.is_empty()).then(|| notices.join(" "))
+}
+
 fn is_database_change(change: &Change) -> bool {
     matches!(
         change,
@@ -4608,6 +4632,52 @@ fn is_database_change(change: &Change) -> bool {
 mod tests {
     use super::*;
     use quire_core::core::database::CellValue;
+
+    #[test]
+    fn startup_notice_surfaces_recovery_backup_and_migration_facts() {
+        let path = PathBuf::from(r"C:\QuireGPUI\quire.db");
+        assert_eq!(open_report_notice(&OpenReport::default(), &path), None);
+
+        let report = OpenReport {
+            recovered_from: Some(PathBuf::from(r"C:\QuireGPUI\quire.db.bak1")),
+            migrated_from: Some(PathBuf::from(r"C:\old\appdata")),
+            backup_failed: true,
+        };
+        let notice = open_report_notice(&report, &path).unwrap();
+        assert!(notice.contains("quire.db.bak1"));
+        assert!(notice.contains("修改可能丢失"));
+        assert!(notice.contains("启动备份"));
+        assert!(notice.contains(r"C:\old\appdata"));
+        assert!(notice.contains(r"C:\QuireGPUI\quire.db"));
+    }
+
+    #[test]
+    fn session_recovers_an_isolated_corrupt_database_and_exposes_notice() -> Result<()> {
+        let scratch = quire_core::testing::ScratchDir::new("gpui-startup-recovery");
+        let path = scratch.path().join("recover.db");
+        {
+            let mut session = Session::open(&path)?;
+            session.set_page_title("Recovered content".into());
+            session.persistence.force_flush()?;
+        }
+
+        let backup = quire_core::storage::backup::slot(&path, 1);
+        std::fs::copy(&path, &backup)?;
+        std::fs::write(&path, b"this is not a sqlite database")?;
+        for suffix in ["-wal", "-shm"] {
+            let mut sidecar = path.as_os_str().to_os_string();
+            sidecar.push(suffix);
+            let _ = std::fs::remove_file(PathBuf::from(sidecar));
+        }
+
+        let recovered = Session::open(&path)?;
+        let notice = recovered.startup_notice.as_deref().unwrap();
+        assert!(notice.contains("数据库无法读取，已从备份恢复"));
+        assert!(notice.contains("修改可能丢失"));
+        assert_eq!(recovered.page.title, "Recovered content");
+        assert!(path.with_extension("db.corrupt").exists());
+        Ok(())
+    }
 
     #[test]
     fn sync_preferences_and_peer_cleanup_are_persisted() -> Result<()> {

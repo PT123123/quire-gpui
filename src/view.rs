@@ -1396,6 +1396,7 @@ pub struct Workspace {
     task_due_error: bool,
     status: String,
     error: bool,
+    startup_notice: Option<String>,
     active: Option<BlockId>,
     save_task: Option<gpui::Task<()>>,
     flush_lock: Arc<Mutex<()>>,
@@ -1433,6 +1434,10 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
+        let startup_notice = session.startup_notice.take();
+        if smoke && startup_notice.is_some() {
+            eprintln!("SMOKE: Workspace mounted the database recovery warning banner");
+        }
         let theme_choice = session.setting("gpui.theme").unwrap_or(theme).to_owned();
         let ui_zoom = session
             .setting("gpui.ui-scale")
@@ -1735,6 +1740,7 @@ impl Workspace {
             task_due_error: false,
             status: "已保存".into(),
             error: false,
+            startup_notice,
             active: None,
             save_task: None,
             flush_lock: Arc::new(Mutex::new(())),
@@ -2171,7 +2177,22 @@ impl Workspace {
             })
         })
         .detach();
-        if smoke {
+        if smoke && this.startup_notice.is_some() {
+            let weak = cx.entity().downgrade();
+            cx.spawn_in(window, async move |_, cx| {
+                cx.background_executor()
+                    .timer(Duration::from_millis(700))
+                    .await;
+                let _ = weak.update_in(cx, |this, window, cx| {
+                    if let Some(quick_note) = this.quick_note_window.take() {
+                        let _ = quick_note.update(cx, |_, popup, _| popup.remove_window());
+                    }
+                    eprintln!("SMOKE: recovery warning remained mounted in the GPUI workspace");
+                    window.remove_window();
+                });
+            })
+            .detach();
+        } else if smoke {
             let mcp_port = this.mcp_port;
             let mcp_token = this.mcp_token.clone();
             let (mcp_result_tx, mcp_result_rx) = std::sync::mpsc::channel();
@@ -15420,6 +15441,48 @@ impl Render for Workspace {
                 root.child(command_overlay)
             })
             .when_some(settings_overlay, |root, overlay| root.child(overlay))
+            .when_some(self.startup_notice.clone(), |root, notice| {
+                root.child(
+                    div()
+                        .id("startup-storage-notice")
+                        .absolute()
+                        .top(px(46.))
+                        .left(px(276.))
+                        .right(px(12.))
+                        .flex()
+                        .items_start()
+                        .gap(px(10.))
+                        .p(px(10.))
+                        .rounded(px(6.))
+                        .border_1()
+                        .border_color(rgb(0xd99b38))
+                        .bg(rgb(0x4b351b))
+                        .shadow_lg()
+                        .child(
+                            div()
+                                .flex_1()
+                                .text_size(px(12.))
+                                .text_color(rgb(0xffe1a6))
+                                .child(notice),
+                        )
+                        .child(
+                            div()
+                                .id("dismiss-startup-storage-notice")
+                                .px(px(7.))
+                                .py(px(2.))
+                                .rounded(px(4.))
+                                .text_size(px(12.))
+                                .text_color(rgb(0xffe1a6))
+                                .cursor_pointer()
+                                .hover(|button| button.bg(rgb(0x765322)))
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.startup_notice = None;
+                                    cx.notify();
+                                }))
+                                .child("关闭"),
+                        ),
+                )
+            })
     }
 }
 

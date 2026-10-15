@@ -12,6 +12,40 @@ pub type ServiceHandle = Box<dyn std::any::Any + Send>;
 pub const HOTKEY_ALT_N: u8 = 1;
 pub const HOTKEY_ALT_M: u8 = 2;
 
+/// Make fatal database startup failures visible when the application is
+/// launched without a console. The detailed anyhow chain is still printed by
+/// `main` for diagnostics.
+pub fn show_startup_error(message: &str) {
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::OsStrExt;
+        let text = std::ffi::OsStr::new(message)
+            .encode_wide()
+            .chain(Some(0))
+            .collect::<Vec<_>>();
+        let title = std::ffi::OsStr::new("Quire GPUI — 无法启动")
+            .encode_wide()
+            .chain(Some(0))
+            .collect::<Vec<_>>();
+        unsafe extern "system" {
+            fn MessageBoxW(hwnd: isize, text: *const u16, title: *const u16, kind: u32) -> i32;
+        }
+        const MB_OK: u32 = 0x0000;
+        const MB_ICONERROR: u32 = 0x0010;
+        const MB_TASKMODAL: u32 = 0x2000;
+        unsafe {
+            MessageBoxW(
+                0,
+                text.as_ptr(),
+                title.as_ptr(),
+                MB_OK | MB_ICONERROR | MB_TASKMODAL,
+            );
+        }
+    }
+    #[cfg(not(windows))]
+    eprintln!("Quire GPUI startup error: {message}");
+}
+
 pub struct Services {
     pub handles: Vec<ServiceHandle>,
     pub tray_available: bool,
