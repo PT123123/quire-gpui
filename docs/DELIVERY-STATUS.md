@@ -1444,3 +1444,10 @@
 - GPUI 单文件重编约快 12.1 倍，峰值 Private Bytes 低约 70%；10k 工作区窗口出现时间略快约 44 ms，但两次样本不足以说明稳定差异。GPUI 的 10k Private 峰值比 Slint 高约 63.9 MiB（约 64%），空闲 CPU 读数也较高；这反映的是当前实现与该机器上的样本，不代表跨机结论。测量未覆盖键入延迟、连续滚动帧率、GPU 专用内存或全新 target 冷构建。
 - 可复跑脚本为 `tools/measure-build.ps1` 和 `tools/measure-runtime.ps1`。构建样本 JSON 与进程日志保存在 `%TEMP%\quire-final-perf-2026-10-16`；Slint 工作树内容未改且 Git 状态干净。性能复测后只改了交付文档，GPUI 源码和 Release 二进制均对应上列提交。
 
+## 第二百三十一轮：补齐 slash 附件转换与链接数据库入口（2026-10-16）
+
+- slash 菜单新增图片、文件转换和“链接视图”。图片/文件系统选择器确认后才提交转换；清理 slash 前缀与转换使用同一 core undo entry，取消选择不改原文。块手柄“＋”的插入菜单选图片或文件时，会把它已插入的占位块直接转成附件。
+- 链接视图打开可搜索数据库选择器，支持上下键移动、Enter/鼠标选择和 Escape 取消。Session 通过 core `ReplaceText + LinkDatabase` 原子命令把占位段落转成共享数据库视图；可撤销并持久化。
+- 隔离测试覆盖图片/文件转换的块 ID、附件文件、撤销/重做与重开，以及 slash 文本和链接数据库共享实体的原子撤销/重开。`cargo fmt --all`、开发构建检查和全量 `cargo test --locked -j 8`（105 项：53 库 + 50 二进制 + 2 集成）通过；`cargo build --release --locked -j 8 --target-dir target-release` 与全新临时 SQLite 的 Release GUI smoke（1000 块）通过。未访问用户数据库。
+- 尚未做文件选择器和链接数据库选择器的真人窗口点选回归；性能报告仍记录旧二进制，本轮按用户要求暂不重测，功能收尾时再运行最终对比。
+

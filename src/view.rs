@@ -1194,17 +1194,17 @@ fn columns_layout_item_ids(blocks: &[Block], layout_id: BlockId) -> Vec<BlockId>
 #[cfg(test)]
 mod view_tests {
     use super::{
-        NavigationHistory, NavigationStop, OrganizerTaskDrag, Session, capture_tag_replacement,
-        capture_tags, columns_layout_item_ids, database_filter_value_from_text,
-        database_group_identity, database_group_label, database_property_kind_choices,
-        evaluate_database_formula, evaluate_database_rollup, find_matches_in,
-        gallery_columns_for_width, link_ranges_for_removal, link_target_range,
+        NavigationHistory, NavigationStop, OrganizerTaskDrag, Session, SlashAction,
+        capture_tag_replacement, capture_tags, columns_layout_item_ids,
+        database_filter_value_from_text, database_group_identity, database_group_label,
+        database_property_kind_choices, evaluate_database_formula, evaluate_database_rollup,
+        find_matches_in, gallery_columns_for_width, link_ranges_for_removal, link_target_range,
         mention_date_matches, notes_auto_input_enabled, order_database_groups,
         organizer_notes_copy_payload, organizer_tag_matches_path, organizer_tag_tree_rows,
         organizer_tags_exclude, organizer_task_drop_accepted, palette_matches, parse_mcp_port,
         parse_organizer_tags, push_history, settings_matches, settings_section_visible,
-        slash_query, sort_organizer_notes, sort_organizer_tasks, sync_peer_is_recent, sync_targets,
-        system_palette_id_for_appearance, toc_headings,
+        slash_items, slash_query, sort_organizer_notes, sort_organizer_tasks, sync_peer_is_recent,
+        sync_targets, system_palette_id_for_appearance, toc_headings,
     };
     use gpui::WindowAppearance;
     use quire_core::core::database::PropertyKind;
@@ -1508,6 +1508,21 @@ mod view_tests {
         assert_eq!(slash_query("标题", true), "标题");
         assert_eq!(slash_query("/标题", true), "/标题");
         assert_eq!(slash_query("Heading", true), "heading");
+        assert!(
+            slash_items()
+                .iter()
+                .any(|(_, _, action)| *action == SlashAction::Convert(BlockKind::Image))
+        );
+        assert!(
+            slash_items()
+                .iter()
+                .any(|(_, _, action)| *action == SlashAction::Convert(BlockKind::File))
+        );
+        assert!(
+            slash_items()
+                .iter()
+                .any(|(_, _, action)| *action == SlashAction::LinkDatabase)
+        );
     }
 
     #[test]
@@ -2009,33 +2024,114 @@ fn link_ranges_for_removal(
         .collect()
 }
 
-fn slash_items() -> &'static [(&'static str, &'static str, BlockKind)] {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SlashAction {
+    Convert(BlockKind),
+    LinkDatabase,
+}
+
+fn slash_items() -> &'static [(&'static str, &'static str, SlashAction)] {
     &[
-        ("文本", "text paragraph", BlockKind::Paragraph),
-        ("标题 1", "h1 heading", BlockKind::Heading1),
-        ("标题 2", "h2 heading", BlockKind::Heading2),
-        ("标题 3", "h3 heading", BlockKind::Heading3),
-        ("项目列表", "bullet list", BlockKind::Bullet),
-        ("编号列表", "numbered list", BlockKind::Numbered),
-        ("待办", "todo task", BlockKind::Todo),
-        ("折叠块", "toggle", BlockKind::Toggle),
-        ("引用", "quote", BlockKind::Quote),
-        ("代码", "code", BlockKind::Code),
-        ("数学公式", "math latex formula", BlockKind::Math),
-        ("链接卡片", "embed link card", BlockKind::Embed),
-        ("同步块", "synced block mirror", BlockKind::Synced),
-        ("页面", "page embed child page", BlockKind::Page),
-        ("链接到页面", "link page reference", BlockKind::Link),
-        ("提示块", "callout", BlockKind::Callout),
-        ("分隔线", "divider", BlockKind::Divider),
-        ("表格", "table grid", BlockKind::Table),
+        (
+            "文本",
+            "text paragraph",
+            SlashAction::Convert(BlockKind::Paragraph),
+        ),
+        (
+            "标题 1",
+            "h1 heading",
+            SlashAction::Convert(BlockKind::Heading1),
+        ),
+        (
+            "标题 2",
+            "h2 heading",
+            SlashAction::Convert(BlockKind::Heading2),
+        ),
+        (
+            "标题 3",
+            "h3 heading",
+            SlashAction::Convert(BlockKind::Heading3),
+        ),
+        (
+            "项目列表",
+            "bullet list",
+            SlashAction::Convert(BlockKind::Bullet),
+        ),
+        (
+            "编号列表",
+            "numbered list",
+            SlashAction::Convert(BlockKind::Numbered),
+        ),
+        ("待办", "todo task", SlashAction::Convert(BlockKind::Todo)),
+        ("折叠块", "toggle", SlashAction::Convert(BlockKind::Toggle)),
+        ("引用", "quote", SlashAction::Convert(BlockKind::Quote)),
+        ("代码", "code", SlashAction::Convert(BlockKind::Code)),
+        (
+            "图片",
+            "image picture attachment",
+            SlashAction::Convert(BlockKind::Image),
+        ),
+        (
+            "文件",
+            "file attachment",
+            SlashAction::Convert(BlockKind::File),
+        ),
+        (
+            "数学公式",
+            "math latex formula",
+            SlashAction::Convert(BlockKind::Math),
+        ),
+        (
+            "链接卡片",
+            "embed link card",
+            SlashAction::Convert(BlockKind::Embed),
+        ),
+        (
+            "同步块",
+            "synced block mirror",
+            SlashAction::Convert(BlockKind::Synced),
+        ),
+        (
+            "页面",
+            "page embed child page",
+            SlashAction::Convert(BlockKind::Page),
+        ),
+        (
+            "链接到页面",
+            "link page reference",
+            SlashAction::Convert(BlockKind::Link),
+        ),
+        (
+            "提示块",
+            "callout",
+            SlashAction::Convert(BlockKind::Callout),
+        ),
+        (
+            "分隔线",
+            "divider",
+            SlashAction::Convert(BlockKind::Divider),
+        ),
+        ("表格", "table grid", SlashAction::Convert(BlockKind::Table)),
         (
             "数据库",
             "database records properties table board calendar",
-            BlockKind::Database,
+            SlashAction::Convert(BlockKind::Database),
         ),
-        ("分栏", "columns layout", BlockKind::Columns),
-        ("目录", "toc table of contents", BlockKind::Toc),
+        (
+            "分栏",
+            "columns layout",
+            SlashAction::Convert(BlockKind::Columns),
+        ),
+        (
+            "目录",
+            "toc table of contents",
+            SlashAction::Convert(BlockKind::Toc),
+        ),
+        (
+            "链接视图",
+            "linked view database existing",
+            SlashAction::LinkDatabase,
+        ),
     ]
 }
 
@@ -2250,6 +2346,8 @@ pub struct Workspace {
     database_column_drag: Option<DatabaseColumnDrag>,
     database_search_open: Option<u64>,
     database_search_text: String,
+    linked_database_target: Option<BlockId>,
+    linked_database_selection: usize,
     database_relation_search_text: String,
     selected_database_record: Option<(u64, u64, u64)>,
     active_database_cell: Option<(u64, u64, u64, u64)>,
@@ -2679,6 +2777,8 @@ impl Workspace {
             database_column_drag: None,
             database_search_open: None,
             database_search_text: String::new(),
+            linked_database_target: None,
+            linked_database_selection: 0,
             database_relation_search_text: String::new(),
             database_filter_panel: 0,
             database_filter_edit_row: None,
@@ -3216,13 +3316,35 @@ impl Workspace {
         this.database_search_subscription = Some(cx.subscribe_in(
             &database_search_input,
             window,
-            |this, _, event, window, cx| match event {
-                InputEvent::Edited { text, .. } => {
-                    this.database_search_text = text.clone();
-                    cx.notify();
+            |this, _, event, window, cx| {
+                match event {
+                    InputEvent::Edited { text, .. } => {
+                        this.database_search_text = text.clone();
+                        this.linked_database_selection = 0;
+                        cx.notify();
+                    }
+                    InputEvent::Navigate(direction) if this.linked_database_target.is_some() => {
+                        let count = this.linked_database_choices().len();
+                        if count > 0 {
+                            this.linked_database_selection = (this.linked_database_selection as i64
+                                + *direction as i64)
+                                .clamp(0, count as i64 - 1)
+                                as usize;
+                            cx.notify();
+                        }
+                    }
+                    InputEvent::Split(_) if this.linked_database_target.is_some() => {
+                        if let Some((database, _)) = this
+                            .linked_database_choices()
+                            .get(this.linked_database_selection)
+                            .cloned()
+                        {
+                            this.choose_linked_database(database, window, cx);
+                        }
+                    }
+                    InputEvent::DismissSlash => this.close_database_search(window, cx),
+                    _ => {}
                 }
-                InputEvent::DismissSlash => this.close_database_search(window, cx),
-                _ => {}
             },
         ));
         let database_relation_search_input = this.database_relation_search_input.clone();
@@ -4842,7 +4964,7 @@ impl Workspace {
                     if let Some((_, _, kind)) =
                         matches.get(self.slash_selection.min(matches.len().saturating_sub(1)))
                     {
-                        self.select_slash_kind(id, *kind, window, cx);
+                        self.select_slash_action(id, *kind, window, cx);
                         return;
                     }
                 }
@@ -5162,34 +5284,102 @@ impl Workspace {
         self.session.execute(Command::SetImageWidth { id, percent });
         self.schedule_save(false, window, cx);
     }
-    fn pick_attachment(&mut self, image: bool, window: &mut Window, cx: &mut Context<Self>) {
+    fn pick_attachment(
+        &mut self,
+        anchor: BlockId,
+        image: bool,
+        convert: bool,
+        replace_text: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if self.session.page.locked || self.closing {
             return;
         }
         let mut picker = rfd::FileDialog::new();
+        picker = picker.set_title(match (image, convert) {
+            (true, true) => "选择图片并替换当前块",
+            (false, true) => "选择文件并替换当前块",
+            (true, false) => "插入图片",
+            (false, false) => "附加文件",
+        });
         if image {
             picker = picker.add_filter("图片", &["png", "jpg", "jpeg", "gif", "bmp"]);
         }
         let Some(path) = picker.pick_file() else {
-            return;
-        };
-        let after = self
-            .active
-            .filter(|id| self.session.blocks().iter().any(|block| block.id == *id))
-            .or_else(|| self.session.blocks().last().map(|block| block.id));
-        let Some(after) = after else {
-            return;
-        };
-        match self.session.import_attachment(after, &path, image) {
-            Ok(id) => {
-                self.active = Some(id);
+            if convert {
                 self.sync_inputs(window, cx);
+                if self.session.editable(anchor) {
+                    let caret = self
+                        .session
+                        .document
+                        .block(anchor)
+                        .map_or(0, |block| block.text.len());
+                    self.active = Some(anchor);
+                    self.focus(anchor, caret, window, cx);
+                }
+                self.schedule_save(false, window, cx);
+            }
+            return;
+        };
+        let previous_caret = self
+            .inputs
+            .get(&anchor.0)
+            .map(|input| input.read(cx).buffer.caret())
+            .unwrap_or(0);
+        let result = if convert {
+            self.session
+                .convert_block_to_attachment(anchor, &path, image, replace_text)
+                .map(|()| anchor)
+        } else {
+            self.session.import_attachment(anchor, &path, image)
+        };
+        match result {
+            Ok(id) => {
+                if convert {
+                    self.active = None;
+                }
+                self.sync_inputs(window, cx);
+                if convert {
+                    let blocks = self.session.blocks();
+                    let index = blocks.iter().position(|block| block.id == id).unwrap_or(0);
+                    let next = blocks
+                        .iter()
+                        .skip(index + 1)
+                        .find(|block| self.session.editable(block.id))
+                        .map(|block| (block.id, 0))
+                        .or_else(|| {
+                            blocks[..index]
+                                .iter()
+                                .rev()
+                                .find(|block| self.session.editable(block.id))
+                                .map(|block| (block.id, block.text.len()))
+                        });
+                    if let Some((target, caret)) = next {
+                        self.active = Some(target);
+                        self.focus(target, caret, window, cx);
+                    } else {
+                        self.active = None;
+                        self.focus_first(window, cx);
+                    }
+                } else if self.session.editable(anchor) {
+                    self.active = Some(anchor);
+                    self.focus(anchor, previous_caret, window, cx);
+                } else {
+                    self.active = None;
+                    self.focus_first(window, cx);
+                }
                 self.status = "附件已添加，正在保存…".into();
                 self.schedule_save(false, window, cx);
             }
             Err(error) => {
                 self.status = format!("导入附件失败：{error}");
                 self.error = true;
+                if convert {
+                    self.sync_inputs(window, cx);
+                    self.restore_focus(window, cx);
+                    self.schedule_save(false, window, cx);
+                }
                 cx.notify();
             }
         }
@@ -5713,6 +5903,30 @@ impl Workspace {
         if self.composing(cx) || self.session.page.locked {
             return;
         }
+        if matches!(kind, BlockKind::Image | BlockKind::File) {
+            let insert_mode = self.slash_insert_mode == Some(id);
+            let replace_text = if !insert_mode {
+                let text = self
+                    .session
+                    .document
+                    .block(id)
+                    .map(|block| block.text.clone())
+                    .unwrap_or_default();
+                let query_len = slash_query(&text, false).len();
+                Some(text.get(1 + query_len..).unwrap_or_default().to_owned())
+            } else {
+                None
+            };
+            self.slash_menu = None;
+            self.slash_insert_mode = None;
+            self.slash_selection = 0;
+            self.mention_menu = None;
+            // The plus-menu already created a fresh empty paragraph, so turn
+            // that placeholder into the attachment; the standalone toolbar
+            // buttons still insert below the active block without replacing it.
+            self.pick_attachment(id, kind == BlockKind::Image, true, replace_text, window, cx);
+            return;
+        }
         self.slash_menu = None;
         self.slash_insert_mode = None;
         if kind == BlockKind::Database {
@@ -5725,6 +5939,18 @@ impl Workspace {
         self.active = Some(self.first_child_editor(id, kind).unwrap_or(id));
         self.restore_focus(window, cx);
         self.schedule_save(false, window, cx);
+    }
+    fn select_slash_action(
+        &mut self,
+        id: BlockId,
+        action: SlashAction,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match action {
+            SlashAction::Convert(kind) => self.select_slash_kind(id, kind, window, cx),
+            SlashAction::LinkDatabase => self.open_linked_database_picker(id, window, cx),
+        }
     }
     fn insert_block_after_and_open_menu(
         &mut self,
@@ -7405,6 +7631,88 @@ impl Workspace {
         window.focus(&self.database_search_input.read(cx).focus);
         cx.notify();
     }
+    fn linked_database_choices(&self) -> Vec<(quire_core::core::database::DatabaseId, String)> {
+        let query = self.database_search_text.trim().to_lowercase();
+        self.session
+            .databases
+            .databases
+            .iter()
+            .filter(|database| query.is_empty() || database.name.to_lowercase().contains(&query))
+            .map(|database| (database.id, database.name.clone()))
+            .collect()
+    }
+    fn open_linked_database_picker(
+        &mut self,
+        block: BlockId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.session.page.locked || self.closing {
+            return;
+        }
+        self.slash_menu = None;
+        self.slash_insert_mode = None;
+        self.slash_selection = 0;
+        self.database_search_open = None;
+        self.database_search_text.clear();
+        self.database_search_input.update(cx, |input, cx| {
+            input.reset(String::new(), Vec::new(), 0, cx);
+            input.placeholder = Some("搜索要链接的数据库…".into());
+        });
+        self.linked_database_target = Some(block);
+        self.linked_database_selection = 0;
+        self.active = Some(block);
+        window.focus(&self.database_search_input.read(cx).focus);
+        cx.notify();
+    }
+    fn choose_linked_database(
+        &mut self,
+        database: quire_core::core::database::DatabaseId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(block) = self.linked_database_target.take() else {
+            return;
+        };
+        self.database_search_text.clear();
+        self.database_search_input.update(cx, |input, cx| {
+            input.reset(String::new(), Vec::new(), 0, cx);
+        });
+        if !self.session.link_database(block, database) {
+            self.status = "无法创建数据库链接：数据库或当前块已不可用".into();
+            self.error = true;
+            self.active = Some(block);
+            self.restore_focus(window, cx);
+            cx.notify();
+            return;
+        }
+        self.active = None;
+        self.sync_inputs(window, cx);
+        let blocks = self.session.blocks();
+        let index = blocks
+            .iter()
+            .position(|candidate| candidate.id == block)
+            .unwrap_or(0);
+        let next = blocks
+            .iter()
+            .skip(index + 1)
+            .find(|candidate| self.session.editable(candidate.id))
+            .map(|candidate| (candidate.id, 0))
+            .or_else(|| {
+                blocks[..index]
+                    .iter()
+                    .rev()
+                    .find(|candidate| self.session.editable(candidate.id))
+                    .map(|candidate| (candidate.id, candidate.text.len()))
+            });
+        if let Some((target, caret)) = next {
+            self.active = Some(target);
+            self.focus(target, caret, window, cx);
+        } else {
+            self.focus_first(window, cx);
+        }
+        self.schedule_save(false, window, cx);
+    }
     fn toggle_database_relation_picker(
         &mut self,
         key: (u64, u64, u64, u64),
@@ -7427,7 +7735,8 @@ impl Workspace {
         cx.notify();
     }
     fn close_database_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.database_search_open.take().is_none() {
+        let linked = self.linked_database_target.take().is_some();
+        if self.database_search_open.take().is_none() && !linked {
             return;
         }
         self.database_search_text.clear();
@@ -12450,7 +12759,7 @@ impl Workspace {
                             option.bg(Palette::color(&p.elevated))
                         })
                         .on_click(cx.listener(move |this, _, window, cx| {
-                            this.select_slash_kind(block_id, item_kind, window, cx)
+                            this.select_slash_action(block_id, item_kind, window, cx)
                         }))
                         .child(*label)
                         .child(div().text_size(px(10.)).text_color(muted).child(*keywords))
@@ -12736,12 +13045,12 @@ impl Workspace {
                     let rows = if mode == BlockMenuMode::Convert {
                         slash_items()
                             .iter()
-                            .filter(|(_, _, target)| *target != kind)
-                            .map(|(label, _, target)| {
-                                let target = *target;
+                            .filter(|(_, _, action)| *action != SlashAction::Convert(kind))
+                            .map(|(label, _, action)| {
+                                let action = *action;
                                 div()
                                     .id(SharedString::from(format!(
-                                        "block-menu-kind-{block_id:?}-{target:?}"
+                                        "block-menu-kind-{block_id:?}-{action:?}"
                                     )))
                                     .w_full()
                                     .h(px(28.))
@@ -12755,7 +13064,7 @@ impl Workspace {
                                     .hover(|item| item.bg(Palette::color(&p.bg).opacity(0.3)))
                                     .on_click(cx.listener(move |this, _, window, cx| {
                                         this.block_menu_open = None;
-                                        this.select_slash_kind(block_id, target, window, cx);
+                                        this.select_slash_action(block_id, action, window, cx);
                                     }))
                                     .child(*label)
                                     .into_any_element()
@@ -17941,6 +18250,137 @@ impl Render for Workspace {
                     })
             })
             .collect::<Vec<_>>();
+        let linked_database_overlay = self.linked_database_target.map(|_| {
+            let choices = self.linked_database_choices();
+            let selected = self.linked_database_selection;
+            let rows = choices
+                .into_iter()
+                .enumerate()
+                .map(|(index, (database, name))| {
+                    div()
+                        .id(SharedString::from(format!(
+                            "linked-database-{}",
+                            database.0
+                        )))
+                        .w_full()
+                        .h(px(34.))
+                        .px(px(9.))
+                        .flex()
+                        .items_center()
+                        .rounded(px(5.))
+                        .cursor_pointer()
+                        .text_size(px(12.))
+                        .text_color(text)
+                        .when(index == selected, |row| {
+                            row.bg(Palette::color(&p.bg).opacity(0.45))
+                        })
+                        .hover(|row| row.bg(Palette::color(&p.bg).opacity(0.45)))
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.choose_linked_database(database, window, cx)
+                        }))
+                        .child(name)
+                })
+                .collect::<Vec<_>>();
+            let has_rows = !rows.is_empty();
+            div()
+                .id("linked-database-overlay")
+                .absolute()
+                .top(px(0.))
+                .right(px(0.))
+                .bottom(px(0.))
+                .left(px(0.))
+                .flex()
+                .items_center()
+                .justify_center()
+                .bg(Hsla::from(rgb(0x000000)).opacity(0x59 as f32 / 255.))
+                .on_click(cx.listener(|this, _, window, cx| this.close_database_search(window, cx)))
+                .child(
+                    div()
+                        .id("linked-database-dialog")
+                        .w(px(440.))
+                        .max_w(window.bounds().size.width - px(24.))
+                        .p(px(14.))
+                        .rounded(px(9.))
+                        .border_1()
+                        .border_color(Palette::color(&p.border))
+                        .bg(Palette::color(&p.elevated2))
+                        .shadow_lg()
+                        .on_click(cx.listener(|_, _, _, cx| cx.stop_propagation()))
+                        .flex()
+                        .flex_col()
+                        .gap(px(9.))
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .justify_between()
+                                .child(
+                                    div()
+                                        .text_size(px(15.))
+                                        .font_weight(FontWeight::SEMIBOLD)
+                                        .child("链接到数据库"),
+                                )
+                                .child(
+                                    div()
+                                        .id("linked-database-cancel")
+                                        .px(px(7.))
+                                        .py(px(3.))
+                                        .rounded(px(4.))
+                                        .cursor_pointer()
+                                        .text_color(muted)
+                                        .hover(|button| {
+                                            button.bg(Palette::color(&p.bg).opacity(0.45))
+                                        })
+                                        .on_click(cx.listener(|this, _, window, cx| {
+                                            this.close_database_search(window, cx)
+                                        }))
+                                        .child("取消"),
+                                ),
+                        )
+                        .child(
+                            div()
+                                .w_full()
+                                .h(px(34.))
+                                .px(px(8.))
+                                .flex()
+                                .items_center()
+                                .rounded(px(5.))
+                                .border_1()
+                                .border_color(Palette::color(&p.border))
+                                .bg(Palette::color(&p.bg).opacity(0.25))
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .min_w_0()
+                                        .child(self.database_search_input.clone()),
+                                ),
+                        )
+                        .child(
+                            div()
+                                .id("linked-database-results")
+                                .w_full()
+                                .max_h(px(300.))
+                                .overflow_y_scroll()
+                                .flex()
+                                .flex_col()
+                                .gap(px(2.))
+                                .when(has_rows, |list| list.children(rows))
+                                .when(!has_rows, |list| {
+                                    list.child(
+                                        div()
+                                            .px(px(9.))
+                                            .py(px(12.))
+                                            .text_size(px(11.))
+                                            .text_color(muted)
+                                            .child("没有匹配的数据库"),
+                                    )
+                                }),
+                        )
+                        .child(div().text_size(px(10.)).text_color(muted).child(
+                            "链接视图与原数据库共用数据和视图设置。↑↓ 选择 · Enter 确认 · Esc 关闭",
+                        )),
+                )
+        });
         let search_overlay = div()
             .id("page-search-overlay")
             .absolute()
@@ -18538,7 +18978,15 @@ impl Render for Workspace {
                     .hover(|button| button.bg(Palette::color(&p.elevated)))
                     .when(!self.session.page.locked, |button| {
                         button.on_click(cx.listener(move |this, _, window, cx| {
-                            this.pick_attachment(image, window, cx)
+                            if let Some(anchor) = this
+                                .active
+                                .filter(|id| {
+                                    this.session.blocks().iter().any(|block| block.id == *id)
+                                })
+                                .or_else(|| this.session.blocks().last().map(|block| block.id))
+                            {
+                                this.pick_attachment(anchor, image, false, None, window, cx);
+                            }
                         }))
                     })
                     .child(label)
@@ -22479,6 +22927,7 @@ impl Render for Workspace {
                 root.child(command_overlay)
             })
             .when_some(settings_overlay, |root, overlay| root.child(overlay))
+            .when_some(linked_database_overlay, |root, overlay| root.child(overlay))
             .when_some(organizer_command_overlay, |root, overlay| root.child(overlay))
             .when_some(organizer_context_overlay, |root, overlay| root.child(overlay))
             .when_some(page_context_overlay, |root, overlay| root.child(overlay))

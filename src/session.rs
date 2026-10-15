@@ -1127,6 +1127,31 @@ impl Session {
         let _ = self.persistence.force_flush();
         Some(db)
     }
+    pub fn link_database(&mut self, block: BlockId, database: DatabaseId) -> bool {
+        if self.page.locked || self.databases.database(database).is_none() {
+            return false;
+        }
+        self.end_typing();
+        let Some(changes) = command::exec_all(
+            &mut self.document,
+            &mut self.history,
+            self.page.id,
+            vec![
+                Command::ReplaceText {
+                    id: block,
+                    text: String::new(),
+                },
+                Command::LinkDatabase {
+                    id: block,
+                    db: database,
+                },
+            ],
+        ) else {
+            return false;
+        };
+        self.persistence.record(changes);
+        true
+    }
     pub fn add_database_record(
         &mut self,
         block: BlockId,
@@ -2587,6 +2612,63 @@ impl Session {
             .find(|block| block.attachment == Some(id))
             .map(|block| block.id)
             .ok_or_else(|| anyhow::anyhow!("core rejected the attachment insertion"))
+    }
+    pub fn convert_block_to_attachment(
+        &mut self,
+        block: BlockId,
+        path: &Path,
+        image: bool,
+        replace_text: Option<String>,
+    ) -> Result<()> {
+        if self.page.locked || !self.editable(block) {
+            bail!("此位置不可转换为附件");
+        }
+        let id = AttachmentId(self.next_attachment_id);
+        self.next_attachment_id = self.next_attachment_id.saturating_add(1);
+        let attachment = if image {
+            self.attachment_store
+                .import_file(id, path)
+                .map_err(|error| anyhow::anyhow!(error.to_string()))?
+        } else {
+            self.attachment_store
+                .import_any_file(id, path)
+                .map_err(|error| anyhow::anyhow!(error.to_string()))?
+        };
+        self.attachments.insert(id.as_u64(), attachment.clone());
+        let mut commands = Vec::with_capacity(2);
+        if let Some(text) = replace_text {
+            commands.push(Command::ReplaceText { id: block, text });
+        }
+        commands.push(if image {
+            Command::SetBlockImage {
+                id: block,
+                attachment: attachment.clone(),
+            }
+        } else {
+            Command::SetBlockFile {
+                id: block,
+                attachment: attachment.clone(),
+            }
+        });
+        let Some(changes) = command::exec_all(
+            &mut self.document,
+            &mut self.history,
+            self.page.id,
+            commands,
+        ) else {
+            self.attachment_store.remove(&attachment);
+            self.attachments.remove(&id.as_u64());
+            bail!("core rejected the attachment conversion");
+        };
+        self.persistence.record(changes);
+        if self
+            .document
+            .block(block)
+            .is_none_or(|stored| stored.attachment != Some(id))
+        {
+            bail!("core rejected the attachment conversion");
+        }
+        Ok(())
     }
     pub fn import_clipboard_image(
         &mut self,
@@ -7781,6 +7863,62 @@ mod tests {
     }
 
     #[test]
+    fn linked_database_block_shares_the_entity_and_undoes_atomically() -> Result<()> {
+        let scratch = quire_core::testing::ScratchDir::new("gpui-linked-database");
+        let path = scratch.path().join("test.db");
+        let (database, linked);
+        {
+            let mut session = Session::open(&path)?;
+            let source = session.blocks()[0].id;
+            database = session
+                .make_database(source, "原始数据库".into())
+                .expect("create source database");
+            session.execute(Command::AppendBlock {
+                kind: BlockKind::Paragraph,
+                text: String::new(),
+            });
+            linked = session.blocks().last().unwrap().id;
+            session.replace(linked, "/链接视图".into(), true);
+
+            assert!(session.link_database(linked, database));
+            let block = session.document.block(linked).unwrap();
+            assert_eq!(block.kind, BlockKind::Database);
+            assert_eq!(block.db_ref, Some(database));
+            assert!(block.text.is_empty());
+            assert_eq!(
+                session
+                    .blocks()
+                    .iter()
+                    .filter(|block| block.db_ref == Some(database))
+                    .count(),
+                2
+            );
+
+            session.undo();
+            let restored = session.document.block(linked).unwrap();
+            assert_eq!(restored.kind, BlockKind::Paragraph);
+            assert_eq!(restored.db_ref, None);
+            assert_eq!(restored.text, "/链接视图");
+            session.redo();
+            session.persistence.force_flush()?;
+        }
+        let reopened = Session::open(&path)?;
+        assert_eq!(
+            reopened.document.block(linked).unwrap().db_ref,
+            Some(database)
+        );
+        assert_eq!(
+            reopened
+                .blocks()
+                .iter()
+                .filter(|block| block.db_ref == Some(database))
+                .count(),
+            2
+        );
+        Ok(())
+    }
+
+    #[test]
     fn saving_a_database_record_as_template_prefills_future_records() -> Result<()> {
         let scratch = quire_core::testing::ScratchDir::new("gpui-database-record-template");
         let path = scratch.path().join("test.db");
@@ -8939,6 +9077,90 @@ mod tests {
         assert_eq!(image.kind, BlockKind::Image);
         assert_eq!(image.attachment, Some(attachment));
         assert_eq!(image.img_percent, 25);
+        assert!(reopened.attachment_path(attachment).unwrap().exists());
+        Ok(())
+    }
+
+    #[test]
+    fn converting_a_block_to_image_preserves_its_id_and_is_undoable() -> Result<()> {
+        let scratch = quire_core::testing::ScratchDir::new("gpui-convert-block-to-image");
+        let path = scratch.path().join("test.db");
+        let source = scratch.path().join("source.png");
+        std::fs::write(
+            &source,
+            include_bytes!("../vendor/gpui-0.2.2/examples/image/app-icon.png"),
+        )?;
+        let id;
+        let attachment;
+        {
+            let mut session = Session::open(&path)?;
+            id = session.blocks()[0].id;
+            session.replace(id, "/图片 turn this block into an image".into(), true);
+            session.convert_block_to_attachment(
+                id,
+                &source,
+                true,
+                Some("turn this block into an image".into()),
+            )?;
+            let image = session.document.block(id).unwrap();
+            assert_eq!(image.kind, BlockKind::Image);
+            assert_eq!(image.id, id);
+            assert_eq!(image.text, "source");
+            attachment = image.attachment.unwrap();
+            assert!(session.attachment_path(attachment).unwrap().exists());
+
+            session.undo();
+            let restored = session.document.block(id).unwrap();
+            assert_eq!(restored.kind, BlockKind::Paragraph);
+            assert_eq!(restored.text, "/图片 turn this block into an image");
+            assert_eq!(restored.attachment, None);
+
+            session.redo();
+            assert_eq!(session.document.block(id).unwrap().kind, BlockKind::Image);
+            session.persistence.force_flush()?;
+        }
+        let reopened = Session::open(&path)?;
+        let image = reopened.document.block(id).unwrap();
+        assert_eq!(image.kind, BlockKind::Image);
+        assert_eq!(image.attachment, Some(attachment));
+        assert!(reopened.attachment_path(attachment).unwrap().exists());
+        Ok(())
+    }
+
+    #[test]
+    fn converting_a_block_to_file_preserves_its_id_and_is_undoable() -> Result<()> {
+        let scratch = quire_core::testing::ScratchDir::new("gpui-convert-block-to-file");
+        let path = scratch.path().join("test.db");
+        let source = scratch.path().join("source.txt");
+        std::fs::write(&source, "attachment contents")?;
+        let id;
+        let attachment;
+        {
+            let mut session = Session::open(&path)?;
+            id = session.blocks()[0].id;
+            session.replace(id, "turn this block into a file".into(), true);
+            session.convert_block_to_attachment(id, &source, false, None)?;
+            let file = session.document.block(id).unwrap();
+            assert_eq!(file.kind, BlockKind::File);
+            assert_eq!(file.id, id);
+            assert_eq!(file.text, "source.txt");
+            attachment = file.attachment.unwrap();
+            assert!(session.attachment_path(attachment).unwrap().exists());
+
+            session.undo();
+            let restored = session.document.block(id).unwrap();
+            assert_eq!(restored.kind, BlockKind::Paragraph);
+            assert_eq!(restored.text, "turn this block into a file");
+            assert_eq!(restored.attachment, None);
+
+            session.redo();
+            assert_eq!(session.document.block(id).unwrap().kind, BlockKind::File);
+            session.persistence.force_flush()?;
+        }
+        let reopened = Session::open(&path)?;
+        let file = reopened.document.block(id).unwrap();
+        assert_eq!(file.kind, BlockKind::File);
+        assert_eq!(file.attachment, Some(attachment));
         assert!(reopened.attachment_path(attachment).unwrap().exists());
         Ok(())
     }
