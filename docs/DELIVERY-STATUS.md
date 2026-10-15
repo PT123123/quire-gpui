@@ -1143,4 +1143,4 @@
 
 - 整理区任务页新增列表/平铺切换。平铺按收集箱与每个清单分列，显示所有匹配的未完成任务；搜索和标签包含/排除继续生效。卡片可标记完成、打开详情并拖到其他清单列；每列的“添加任务”直接创建到该列。跨列移动复用现有单步 organizer 撤销批次。
 - 旧版 SPEC/OrganizerArea 明确平铺是整块看板，而非当前选中清单的第二种排列；实现按此忽略单一清单/智能视图范围。更新 PLAN 与 PARITY 语义矩阵。尚未做真人拖动/布局验收，笔记平铺和笔记拖放仍未实现。
-- 验证：`cargo fmt --all -- --check`、`cargo test --locked`（86 项）、`cargo check --locked`、`cargo build --release --locked` 与 `git diff --check` 通过；全新随机 `%TEMP%` SQLite 的 Release GUI smoke（1000 块）通过，并调用看板 view builder 构造整理区完整视图树。看板目前按列渲染全部匹配卡片，超大任务清单的虚拟化/滚动性能仍需补齐；真人拖动与截图视觉对照待桌面验收。本轮没有访问真实用户库或改动 Slint/core/冻结参考树。
+- 验证：`cargo fmt --all -- --check`、`cargo test --locked`（86 项）、`cargo check --locked`、`cargo build --release --locked` 与 `git diff --check` 通过；全新随机 `%TEMP%` SQLite 的 Release GUI smoke（1000 块）通过，并调用看板 view builder 构造整理区完整视图树。看板各列现用 GPUI uniform_list 仅挂载可见卡片；超大任务量的真机滚动帧率仍待量测，真人拖动与截图视觉对照待桌面验收。本轮没有访问真实用户库或改动 Slint/core/冻结参考树。

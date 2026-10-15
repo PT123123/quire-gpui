@@ -2933,15 +2933,6 @@ impl Workspace {
                     assert!(this.session.redo_organizer());
                     eprintln!("SMOKE: organizer selected-task drag payload moves the group atomically");
 
-                    this.organizer_tasks = true;
-                    this.organizer_trash = false;
-                    this.organizer_board_mode = true;
-                    let board_frame = this.render(window, cx);
-                    drop(board_frame);
-                    assert!(this.session.organizer.list(move_target).is_some());
-                    this.organizer_board_mode = false;
-                    eprintln!("SMOKE: organizer task board builds its full view tree");
-
                     let restore_tasks = [
                         this.session.create_task("恢复任务 A".into()),
                         this.session.create_task("恢复任务 B".into()),
@@ -2996,7 +2987,9 @@ impl Workspace {
                     assert!(this.session.redo_organizer());
                     assert!(this.session.organizer.trashed_tasks().next().is_none());
                     this.organizer_trash = false;
-                    this.organizer_tasks = false;
+                    this.organizer_tasks = true;
+                    this.organizer_board_mode = true;
+                    assert!(this.session.organizer.list(move_target).is_some());
                     this.schedule_save(true, window, cx);
                     eprintln!("SMOKE: organizer single purge, batch empty and undo/redo passed");
                 });
@@ -3010,6 +3003,13 @@ impl Workspace {
                     .timer(Duration::from_millis(150))
                     .await;
                 let _ = weak.update_in(cx, |this, window, cx| {
+                    assert!(this.organizer_board_mode);
+                    let board_frame = this.render(window, cx);
+                    drop(board_frame);
+                    this.organizer_board_mode = false;
+                    this.organizer_tasks = false;
+                    cx.notify();
+                    eprintln!("SMOKE: organizer task board mounted with virtualized columns");
                     assert!(this.command_palette_open);
                     assert_eq!(this.command_palette_query, "设置");
                     assert_eq!(this.palette_items().len(), 1);
@@ -16937,112 +16937,144 @@ impl Render for Workspace {
                     .cloned()
                     .collect::<Vec<_>>();
                 let card_count = cards.len();
-                let card_views = cards
-                    .into_iter()
-                    .map(|task| {
-                        let id = task.id;
-                        let title = if task.title.trim().is_empty() {
-                            "无标题任务".to_owned()
-                        } else {
-                            task.title.clone()
-                        };
-                        let drag = OrganizerTaskDrag {
-                            tasks: vec![id],
-                            source_lists: vec![list_id],
-                            title: title.clone(),
-                        };
-                        div()
-                            .id(SharedString::from(format!("organizer-board-task-{id:?}")))
-                            .w_full()
-                            .p(px(10.))
-                            .rounded(px(8.))
-                            .border_1()
-                            .border_color(Palette::color(&p.border))
-                            .bg(Palette::color(&p.elevated2))
-                            .cursor_pointer()
-                            .hover(|card| card.border_color(accent).bg(Palette::color(&p.elevated)))
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                this.select_task(id, window, cx)
-                            }))
-                            .on_drag(drag, |drag, _, _, cx| {
-                                cx.new(|_| OrganizerTaskDragPreview {
-                                    title: drag.title.clone(),
-                                    count: drag.tasks.len(),
-                                })
-                            })
-                            .child(
+                let card_views = uniform_list(
+                    SharedString::from(format!("organizer-board-cards-{list_id:?}")),
+                    card_count,
+                    cx.processor(move |this, range: Range<usize>, _window, cx| {
+                        let p = Palette::load(&this.theme_choice);
+                        let accent = Palette::color(&p.accent);
+                        let muted = Palette::color(&p.muted);
+                        let border = Palette::color(&p.border);
+                        let elevated = Palette::color(&p.elevated);
+                        let elevated2 = Palette::color(&p.elevated2);
+                        let bg = Palette::color(&p.bg);
+                        let today = quire_core::core::date::today_iso();
+                        cards[range]
+                            .iter()
+                            .map(|task| {
+                                let id = task.id;
+                                let title = if task.title.trim().is_empty() {
+                                    "无标题任务".to_owned()
+                                } else {
+                                    task.title.clone()
+                                };
+                                let selected = this.selected_task == Some(id);
+                                let drag = OrganizerTaskDrag {
+                                    tasks: vec![id],
+                                    source_lists: vec![task.list],
+                                    title: title.clone(),
+                                };
                                 div()
+                                    .id(SharedString::from(format!("organizer-board-task-{id:?}")))
+                                    .w_full()
+                                    .h(px(82.))
+                                    .mb(px(8.))
+                                    .p(px(9.))
+                                    .rounded(px(8.))
+                                    .border_1()
+                                    .border_color(if selected { accent } else { border })
+                                    .bg(if selected {
+                                        accent.opacity(0.12)
+                                    } else {
+                                        elevated2
+                                    })
+                                    .cursor_pointer()
+                                    .hover(|card| card.border_color(accent).bg(elevated))
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        this.select_task(id, window, cx)
+                                    }))
+                                    .on_drag(drag, |drag, _, _, cx| {
+                                        cx.new(|_| OrganizerTaskDragPreview {
+                                            title: drag.title.clone(),
+                                            count: drag.tasks.len(),
+                                        })
+                                    })
                                     .flex()
-                                    .items_center()
-                                    .gap(px(7.))
+                                    .flex_col()
+                                    .justify_between()
                                     .child(
                                         div()
-                                            .id(SharedString::from(format!(
-                                                "organizer-board-done-{id:?}"
-                                            )))
-                                            .w(px(18.))
+                                            .h(px(30.))
+                                            .flex()
+                                            .items_center()
+                                            .gap(px(7.))
+                                            .child(
+                                                div()
+                                                    .id(SharedString::from(format!(
+                                                        "organizer-board-done-{id:?}"
+                                                    )))
+                                                    .w(px(18.))
+                                                    .h(px(18.))
+                                                    .flex()
+                                                    .items_center()
+                                                    .justify_center()
+                                                    .rounded(px(9.))
+                                                    .border_1()
+                                                    .border_color(muted)
+                                                    .cursor_pointer()
+                                                    .on_click(cx.listener(
+                                                        move |this, _, window, cx| {
+                                                            this.toggle_task_done(id, window, cx)
+                                                        },
+                                                    )),
+                                            )
+                                            .child(
+                                                div()
+                                                    .flex_1()
+                                                    .min_w_0()
+                                                    .max_h(px(30.))
+                                                    .overflow_hidden()
+                                                    .text_size(px(13.))
+                                                    .font_weight(FontWeight::SEMIBOLD)
+                                                    .child(title),
+                                            )
+                                            .when(task.priority != Priority::None, |row| {
+                                                row.child(
+                                                    div()
+                                                        .text_size(px(11.))
+                                                        .text_color(accent)
+                                                        .child("◆"),
+                                                )
+                                            }),
+                                    )
+                                    .when(task.due.is_some() || !task.tags.is_empty(), |card| {
+                                        let mut meta = div()
                                             .h(px(18.))
                                             .flex()
                                             .items_center()
-                                            .justify_center()
-                                            .rounded(px(9.))
-                                            .border_1()
-                                            .border_color(muted)
-                                            .cursor_pointer()
-                                            .on_click(cx.listener(move |this, _, window, cx| {
-                                                this.toggle_task_done(id, window, cx)
-                                            })),
-                                    )
-                                    .child(
-                                        div()
-                                            .flex_1()
-                                            .min_w_0()
-                                            .text_size(px(13.))
-                                            .font_weight(FontWeight::SEMIBOLD)
-                                            .child(title),
-                                    )
-                                    .when(task.priority != Priority::None, |row| {
-                                        row.child(
-                                            div().text_size(px(11.)).text_color(accent).child("◆"),
-                                        )
-                                    }),
-                            )
-                            .when(task.due.is_some() || !task.tags.is_empty(), |card| {
-                                card.child(
-                                    div()
-                                        .mt(px(7.))
-                                        .flex()
-                                        .flex_wrap()
-                                        .gap(px(4.))
-                                        .text_size(px(10.))
-                                        .text_color(muted)
-                                        .when_some(task.due.clone(), |meta, due| {
-                                            meta.child(
+                                            .gap(px(4.))
+                                            .overflow_hidden()
+                                            .text_size(px(10.))
+                                            .text_color(muted);
+                                        if let Some(due) = task.due.as_deref() {
+                                            meta = meta.child(
                                                 div()
                                                     .px(px(6.))
-                                                    .py(px(2.))
                                                     .rounded(px(8.))
                                                     .border_1()
-                                                    .border_color(Palette::color(&p.border))
+                                                    .border_color(border)
                                                     .child(if due == today {
                                                         "今天".to_owned()
                                                     } else {
-                                                        due
+                                                        due.to_owned()
                                                     }),
-                                            )
-                                        })
-                                        .children(task.tags.iter().take(3).map(|tag| {
+                                            );
+                                        }
+                                        meta = meta.children(task.tags.iter().take(2).map(|tag| {
                                             div()
                                                 .px(px(6.))
-                                                .py(px(2.))
                                                 .rounded(px(8.))
-                                                .bg(Palette::color(&p.bg).opacity(0.4))
+                                                .bg(bg.opacity(0.4))
                                                 .child(format!("#{tag}"))
-                                        })),
-                                )
+                                        }));
+                                        card.child(meta)
+                                    })
                             })
-                    })
-                    .collect::<Vec<_>>();
+                            .collect::<Vec<_>>()
+                    }),
+                )
+                .flex_1()
+                .min_h_0();
                 let target_is_trash = self.organizer_trash;
                 div()
                     .id(SharedString::from(format!(
@@ -17106,11 +17138,7 @@ impl Render for Workspace {
                             )))
                             .flex_1()
                             .min_h_0()
-                            .overflow_y_scroll()
-                            .flex()
-                            .flex_col()
-                            .gap(px(8.))
-                            .children(card_views),
+                            .child(card_views),
                     )
                     .child(
                         div()
