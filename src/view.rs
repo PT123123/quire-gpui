@@ -147,6 +147,31 @@ struct EditorBlockDragPreview {
 }
 
 #[derive(Clone)]
+struct PageTreeDrag {
+    page: quire_core::core::types::PageId,
+    title: String,
+}
+
+struct PageTreeDragPreview {
+    title: String,
+}
+
+impl Render for PageTreeDragPreview {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .max_w(px(260.))
+            .px(px(10.))
+            .py(px(7.))
+            .rounded(px(6.))
+            .border_1()
+            .border_color(gpui::hsla(0.42, 0.52, 0.55, 0.9))
+            .bg(gpui::hsla(0.42, 0.28, 0.16, 0.94))
+            .text_size(px(11.))
+            .child(self.title.clone())
+    }
+}
+
+#[derive(Clone)]
 enum MentionOption {
     Date(String),
     Page(quire_core::core::types::Page),
@@ -9530,6 +9555,18 @@ impl Workspace {
             self.schedule_save(false, window, cx);
         }
     }
+    fn drop_page_under(
+        &mut self,
+        id: quire_core::core::types::PageId,
+        parent: Option<quire_core::core::types::PageId>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.session.move_page_under(id, parent) {
+            cx.notify();
+            self.schedule_save(false, window, cx);
+        }
+    }
     fn duplicate_page(
         &mut self,
         id: quire_core::core::types::PageId,
@@ -16301,6 +16338,13 @@ impl Render for Workspace {
             div().id("page-icon-popover")
         };
         let query = self.search_query.trim().to_lowercase();
+        let root_drop_sources = self
+            .session
+            .pages
+            .iter()
+            .filter(|page| self.session.can_move_page_under(page.id, None))
+            .map(|page| page.id)
+            .collect::<HashSet<_>>();
         let page_rows = ordered_page_tree(&self.session.pages, false)
             .into_iter()
             .map(|(page, depth)| {
@@ -16311,6 +16355,20 @@ impl Render for Workspace {
                     .pages
                     .iter()
                     .any(|child| child.parent == Some(page_id));
+                let page_drop_sources = self
+                    .session
+                    .pages
+                    .iter()
+                    .filter(|candidate| {
+                        self.session
+                            .can_move_page_under(candidate.id, Some(page_id))
+                    })
+                    .map(|candidate| candidate.id)
+                    .collect::<HashSet<_>>();
+                let drag_data = PageTreeDrag {
+                    page: page_id,
+                    title: page.title.clone(),
+                };
                 let disclosure = if has_children {
                     if page.expanded { "▾" } else { "▸" }
                 } else {
@@ -16462,6 +16520,19 @@ impl Render for Workspace {
                     .when(selected, |row| row.bg(rgba(0xffffff14)).text_color(accent))
                     .when(!selected, |row| row.text_color(muted))
                     .hover(|row| row.bg(Palette::color(&p.bg).opacity(0.24)))
+                    .on_drag(drag_data, |drag, _, _, cx| {
+                        cx.new(|_| PageTreeDragPreview {
+                            title: drag.title.clone(),
+                        })
+                    })
+                    .can_drop(move |value, _, _| {
+                        value
+                            .downcast_ref::<PageTreeDrag>()
+                            .is_some_and(|drag| page_drop_sources.contains(&drag.page))
+                    })
+                    .on_drop(cx.listener(move |this, drag: &PageTreeDrag, window, cx| {
+                        this.drop_page_under(drag.page, Some(page_id), window, cx)
+                    }))
                     .on_hover(cx.listener(move |this, hovered, _, cx| {
                         if *hovered {
                             if this.hovered_page != Some(page_id) {
@@ -20550,9 +20621,23 @@ impl Render for Workspace {
                             })
                             .child(
                                 div()
+                                    .id("workspace-root-drop-target")
                                     .text_size(px(11.))
                                     .text_color(muted)
                                     .mt(px(10.))
+                                    .when(!root_drop_sources.is_empty(), |target| {
+                                        target
+                                            .can_drop(move |value, _, _| {
+                                                value.downcast_ref::<PageTreeDrag>().is_some_and(
+                                                    |drag| root_drop_sources.contains(&drag.page),
+                                                )
+                                            })
+                                            .on_drop(cx.listener(
+                                                |this, drag: &PageTreeDrag, window, cx| {
+                                                    this.drop_page_under(drag.page, None, window, cx)
+                                                },
+                                            ))
+                                    })
                                     .child("工作区"),
                             )
                             .child(

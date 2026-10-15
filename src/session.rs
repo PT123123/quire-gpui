@@ -4949,11 +4949,60 @@ impl Session {
             }
         }
         self.pages.sort_by_key(|page| (page.parent, page.order));
+        if let Some(active_page) = self.pages.iter().find(|page| page.id == self.page.id) {
+            self.page = active_page.clone();
+        }
         if changes.is_empty() {
             return false;
         }
         self.persistence.record(changes);
         true
+    }
+
+    /// Whether a page-tree drag may reparent `id` under `parent` (or to the
+    /// workspace root). Templates, self-drops, cycles, missing targets, and
+    /// no-op same-parent drops are rejected before GPUI highlights a target.
+    pub fn can_move_page_under(&self, id: PageId, parent: Option<PageId>) -> bool {
+        let Some(page) = self
+            .pages
+            .iter()
+            .find(|page| page.id == id && !page.template)
+        else {
+            return false;
+        };
+        if page.parent == parent || parent == Some(id) {
+            return false;
+        }
+        let mut ancestor = parent;
+        let mut visited = HashSet::new();
+        while let Some(ancestor_id) = ancestor {
+            if ancestor_id == id || !visited.insert(ancestor_id) {
+                return false;
+            }
+            let Some(ancestor_page) = self
+                .pages
+                .iter()
+                .find(|candidate| candidate.id == ancestor_id && !candidate.template)
+            else {
+                return false;
+            };
+            ancestor = ancestor_page.parent;
+        }
+        true
+    }
+
+    /// Reparent a page and its whole subtree to the end of the target's
+    /// children. Sibling ordering keeps using the explicit move controls.
+    pub fn move_page_under(&mut self, id: PageId, parent: Option<PageId>) -> bool {
+        if !self.can_move_page_under(id, parent) {
+            return false;
+        }
+        let insertion = self
+            .pages
+            .iter()
+            .filter(|page| page.parent == parent && page.id != id && !page.template)
+            .count();
+        self.reparent_page(id, parent, Some(insertion))
     }
 
     /// Move a block and its entire core-managed subtree to another ordinary,
@@ -5161,6 +5210,9 @@ impl Session {
             });
         }
         self.pages.sort_by_key(|page| (page.parent, page.order));
+        if let Some(active_page) = self.pages.iter().find(|page| page.id == self.page.id) {
+            self.page = active_page.clone();
+        }
         if changes.is_empty() {
             return false;
         }
@@ -7661,6 +7713,55 @@ mod tests {
         let reopened = Session::open(&path)?;
         assert_eq!(reopened.organizer.task(first).unwrap().list, destination);
         assert_eq!(reopened.organizer.task(second).unwrap().list, destination);
+        Ok(())
+    }
+
+    #[test]
+    fn page_tree_drop_reparents_without_cycles_and_persists() -> Result<()> {
+        let scratch = quire_core::testing::ScratchDir::new("gpui-page-tree-drop");
+        let path = scratch.path().join("test.db");
+        let mut session = Session::open(&path)?;
+        let first = session.page.id;
+        let second = session.create_page(None);
+
+        assert!(session.can_move_page_under(second, Some(first)));
+        assert!(session.move_page_under(second, Some(first)));
+        assert_eq!(
+            session
+                .pages
+                .iter()
+                .find(|page| page.id == second)
+                .unwrap()
+                .parent,
+            Some(first)
+        );
+        assert!(!session.can_move_page_under(first, Some(second)));
+        assert!(!session.move_page_under(first, Some(second)));
+
+        assert!(session.can_move_page_under(second, None));
+        assert!(session.move_page_under(second, None));
+        assert_eq!(
+            session
+                .pages
+                .iter()
+                .find(|page| page.id == second)
+                .unwrap()
+                .parent,
+            None
+        );
+        session.persistence.force_flush()?;
+        drop(session);
+
+        let reopened = Session::open(&path)?;
+        assert_eq!(
+            reopened
+                .pages
+                .iter()
+                .find(|page| page.id == second)
+                .unwrap()
+                .parent,
+            None
+        );
         Ok(())
     }
 
