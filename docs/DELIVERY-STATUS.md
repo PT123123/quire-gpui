@@ -1276,3 +1276,13 @@
 
 - 数据库列选择器补齐 Escape 关闭和焦点转移时关闭；筛选/分组选择器已有 Escape 与互斥关闭路径，统一回填 F081/F083/F099。Release GUI smoke 直接经过与编辑器相同的 `DismissSlash` 事件关闭列选择器。
 - 对照 GPUI 已有图标网格、None 项和 `PageIconSet` 持久化，把 F167 从“未开始”校准为“已实现/未验证”；Release GUI smoke 选择图标并恢复隔离页原值。`tools/extract-parity.mjs` 重生成 246 callback / 261 property / 188 场景并成功合并 161 个回调语义项。`cargo fmt --all -- --check`、`cargo test --locked`（98 项）、`cargo check --locked`、`cargo build --release --locked` 与 `git diff --check` 通过。全新临时 SQLite 的 1000 块 Release GUI smoke 退出码 0，包含上述新场景以及 MCP、速记、托盘、窗口最大化/还原和既有数据库视图；未访问真实用户库或修改 Slint/core/冻结参考树。
+
+## 第二百零九轮：内联汇总编辑与返回文档的矩阵校准
+
+- 清理旧 Slint 的无调用点状态回调：GPUI 数据库汇总属性采用常驻内联配置，选择关联/列/聚合后即时写入，无需单独“关闭”；整理区返回文档由点击侧栏当前页实现，加入统一导航历史。分别将 F130/F178 校准为已实现/未验证，F049 仍是旧版触屏专用、GPUI 没有等价的全局末尾插入入口。
+- `tools/extract-parity.mjs` 重生成 246 callback / 261 property / 188 场景并合并语义 sidecar。F178 的文档返回路径已在上轮 1000 块 Release GUI smoke 实际走过；汇总编辑器有代码入口与 typed core/session 覆盖。只有文档矩阵变更，代码验证复用刚通过的全量测试、检查、Release 构建和隔离 GUI smoke；未访问真实用户库或修改 Slint/core/冻结参考树。
+
+## 第二百一十轮：数据库筛选与分组回调映射
+
+- 逐行审读 GPUI 的筛选面板与视图配置入口，将旧版 F082-F096、F098/F100 的现有等价行为写入语义 sidecar：全部/任一匹配、类型适配列和运算符、规则增删/清空、反转、布尔/选项/文本值、输入校验及分组选择。没有新增重复 UI callback；GPUI 直接操作同一视图状态并经 core 持久化。
+- `tools/extract-parity.mjs` 重生成 246 callback / 261 property / 188 场景，矩阵中上述条目均已标记“已实现/未验证”；独立的数字/日期值验证单测既有。本轮仅文档变更，代码沿用刚通过的全量 98 项测试、check、Release build 与 GUI smoke；未访问真实用户库或修改 Slint/core/冻结参考树。
