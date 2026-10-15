@@ -203,3 +203,7 @@ db-rollup-panel-set,已实现,未验证,Rollup 配置编辑区域显示当前关
 db-rollup-relation-picked,已实现,未验证,Rollup 可选源关系列,选择关系时清空旧目标列并重设聚合为空
 db-rollup-column-picked,已实现,未验证,Rollup 可选关联目标数据库中的可汇总属性列,选择即写入当前聚合配置
 db-rollup-aggregate-picked,已实现,未验证,Rollup 支持 None/Count/Sum/Average/Min/Max 等类型适配聚合,core 配置校验与 typed 计算覆盖关联记录聚合
+block-activate,已实现,未验证,内容块点击即聚焦并将其设为活动块；页面引用点击打开目标页,同步块按 source 映射编辑焦点；GPUI 文本输入框常驻并在聚焦时进入编辑
+column-added,已实现,未验证,分栏工具区可新增至最多三列并可删除最右侧列,通过 ColumnsAddColumn/ColumnsDeleteColumn 纳入页面撤销历史；空列可点入首段落
+block-menu-opened,已实现,未验证,内容块拖拽把手可打开锚定于该行的块操作菜单,菜单包含块类型/颜色/复制/移动等操作并贴合窗口边界
+cancel-editing,未开始,未验证,旧版 Escape 将正在编辑的块退回只读展示态；GPUI 编辑器常驻输入且 Escape 当前用于关闭菜单/弹层,尚无独立编辑态或可等价回归的“退出编辑但保留焦点”行为；这是明确的键盘交互差异
