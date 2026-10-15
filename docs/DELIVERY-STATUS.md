@@ -1466,3 +1466,24 @@
 
 - Release GUI smoke 新增链接数据库选择器的过滤/选择/撤销路径，折叠状态的撤销/重做，以及数据库记录模板的撤销/重做。选择器行由当前隔离库的数据库列表生成；测试最后删除新建的链接块，避免污染后续页面场景。
 - 验证：全量 `cargo test --locked -j 8`（106 项：54 库 + 50 二进制 + MCP stdio + sync loopback）、`cargo build --release --locked -j 8 --target-dir target-release` 和独立临时 SQLite、1000 块 Release GUI smoke 全部通过。smoke 日志确认新增三条路径及既有速记、托盘、MCP、最大化/还原仍通过。真人点选和 IME 测试仍按用户说明留给后续反馈；性能复测未运行。
+
+## 第二百三十五轮：最终 GPUI / Slint 构建与运行性能复测（2026-10-16）
+
+- 版本：GPUI `c742cfa9eca00812897d0f33ba2052dfda059586`；Slint `911246743cf79c43c96b38dfd39dffac3fb4d53c`（quire 0.1.26）。同机 Windows 11、Rust/Cargo 1.98.0、窗口 1600×900。发布文件分别为 GPUI 25,874,432 B、Slint 38,415,872 B。
+- 构建命令均为 `cargo build --release --locked`；warm 为已构建后的 no-op，单文件重编只改 GPUI `src/view.rs`、Slint `src/app/state.rs` 的 mtime、不改内容。采样 250ms，编译内存为 cargo/rustc/link/lld-link 工作进程峰值总和。
+
+| Release 构建 | GPUI | Slint |
+|---|---:|---:|
+| warm no-op | 3.21s；Working Set / Private 122.6 / 106.2 MiB | 4.73s；116.8 / 100.2 MiB |
+| 单文件源码重编 | 35.71s；1111.6 / 1692.4 MiB | 436.69s；5614.5 / 5596.5 MiB |
+
+- 运行进程预热 2 秒后空闲采样 8 秒，每 250ms 采样；每端每场景 n=2。CPU 是单核占用百分比。
+
+| 场景 | GPUI 窗口出现 | Slint 窗口出现 | GPUI CPU / 单核 | Slint CPU / 单核 | GPUI Working Set 末值 / 峰值 | Slint Working Set 末值 / 峰值 | GPUI Private 末值 / 峰值 | Slint Private 末值 / 峰值 |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| 空白工作区 | 1045.3ms | 980.7ms | 2.01% | 0.29% | 122.0 / 149.5 MiB | 111.0 / 116.3 MiB | 91.4 / 119.0 MiB | 79.7 / 85.0 MiB |
+| 10,000 块 | 917.1ms | 864.1ms | 2.70% | 0.10% | 159.4 / 194.8 MiB | 126.3 / 131.5 MiB | 128.9 / 164.4 MiB | 95.1 / 100.4 MiB |
+
+- 单文件重编 GPUI 约快 12.2 倍，峰值 Private Bytes 低约 69.8%；可执行文件小约 32.7%。窗口出现时间 GPUI 空白慢约 65ms、10k 慢约 53ms。10k 场景 GPUI 峰值 Private Bytes 高约 64.0 MiB（64%），空闲 CPU 读数也较高。样本只有两次，不代表跨机器结论；运行时 10k 输入不完全等价：GPUI 从隔离 SQLite 读取持久化块，Slint 通过 `--blocks 10000` 在内存中生成块。测量未覆盖键入延迟、滚动帧率、GPU 专用内存和冷构建。
+- 一次初始 GPUI warm 调用发现默认 `target/release` 落后于隔离 smoke 使用的 `target-release`，其 45.05s 实为增量重编，未纳入 warm 结果；之后重编样本完成后重新测得有效 no-op warm。首次 Slint 10k 参数绑定把宽度误传为 10000px，该样本已丢弃；本表只含正确的 1600×900 重测结果。
+- 原始 JSON、stdout/stderr 日志和隔离运行库位于 `%TEMP%\quire-final-perf-2026-10-16-final`。GPUI 默认 Release 文件和隔离 Release 文件均对应 `c742cfa`；Slint 工作树内容未改且 Git 状态干净。测量后只更新计划与交付文档。
