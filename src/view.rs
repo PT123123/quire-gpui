@@ -3895,6 +3895,21 @@ impl Workspace {
                         .expect("gallery smoke database block should remain available");
                     let block_id = block.id;
                     let database = block.db_ref.expect("gallery smoke database reference");
+                    let template_record = this
+                        .session
+                        .repo
+                        .records_of(database)
+                        .expect("template smoke should query database rows")
+                        .into_iter()
+                        .next()
+                        .expect("template smoke needs a database record");
+                    this.selected_database_record = Some((block_id.0, database.0, template_record.id.0));
+                    assert!(this
+                        .session
+                        .save_database_record_as_template(block_id, template_record.id)
+                        .expect("selected row should save as the record template"));
+                    this.schedule_save(true, window, cx);
+                    eprintln!("SMOKE: selected database row saved as the new-record template");
                     let view = this.session.databases.views_of(database).next().unwrap().id;
                     this.database_calendar_month = (2026, 10);
                     this.session
@@ -15629,7 +15644,49 @@ impl Workspace {
                                                                     },
                                                                 ))
                                                                 .child("＋ 新建行"),
-                                                        ).child(
+                                                        ).child({
+                                                            let selected_record = self.selected_database_record.filter(
+                                                                |(block, db, _)| *block == block_id.0 && *db == db_id.0,
+                                                            );
+                                                            let mut button = div()
+                                                                .id(SharedString::from(format!(
+                                                                    "db-save-template-{}",
+                                                                    block_id.0
+                                                                )))
+                                                                .px(px(8.))
+                                                                .py(px(4.))
+                                                                .rounded(px(4.))
+                                                                .text_color(if selected_record.is_some() { accent } else { muted })
+                                                                .when(selected_record.is_some(), |button| button.cursor_pointer().hover(|button| button.bg(Palette::color(&p.bg).opacity(0.3))))
+                                                                .child("设为新记录模板");
+                                                            if let Some((_, _, record)) = selected_record
+                                                                && !self.session.page.locked
+                                                            {
+                                                                button = button.on_click(cx.listener(move |this, _, window, cx| {
+                                                                    match this.session.save_database_record_as_template(
+                                                                        block_id,
+                                                                        quire_core::core::database::RecordId(record),
+                                                                    ) {
+                                                                        Ok(true) => {
+                                                                            this.status = "已将选中记录保存为新记录模板".into();
+                                                                            this.error = false;
+                                                                            this.schedule_save(true, window, cx);
+                                                                        }
+                                                                        Ok(false) => {
+                                                                            this.status = "该记录没有可保存的模板变化".into();
+                                                                            this.error = false;
+                                                                            cx.notify();
+                                                                        }
+                                                                        Err(error) => {
+                                                                            this.status = format!("保存数据库模板失败：{error}");
+                                                                            this.error = true;
+                                                                            cx.notify();
+                                                                        }
+                                                                    }
+                                                                }));
+                                                            }
+                                                            button
+                                                        }).child(
                                                             {
                                                                 let selected = self.selected_database_record.is_some_and(
                                                                     |(block, db, _)| {

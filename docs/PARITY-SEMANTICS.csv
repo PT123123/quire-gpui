@@ -229,3 +229,4 @@ cancel-editing,未开始,未验证,旧版 Escape 将内容块从只读/编辑切
 db-cal-month,已实现,未验证,Calendar 与 Timeline 均可用前后按钮跨月浏览并重查日期记录,GPUI 以年月状态和 core month_cells/shift_month 查询实现；含闰年及跨年边界需 GUI 回归
 db-gallery-shaped,已实现,未验证,画廊根据正文区宽度自适应显示一至四列虚拟卡片行并保持最小卡宽,列数边界有单测且隔离 GUI smoke 验证可视行记录查询；真实拖动窗口观察断点未做
 db-open-record,已实现,未验证,表格标题快捷入口与画廊/日历/时间线/看板记录入口打开记录关联页面，无页面的记录首次打开时延迟创建子页面并绑定记录,页面创建/首段落/RecordPageSet 写入同一持久化批次；隔离 Session 覆盖首次创建、重复打开复用及重启读回
+db-template-saved,已实现,未验证,选中数据库行可设为后续新记录的默认模板,使用 core database_template typed 编解码并通过 DatabaseTemplateSet 持久化；表单创建会合并模板默认值与用户本次输入

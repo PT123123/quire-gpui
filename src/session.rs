@@ -1105,6 +1105,57 @@ impl Session {
         Some(id)
     }
 
+    /// Save a record's stored cells as the defaults for future records in its
+    /// database. The core template codec preserves typed values and skips
+    /// absent cells, so templates use the same storage semantics as form input.
+    pub fn save_database_record_as_template(
+        &mut self,
+        block: BlockId,
+        record_id: RecordId,
+    ) -> Result<bool> {
+        if self.page.locked {
+            return Ok(false);
+        }
+        let Some(database) = self.document.block(block).and_then(|block| block.db_ref) else {
+            return Ok(false);
+        };
+        let Some(record) = self.repo.record(record_id)? else {
+            return Ok(false);
+        };
+        if record.db != database {
+            return Ok(false);
+        }
+        let property_ids = self
+            .databases
+            .properties_of(database)
+            .map(|property| property.id)
+            .collect::<BTreeSet<_>>();
+        let cells = self
+            .repo
+            .record_values(record_id)?
+            .into_iter()
+            .filter(|(property, _)| property_ids.contains(property))
+            .map(|(property, value)| (property.0, value))
+            .collect::<Vec<_>>();
+        let template = quire_core::core::database_template::from_cells(&cells);
+        let database_row = self
+            .databases
+            .databases
+            .iter_mut()
+            .find(|row| row.id == database)
+            .context("数据库定义已不存在")?;
+        if database_row.template == template {
+            return Ok(false);
+        }
+        database_row.template = template.clone();
+        self.persistence.record(vec![Change::DatabaseTemplateSet {
+            id: database,
+            template,
+        }]);
+        self.persistence.force_flush()?;
+        Ok(true)
+    }
+
     /// Open a database record as its corresponding page. Bare rows receive a
     /// child page on first open, and the record-to-page link is persisted in
     /// the same change batch as the page itself.
@@ -7251,6 +7302,76 @@ mod tests {
         );
         assert_eq!(reopened.pages.len(), page_count);
         assert_eq!(reopened.document.page_blocks(page_id).len(), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn saving_a_database_record_as_template_prefills_future_records() -> Result<()> {
+        let scratch = quire_core::testing::ScratchDir::new("gpui-database-record-template");
+        let path = scratch.path().join("test.db");
+        let (database, title, completed) = {
+            let mut session = Session::open(&path)?;
+            let block = session.blocks()[0].id;
+            let database = session
+                .make_database(block, "事项".into())
+                .expect("database created");
+            let title = session.databases.title_property(database).unwrap().id;
+            let completed = session
+                .add_database_property(
+                    block,
+                    "完成".into(),
+                    quire_core::core::database::PropertyKind::Checkbox,
+                )
+                .expect("checkbox property created");
+            let source = session
+                .add_database_record(block)
+                .expect("source record created");
+            session.set_database_cell(block, source, title, "每周规划")?;
+            session.set_database_cell(block, source, completed, "true")?;
+
+            assert!(session.save_database_record_as_template(block, source)?);
+            assert!(!session.save_database_record_as_template(block, source)?);
+            assert_eq!(
+                quire_core::core::database_template::cells_of(
+                    &session.databases.database(database).unwrap().template
+                ),
+                vec![
+                    (
+                        title,
+                        quire_core::core::database::CellValue::Text("每周规划".into())
+                    ),
+                    (completed, quire_core::core::database::CellValue::Flag(true)),
+                ]
+            );
+
+            let created = session
+                .submit_database_form(block, &[])
+                .expect("empty form should create a record from saved defaults");
+            session.persistence.force_flush()?;
+            assert_eq!(
+                session.repo.cell(created, title)?,
+                quire_core::core::database::CellValue::Text("每周规划".into())
+            );
+            assert_eq!(
+                session.repo.cell(created, completed)?,
+                quire_core::core::database::CellValue::Flag(true)
+            );
+            session.persistence.force_flush()?;
+            (database, title, completed)
+        };
+
+        let reopened = Session::open(&path)?;
+        let template = &reopened.databases.database(database).unwrap().template;
+        assert_eq!(
+            quire_core::core::database_template::cells_of(template),
+            vec![
+                (
+                    title,
+                    quire_core::core::database::CellValue::Text("每周规划".into())
+                ),
+                (completed, quire_core::core::database::CellValue::Flag(true)),
+            ]
+        );
         Ok(())
     }
 

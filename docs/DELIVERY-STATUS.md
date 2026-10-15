@@ -1343,3 +1343,9 @@
 - 补齐 F103 `db-open-record`：表格标题列提供明确打开入口；画廊卡片、日历记录、时间线行与看板卡片标题可打开记录页面。裸记录首次打开时按标题创建数据库所在页的子页面与首个段落，并在同一持久化批次写入 `RecordPageSet`；再次打开复用已关联页面。页面创建数据由 GPUI Session 管理，写入复用 core persistence/repository。
 - 新增隔离 SQLite 回归，验证标题与父子关系、首次创建、重复打开不重复建页、记录关联及重启读回。Release GUI smoke 实际经 Workspace 的打开路径导航到新建子页、确认记录反向关联，再返回数据库页面。
 - `cargo fmt --all -- --check`、全量测试、`cargo check --locked`、`cargo build --release --locked`、`git diff --check` 和全新隔离 SQLite Release GUI smoke 均通过。新 smoke 覆盖 database record open 路径，以及既有 gallery/calendar/timeline/form/chart、1000 块虚拟滚动、速记、托盘、MCP 与最大化/还原。真实鼠标逐布局点击仍未做；未访问真实用户库或修改 Slint/core/冻结参考树。
+
+## 第二百二十一轮：选中数据库行保存为新记录模板
+
+- 补齐 F114 `db-template-saved`：表格操作栏新增“设为新记录模板”，仅选中记录时可用。读取记录的 core 类型化存储值，经 `database_template::from_cells` 保存到数据库定义；表单创建继续用既有模板解码与类型校验，并由本次输入覆盖相同属性的默认值。
+- 隔离 Session 测试验证文字与 checkbox 类型默认值、重复保存无变化、关闭重开后模板仍在，以及空表单新记录读回默认值。Release GUI smoke 实际选中隔离记录并保存模板。
+- `cargo fmt --all -- --check`、`cargo test --locked`（101 项：49 库 + 50 二进制 + 1 MCP stdio + 1 sync loopback）、`cargo check --locked`、`cargo build --release --locked`、`git diff --check` 和隔离 Release GUI smoke 均通过；速记、托盘、MCP、最大化/还原及 1000 块虚拟滚动回归继续通过。真实窗口鼠标逐项验收仍待后续；没有访问真实用户库或修改 Slint/core/冻结参考树。
