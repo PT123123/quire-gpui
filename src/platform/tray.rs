@@ -100,6 +100,7 @@ mod imp {
     const TRAY_REMOVE: u32 = WM_APP + 2;
     // mouse messages the callback's lParam low word carries
     const WM_LBUTTONUP: usize = 0x0202;
+    const WM_LBUTTONDBLCLK: usize = 0x0203;
     const WM_RBUTTONUP: usize = 0x0205;
     const WM_INITMENUPOPUP: u32 = 0x0117;
     const WM_CLOSE: u32 = 0x0010;
@@ -496,7 +497,7 @@ mod imp {
     unsafe extern "system" fn wndproc(hwnd: isize, msg: u32, wp: usize, lp: isize) -> isize {
         if msg == TRAY_CALLBACK {
             match lp as usize {
-                WM_LBUTTONUP => {
+                WM_LBUTTONUP | WM_LBUTTONDBLCLK => {
                     CTX.with(|c| {
                         if let Some(ctx) = c.borrow().as_ref() {
                             (ctx.on_show)();

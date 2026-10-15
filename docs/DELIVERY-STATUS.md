@@ -1071,3 +1071,9 @@
 - 图片块“⋮”菜单新增“图片宽度…”子页，显示旧版一致的 25%、50%、100% 三档及当前选择；选择后菜单保留打开并刷新勾选，宽度命令走 core `SetImageWidth`，沿用已有强制保存路径。图片下方快捷档位继续可用。
 - 扩展隔离附件测试：复制入测试 PNG 后选择 25%，验证 undo/redo、flush/reopen 后附件和宽度均保留。菜单真实鼠标点选尚未在自动化 smoke 中覆盖。
 - 验证：`cargo fmt --all -- --check`、全量 `cargo test -j 8`（78 项：40 库 + 36 二进制 + 2 集成）、`cargo check -j 8`、`cargo build --release -j 8`、`git diff --check` 通过。全新随机临时 SQLite 的 Release GUI smoke（1000 块）通过，覆盖速记提交、托盘隐藏/唤回、MCP 工具鉴权写入、最大化/还原和虚拟滚动。图片宽度子菜单选项的真人鼠标命中仍未自动化；宽度 command 的 undo/redo/reopen 由 ScratchDir 附件测试验证。未访问默认用户库或修改 Slint/core。
+
+## 第一百七十轮：速记、托盘、同步与 MCP 优先回归
+
+- 按用户最新优先级复核速记窗口、托盘/主窗口生命周期、同步 UI 与 MCP 服务的当前实现；托盘现在同时响应 Windows Shell 的左键单击和双击唤回主界面，避免 Shell 只投递双击通知时无法恢复窗口。
+- 本轮没有更改速记、同步和 MCP 业务路径；隔离 Release GUI smoke 已实际启动临时 SQLite 窗口，并通过 16 个 MCP 工具发现、Bearer HTTP 写笔记、速记输入/标签抽取/提交、托盘隐藏/ShowMain 唤回、窗口最大化/还原及 1000 块虚拟滚动。全部 `cargo test --locked`（78 项：40 库 + 36 二进制 + 1 stdio + 1 sync 集成）、`cargo fmt --all -- --check`、`cargo check --locked`、`cargo build --release --locked` 通过。
+- 双击分支已编译通过，但 Shell 的真实托盘单/双击、菜单及多屏行为仍需真人桌面验收；同步仍需两台实体设备与真实网络验证，MCP 外部宿主长连接/重启恢复也未声称通过。未访问默认用户库或修改 Slint/core。
