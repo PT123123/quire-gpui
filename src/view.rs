@@ -12338,6 +12338,7 @@ impl Workspace {
                 .any(|child| child.parent == Some(block_id));
         let block_drop_page = self.session.page.id;
         let block_drop_enabled = !self.session.page.locked && !self.closing;
+        let block_drop_accent = Palette::color(&self.palette.accent).opacity(0.14);
         let mention_options = if let Some((_, at, _)) = self
             .mention_menu
             .clone()
@@ -12960,6 +12961,13 @@ impl Workspace {
                             && value
                                 .downcast_ref::<EditorBlockDrag>()
                                 .is_some_and(|drag| drag.page == block_drop_page)
+                    })
+                    .drag_over::<EditorBlockDrag>(move |style, drag, _, _| {
+                        if drag.page == block_drop_page {
+                            style.bg(block_drop_accent)
+                        } else {
+                            style
+                        }
                     })
                     .on_drop(cx.listener(
                         move |this, drag: &EditorBlockDrag, window, cx| {
