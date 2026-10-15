@@ -1027,5 +1027,5 @@
 
 ## 第一百六十二轮：官方 MCP SDK 外部客户端实连复核
 
-- 在当前 Release 可执行文件上启动独立隔离数据库，并通过官方 `@modelcontextprotocol/client@2.3.1` 的 `StreamableHTTPClientTransport` 实际建立 Bearer 鉴权连接；SDK 自动协商得到 `2026-07-28`，`tools/list` 返回 16 个工具，随后经真实客户端调用 `create_note` 并以 `list_notes` 读回中文标题/正文/标签，往返断言通过。
-- 客户端依官方文档使用标准 `Client.connect()` 握手与 Streamable HTTP transport；测试进程结束后关闭临时应用。库与 npm 安装均位于 `%TEMP%`，没有打开默认用户库或改动 Slint 参考树。真实 MCP 调用闭环已由本轮复核；长时间连接稳定性、宿主应用重启后的客户端自动重连尚未验收。
+- 在当前 Release 可执行文件上启动独立隔离数据库，并通过官方 `@modelcontextprotocol/client@2.3.1` 的 `StreamableHTTPClientTransport` 实际建立 Bearer 鉴权连接。自动协商得到 `2026-07-28`，`tools/list` 返回 16 个工具，调用 `create_note` 后由 `list_notes` 读回中文标题/正文/标签；再以官方客户端强制 legacy 模式协商 `2025-11-25`，列出相同工具并实际调用 `list_pages`、`create_page`，两种传输协议代均通过。
+- 客户端依官方文档使用标准 `Client.connect()` 握手与 Streamable HTTP transport；测试进程结束后关闭临时应用。库与 npm 安装均位于 `%TEMP%`，没有打开默认用户库或改动 Slint 参考树。真实 MCP 调用闭环已由本轮复核；更早版本 SDK 二进制、长时间连接稳定性与宿主应用重启后的客户端自动重连尚未验收。
