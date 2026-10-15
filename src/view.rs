@@ -3739,6 +3739,16 @@ impl Workspace {
                     assert_eq!(this.session.blocks().len(), original_block_count);
                     eprintln!("SMOKE: block plus insertion menu filtering, selection and undo passed");
                     let original_page = this.session.page.id;
+                    let escape_anchor = this.session.blocks()[0].id;
+                    this.database_columns_open = Some((escape_anchor.0, 1));
+                    this.input_event(
+                        escape_anchor,
+                        &InputEvent::DismissSlash,
+                        window,
+                        cx,
+                    );
+                    assert!(this.database_columns_open.is_none());
+                    eprintln!("SMOKE: Escape dismisses the database column picker");
                     this.open_organizer_tab(false, true, window, cx);
                     assert!(this.organizer_open && !this.organizer_tasks);
                     this.open_organizer_tab(true, true, window, cx);
@@ -4793,6 +4803,12 @@ impl Workspace {
                     self.database_group_open = None;
                 }
                 if self
+                    .database_columns_open
+                    .is_some_and(|(columns_block, _)| columns_block != id.0)
+                {
+                    self.database_columns_open = None;
+                }
+                if self
                     .block_menu_open
                     .is_some_and(|(menu_block, _)| menu_block != id)
                 {
@@ -4860,6 +4876,7 @@ impl Workspace {
                 let block_menu_closed = self.block_menu_open.take().is_some();
                 let filter_menu_closed = self.database_filter_open.take().is_some();
                 let group_menu_closed = self.database_group_open.take().is_some();
+                let columns_menu_closed = self.database_columns_open.take().is_some();
                 self.database_filter_value_active = None;
                 if self.find_open {
                     self.close_find(window, cx);
@@ -4870,6 +4887,7 @@ impl Workspace {
                 if block_menu_closed
                     || filter_menu_closed
                     || group_menu_closed
+                    || columns_menu_closed
                     || slash_closed
                     || mention_closed
                 {

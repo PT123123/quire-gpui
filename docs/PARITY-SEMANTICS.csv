@@ -160,3 +160,6 @@ hotkey-alt-m-toggled,已实现,未验证,设置可切换全局 Alt+M 显示主�
 org-auto-input-toggled,已实现,未验证,`notes.auto_input` 缺省开启；上次停留在笔记区时启动后自动打开笔记捕获输入层,持久化沿用 Slint 共享元数据/设置行；关闭后仍恢复笔记区但不弹输入层
 nav-back-requested,已实现,未验证,后退在同一会话中穿梭文档、笔记和任务页，越过栈底时回到笔记页,跳过已删除页面；回退目标进入前进栈，可重走；导航栈最多保留 50 项
 nav-forward-requested,已实现,未验证,前进重走此前回退经过的文档、笔记和任务页,用户发起新导航时清空前进分支；跳过已删除页面
+db-columns-closed,已实现,未验证,数据库列选择器可按 Escape 关闭，焦点移到其他内容块时也关闭,共享 DismissSlash 输入事件与焦点转移清理列选择器状态
+db-filter-closed,已实现,未验证,数据库筛选器可按 Escape 关闭，切换焦点或打开其他数据库工具时关闭,共享 DismissSlash 输入事件与工具互斥清理筛选器状态
+db-group-closed,已实现,未验证,数据库分组菜单可按 Escape 关闭，切换焦点或打开其他数据库工具时关闭,共享 DismissSlash 输入事件与工具互斥清理分组状态
