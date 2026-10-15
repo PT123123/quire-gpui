@@ -1671,6 +1671,8 @@ pub struct Workspace {
     mcp_token: String,
     mcp_status: String,
     tray_available: bool,
+    lan_share_active: bool,
+    lan_share_notice: Option<String>,
     quick_note_window: Option<WindowHandle<QuickNoteWindow>>,
     sync_cmd_tx: std::sync::mpsc::Sender<quire_core::services::sync::engine::Cmd>,
     sync_status: String,
@@ -1690,6 +1692,8 @@ impl Workspace {
         smoke: bool,
         tray_available: bool,
         sync_listener_warning: Option<String>,
+        lan_share_active: bool,
+        lan_share_notice: Option<String>,
         shell_events: std::sync::mpsc::Receiver<crate::platform::ShellEvent>,
         platform_services: crate::platform::Services,
         window: &mut Window,
@@ -2048,6 +2052,8 @@ impl Workspace {
             }
             .into(),
             tray_available,
+            lan_share_active,
+            lan_share_notice,
             quick_note_window: None,
             sync_cmd_tx,
             sync_status: sync_listener_warning
@@ -8596,6 +8602,17 @@ impl Workspace {
         );
         self.schedule_save(false, window, cx);
     }
+    fn toggle_lan_sharing(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let enabled = self.session.setting("lan.share") == Some("1");
+        let next = !enabled;
+        self.session
+            .set_setting("lan.share", if next { "1" } else { "0" });
+        self.hotkey_notice = format!(
+            "局域网只读共享已{}（重启后生效）",
+            if next { "开启" } else { "关闭" }
+        );
+        self.schedule_save(false, window, cx);
+    }
     fn sync_auto_tick(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
         let (automatic, interval) = self.session.sync_config();
         if !automatic || self.sync_last_auto.elapsed().as_secs() < interval {
@@ -13824,6 +13841,9 @@ impl Render for Workspace {
             == "true";
         let hotkey_notice = self.hotkey_notice.clone();
         let tray_available = self.tray_available;
+        let lan_share_enabled = self.session.setting("lan.share") == Some("1");
+        let lan_share_active = self.lan_share_active;
+        let lan_share_notice = self.lan_share_notice.clone();
         let mcp_logs: Vec<serde_json::Value> = self
             .session
             .setting("gpui.mcp.log")
@@ -14196,6 +14216,22 @@ impl Render for Workspace {
                                         )))
                                         .child(if hotkey_alt_m { "● 已开启" } else { "○ 已关闭" })),
                             ).child(
+                                div().flex().justify_between().items_center()
+                                    .child("在局域网内只读共享（端口 5877，重启后生效）")
+                                    .child(div().id("lan-sharing").px(px(8.)).py(px(4.)).rounded(px(4.))
+                                        .border_1().border_color(Palette::color(&p.border)).cursor_pointer()
+                                        .text_color(if lan_share_enabled { accent } else { muted })
+                                        .on_click(cx.listener(|this, _, window, cx| this.toggle_lan_sharing(window, cx)))
+                                        .child(if lan_share_enabled { "● 已开启" } else { "○ 已关闭" })),
+                            ).child(
+                                div().text_size(px(10.)).text_color(muted).child(if lan_share_active {
+                                    "当前进程正在端口 5877 提供只读共享。"
+                                } else {
+                                    "当前进程未启动分享；更改设置或使用 --share 后重启生效。"
+                                }),
+                            ).when_some(lan_share_notice, |panel, notice| panel.child(
+                                div().text_size(px(10.)).text_color(rgb(0xd9a441)).child(notice),
+                            )).child(
                                 div().text_size(px(11.)).text_color(muted).child(hotkey_notice),
                             ).when(!tray_available, |panel| panel.child(
                                 div().text_size(px(10.)).text_color(rgb(0xd9a441))

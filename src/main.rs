@@ -27,6 +27,8 @@ fn run() -> Result<()> {
     let mut smoke_recovery = false;
     let mut smoke_blocks = 0usize;
     let mut stdio = false;
+    let mut share_port = None;
+    let mut pull_url = None;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -45,10 +47,23 @@ fn run() -> Result<()> {
                     .parse()
                     .context("--smoke-blocks 需要正整数")?;
             }
+            "--share" => share_port = Some(quire_core::services::lan_server::DEFAULT_PORT),
+            "--share-port" => {
+                let port = args
+                    .next()
+                    .context("--share-port 需要端口")?
+                    .parse::<u16>()
+                    .context("--share-port 需要 1–65535 端口")?;
+                if port == 0 {
+                    bail!("--share-port 需要 1–65535 端口");
+                }
+                share_port = Some(port);
+            }
+            "--pull" => pull_url = Some(args.next().context("--pull 需要 URL")?),
             "--stdio" | "mcp" => stdio = true,
             "--help" | "-h" => {
                 println!(
-                    "quire-gpui [--db PATH] [--theme ID] [--dump-state]\nquire-gpui --stdio [--db PATH]: bridge MCP stdio to the running Quire HTTP service. The database path locates its adjacent mcp.json pointer.\n--smoke-test: requires a NEW --db path and refuses an existing adjacent mcp.json; exercises isolated UI/MCP paths, NOT real OS IME.\n--smoke-recovery: with --smoke-test only, requires an existing isolated database that recovers from a backup.\n--smoke-blocks N: with --smoke-test, add N synthetic paragraph blocks (max 10000) to the isolated test page."
+                    "quire-gpui [--db PATH] [--theme ID] [--dump-state] [--share] [--share-port PORT] [--pull URL]\nquire-gpui --stdio [--db PATH]: bridge MCP stdio to the running Quire HTTP service. The database path locates its adjacent mcp.json pointer.\n--share: serve this workspace read-only on the LAN at port 5877.\n--share-port PORT: serve read-only on the LAN at the specified port.\n--pull URL: import pages from a Quire LAN share endpoint.\n--smoke-test: requires a NEW --db path and refuses an existing adjacent mcp.json; exercises isolated UI/MCP paths, NOT real OS IME.\n--smoke-recovery: with --smoke-test only, requires an existing isolated database that recovers from a backup.\n--smoke-blocks N: with --smoke-test, add N synthetic paragraph blocks (max 10000) to the isolated test page."
                 );
                 return Ok(());
             }
@@ -78,6 +93,9 @@ fn run() -> Result<()> {
     }
     if smoke_blocks > 0 && !smoke {
         bail!("--smoke-blocks 只能与 --smoke-test 同用");
+    }
+    if smoke && (share_port.is_some() || pull_url.is_some()) {
+        bail!("--smoke-test 不允许启动局域网分享或拉取外部页面");
     }
     if dump && path.as_ref().is_none_or(|p| !p.exists()) {
         bail!("--dump-state 需要已存在的 --db 库");
@@ -128,6 +146,49 @@ fn run() -> Result<()> {
     };
     if smoke_recovery && session.startup_notice.is_none() {
         bail!("--smoke-recovery 数据库没有触发备份恢复");
+    }
+    let mut lan_share_notice = None;
+    if let Some(url) = pull_url.as_deref() {
+        match pull_lan_pages(&mut session, url) {
+            Ok(count) => eprintln!("Imported {count} pages from LAN share {url}"),
+            Err(error) => {
+                let message = format!("局域网导入失败：{error}");
+                eprintln!("Quire GPUI: {message}");
+                lan_share_notice = Some(message);
+            }
+        }
+    }
+    let configured_share_port = share_port.or_else(|| {
+        (session.setting("lan.share") == Some("1"))
+            .then_some(quire_core::services::lan_server::DEFAULT_PORT)
+    });
+    let mut lan_share_active = false;
+    if let Some(port) = configured_share_port {
+        let server = quire_core::services::lan_server::LanServer::new(session.repo.clone(), port);
+        match server.bind() {
+            Ok(listener) => {
+                let local_addr = listener.local_addr().ok();
+                match std::thread::Builder::new()
+                    .name("quire-lan-share".into())
+                    .spawn(move || server.serve(listener))
+                {
+                    Ok(_) => {
+                        lan_share_active = true;
+                        eprintln!("Quire GPUI read-only LAN share listening on {local_addr:?}");
+                    }
+                    Err(error) => {
+                        let message = format!("局域网共享启动失败：{error}");
+                        eprintln!("Quire GPUI: {message}");
+                        lan_share_notice = Some(message);
+                    }
+                }
+            }
+            Err(error) => {
+                let message = format!("局域网只读共享无法监听端口 {port}：{error}");
+                eprintln!("Quire GPUI: {message}");
+                lan_share_notice = Some(message);
+            }
+        }
     }
     if smoke_recovery {
         eprintln!("SMOKE: isolated database recovery warning was received");
@@ -289,6 +350,8 @@ fn run() -> Result<()> {
                         smoke,
                         tray_available,
                         sync_listener_warning.clone(),
+                        lan_share_active,
+                        lan_share_notice.clone(),
                         shell_rx,
                         platform_services,
                         window,
@@ -343,6 +406,24 @@ fn run() -> Result<()> {
     Ok(())
 }
 
+fn pull_lan_pages(session: &mut Session, url: &str) -> Result<usize> {
+    let pages =
+        quire_core::services::lan_client::pull_workspace(url).map_err(anyhow::Error::msg)?;
+    let count = pages.len();
+    for (title, markdown) in pages {
+        let safe_title = if title.trim().is_empty() {
+            "已导入".to_owned()
+        } else {
+            title.trim().to_owned()
+        };
+        session.import_markdown(safe_title, &markdown);
+    }
+    if count > 0 {
+        session.persistence.force_flush()?;
+    }
+    Ok(count)
+}
+
 fn restored_window_bounds(session: &Session, cx: &App) -> Bounds<Pixels> {
     let fallback = || Bounds::centered(None, size(px(1280.), px(800.)), cx);
     let Some(bounds) = session
@@ -395,7 +476,7 @@ fn parse_window_bounds(x: &str, y: &str, width: &str, height: &str) -> Option<Bo
 
 #[cfg(test)]
 mod window_geometry_tests {
-    use super::{parse_window_bounds, sync_listener_preflight};
+    use super::{parse_window_bounds, pull_lan_pages, sync_listener_preflight};
 
     #[test]
     fn saved_window_bounds_accept_valid_position_and_size() {
@@ -434,5 +515,51 @@ mod window_geometry_tests {
         let port = listener.local_addr().unwrap().port();
         drop(listener);
         assert!(sync_listener_preflight(port).is_none());
+    }
+
+    #[test]
+    fn lan_pull_imports_pages_from_a_loopback_share() {
+        let scratch = quire_core::testing::ScratchDir::new("gpui-lan-pull");
+        let path = scratch.path().join("destination.sqlite3");
+        let mut session = quire_gpui::session::Session::open(&path).unwrap();
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = std::thread::spawn(move || {
+            use std::io::{Read, Write};
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0u8; 2048];
+            let _ = stream.read(&mut request).unwrap();
+            let body = "<<<QUIRE PAGE: Shared sample>>>\n# Shared sample\n\nImported from LAN.\n";
+            write!(
+                stream,
+                "HTTP/1.0 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            )
+            .unwrap();
+        });
+
+        let count = pull_lan_pages(&mut session, &format!("http://127.0.0.1:{port}"))
+            .expect("loopback LAN pull succeeds");
+        server.join().unwrap();
+        assert_eq!(count, 1);
+        assert!(
+            session
+                .pages
+                .iter()
+                .any(|page| page.title == "Shared sample")
+        );
+        let imported = session
+            .pages
+            .iter()
+            .find(|page| page.title == "Shared sample")
+            .unwrap();
+        assert!(
+            session
+                .document
+                .page_blocks(imported.id)
+                .iter()
+                .any(|block| block.text.contains("Imported from LAN."))
+        );
     }
 }

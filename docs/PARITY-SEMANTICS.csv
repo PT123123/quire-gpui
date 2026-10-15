@@ -100,5 +100,6 @@ org-capture-opened,已实现,未验证,速记小窗打开时从当前整理区�
 org-capture-sent,已实现,未验证,Ctrl+Enter Alt+S 或保存按钮将普通笔记写入当前库并提取 #标签；成功关闭，失败保留草稿,创建笔记后立即 flush；保存失败返回 false 并留在速记窗；沿用主窗口唯一 Session
 org-capture-closed,已实现,未验证,Escape 先收起标签建议再关闭速记；取消不写入笔记,隐藏建议只改变窗口 UI 状态；取消仅丢弃本次草稿，不产生 undo 项
 org-quick-note-requested,已实现,未验证,全局 Alt+N 打开独立无边框速记窗口，不要求主窗口先显示；应用内 Alt+N 同样可用,复用现有速记窗口和 UI job pump；不会重置已存在的草稿
+toggle-lan-sharing,已实现,已验证,通用设置可持久化启停 5877 局域网只读分享，重启生效；默认关闭,命令行 --share / --share-port 可显式启动；--pull URL 将共享页面导入当前库；pull 通过 loopback 与隔离 SQLite 回归
 org-capture-draft-changed,已实现,未验证,编辑时从当前 live 笔记与任务标签重算最多五个候选；支持完整层级标签和末级标签不区分大小写匹配,候选针对光标前未结束的 #token；有空白分隔时不显示；标签池按唯一值排序
 org-tag-suggest-picked,已实现,未验证,上下方向键移动候选；Enter Tab 或点击应用候选并将光标移到完整标签之后,按 UTF-8 字符边界替换当前 #token；后续文本和标点保留，避免重复空格

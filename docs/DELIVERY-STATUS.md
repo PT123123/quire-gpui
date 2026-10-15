@@ -1001,3 +1001,9 @@
 - 子任务标题行内编辑此前没有处理 Escape 事件，现新增取消路径：退出编辑态并丢弃草稿，不写入 Task；Enter 与失焦继续提交。隔离 Release smoke 通过 Workspace 编辑流程先取消草稿、核验旧值保留，再提交新标题并读回。
 - 校准 callback 矩阵：F234 `org-subtask-edit` 和 F235 `org-subtask-title-set` 标为 GPUI 已实现，分别描述打开编辑与提交/取消；将 F233 语义限定为新增，避免把新旧两种操作混成一行。运行生成器后仍为 246 callbacks、261 properties、188 scenes，sidecar 合并 100 条且字节稳定。
 - 验证：全量 `cargo test -j 8`（70 项）、`cargo check -j 8`、Release 构建、全新隔离 SQLite 的 Release GUI smoke、格式检查和 `git diff --check` 通过。未访问默认用户数据库或修改 Slint 参考树。
+
+## 第一百五十八轮：补齐旧版 LAN 只读分享与导入
+
+- GPUI 启动流程现在兼容旧版 `lan.share` 设置：在通用设置启停端口 5877 只读分享（重启生效，默认关闭），并支持 `--share`、`--share-port PORT` 显式启动。增加 `--pull URL`，将旧版 LAN share 输出的页面导入当前工作区并立即 flush；导入失败会打印原因并在设置页显示提示。`--smoke-test` 拒绝与网络分享/导入组合，避免隔离 GUI smoke 暴露服务或访问外部数据。
+- loopback HTTP fixture + core ScratchDir 临时 SQLite 回归验证一页 Markdown 拉取后标题与正文均进入 Session；没有绑定全网卡或访问真实用户库。LAN 分享真实网络访问仍待两设备验收。
+- 验证：定向 loopback 测试通过，全量 `cargo test -j 8`（70 项）、`cargo check -j 8`、`cargo build --release -j 8`、`cargo fmt --all -- --check`、`git diff --check` 和新建临时目录 Release GUI smoke（1000 个块）通过。生成器重跑后为 246 callback、261 property、188 scene，sidecar 合并 101 条。速记、托盘隐藏/唤回、MCP 和窗口操作继续由隔离 GUI smoke 覆盖。
