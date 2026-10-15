@@ -15603,154 +15603,32 @@ impl Render for Workspace {
                     .child(row)
                     .when(menu_open && !color_menu_open, |container| {
                         container.child(
-                            div()
-                                .id(SharedString::from(format!("organizer-list-menu-{id:?}")))
-                                .ml(px(22.))
-                                .mb(px(4.))
-                                .p(px(4.))
-                                .rounded(px(6.))
-                                .border_1()
-                                .border_color(Palette::color(&p.border))
-                                .bg(Palette::color(&p.elevated))
-                                .flex()
-                                .flex_col()
-                                .gap(px(2.))
+                            anchored()
+                                .position_mode(AnchoredPositionMode::Local)
+                                .offset(point(px(22.), px(28.)))
                                 .child(
                                     div()
                                         .id(SharedString::from(format!(
-                                            "organizer-list-menu-rename-{id:?}"
+                                            "organizer-list-menu-{id:?}"
                                         )))
-                                        .w_full()
-                                        .h(px(27.))
-                                        .px(px(8.))
+                                        .p(px(4.))
+                                        .rounded(px(6.))
+                                        .border_1()
+                                        .border_color(Palette::color(&p.border))
+                                        .bg(Palette::color(&p.elevated))
                                         .flex()
-                                        .items_center()
-                                        .rounded(px(4.))
-                                        .cursor_pointer()
-                                        .text_size(px(12.))
-                                        .text_color(text)
-                                        .hover(|item| item.bg(Palette::color(&p.bg).opacity(0.35)))
-                                        .on_click(cx.listener(move |this, _, window, cx| {
-                                            this.start_task_list_rename(id, window, cx)
-                                        }))
-                                        .child("重命名"),
-                                )
-                                .child(
-                                    div()
-                                        .id(SharedString::from(format!(
-                                            "organizer-list-menu-color-{id:?}"
-                                        )))
-                                        .w_full()
-                                        .h(px(27.))
-                                        .px(px(8.))
-                                        .flex()
-                                        .items_center()
-                                        .justify_between()
-                                        .rounded(px(4.))
-                                        .cursor_pointer()
-                                        .text_size(px(12.))
-                                        .text_color(text)
-                                        .hover(|item| item.bg(Palette::color(&p.bg).opacity(0.35)))
-                                        .on_click(cx.listener(move |this, _, _, cx| {
-                                            this.toggle_task_list_color_picker(id, cx)
-                                        }))
-                                        .child("颜色")
+                                        .flex_col()
+                                        .gap(px(2.))
                                         .child(
                                             div()
-                                                .text_color(
-                                                    Palette::load(&self.theme_choice)
-                                                        .block_text(list_color.slot()),
-                                                )
-                                                .child("●  ›"),
-                                        ),
-                                )
-                                .child(
-                                    div()
-                                        .id(SharedString::from(format!(
-                                            "organizer-list-menu-delete-{id:?}"
-                                        )))
-                                        .w_full()
-                                        .h(px(27.))
-                                        .px(px(8.))
-                                        .flex()
-                                        .items_center()
-                                        .rounded(px(4.))
-                                        .cursor_pointer()
-                                        .text_size(px(12.))
-                                        .text_color(Hsla::from(rgb(0xe5534b)))
-                                        .hover(|item| item.bg(Palette::color(&p.bg).opacity(0.35)))
-                                        .on_click(cx.listener(move |this, _, window, cx| {
-                                            this.delete_task_list(id, window, cx)
-                                        }))
-                                        .child("删除清单"),
-                                ),
-                        )
-                    })
-                    .when(menu_open && color_menu_open, |container| {
-                        container.child(
-                            div()
-                                .id(SharedString::from(format!("organizer-list-colors-{id:?}")))
-                                .ml(px(22.))
-                                .mb(px(4.))
-                                .p(px(4.))
-                                .rounded(px(6.))
-                                .border_1()
-                                .border_color(Palette::color(&p.border))
-                                .bg(Palette::color(&p.elevated))
-                                .flex()
-                                .flex_col()
-                                .gap(px(2.))
-                                .child(
-                                    div()
-                                        .id(SharedString::from(format!(
-                                            "organizer-list-menu-color-back-{id:?}"
-                                        )))
-                                        .w_full()
-                                        .h(px(27.))
-                                        .px(px(8.))
-                                        .flex()
-                                        .items_center()
-                                        .rounded(px(4.))
-                                        .cursor_pointer()
-                                        .text_size(px(12.))
-                                        .text_color(muted)
-                                        .hover(|item| item.bg(Palette::color(&p.bg).opacity(0.35)))
-                                        .on_click(cx.listener(move |this, _, _, cx| {
-                                            this.task_list_color_open = None;
-                                            cx.notify();
-                                        }))
-                                        .child("‹ 返回"),
-                                )
-                                .children(
-                                    ColorKind::ALL
-                                        .into_iter()
-                                        .filter(|color| *color != ColorKind::Default)
-                                        .map(|color| {
-                                            let color_id = id;
-                                            let selected = color == list_color;
-                                            let label = match color {
-                                                ColorKind::Gray => "灰色",
-                                                ColorKind::Brown => "棕色",
-                                                ColorKind::Orange => "橙色",
-                                                ColorKind::Yellow => "黄色",
-                                                ColorKind::Green => "绿色",
-                                                ColorKind::Blue => "蓝色",
-                                                ColorKind::Purple => "紫色",
-                                                ColorKind::Pink => "粉色",
-                                                ColorKind::Red => "红色",
-                                                ColorKind::Default => "默认",
-                                            };
-                                            div()
                                                 .id(SharedString::from(format!(
-                                                    "organizer-list-color-{id:?}-{}",
-                                                    color.slot()
+                                                    "organizer-list-menu-rename-{id:?}"
                                                 )))
                                                 .w_full()
-                                                .h(px(25.))
+                                                .h(px(27.))
                                                 .px(px(8.))
                                                 .flex()
                                                 .items_center()
-                                                .gap(px(8.))
                                                 .rounded(px(4.))
                                                 .cursor_pointer()
                                                 .text_size(px(12.))
@@ -15760,24 +15638,172 @@ impl Render for Workspace {
                                                 })
                                                 .on_click(cx.listener(
                                                     move |this, _, window, cx| {
-                                                        this.set_task_list_color(
-                                                            color_id, color, window, cx,
-                                                        )
+                                                        this.start_task_list_rename(id, window, cx)
                                                     },
                                                 ))
+                                                .child("重命名"),
+                                        )
+                                        .child(
+                                            div()
+                                                .id(SharedString::from(format!(
+                                                    "organizer-list-menu-color-{id:?}"
+                                                )))
+                                                .w_full()
+                                                .h(px(27.))
+                                                .px(px(8.))
+                                                .flex()
+                                                .items_center()
+                                                .justify_between()
+                                                .rounded(px(4.))
+                                                .cursor_pointer()
+                                                .text_size(px(12.))
+                                                .text_color(text)
+                                                .hover(|item| {
+                                                    item.bg(Palette::color(&p.bg).opacity(0.35))
+                                                })
+                                                .on_click(cx.listener(move |this, _, _, cx| {
+                                                    this.toggle_task_list_color_picker(id, cx)
+                                                }))
+                                                .child("颜色")
                                                 .child(
                                                     div()
-                                                        .w(px(10.))
-                                                        .h(px(10.))
-                                                        .rounded(px(5.))
-                                                        .bg(Palette::load(&self.theme_choice)
-                                                            .block_text(color.slot())),
-                                                )
-                                                .child(label)
-                                                .when(selected, |item| {
-                                                    item.child(div().flex_1()).child("✓")
+                                                        .text_color(
+                                                            Palette::load(&self.theme_choice)
+                                                                .block_text(list_color.slot()),
+                                                        )
+                                                        .child("●  ›"),
+                                                ),
+                                        )
+                                        .child(
+                                            div()
+                                                .id(SharedString::from(format!(
+                                                    "organizer-list-menu-delete-{id:?}"
+                                                )))
+                                                .w_full()
+                                                .h(px(27.))
+                                                .px(px(8.))
+                                                .flex()
+                                                .items_center()
+                                                .rounded(px(4.))
+                                                .cursor_pointer()
+                                                .text_size(px(12.))
+                                                .text_color(Hsla::from(rgb(0xe5534b)))
+                                                .hover(|item| {
+                                                    item.bg(Palette::color(&p.bg).opacity(0.35))
                                                 })
-                                        }),
+                                                .on_click(cx.listener(
+                                                    move |this, _, window, cx| {
+                                                        this.delete_task_list(id, window, cx)
+                                                    },
+                                                ))
+                                                .child("删除清单"),
+                                        ),
+                                ),
+                        )
+                    })
+                    .when(menu_open && color_menu_open, |container| {
+                        container.child(
+                            anchored()
+                                .position_mode(AnchoredPositionMode::Local)
+                                .offset(point(px(22.), px(28.)))
+                                .child(
+                                    div()
+                                        .id(SharedString::from(format!(
+                                            "organizer-list-colors-{id:?}"
+                                        )))
+                                        .p(px(4.))
+                                        .rounded(px(6.))
+                                        .border_1()
+                                        .border_color(Palette::color(&p.border))
+                                        .bg(Palette::color(&p.elevated))
+                                        .flex()
+                                        .flex_col()
+                                        .gap(px(2.))
+                                        .child(
+                                            div()
+                                                .id(SharedString::from(format!(
+                                                    "organizer-list-menu-color-back-{id:?}"
+                                                )))
+                                                .w_full()
+                                                .h(px(27.))
+                                                .px(px(8.))
+                                                .flex()
+                                                .items_center()
+                                                .rounded(px(4.))
+                                                .cursor_pointer()
+                                                .text_size(px(12.))
+                                                .text_color(muted)
+                                                .hover(|item| {
+                                                    item.bg(Palette::color(&p.bg).opacity(0.35))
+                                                })
+                                                .on_click(cx.listener(move |this, _, _, cx| {
+                                                    this.task_list_color_open = None;
+                                                    cx.notify();
+                                                }))
+                                                .child("‹ 返回"),
+                                        )
+                                        .children(
+                                            ColorKind::ALL
+                                                .into_iter()
+                                                .filter(|color| *color != ColorKind::Default)
+                                                .map(|color| {
+                                                    let color_id = id;
+                                                    let selected = color == list_color;
+                                                    let label = match color {
+                                                        ColorKind::Gray => "灰色",
+                                                        ColorKind::Brown => "棕色",
+                                                        ColorKind::Orange => "橙色",
+                                                        ColorKind::Yellow => "黄色",
+                                                        ColorKind::Green => "绿色",
+                                                        ColorKind::Blue => "蓝色",
+                                                        ColorKind::Purple => "紫色",
+                                                        ColorKind::Pink => "粉色",
+                                                        ColorKind::Red => "红色",
+                                                        ColorKind::Default => "默认",
+                                                    };
+                                                    div()
+                                                        .id(SharedString::from(format!(
+                                                            "organizer-list-color-{id:?}-{}",
+                                                            color.slot()
+                                                        )))
+                                                        .w_full()
+                                                        .h(px(25.))
+                                                        .px(px(8.))
+                                                        .flex()
+                                                        .items_center()
+                                                        .gap(px(8.))
+                                                        .rounded(px(4.))
+                                                        .cursor_pointer()
+                                                        .text_size(px(12.))
+                                                        .text_color(text)
+                                                        .hover(|item| {
+                                                            item.bg(
+                                                                Palette::color(&p.bg).opacity(0.35)
+                                                            )
+                                                        })
+                                                        .on_click(cx.listener(
+                                                            move |this, _, window, cx| {
+                                                                this.set_task_list_color(
+                                                                    color_id, color, window, cx,
+                                                                )
+                                                            },
+                                                        ))
+                                                        .child(
+                                                            div()
+                                                                .w(px(10.))
+                                                                .h(px(10.))
+                                                                .rounded(px(5.))
+                                                                .bg(Palette::load(
+                                                                    &self.theme_choice,
+                                                                )
+                                                                .block_text(color.slot())),
+                                                        )
+                                                        .child(label)
+                                                        .when(selected, |item| {
+                                                            item.child(div().flex_1()).child("✓")
+                                                        })
+                                                }),
+                                        ),
                                 ),
                         )
                     })

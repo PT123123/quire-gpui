@@ -941,3 +941,8 @@ GPUI 已覆盖主编辑器、整理区、独立速记与标签建议、Windows �
 
 - “跟随系统”启动时以 GPUI 窗口当前 `WindowAppearance` 选择 Light 或 Midnight；监听 `observe_window_appearance`，系统亮暗变化时更新主题调色板、输入文本色及主题过渡，不改写用户保存的 `system` 选择、不清搜索内容。显式选定的主题不受系统外观影响；主题选择入口现在同步更新托盘主题模式，Windows 托盘菜单继续实时查询系统亮暗。
 - 映射函数覆盖 Light/VibrantLight 与 Dark/VibrantDark 的单元测试通过；`cargo fmt --all -- --check`、全量 `cargo test -j 8`（68 项）与 `cargo build --release -j 8` 通过。尚未通过真实 Windows 设置切换来验证 GPUI 收到外观通知以及托盘菜单的实机联动；隔离 GUI smoke 不模拟 OS 主题变化。没有访问默认用户数据库。
+
+## 第一百四十七轮：整理区清单菜单锚定定位
+
+- 清单“⋯”菜单及颜色子页改为 GPUI `anchored()` 浮层，采用本地锚点与窗口边界碰撞避让；菜单不再作为清单行容器的流式子项，因此打开菜单不会撑开整理区清单列表，也能在靠近窗口边缘时翻转/贴边。
+- `cargo check -j 8`、全量 `cargo test -j 8`（68 项）、`cargo build --release -j 8`、`cargo fmt --all -- --check` 和 `git diff --check` 均通过；全新 `%TEMP%` 库 Release UI smoke 通过，日志覆盖清单菜单/颜色子页、改名与撤销/重做，以及速记、托盘、MCP、最大化/还原和数据库视图。烟测验证既有交互路径，没有自动执行菜单按钮的真实鼠标点击或截图；点击外部关闭、焦点恢复及统一 OverlayHost 仍待实现。未访问真实用户数据库。
