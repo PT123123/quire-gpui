@@ -957,3 +957,9 @@
 
 - 编辑器悬停操作区增加专用拖动手柄和轻量预览；可见块行接收同页块拖放，落点放在目标行之前，文档尾部空白区接收追加落点。通过 core `can_move_block_to` 拒绝锁定页、跨页/非法类型、同一位置及会切开其他子树的落点；执行复用 core `MoveBlockTo`，保持原 parent 并沿用单步撤销历史。操作后按稳定 BlockId 恢复焦点与光标。
 - 新隔离 Session 测试覆盖可移动/越界落点、顺序变更、undo/redo、flush 和重开读回。完整验证：`cargo test -j 8`（70 项：36 库 + 32 二进制 + 2 集成）、Release build、格式与 diff 检查，以及全新临时库 GUI smoke。鼠标拖动本身未由自动化模拟；GPUI 当前没有旧版行内前/后半区判定和落点线，差异已记在 `docs/DIFFERENCES.md` 与 parity sidecar。未访问真实用户数据库。
+
+## 第一百五十轮：速记窗口实时跟随渐变主题
+
+- 修复速记窗口在打开后固定使用旧 palette 的问题。主工作区切换主题或因系统外观变化调用 `apply_palette` 时，已打开的速记小窗现在同步更新渐变背景、控件颜色及输入文字色；速记草稿、光标和候选状态保持不变。
+- 隔离 Release GUI smoke 在速记小窗打开期间切到 jade、断言子窗口已切换，再恢复原主题后继续验证复用、输入、标签抽取与提交；同次 smoke 通过 MCP 16 工具目录与写入、托盘隐藏/唤回、窗口最大化/还原和 1000 块虚拟滚动。
+- 验证：全量 `cargo test -j 8`（70 项）、`cargo check -j 8`、`cargo build --release -j 8`、格式检查、`git diff --check` 及新建临时 SQLite 的 Release GUI smoke 全部通过。没有访问默认用户库。托盘系统菜单真人点击、两台实体设备 UDP/防火墙互通和真实 MCP 客户端长期连接仍需桌面环境验收。

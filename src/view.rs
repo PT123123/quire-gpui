@@ -3007,7 +3007,7 @@ impl Workspace {
                                     .timer(Duration::from_millis(200))
                                     .await;
                                 let note_text = quick_note_text.clone();
-                                let _ = weak.update_in(cx, |this, _, cx| {
+                                let _ = weak.update_in(cx, |this, popup_window, cx| {
                                     let handle = this
                                         .quick_note_window
                                         .expect("quick-note window should open in smoke mode");
@@ -3016,6 +3016,16 @@ impl Workspace {
                                         windows_before,
                                         "repeated quick-note activation must reuse the startup popup"
                                     );
+                                    let original_palette = this.palette.id.clone();
+                                    this.apply_palette("jade", popup_window, cx);
+                                    let popup_palette = handle
+                                        .update(cx, |note, _, _| note.palette.id.clone())
+                                        .expect("quick-note window should follow theme changes");
+                                    assert_eq!(
+                                        popup_palette, "jade",
+                                        "an already-open quick-note popup must follow theme changes"
+                                    );
+                                    this.apply_palette(&original_palette, popup_window, cx);
                                     handle
                                         .update(cx, |note, popup, cx| {
                                             note.input.update(cx, |input, cx| {
@@ -4550,6 +4560,13 @@ impl Workspace {
             self.database_option_input.clone(),
         ] {
             input.update(cx, |input, _| input.text_color = Some(fg));
+        }
+        // The capture popup is a separate GPUI window and keeps its own
+        // palette snapshot. Keep its gradient and controls in sync with the
+        // main window when the user changes themes (including system changes).
+        if let Some(quick_note) = self.quick_note_window {
+            let palette = self.palette.clone();
+            let _ = quick_note.update(cx, |note, _, cx| note.apply_palette(palette, cx));
         }
         self.sync_inputs(window, cx);
         cx.notify();
@@ -17961,6 +17978,14 @@ struct QuickNoteWindow {
 }
 
 impl QuickNoteWindow {
+    fn apply_palette(&mut self, palette: Palette, cx: &mut Context<Self>) {
+        let foreground = Palette::color(&palette.fg);
+        self.input
+            .update(cx, |input, _| input.text_color = Some(foreground));
+        self.palette = palette;
+        cx.notify();
+    }
+
     fn new(
         owner: Entity<Workspace>,
         palette: Palette,
