@@ -9459,6 +9459,36 @@ impl Workspace {
             .map(|page| page.id)
             .collect()
     }
+    fn search_hit_selection(
+        &self,
+        page_id: quire_core::core::types::PageId,
+    ) -> Option<(BlockId, Range<usize>)> {
+        let query = self.search_query.trim().to_lowercase();
+        if query.is_empty() {
+            return None;
+        }
+        self.session
+            .document
+            .page_blocks(page_id)
+            .into_iter()
+            .find(|block| {
+                self.session.editable(block.id) && block.text.to_lowercase().contains(&query)
+            })
+            .map(|block| (block.id, 0..block.text.len()))
+    }
+    fn open_search_hit(
+        &mut self,
+        page_id: quire_core::core::types::PageId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let selection = self.search_hit_selection(page_id);
+        self.activate_page(page_id, window, cx);
+        if let Some((block_id, range)) = selection {
+            self.focus_selection(block_id, range, window, cx);
+        }
+        self.close_search(window, cx);
+    }
     fn palette_items(&self) -> Vec<PaletteItem> {
         let mut items = vec![
             PaletteItem {
@@ -17265,8 +17295,7 @@ impl Render for Workspace {
                             })
                             .hover(|row| row.bg(Palette::color(&p.bg).opacity(0.45)))
                             .on_click(cx.listener(move |this, _, window, cx| {
-                                this.activate_page(page_id, window, cx);
-                                this.close_search(window, cx);
+                                this.open_search_hit(page_id, window, cx);
                             }))
                             .child(title)
                             .child(div().text_size(px(10.)).text_color(muted).child(preview))

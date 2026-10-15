@@ -1308,3 +1308,9 @@
 - 核对 GPUI 搜索订阅、过滤函数、结果行与旧版 controller：F169 查询过滤、F170 键盘移动、F171 回车/点击打开页面已存在，加入人工语义 sidecar；选择行为有一处差异，GPUI 上下键循环，旧版在结果首尾夹取。
 - F172 保持未开始：旧版能定位并选中具体命中块，当前 GPUI 只列页面和一条预览，打开页面后不跳到命中块。明确了完成条件为保留匹配 block ID、滚动虚拟列表并选中命中范围。
 - `tools/extract-parity.mjs` 重生成 246 callbacks / 261 properties / 188 scenes，语义 sidecar 合并 208 个回调。仅文档变更；沿用上一轮通过的 98 项测试、check、Release build 和隔离 GUI smoke，未访问真实用户库或修改 Slint/core/冻结参考树。
+
+## 第二百一十五轮：搜索结果定位正文命中
+
+- 页面搜索结果点击现在会打开页面，并定位到首个可编辑的正文命中块；复用 `focus_selection` 的虚拟列表滚动、编辑器挂载等待和焦点/选区路径，选择整段命中文本。标题命中但正文没有可编辑命中时仍可正常打开页面。回车继续按所选页面打开，F172 矩阵改为已实现/未验证。
+- 每页仍合并显示为一条搜索结果，因此同页多个命中只跳到首个；搜索上下键仍按 GPUI 现有循环行为，和旧版首尾夹取有差异。
+- `cargo fmt --all -- --check`、`cargo check --locked`、`cargo test --locked`（98 项）、`cargo build --release --locked`、`git diff --check` 通过。当前没有独立 GUI smoke 专门覆盖搜索命中后的自动滚动/选区，矩阵保持未验证；未访问真实用户库或修改 Slint/core/冻结参考树。
