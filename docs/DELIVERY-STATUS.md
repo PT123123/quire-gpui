@@ -1,4 +1,4 @@
-﻿# 交付状态
+# 交付状态
 
 ## 第一轮 2026-10-14（02:31）：交接包骨架
 
@@ -1166,3 +1166,8 @@
 
 - 对照旧版发现，笔记区“＋”应弹出 560×340 的同窗捕获层，而 GPUI 原先直接创建空笔记。现支持空白草稿、当前标签路径预填并将焦点/光标放在末尾、标签建议键盘和点击选择、Enter 换行、Ctrl+Enter/Alt+S/按钮提交、Escape 分两级关闭建议/浮层、取消按钮和点遮罩关闭。提交才用单条 core `CreateNote` 写入正文与 `#标签`，随后选中并打开新笔记；取消不写入。
 - Session ScratchDir 覆盖单步撤销/重做与 SQLite 重开。隔离 Release GUI smoke 构造并渲染浮层，断言打开和取消均不新增记录、筛选标签预填、提交创建唯一笔记并打开详情。`cargo fmt --all -- --check`、`cargo test --locked`（88 项：44 库 + 42 二进制 + 1 stdio + 1 sync loopback）、`cargo check --locked`、`cargo build --release --locked` 与 `git diff --check` 均通过；Release GUI smoke（1000 块）也通过并继续覆盖 MCP、独立速记、托盘、最大化/还原和虚拟列表。标签建议真人点击、Escape 层级及多屏视觉仍待桌面验收。未访问真实用户库，未改 Slint/core/冻结参考树。
+
+## 第一百八十七轮：复制全部可见笔记
+
+- 旧版笔记工具栏可将当前搜索/标签结果一次复制，逐条携带稳定 UUID；GPUI 之前只有先开多选再点“复制”。现新增“复制全部”入口，使用排序后的可见顶层笔记 ID，回收站隐藏；导出正文优先、空正文回退标题、评论和空条目跳过，缺 UUID 时回退本地 ID。
+- 纯逻辑测试验证列表顺序、正文与标题回退、稳定 UUID、本地 ID 和评论过滤；桌面剪贴板真人点击尚未验收。验证：单测、`cargo fmt --all -- --check`、`cargo test --locked`（90 项：44 库 + 43 二进制 + 1 stdio + 1 sync loopback）、`cargo check --locked`、`cargo build --release --locked`、`git diff --check` 均通过；全新随机 `%TEMP%` SQLite 的 Release GUI smoke（1000 块）通过，覆盖速记窗口保存、托盘隐藏/恢复、最大化/还原及虚拟滚动。未访问真实用户库或改动 Slint/core/冻结参考树。

@@ -4,7 +4,7 @@ use quire_core::core::{
     command::Command,
     database::ViewId,
     organizer::NoteId,
-    organizer::{OrganizerCatalog, Priority, Repeat, Task as OrganizerTask},
+    organizer::{Note as OrganizerNote, OrganizerCatalog, Priority, Repeat, Task as OrganizerTask},
     types::{Block, BlockId, BlockKind, ColorKind, Lang, Mark, MarkKind},
 };
 use quire_gpui::session::Session;
@@ -62,6 +62,30 @@ fn organizer_task_drop_accepted(
     in_trash: bool,
 ) -> bool {
     !in_trash && drag.source_lists.iter().any(|source| *source != target)
+}
+
+fn organizer_notes_copy_payload(notes: &[OrganizerNote]) -> (String, usize) {
+    let rows = notes
+        .iter()
+        .filter(|note| note.ref_note.is_none())
+        .filter_map(|note| {
+            let body = if note.body.trim().is_empty() {
+                note.title.as_str()
+            } else {
+                note.body.as_str()
+            };
+            if body.trim().is_empty() {
+                return None;
+            }
+            let id = if note.uuid.trim().is_empty() {
+                format!("local:{}", note.id.0)
+            } else {
+                note.uuid.clone()
+            };
+            Some(format!("{body}\nID: {id}"))
+        })
+        .collect::<Vec<_>>();
+    (rows.join("\n\n"), rows.len())
 }
 
 #[derive(Clone)]
@@ -935,16 +959,16 @@ mod view_tests {
         OrganizerTaskDrag, capture_tag_replacement, capture_tags, database_filter_value_from_text,
         database_group_identity, database_group_label, database_property_kind_choices,
         evaluate_database_formula, evaluate_database_rollup, find_matches_in, link_target_range,
-        mention_date_matches, order_database_groups, organizer_tag_matches_path,
-        organizer_tag_tree_rows, organizer_tags_exclude, organizer_task_drop_accepted,
-        palette_matches, parse_mcp_port, parse_organizer_tags, push_history, settings_matches,
-        settings_section_visible, slash_query, sync_peer_is_recent, sync_targets,
-        system_palette_id_for_appearance, toc_headings,
+        mention_date_matches, order_database_groups, organizer_notes_copy_payload,
+        organizer_tag_matches_path, organizer_tag_tree_rows, organizer_tags_exclude,
+        organizer_task_drop_accepted, palette_matches, parse_mcp_port, parse_organizer_tags,
+        push_history, settings_matches, settings_section_visible, slash_query, sync_peer_is_recent,
+        sync_targets, system_palette_id_for_appearance, toc_headings,
     };
     use gpui::WindowAppearance;
     use quire_core::core::database::PropertyKind;
     use quire_core::core::database_view::FilterValue;
-    use quire_core::core::organizer::{ListId, TaskId};
+    use quire_core::core::organizer::{ListId, Note as OrganizerNote, NoteId, TaskId};
     use quire_core::core::types::{
         Block, BlockId, BlockKind, ColorKind, Lang, Mark, MarkKind, OrderKey, PageId,
     };
@@ -975,6 +999,67 @@ mod view_tests {
             parse_organizer_tags(" 设计,复刻， 设计 ,,桌面端 "),
             ["设计", "复刻", "桌面端"]
         );
+    }
+
+    #[test]
+    fn copy_all_notes_keeps_visible_order_uses_title_fallback_and_skips_replies() {
+        let notes = vec![
+            OrganizerNote {
+                id: NoteId(7),
+                uuid: "note-uuid-7".into(),
+                title: "标题不会覆盖正文".into(),
+                body: "第一篇正文".into(),
+                pinned: false,
+                tags: Vec::new(),
+                created: 10,
+                edited: 10,
+                ref_note: None,
+                deleted_at: None,
+                rev: String::new(),
+            },
+            OrganizerNote {
+                id: NoteId(8),
+                uuid: String::new(),
+                title: "标题回退".into(),
+                body: String::new(),
+                pinned: false,
+                tags: Vec::new(),
+                created: 11,
+                edited: 11,
+                ref_note: None,
+                deleted_at: None,
+                rev: String::new(),
+            },
+            OrganizerNote {
+                id: NoteId(9),
+                uuid: "reply-uuid".into(),
+                title: String::new(),
+                body: "评论不应单独导出".into(),
+                pinned: false,
+                tags: Vec::new(),
+                created: 12,
+                edited: 12,
+                ref_note: Some(NoteId(7)),
+                deleted_at: None,
+                rev: String::new(),
+            },
+            OrganizerNote {
+                id: NoteId(10),
+                uuid: String::new(),
+                title: String::new(),
+                body: String::new(),
+                pinned: false,
+                tags: Vec::new(),
+                created: 13,
+                edited: 13,
+                ref_note: None,
+                deleted_at: None,
+                rev: String::new(),
+            },
+        ];
+        let (text, count) = organizer_notes_copy_payload(&notes);
+        assert_eq!(count, 2);
+        assert_eq!(text, "第一篇正文\nID: note-uuid-7\n\n标题回退\nID: local:8");
     }
 
     #[test]
@@ -7138,6 +7223,29 @@ impl Workspace {
         }
         self.selected_note_ids.clear();
         self.note_multi_select = false;
+        cx.notify();
+    }
+    fn copy_all_visible_notes(
+        &mut self,
+        visible: &[quire_core::core::organizer::NoteId],
+        cx: &mut Context<Self>,
+    ) {
+        if self.organizer_trash {
+            return;
+        }
+        let notes = visible
+            .iter()
+            .filter_map(|id| self.session.organizer.note(*id).cloned())
+            .collect::<Vec<_>>();
+        let (text, count) = organizer_notes_copy_payload(&notes);
+        if text.is_empty() {
+            self.status = "没有可复制的笔记".into();
+            self.error = false;
+        } else {
+            cx.write_to_clipboard(ClipboardItem::new_string(text));
+            self.status = format!("已复制 {count} 条笔记（含唯一 ID）");
+            self.error = false;
+        }
         cx.notify();
     }
     fn bulk_trash_notes(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -16679,7 +16787,6 @@ impl Render for Workspace {
         })
         .collect::<Vec<_>>();
         let note_count = notes.len();
-        let visible_note_ids = notes.iter().map(|note| note.id).collect::<Vec<_>>();
         notes.sort_by_key(|note| {
             std::cmp::Reverse((
                 note.pinned,
@@ -16690,6 +16797,7 @@ impl Render for Workspace {
                 },
             ))
         });
+        let visible_note_ids = notes.iter().map(|note| note.id).collect::<Vec<_>>();
         let note_rows = notes
             .into_iter()
             .map(|note| {
@@ -18296,6 +18404,25 @@ impl Render for Workspace {
                                         .bg(Palette::color(&p.bg).opacity(0.25))
                                         .child(self.search_input.clone()),
                                 )
+                                .when(!self.organizer_trash, |toolbar| {
+                                    let ids = visible_note_ids.clone();
+                                    toolbar.child(
+                                        div()
+                                            .id("organizer-note-copy-all")
+                                            .px(px(8.))
+                                            .py(px(6.))
+                                            .rounded(px(5.))
+                                            .cursor_pointer()
+                                            .text_color(accent)
+                                            .hover(|button| {
+                                                button.bg(Palette::color(&p.bg).opacity(0.25))
+                                            })
+                                            .on_click(cx.listener(move |this, _, _, cx| {
+                                                this.copy_all_visible_notes(&ids, cx)
+                                            }))
+                                            .child("复制全部"),
+                                    )
+                                })
                                 .child(div().flex_1())
                                 .child(
                                     div()
