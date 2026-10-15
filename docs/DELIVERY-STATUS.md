@@ -921,3 +921,8 @@ GPUI 已覆盖主编辑器、整理区、独立速记与标签建议、Windows �
 
 - 现代 MCP 桌面 smoke 现在先走 `server/discover`，再通过 Streamable HTTP `tools/list` 断言全部 16 个工具可见，最后调用 `create_note` 并验证数据经 UI 线程进入唯一活动 Session；原有 Bearer 鉴权、stdio 子进程和 MCP 单元覆盖保持。
 - 隔离 Release smoke 关闭主窗口时现在走测试专用退出路径，触发正常保存并结束 GPUI 进程；正式运行关闭主窗口仍按托盘可用性隐藏或退出。验证：`cargo test -j 8`（67 项）、`cargo fmt --all -- --check`、`git diff --check`、Release build 与新临时库 `--smoke-test --smoke-blocks 1000` 全通过；smoke 同时覆盖速记保存/复用、托盘隐藏唤回、MCP 默认启动、16 工具目录和写入、双窗口最大化/还原以及长文档虚拟滚动。
+
+## 第一百四十三轮：数据库 Form 表单布局
+
+- 数据库布局循环加入 Form。表单按当前视图列配置生成标题及可见属性字段，展示属性名和输入提示；公式、汇总、创建/编辑时间等只读属性保留字段提示。支持提交、清空和 Enter 提交；属性类型解析在 Session 层执行，错误显示属性名并保留草稿。数据库模板默认值与显式输入合并，以一个 `exec_all` 历史批次新建记录，支持单步撤销/重做；模板中已删除或派生属性被过滤。
+- 新增隔离 Session 回归，覆盖数字解析失败时零写入、文本/数字/Select 提交、整条 undo/redo 和重开持久化。Release GUI smoke 切换 Form 后断言字段渲染，提交标题/checkbox/起止日期并从 SQLite 读回四种类型，记录数从 3 增至 4 后恢复看板。`cargo test -j 8`（68 项）、Release build、1000 块新隔离目录窗口 smoke 通过；smoke 全程使用唯一临时数据库，不访问默认用户库。Form 当前使用可编辑单行文本输入承载各类型，富选择器/日期控件、Chart 和看板拖放仍待后续实现。

@@ -850,6 +850,107 @@ impl Session {
         let _ = self.persistence.force_flush();
         Some(id)
     }
+
+    /// Create one record from a view form. Every entered value is parsed before
+    /// the document is changed, then the record, its template defaults, and
+    /// all submitted cells are applied as one undoable history entry.
+    pub fn submit_database_form(
+        &mut self,
+        block: BlockId,
+        fields: &[(PropertyId, String)],
+    ) -> Result<RecordId> {
+        use quire_core::core::database::{CellValue, PropertyKind};
+
+        if self.page.locked {
+            bail!("当前页面已锁定，不能提交数据库表单");
+        }
+        let db = self
+            .document
+            .block(block)
+            .and_then(|block| block.db_ref)
+            .context("数据库块已不存在")?;
+        let database = self.databases.database(db).context("数据库定义已不存在")?;
+
+        let properties = self
+            .databases
+            .properties_of(db)
+            .cloned()
+            .collect::<Vec<_>>();
+        let mut values = quire_core::core::database_template::cells_of(&database.template)
+            .into_iter()
+            .filter(|(property, _)| {
+                properties.iter().any(|definition| {
+                    definition.id == *property
+                        && !definition.kind.is_computed()
+                        && !definition.kind.is_derived()
+                })
+            })
+            .collect::<Vec<_>>();
+        for (property_id, text) in fields {
+            if text.is_empty() {
+                continue;
+            }
+            let property = properties
+                .iter()
+                .find(|property| property.id == *property_id)
+                .context("表单字段不属于当前数据库")?;
+            let kind = property.kind;
+            if kind.is_computed() || kind.is_derived() {
+                continue;
+            }
+            let value = match kind {
+                PropertyKind::MultiSelect | PropertyKind::Files | PropertyKind::Relation => {
+                    let items = text
+                        .split([',', '，'])
+                        .map(str::trim)
+                        .filter(|item| !item.is_empty())
+                        .map(str::to_owned)
+                        .collect::<Vec<_>>();
+                    quire_core::core::database_property::parse_many(kind, &property.config, &items)
+                }
+                _ => quire_core::core::database_property::parse_one(kind, &property.config, text),
+            }
+            .map_err(|error| anyhow::anyhow!("{}：{error}", property.name))?;
+            if let Some(existing) = values.iter_mut().find(|(id, _)| *id == *property_id) {
+                existing.1 = value;
+            } else {
+                values.push((*property_id, value));
+            }
+        }
+
+        values.retain(|(_, value)| *value != CellValue::Empty);
+        let record = RecordId(
+            self.repo
+                .max_id(quire_core::storage::database_store::DbTable::Records)?
+                .saturating_add(1),
+        );
+        let ord = quire_core::core::types::OrderKey::between(self.repo.last_record_ord(db)?, None)
+            .context("无法为新记录分配排序位置")?;
+        let mut commands = vec![Command::AddDatabaseRecord { block, record, ord }];
+        commands.extend(
+            values
+                .into_iter()
+                .map(|(property, to)| Command::SetDatabaseCell {
+                    block,
+                    record,
+                    property,
+                    from: CellValue::Empty,
+                    to,
+                }),
+        );
+        self.end_typing();
+        let changes = command::exec_all(
+            &mut self.document,
+            &mut self.history,
+            self.page.id,
+            commands,
+        )
+        .context("数据库表单未能生成有效的记录批次")?;
+        self.apply_database_changes(&changes);
+        self.persistence.record(changes);
+        Ok(record)
+    }
+
     pub fn delete_database_record(&mut self, block: BlockId, record: RecordId) -> Result<bool> {
         if self.page.locked {
             return Ok(false);
@@ -6293,6 +6394,71 @@ mod tests {
             "restoring the prior type after reopening must reveal the stored value"
         );
         assert_eq!(reopened.repo.cell(record, done)?, CellValue::Flag(true));
+        Ok(())
+    }
+
+    #[test]
+    fn database_form_validates_then_creates_all_fields_as_one_undoable_record() -> Result<()> {
+        use quire_core::core::database::{CellValue, PropertyKind};
+
+        let scratch = quire_core::testing::ScratchDir::new("gpui-database-form");
+        let path = scratch.path().join("form.db");
+        let (block, db, title, amount, status, record);
+        {
+            let mut session = Session::open(&path)?;
+            block = session.blocks()[0].id;
+            db = session
+                .make_database(block, "表单项目".into())
+                .expect("database created");
+            title = session.databases.title_property(db).unwrap().id;
+            amount = session
+                .add_database_property(block, "工时".into(), PropertyKind::Number)
+                .context("number property created")?;
+            status = session
+                .add_database_property(block, "状态".into(), PropertyKind::Select)
+                .context("select property created")?;
+            assert!(session.add_database_property_option(block, status, "进行中")?);
+
+            let invalid = vec![(title, "无效表单不应创建".into()), (amount, "NaN".into())];
+            assert!(session.submit_database_form(block, &invalid).is_err());
+            assert_eq!(session.repo.records_of(db)?.len(), 0);
+
+            let fields = vec![
+                (title, "表单创建的记录".into()),
+                (amount, "12.5".into()),
+                (status, "进行中".into()),
+            ];
+            record = session.submit_database_form(block, &fields)?;
+            session.persistence.force_flush()?;
+            assert_eq!(session.repo.records_of(db)?.len(), 1);
+            assert_eq!(
+                session.repo.cell(record, title)?,
+                CellValue::Text("表单创建的记录".into())
+            );
+            assert_eq!(session.repo.cell(record, amount)?, CellValue::Number(12.5));
+            assert!(matches!(
+                session.repo.cell(record, status)?,
+                CellValue::Text(_)
+            ));
+
+            session.undo();
+            session.persistence.force_flush()?;
+            assert_eq!(
+                session.repo.records_of(db)?.len(),
+                0,
+                "one undo removes the record and all its values"
+            );
+            session.redo();
+            session.persistence.force_flush()?;
+            assert_eq!(session.repo.records_of(db)?.len(), 1);
+        }
+        let reopened = Session::open(&path)?;
+        assert_eq!(reopened.repo.records_of(db)?.len(), 1);
+        assert_eq!(
+            reopened.repo.cell(record, title)?,
+            CellValue::Text("表单创建的记录".into())
+        );
+        assert_eq!(reopened.repo.cell(record, amount)?, CellValue::Number(12.5));
         Ok(())
     }
 

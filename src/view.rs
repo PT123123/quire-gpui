@@ -1313,6 +1313,9 @@ pub struct Workspace {
     organizer_tags_input: Entity<TextInput>,
     subtask_title_input: Entity<TextInput>,
     database_cell_input: Entity<TextInput>,
+    database_form_inputs: HashMap<(u64, u64, u64), Entity<TextInput>>,
+    database_form_subscriptions: HashMap<(u64, u64, u64), Subscription>,
+    database_form_properties: HashMap<(u64, u64), Vec<quire_core::core::database::PropertyId>>,
     database_formula_input: Entity<TextInput>,
     database_option_input: Entity<TextInput>,
     database_search_input: Entity<TextInput>,
@@ -1436,6 +1439,7 @@ pub struct Workspace {
     smoke_gallery_rendered: bool,
     smoke_calendar_rendered: bool,
     smoke_timeline_rendered: bool,
+    smoke_form_rendered: bool,
     database_calendar_month: (i32, u32),
     database_calendar_property_open: Option<(u64, u64)>,
     database_timeline_end_property_open: Option<(u64, u64)>,
@@ -1671,6 +1675,9 @@ impl Workspace {
             organizer_tags_input,
             subtask_title_input,
             database_cell_input,
+            database_form_inputs: HashMap::new(),
+            database_form_subscriptions: HashMap::new(),
+            database_form_properties: HashMap::new(),
             database_formula_input,
             database_option_input,
             database_search_input,
@@ -1794,6 +1801,7 @@ impl Workspace {
             smoke_gallery_rendered: false,
             smoke_calendar_rendered: false,
             smoke_timeline_rendered: false,
+            smoke_form_rendered: false,
             database_calendar_month: current_utc_month(),
             database_calendar_property_open: None,
             database_timeline_end_property_open: None,
@@ -2533,10 +2541,57 @@ impl Workspace {
                         .set_database_view_layout(
                             block.id,
                             view,
-                            quire_core::core::database::ViewLayout::Board,
+                            quire_core::core::database::ViewLayout::Form,
                         )
-                        .expect("board layout should restore after timeline smoke");
+                        .expect("form layout should be available after timeline smoke");
                     this.schedule_save(true, window, cx);
+                });
+                cx.background_executor()
+                    .timer(Duration::from_millis(300))
+                    .await;
+                let _ = weak.update_in(cx, |this, window, cx| {
+                    assert!(this.smoke_form_rendered, "form layout should render schema fields");
+                    let block = this
+                        .session
+                        .blocks()
+                        .iter()
+                        .find(|block| block.kind == BlockKind::Database)
+                        .expect("form smoke database block should remain available");
+                    let block_id = block.id;
+                    let database = block.db_ref.expect("form smoke database reference");
+                    let view = this.session.databases.views_of(database).next().unwrap().id;
+                    let properties = this.session.databases.properties_of(database).cloned().collect::<Vec<_>>();
+                    let title = this.session.databases.title_property(database).unwrap().id;
+                    let done = properties.iter().find(|property| property.name == "完成").unwrap().id;
+                    let date = properties.iter().find(|property| property.name == "日期").unwrap().id;
+                    let end_date = properties.iter().find(|property| property.name == "结束日期").unwrap().id;
+                    for (property, value) in [
+                        (title, "表单 smoke 创建"),
+                        (done, "true"),
+                        (date, "2026-10-16"),
+                        (end_date, "2026-10-20"),
+                    ] {
+                        let input = this.database_form_inputs
+                            .get(&(block_id.0, database.0, property.0))
+                            .expect("visible database form field should have an input")
+                            .clone();
+                        input.update(cx, |input, cx| {
+                            input.reset(value.to_owned(), Vec::new(), value.len(), cx)
+                        });
+                    }
+                    let form_fields = vec![(title, "表单 smoke 创建".to_owned()), (done, "true".to_owned()), (date, "2026-10-16".to_owned()), (end_date, "2026-10-20".to_owned())];
+                    let record = this.session.submit_database_form(block_id, &form_fields)
+                        .expect("valid form should create an atomic database record");
+                    this.session.persistence.force_flush().expect("form smoke should persist its record");
+                    assert_eq!(this.session.repo.records_of(database).expect("form smoke should query rows").len(), 4);
+                    assert_eq!(this.session.repo.cell(record, title).expect("form title should persist"), quire_core::core::database::CellValue::Text("表单 smoke 创建".into()));
+                    assert_eq!(this.session.repo.cell(record, done).expect("form checkbox should persist"), quire_core::core::database::CellValue::Flag(true));
+                    assert_eq!(this.session.repo.cell(record, date).expect("form start date should persist"), quire_core::core::database::CellValue::Text("2026-10-16".into()));
+                    assert_eq!(this.session.repo.cell(record, end_date).expect("form end date should persist"), quire_core::core::database::CellValue::Text("2026-10-20".into()));
+                    this.session.set_database_view_layout(block_id, view, quire_core::core::database::ViewLayout::Board)
+                        .expect("board layout should restore after form smoke");
+                    this.schedule_save(true, window, cx);
+                    eprintln!("SMOKE: database form submission parsed typed fields and persisted one record");
                 });
                 cx.background_executor()
                     .timer(Duration::from_millis(150))
@@ -4307,6 +4362,107 @@ impl Workspace {
         });
         let input = self.database_cell_input.read(cx);
         window.focus(&input.focus);
+        cx.notify();
+    }
+    fn ensure_database_form_input(
+        &mut self,
+        block: u64,
+        db: u64,
+        property: u64,
+        kind: quire_core::core::database::PropertyKind,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Entity<TextInput> {
+        let key = (block, db, property);
+        if let Some(input) = self.database_form_inputs.get(&key) {
+            return input.clone();
+        }
+        let input = cx.new(|cx| TextInput::new(String::new(), Vec::new(), 13., window, cx));
+        let hint = match kind {
+            quire_core::core::database::PropertyKind::Number => "输入数字",
+            quire_core::core::database::PropertyKind::Date => "YYYY-MM-DD 或 YYYY-MM-DDTHH:MM",
+            quire_core::core::database::PropertyKind::Checkbox => "输入 yes / no",
+            quire_core::core::database::PropertyKind::Select
+            | quire_core::core::database::PropertyKind::Status => "输入已有选项名称",
+            quire_core::core::database::PropertyKind::MultiSelect => "多个选项用逗号分隔",
+            quire_core::core::database::PropertyKind::Relation => "多个记录 ID 用逗号分隔",
+            quire_core::core::database::PropertyKind::Files => "多个附件 ID 用逗号分隔",
+            _ => "填写字段",
+        };
+        input.update(cx, |input, _| input.placeholder = Some(hint.into()));
+        let subscription =
+            cx.subscribe_in(
+                &input,
+                window,
+                move |this, _, event, window, cx| match event {
+                    InputEvent::Split(_) => {
+                        if let Some(fields) =
+                            this.database_form_properties.get(&(block, db)).cloned()
+                        {
+                            this.submit_database_form(block, db, &fields, window, cx);
+                        }
+                    }
+                    InputEvent::Edited { .. } => cx.notify(),
+                    _ => {}
+                },
+            );
+        self.database_form_inputs.insert(key, input.clone());
+        self.database_form_subscriptions.insert(key, subscription);
+        input
+    }
+    fn submit_database_form(
+        &mut self,
+        block: u64,
+        db: u64,
+        properties: &[quire_core::core::database::PropertyId],
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.session.page.locked {
+            return;
+        }
+        let fields = properties
+            .iter()
+            .filter_map(|property| {
+                self.database_form_inputs
+                    .get(&(block, db, property.0))
+                    .map(|input| (*property, input.read(cx).buffer.committed().to_owned()))
+            })
+            .collect::<Vec<_>>();
+        match self.session.submit_database_form(BlockId(block), &fields) {
+            Ok(record) => {
+                for property in properties {
+                    if let Some(input) = self.database_form_inputs.get(&(block, db, property.0)) {
+                        input.update(cx, |input, cx| {
+                            input.reset(String::new(), Vec::new(), 0, cx)
+                        });
+                    }
+                }
+                self.selected_database_record = Some((block, db, record.0));
+                self.status = "表单已创建一条数据库记录".into();
+                self.schedule_save(true, window, cx);
+            }
+            Err(error) => {
+                self.status = format!("表单提交失败：{error}");
+                self.error = true;
+                cx.notify();
+            }
+        }
+    }
+    fn clear_database_form(
+        &mut self,
+        block: u64,
+        db: u64,
+        properties: &[quire_core::core::database::PropertyId],
+        cx: &mut Context<Self>,
+    ) {
+        for property in properties {
+            if let Some(input) = self.database_form_inputs.get(&(block, db, property.0)) {
+                input.update(cx, |input, cx| {
+                    input.reset(String::new(), Vec::new(), 0, cx)
+                });
+            }
+        }
         cx.notify();
     }
     fn begin_database_formula_edit(
@@ -9614,6 +9770,7 @@ impl Workspace {
                                     let db_hover = Palette::color(&p.bg).opacity(0.22);
                                     let db_checkbox_fg = Palette::color(&p.bg);
                                     let query_columns = columns.clone();
+                                    let form_query_columns = query_columns.clone();
                                     let row_column_widths = column_widths.clone();
                                     let row_search = row_search.clone();
                                     let cell_title_property = title;
@@ -9780,12 +9937,18 @@ impl Workspace {
                                     let show_table_header = show_table_header
                                         && active_layout
                                             != quire_core::core::database::ViewLayout::Timeline;
+                                    let show_table_header = show_table_header
+                                        && active_layout
+                                            != quire_core::core::database::ViewLayout::Form
+                                        && active_layout
+                                            != quire_core::core::database::ViewLayout::Chart;
                                     let row_sorts = view_sorts.clone();
                                     let row_filter = view_filter.clone();
                                     let row_group_data = group_data.clone();
                                     let collapsed_groups = self.database_collapsed_groups.clone();
                                     let formula_properties = all_columns.clone();
                                     let all_database_properties = self.session.databases.properties.clone();
+                                    let form_all_database_properties = all_database_properties.clone();
                                     let database_attachments = self.session.attachments.clone();
                                     let board_query_columns = query_columns.clone();
                                     let board_row_sorts = row_sorts.clone();
@@ -10186,6 +10349,143 @@ impl Workspace {
                                     .flex_1()
                                     .min_h(px(40.));
                                     let rows = if active_layout
+                                        == quire_core::core::database::ViewLayout::Form
+                                    {
+                                        let mut form_properties = vec![cell_title_property];
+                                        form_properties.extend(form_query_columns.iter().map(|column| column.id));
+                                        self.database_form_properties
+                                            .insert((block_id.0, db_id.0), form_properties.clone());
+                                        let mut fields = vec![(
+                                            cell_title_property,
+                                            form_all_database_properties
+                                                .iter()
+                                                .find(|property| property.id == cell_title_property)
+                                                .map(|property| property.name.clone())
+                                                .unwrap_or_else(|| "标题".into()),
+                                            quire_core::core::database::PropertyKind::Title,
+                                        )];
+                                        fields.extend(form_query_columns.iter().map(|column| {
+                                            (column.id, column.name.clone(), column.kind)
+                                        }));
+                                        let field_rows = fields.into_iter().map(|(property, name, kind)| {
+                                            let editable = !self.session.page.locked
+                                                && !kind.is_computed()
+                                                && !kind.is_derived();
+                                            let control = if editable {
+                                                let input = self.ensure_database_form_input(
+                                                    block_id.0,
+                                                    db_id.0,
+                                                    property.0,
+                                                    kind,
+                                                    window,
+                                                    cx,
+                                                );
+                                                div()
+                                                    .id(SharedString::from(format!(
+                                                        "db-form-input-{}-{}",
+                                                        db_id.0, property.0
+                                                    )))
+                                                    .h(px(31.))
+                                                    .flex_1()
+                                                    .min_w_0()
+                                                    .px(px(7.))
+                                                    .rounded(px(4.))
+                                                    .border_1()
+                                                    .border_color(db_border)
+                                                    .bg(Palette::color(&self.palette.bg).opacity(0.22))
+                                                    .child(input)
+                                                    .into_any_element()
+                                            } else {
+                                                div()
+                                                    .h(px(31.))
+                                                    .flex_1()
+                                                    .min_w_0()
+                                                    .flex()
+                                                    .items_center()
+                                                    .px(px(7.))
+                                                    .text_size(px(11.))
+                                                    .text_color(muted)
+                                                    .child("提交后生成")
+                                                    .into_any_element()
+                                            };
+                                            div()
+                                                .id(SharedString::from(format!(
+                                                    "db-form-field-{}-{}",
+                                                    db_id.0, property.0
+                                                )))
+                                                .w_full()
+                                                .h(px(40.))
+                                                .flex()
+                                                .items_center()
+                                                .gap(px(8.))
+                                                .child(
+                                                    div()
+                                                        .w(px(176.))
+                                                        .flex_shrink_0()
+                                                        .text_size(px(11.))
+                                                        .text_color(muted)
+                                                        .child(name),
+                                                )
+                                                .child(control)
+                                        }).collect::<Vec<_>>();
+                                        let submit_properties = form_properties.clone();
+                                        let clear_properties = form_properties.clone();
+                                        let mut form = div()
+                                            .id(SharedString::from(format!("db-form-{}", db_id.0)))
+                                            .w_full()
+                                            .max_h(px(420.))
+                                            .overflow_y_scroll()
+                                            .flex()
+                                            .flex_col()
+                                            .gap(px(4.))
+                                            .py(px(6.))
+                                            .children(field_rows);
+                                        form = form.child(
+                                            div()
+                                                .id(SharedString::from(format!("db-form-actions-{}", db_id.0)))
+                                                .w_full()
+                                                .h(px(46.))
+                                                .flex()
+                                                .items_center()
+                                                .gap(px(8.))
+                                                .child(
+                                                    div()
+                                                        .id(SharedString::from(format!("db-form-submit-{}", db_id.0)))
+                                                        .px(px(13.))
+                                                        .py(px(6.))
+                                                        .rounded(px(5.))
+                                                        .bg(accent)
+                                                        .text_color(Palette::color(&self.palette.fg))
+                                                        .text_size(px(11.))
+                                                        .when(!self.session.page.locked, |button| {
+                                                            button.cursor_pointer().on_click(cx.listener(move |this, _, window, cx| {
+                                                                this.submit_database_form(block_id.0, db_id.0, &submit_properties, window, cx);
+                                                            }))
+                                                        })
+                                                        .child("提交"),
+                                                )
+                                                .child(
+                                                    div()
+                                                        .id(SharedString::from(format!("db-form-clear-{}", db_id.0)))
+                                                        .px(px(11.))
+                                                        .py(px(6.))
+                                                        .rounded(px(5.))
+                                                        .text_color(muted)
+                                                        .text_size(px(11.))
+                                                        .when(!self.session.page.locked, |button| {
+                                                            button.cursor_pointer().hover(|button| button.bg(db_hover)).on_click(cx.listener(move |this, _, _, cx| {
+                                                                this.clear_database_form(block_id.0, db_id.0, &clear_properties, cx);
+                                                            }))
+                                                        })
+                                                        .child("清空"),
+                                                ),
+                                        );
+                                        if self.smoke_mode && !self.smoke_form_rendered {
+                                            self.smoke_form_rendered = true;
+                                            eprintln!("SMOKE: database form fields rendered from visible schema");
+                                        }
+                                        form.into_any_element()
+                                    } else if active_layout
                                         == quire_core::core::database::ViewLayout::Calendar
                                     {
                                         let view_definition = selected_view
@@ -11972,6 +12272,7 @@ impl Workspace {
                                                                 quire_core::core::database::ViewLayout::Gallery => "画廊",
                                                                 quire_core::core::database::ViewLayout::Calendar => "日历",
                                                                 quire_core::core::database::ViewLayout::Timeline => "时间线",
+                                                                quire_core::core::database::ViewLayout::Form => "表单",
                                                                 _ => "表格",
                                                             };
                                                             let mut button = div()
@@ -12003,6 +12304,12 @@ impl Workspace {
                                                                             }
                                                                             quire_core::core::database::ViewLayout::Calendar => {
                                                                                 quire_core::core::database::ViewLayout::Timeline
+                                                                            }
+                                                                            quire_core::core::database::ViewLayout::Timeline => {
+                                                                                quire_core::core::database::ViewLayout::Form
+                                                                            }
+                                                                            quire_core::core::database::ViewLayout::Form => {
+                                                                                quire_core::core::database::ViewLayout::Table
                                                                             }
                                                                             _ => {
                                                                                 quire_core::core::database::ViewLayout::Table
