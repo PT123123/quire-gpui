@@ -214,7 +214,7 @@ pub fn execute(session: &mut Session, name: &str, args: &Value) -> Result<Value,
             let rows = session.organizer.notes.iter().filter(|n| {
                 (include_trashed || !n.is_trashed()) && !session.note_delete_is_pending(n.id)
             }).map(|n| json!({
-                "note_id": n.id.0, "title": n.title, "body": n.body, "tags": n.tags,
+                "id": n.id.0, "note_id": n.id.0, "title": n.title, "body": n.body, "tags": n.tags,
                 "pinned": n.pinned, "trashed": n.is_trashed(), "created": n.created, "edited": n.edited
             })).collect::<Vec<_>>();
             Ok(json!({"notes": rows}))
@@ -237,7 +237,7 @@ pub fn execute(session: &mut Session, name: &str, args: &Value) -> Result<Value,
                 body,
                 split_tags(args.get("tags").and_then(Value::as_str).unwrap_or("")),
             );
-            Ok(json!({"ok": true, "note_id": id.0}))
+            Ok(json!({"ok": true, "id": id.0, "note_id": id.0}))
         }
         "update_note" => {
             let id = NoteId(integer(args, "note_id")?);
@@ -288,7 +288,7 @@ pub fn execute(session: &mut Session, name: &str, args: &Value) -> Result<Value,
                 })
                 .map(|t| {
                     json!({
-                        "task_id": t.id.0, "list_id": t.list.0, "title": t.title, "notes": t.notes,
+                        "id": t.id.0, "task_id": t.id.0, "list": t.list.0, "list_id": t.list.0, "title": t.title, "notes": t.notes,
                         "due": t.due, "priority": t.priority.as_str(), "done": t.done,
                         "tags": t.tags, "trashed": t.is_trashed(),
                         "subtasks": t.subtasks.iter().map(|item| json!({
@@ -344,7 +344,7 @@ pub fn execute(session: &mut Session, name: &str, args: &Value) -> Result<Value,
             if let Some(priority) = priority {
                 session.set_task_priority(id, priority);
             }
-            Ok(json!({"ok": true, "task_id": id.0}))
+            Ok(json!({"ok": true, "id": id.0, "task_id": id.0}))
         }
         "update_task" => {
             let id = TaskId(integer(args, "task_id")?);
@@ -671,8 +671,12 @@ mod tests {
         )
         .unwrap();
         let id = created["note_id"].as_u64().unwrap();
+        assert_eq!(created["id"], id);
         let note = session.organizer.note(NoteId(id)).unwrap();
         assert_eq!(note.tags, ["工作", "项目"]);
+        let listed = execute(&mut session, "list_notes", &json!({})).unwrap();
+        assert_eq!(listed["notes"][0]["id"], id);
+        assert_eq!(listed["notes"][0]["note_id"], id);
         execute(
             &mut session,
             "update_note",
@@ -746,6 +750,7 @@ mod tests {
             &json!({"title": "Release", "notes": "ship", "priority": "high"}),
         )
         .unwrap();
+        assert_eq!(created["id"], created["task_id"]);
         let task_id = TaskId(created["task_id"].as_u64().unwrap());
         assert!(session.add_subtask(task_id, "Build installer".into()));
         let subtask_id = session.organizer.task(task_id).unwrap().subtasks[0].id;
@@ -758,6 +763,8 @@ mod tests {
             .iter()
             .find(|task| task["task_id"] == task_id.0)
             .unwrap();
+        assert_eq!(task["id"], task_id.0);
+        assert_eq!(task["list"], task["list_id"]);
         assert_eq!(task["subtasks"][0]["id"], subtask_id);
         assert_eq!(task["subtasks"][0]["title"], "Build installer");
         assert_eq!(task["subtasks"][0]["done"], true);

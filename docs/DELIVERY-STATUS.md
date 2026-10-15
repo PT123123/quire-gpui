@@ -1095,3 +1095,8 @@
 - 对照旧版与 GPUI 的 `list_tasks` 工具，发现 GPUI 返回字段漏掉旧版已有的 `subtasks` 数组。现每项任务都返回子任务 `id`、`title`、`done`，工具描述同步说明字段。
 - 新增隔离 Session 回归：创建任务与子任务、标记完成，再从 MCP `list_tasks` 响应验证三字段。无 Slint/core/参考树改动；不访问真实用户库。
 - 验证：`cargo fmt --all -- --check`、`cargo test --locked`（82 项：41 库 + 39 二进制 + 1 stdio + 1 sync loopback）、`cargo check --locked`、`cargo build --release --locked`、`git diff --check` 均通过；全新 `%TEMP%` SQLite 的 Release GUI smoke（1000 块）通过，覆盖 MCP 16 工具发现/鉴权写入、速记、托盘隐藏唤回、最大化还原及虚拟滚动。新增子任务 JSON 字段由隔离工具单测验证。没有访问真实用户库，Slint/core/冻结参考树未修改。
+
+## 第一百七十四轮：MCP organizer 响应字段兼容
+
+- 对照旧版 `note_row`、`task_row` 与创建响应，发现 GPUI 将通用 `id`/`list` 改成了 `note_id`/`task_id`/`list_id`，旧客户端按既有字段读取会失效。现在 list/create 响应同时提供旧字段和清晰别名，避免破坏当前 GPUI 客户端。
+- 隔离 MCP 工具测试断言笔记/任务创建及列表响应中的字段别名一致；`cargo fmt --all -- --check` 与 `cargo test --locked`（82 项）通过。无旧版/core/冻结参考树改动，不访问真实用户库。
