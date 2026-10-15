@@ -1105,6 +1105,89 @@ impl Session {
         Some(id)
     }
 
+    /// Open a database record as its corresponding page. Bare rows receive a
+    /// child page on first open, and the record-to-page link is persisted in
+    /// the same change batch as the page itself.
+    pub fn open_database_record(
+        &mut self,
+        block: BlockId,
+        record_id: RecordId,
+    ) -> Result<Option<PageId>> {
+        self.persistence.force_flush()?;
+        let Some(database) = self.document.block(block).and_then(|block| block.db_ref) else {
+            return Ok(None);
+        };
+        let Some(record) = self.repo.record(record_id)? else {
+            return Ok(None);
+        };
+        if record.db != database {
+            return Ok(None);
+        }
+        if let Some(page) = record.page {
+            return Ok(Some(page));
+        }
+
+        let title = self
+            .databases
+            .title_property(database)
+            .and_then(|property| self.repo.cell(record_id, property.id).ok())
+            .map(|value| value.display())
+            .filter(|title| !title.trim().is_empty())
+            .unwrap_or_else(|| "无标题".to_owned());
+        let parent = self
+            .document
+            .block(block)
+            .map(|block| block.page)
+            .unwrap_or(self.page.id);
+        let id = PageId(self.pages.iter().map(|page| page.id.0).max().unwrap_or(0) + 1);
+        let last_order = self
+            .pages
+            .iter()
+            .filter(|page| page.parent == Some(parent) && !page.template)
+            .map(|page| page.order)
+            .max();
+        let page = Page {
+            id,
+            title,
+            parent: Some(parent),
+            order: OrderKey::between(last_order, None).unwrap_or(OrderKey::FIRST),
+            favorite: false,
+            expanded: false,
+            font: PageFont::default(),
+            full_width: false,
+            small_text: false,
+            icon: String::new(),
+            cover: None,
+            locked: false,
+            template: false,
+        };
+        self.document.set_page_blocks(id, Vec::new());
+        let Some(entry) = command::plan(
+            &mut self.document,
+            id,
+            Command::AppendBlock {
+                kind: BlockKind::Paragraph,
+                text: String::new(),
+            },
+        ) else {
+            self.document.drop_page(id);
+            return Ok(None);
+        };
+        self.document.apply(&entry.apply);
+        let mut changes = vec![
+            Change::PageCreated(page.clone()),
+            Change::RecordPageSet {
+                id: record_id,
+                page: Some(id),
+            },
+        ];
+        changes.extend(entry.apply);
+        self.persistence.record(changes);
+        self.pages.push(page.clone());
+        self.persistence.force_flush()?;
+        Ok(Some(id))
+    }
+
     /// Create one record from a view form. Every entered value is parsed before
     /// the document is changed, then the record, its template defaults, and
     /// all submitted cells are applied as one undoable history entry.
@@ -7093,6 +7176,81 @@ mod tests {
             "restoring the prior type after reopening must reveal the stored value"
         );
         assert_eq!(reopened.repo.cell(record, done)?, CellValue::Flag(true));
+        Ok(())
+    }
+
+    #[test]
+    fn opening_database_record_lazily_creates_and_reuses_its_child_page() -> Result<()> {
+        let scratch = quire_core::testing::ScratchDir::new("gpui-database-record-page");
+        let path = scratch.path().join("test.db");
+        let (page_id, record_id, parent_id, page_count) = {
+            let mut session = Session::open(&path)?;
+            let block = session.blocks()[0].id;
+            let parent = session.page.id;
+            let database = session
+                .make_database(block, "工作项目".into())
+                .expect("database created");
+            let title = session.databases.title_property(database).unwrap().id;
+            let record = session
+                .add_database_record(block)
+                .expect("bare record created");
+            session.set_database_cell(block, record, title, "规划复核")?;
+
+            let page = session
+                .open_database_record(block, record)?
+                .expect("record page created");
+            assert_eq!(
+                session.page.id, parent,
+                "opening the row prepares its page without navigating"
+            );
+            assert_eq!(
+                session
+                    .pages
+                    .iter()
+                    .find(|candidate| candidate.id == page)
+                    .unwrap()
+                    .title,
+                "规划复核"
+            );
+            assert_eq!(
+                session
+                    .pages
+                    .iter()
+                    .find(|candidate| candidate.id == page)
+                    .unwrap()
+                    .parent,
+                Some(parent)
+            );
+            assert_eq!(session.repo.record(record)?.unwrap().page, Some(page));
+            assert_eq!(session.document.page_blocks(page).len(), 1);
+
+            let count = session.pages.len();
+            assert_eq!(session.open_database_record(block, record)?, Some(page));
+            assert_eq!(
+                session.pages.len(),
+                count,
+                "reopening must not mint a duplicate page"
+            );
+            session.persistence.force_flush()?;
+            (page, record, parent, count)
+        };
+
+        let reopened = Session::open(&path)?;
+        assert_eq!(
+            reopened.repo.record(record_id)?.unwrap().page,
+            Some(page_id)
+        );
+        assert_eq!(
+            reopened
+                .pages
+                .iter()
+                .find(|page| page.id == page_id)
+                .unwrap()
+                .parent,
+            Some(parent_id)
+        );
+        assert_eq!(reopened.pages.len(), page_count);
+        assert_eq!(reopened.document.page_blocks(page_id).len(), 1);
         Ok(())
     }
 

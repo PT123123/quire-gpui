@@ -1337,3 +1337,9 @@
 - 画廊虚拟列表原先固定每行三张卡片，窗口或侧栏宽度变化时会留下不必要的空隙或挤压卡片。现在根据正文区可用宽度在 1–4 列间切换，记录窗口查询仍只读取可见行范围；最小卡宽维持约 180px。
 - 回填 F105/F106：日历/时间线月份导航与画廊自适应网格都已在 GPUI 实现，状态为已实现/未验证；画廊列数断点有单元测试。`tools/extract-parity.mjs` 重生成 246 callbacks / 261 properties / 188 scenes，语义 sidecar 合并 225 个回调。
 - `cargo fmt --all -- --check`、`cargo test --locked`（99 项：47 库 + 50 二进制 + 1 MCP stdio + 1 sync loopback）、`cargo build --release --locked`、`git diff --check` 均通过。全新隔离 SQLite 的 Release GUI smoke（1000 个合成块）通过，日志确认画廊行渲染/查询、日历、时间线、表单、图表、托盘、速记、MCP、最大化/还原与虚拟滚动路径。真人拖动窗口核对具体断点尚未做；未访问真实用户库，也未改 Slint/core/冻结参考树。
+
+## 第二百二十轮：数据库记录延迟创建关联页面
+
+- 补齐 F103 `db-open-record`：表格标题列提供明确打开入口；画廊卡片、日历记录、时间线行与看板卡片标题可打开记录页面。裸记录首次打开时按标题创建数据库所在页的子页面与首个段落，并在同一持久化批次写入 `RecordPageSet`；再次打开复用已关联页面。页面创建数据由 GPUI Session 管理，写入复用 core persistence/repository。
+- 新增隔离 SQLite 回归，验证标题与父子关系、首次创建、重复打开不重复建页、记录关联及重启读回。Release GUI smoke 实际经 Workspace 的打开路径导航到新建子页、确认记录反向关联，再返回数据库页面。
+- `cargo fmt --all -- --check`、全量测试、`cargo check --locked`、`cargo build --release --locked`、`git diff --check` 和全新隔离 SQLite Release GUI smoke 均通过。新 smoke 覆盖 database record open 路径，以及既有 gallery/calendar/timeline/form/chart、1000 块虚拟滚动、速记、托盘、MCP 与最大化/还原。真实鼠标逐布局点击仍未做；未访问真实用户库或修改 Slint/core/冻结参考树。

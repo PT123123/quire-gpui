@@ -3939,11 +3939,32 @@ impl Workspace {
                         .iter()
                         .find(|block| block.kind == BlockKind::Database)
                         .expect("timeline smoke database block should remain available");
+                    let database_block = block.id;
                     let database = block.db_ref.expect("timeline smoke database reference");
+                    let bare_record = this
+                        .session
+                        .repo
+                        .records_of(database)
+                        .expect("record page smoke should query database rows")
+                        .into_iter()
+                        .find(|record| record.page.is_none())
+                        .expect("record page smoke needs a bare record");
+                    let return_page = this.session.page.id;
+                    this.open_database_record_page(database_block, bare_record.id.0, window, cx);
+                    let record_page = this.session.page.id;
+                    assert_ne!(record_page, return_page, "opening a bare record must navigate to its new page");
+                    assert_eq!(
+                        this.session.repo.record(bare_record.id).expect("record page should be queryable").unwrap().page,
+                        Some(record_page),
+                        "the opened record must point back to its page",
+                    );
+                    this.activate_page(return_page, window, cx);
+                    assert_eq!(this.session.page.id, return_page, "smoke should return to the database host page");
+                    eprintln!("SMOKE: opening a database record created and linked its child page");
                     let view = this.session.databases.views_of(database).next().unwrap().id;
                     this.session
                         .set_database_view_layout(
-                            block.id,
+                            database_block,
                             view,
                             quire_core::core::database::ViewLayout::Form,
                         )
@@ -9384,6 +9405,34 @@ impl Workspace {
         }
         self.activate_page_without_history(id, window, cx);
     }
+    fn open_database_record_page(
+        &mut self,
+        block: BlockId,
+        record: u64,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.closing || self.composing(cx) {
+            return;
+        }
+        self.session.end_typing();
+        match self
+            .session
+            .open_database_record(block, quire_core::core::database::RecordId(record))
+        {
+            Ok(Some(page)) => self.activate_page(page, window, cx),
+            Ok(None) => {
+                self.status = "无法打开数据库记录".into();
+                self.error = true;
+                cx.notify();
+            }
+            Err(error) => {
+                self.status = format!("打开数据库记录失败：{error}");
+                self.error = true;
+                cx.notify();
+            }
+        }
+    }
     fn current_navigation_stop(&self) -> NavigationStop {
         if self.organizer_open {
             NavigationStop::Organizer {
@@ -12976,9 +13025,33 @@ impl Workspace {
                                                                         !editing
                                                                             && kind != quire_core::core::database::PropertyKind::Checkbox,
                                                                         |cell| {
-                                                                        cell.child(displayed.clone())
+                                                                            cell.child(displayed.clone())
                                                                         },
                                                                     );
+                                                            if index == 0 && !editing {
+                                                                cell = cell.child(
+                                                                    div()
+                                                                        .id(SharedString::from(format!(
+                                                                            "db-open-record-{}-{}",
+                                                                            db_id.0, row.record
+                                                                        )))
+                                                                        .ml_auto()
+                                                                        .px(px(4.))
+                                                                        .text_color(accent)
+                                                                        .hover(|button| button.bg(db_hover))
+                                                                        .cursor_pointer()
+                                                                        .on_click(_cx.listener(move |this, _, window, cx| {
+                                                                            cx.stop_propagation();
+                                                                            this.open_database_record_page(
+                                                                                BlockId(cell_block),
+                                                                                row.record,
+                                                                                window,
+                                                                                cx,
+                                                                            );
+                                                                        }))
+                                                                        .child("↗"),
+                                                                );
+                                                            }
                                                             if editable && !editing {
                                                                 cell = cell.cursor_pointer().hover(|cell| cell.bg(db_hover));
                                                                 if kind
@@ -13663,7 +13736,10 @@ impl Workspace {
                                                                 .text_color(text)
                                                                 .hover(|item| item.bg(db_hover))
                                                                 .cursor_pointer()
-                                                                .on_click(cx.listener(move |this, _, _, cx| { this.selected_database_record = Some((block_id.0, db_id.0, record)); cx.notify(); }))
+                                                                .on_click(cx.listener(move |this, _, window, cx| {
+                                                                    this.selected_database_record = Some((block_id.0, db_id.0, record));
+                                                                    this.open_database_record_page(block_id, record, window, cx);
+                                                                }))
                                                                 .child(title_text)
                                                         });
                                                         cell = cell.children(record_items);
@@ -13996,7 +14072,10 @@ impl Workspace {
                                                             .border_color(db_border.opacity(0.5))
                                                             .bg(if selected { Palette::color(&this.palette.accent).opacity(0.1) } else { Palette::color(&this.palette.bg) })
                                                             .cursor_pointer()
-                                                            .on_click(cx.listener(move |this, _, _, cx| { this.selected_database_record = Some((block_id.0, db_id.0, record)); cx.notify(); }))
+                                                            .on_click(cx.listener(move |this, _, window, cx| {
+                                                                this.selected_database_record = Some((block_id.0, db_id.0, record));
+                                                                this.open_database_record_page(block_id, record, window, cx);
+                                                            }))
                                                             .child(div().id(SharedString::from(format!("db-timeline-title-{}-{record}", db_id.0))).w(px(200.)).h_full().flex_shrink_0().flex().items_center().px(px(6.)).text_size(px(10.)).text_color(text).child(title_text))
                                                             .child(track)
                                                             .into_any_element()
@@ -14090,9 +14169,9 @@ impl Workspace {
                                                                     .bg(if selected { Palette::color(&this.palette.accent).opacity(0.13) } else { Palette::color(&this.palette.elevated) })
                                                                     .cursor_pointer()
                                                                     .hover(|card| card.border_color(Palette::color(&this.palette.accent)))
-                                                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                                                    .on_click(cx.listener(move |this, _, window, cx| {
                                                                         this.selected_database_record = Some((block_id.0, db_id.0, record));
-                                                                        cx.notify();
+                                                                        this.open_database_record_page(block_id, record, window, cx);
                                                                     }))
                                                                     .child(div().w_full().text_size(px(12.)).font_weight(FontWeight::SEMIBOLD).text_color(Palette::color(&this.palette.fg)).child(title_text))
                                                                     .children(properties)
@@ -14388,10 +14467,33 @@ impl Workspace {
                                                                         .child(
                                                                             div()
                                                                                 .w_full()
+                                                                                .flex()
+                                                                                .items_center()
+                                                                                .justify_between()
                                                                                 .text_size(px(12.))
                                                                                 .font_weight(FontWeight::SEMIBOLD)
                                                                                 .text_color(Palette::color(&this.palette.fg))
-                                                                                .child(title_text.clone()),
+                                                                                .child(title_text.clone())
+                                                                                .child(
+                                                                                    div()
+                                                                                        .id(SharedString::from(format!(
+                                                                                            "db-board-open-record-{}-{record}",
+                                                                                            card_db.0
+                                                                                        )))
+                                                                                        .px(px(4.))
+                                                                                        .text_color(Palette::color(&this.palette.accent))
+                                                                                        .cursor_pointer()
+                                                                                        .on_click(cx.listener(move |this, _, window, cx| {
+                                                                                            cx.stop_propagation();
+                                                                                            this.open_database_record_page(
+                                                                                                card_block,
+                                                                                                record,
+                                                                                                window,
+                                                                                                cx,
+                                                                                            );
+                                                                                        }))
+                                                                                        .child("↗"),
+                                                                                ),
                                                                         )
                                                                         .children(properties)
                                                                         .children(move_controls);
