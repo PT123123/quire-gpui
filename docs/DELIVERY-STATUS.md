@@ -1349,3 +1349,8 @@
 - 补齐 F114 `db-template-saved`：表格操作栏新增“设为新记录模板”，仅选中记录时可用。读取记录的 core 类型化存储值，经 `database_template::from_cells` 保存到数据库定义；表单创建继续用既有模板解码与类型校验，并由本次输入覆盖相同属性的默认值。
 - 隔离 Session 测试验证文字与 checkbox 类型默认值、重复保存无变化、关闭重开后模板仍在，以及空表单新记录读回默认值。Release GUI smoke 实际选中隔离记录并保存模板。
 - `cargo fmt --all -- --check`、`cargo test --locked`（101 项：49 库 + 50 二进制 + 1 MCP stdio + 1 sync loopback）、`cargo check --locked`、`cargo build --release --locked`、`git diff --check` 和隔离 Release GUI smoke 均通过；速记、托盘、MCP、最大化/还原及 1000 块虚拟滚动回归继续通过。真实窗口鼠标逐项验收仍待后续；没有访问真实用户库或修改 Slint/core/冻结参考树。
+
+## 第二百二十二轮：通用菜单动作矩阵复核
+
+- 根据 GPUI 菜单渲染与点击处理逐项核对 F166 `menu-action`：块菜单的转换/颜色/复制/删除/跨页移动、页面节点管理菜单及固定侧栏入口均通过菜单专属闭包进入真实操作；GPUI 不保留旧版整数菜单动作回调。状态从“未开始”更正为“已实现/未验证”，真人逐项右键验收仍未完成。
+- `tools/extract-parity.mjs` 重生成 246 callbacks / 261 properties / 188 scenes，人工语义 sidecar 成功合并 228 个回调。本轮只有矩阵状态更正，复用刚通过的 101 项测试、dev check、Release build、格式检查与隔离 Release GUI smoke；未访问真实用户库或修改 Slint/core/冻结参考树。
