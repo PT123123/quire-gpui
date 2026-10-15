@@ -106,3 +106,9 @@ org-select-all-toggled,已实现,已验证,全选或取消全选当前筛选后�
 org-selection-verbed,已实现,已验证,批量复制含唯一 ID 的笔记/任务，批量删除进入可撤销回收站；任务另支持批量完成,隔离 Release GUI smoke 覆盖笔记批量删除/撤销与任务批量完成/撤销；剪贴板复制及真人界面点验未覆盖
 org-capture-draft-changed,已实现,未验证,编辑时从当前 live 笔记与任务标签重算最多五个候选；支持完整层级标签和末级标签不区分大小写匹配,候选针对光标前未结束的 #token；有空白分隔时不显示；标签池按唯一值排序
 org-tag-suggest-picked,已实现,未验证,上下方向键移动候选；Enter Tab 或点击应用候选并将光标移到完整标签之后,按 UTF-8 字符边界替换当前 #token；后续文本和标点保留，避免重复空格
+version-save,已实现,已验证,为当前页面保存命名快照；最多保留最新 20 个版本，空名称自动编号,隔离 Release GUI smoke 验证保存并持久化；快照复用 core `versions/` 单页 SQLite 格式和 metadata 索引
+version-view,已实现,已验证,选择版本后查看相对当前页面的新增/删除块差异,基于 core `diff::compare`；Session/GUI 状态 smoke 核对差异行；面板真实绘制与截图尚未验证
+version-restore,已实现,已验证,将当前页面内容恢复到所选快照；页面标题/图标/封面等页面属性不变,通过 `InsertForest` 与根块删除构成单条 core 历史项；隔离 Session 和 Release GUI smoke 验证恢复及 Ctrl+Z 还原
+version-delete,已实现,已验证,删除选中版本的快照文件及其 metadata；删除页面会同时清理其后代版本,隔离库验证删除后索引、快照和重开状态；版本列表提供逐项删除
+version-back,已实现,已验证,从差异查看返回版本列表而不关闭面板,GPUI 清除当前选择/差异行并保留版本目录列表
+versions-close,已实现,已验证,关闭版本历史面板并恢复编辑焦点,完成按钮和 Escape 关闭面板；打开时聚焦版本名称输入框

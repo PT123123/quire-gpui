@@ -54,6 +54,7 @@ pub struct Session {
     attachment_store: AttachmentStore,
     next_attachment_id: u64,
     history: History,
+    page_versions: BTreeMap<u64, Vec<(i64, String)>>,
     typing: Option<(BlockId, Entry, Instant)>,
     pending_organizer_delete: Option<PendingOrganizerDelete>,
     next_organizer_delete_token: u64,
@@ -626,6 +627,21 @@ impl Session {
             .context("无法打开库；不会覆盖或重建已有文件")?;
         let repo = Arc::new(repo);
         let loaded = repo.load()?;
+        let mut page_versions: BTreeMap<u64, Vec<(i64, String)>> = BTreeMap::new();
+        for (page, created, label) in loaded.meta.iter().filter_map(|(key, label)| {
+            quire_core::storage::versions::parse_key(key)
+                .map(|(page, created)| (page, created, label.clone()))
+        }) {
+            if page > 0 && created > 0 {
+                page_versions
+                    .entry(page as u64)
+                    .or_default()
+                    .push((created, label));
+            }
+        }
+        for versions in page_versions.values_mut() {
+            versions.sort_by(|a, b| b.0.cmp(&a.0));
+        }
         let organizer = repo.load_organizer()?;
         let databases = repo.load_databases()?;
         let attachments = repo
@@ -701,6 +717,7 @@ impl Session {
             attachment_store,
             next_attachment_id,
             history: History::default(),
+            page_versions,
             typing: None,
             pending_organizer_delete: None,
             next_organizer_delete_token: 0,
@@ -782,6 +799,146 @@ impl Session {
     }
     pub fn blocks(&self) -> &[Block] {
         self.document.page_blocks(self.page.id)
+    }
+    pub fn page_versions(&self, page: PageId) -> &[(i64, String)] {
+        self.page_versions
+            .get(&page.0)
+            .map(Vec::as_slice)
+            .unwrap_or(&[])
+    }
+    pub fn save_page_version(&mut self, page: PageId, label: &str) -> anyhow::Result<String> {
+        anyhow::ensure!(
+            self.pages
+                .iter()
+                .any(|candidate| candidate.id == page && !candidate.template),
+            "找不到页面"
+        );
+        self.persistence.force_flush()?;
+        let clean_label = label
+            .trim()
+            .chars()
+            .filter(|ch| *ch != '\n' && *ch != '\r')
+            .take(60)
+            .collect::<String>();
+        let mut created = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_secs() as i64;
+        let mut pinned = None;
+        for _ in 0..5 {
+            match quire_core::storage::versions::save(&self.repo, page.0 as i64, created)? {
+                Some(ids) => {
+                    pinned = Some(ids);
+                    break;
+                }
+                None => created += 1,
+            }
+        }
+        let pinned = pinned.ok_or_else(|| anyhow::anyhow!("这一秒已经保存过多个版本"))?;
+        let mut versions = self.page_versions.get(&page.0).cloned().unwrap_or_default();
+        let name = if clean_label.is_empty() {
+            format!("版本 {}", versions.len() + 1)
+        } else {
+            clean_label
+        };
+        versions.push((created, name.clone()));
+        versions.sort_by(|a, b| b.0.cmp(&a.0));
+        let mut changes = vec![
+            Change::MetaSet {
+                key: quire_core::storage::versions::label_key(page.0 as i64, created),
+                value: name.clone(),
+            },
+            Change::MetaSet {
+                key: quire_core::storage::versions::files_key(page.0 as i64, created),
+                value: pinned
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join(","),
+            },
+        ];
+        while versions.len() > quire_core::storage::versions::MAX_PER_PAGE {
+            let (old, _) = versions.pop().expect("length checked");
+            quire_core::storage::versions::remove(&self.path, page.0 as i64, old)?;
+            changes.push(Change::MetaDelete {
+                key: quire_core::storage::versions::label_key(page.0 as i64, old),
+            });
+            changes.push(Change::MetaDelete {
+                key: quire_core::storage::versions::files_key(page.0 as i64, old),
+            });
+        }
+        self.page_versions.insert(page.0, versions);
+        self.persistence.record(changes);
+        self.persistence.force_flush()?;
+        Ok(name)
+    }
+    pub fn version_diff(
+        &self,
+        page: PageId,
+        created: i64,
+    ) -> anyhow::Result<Vec<quire_core::core::diff::DiffLine>> {
+        anyhow::ensure!(
+            self.page_versions(page)
+                .iter()
+                .any(|(at, _)| *at == created),
+            "找不到该版本"
+        );
+        let (_saved_page, blocks) =
+            quire_core::storage::versions::read(&self.path, page.0 as i64, created)?;
+        Ok(quire_core::core::diff::compare(
+            &blocks,
+            self.document.page_blocks(page),
+        ))
+    }
+    pub fn restore_page_version(&mut self, page: PageId, created: i64) -> anyhow::Result<usize> {
+        anyhow::ensure!(page == self.page.id, "请先打开该页面，再恢复它的版本");
+        anyhow::ensure!(!self.page.locked, "此页面已锁定");
+        anyhow::ensure!(
+            self.page_versions(page)
+                .iter()
+                .any(|(at, _)| *at == created),
+            "找不到该版本"
+        );
+        let (_saved_page, blocks) =
+            quire_core::storage::versions::read(&self.path, page.0 as i64, created)?;
+        let count = blocks.len();
+        let roots = self
+            .document
+            .page_blocks(page)
+            .iter()
+            .filter(|block| block.parent.is_none())
+            .map(|block| Command::DeleteBlock { id: block.id })
+            .collect::<Vec<_>>();
+        let mut commands = vec![Command::InsertForest {
+            anchor: None,
+            blocks,
+        }];
+        commands.extend(roots);
+        let changes = command::exec_all(&mut self.document, &mut self.history, page, commands)
+            .ok_or_else(|| anyhow::anyhow!("没有可恢复的内容"))?;
+        self.persistence.record(changes);
+        Ok(count)
+    }
+    pub fn delete_page_version(&mut self, page: PageId, created: i64) -> anyhow::Result<String> {
+        let versions = self
+            .page_versions
+            .get_mut(&page.0)
+            .ok_or_else(|| anyhow::anyhow!("找不到该版本"))?;
+        let index = versions
+            .iter()
+            .position(|(at, _)| *at == created)
+            .ok_or_else(|| anyhow::anyhow!("找不到该版本"))?;
+        let (_, label) = versions.remove(index);
+        quire_core::storage::versions::remove(&self.path, page.0 as i64, created)?;
+        self.persistence.record(vec![
+            Change::MetaDelete {
+                key: quire_core::storage::versions::label_key(page.0 as i64, created),
+            },
+            Change::MetaDelete {
+                key: quire_core::storage::versions::files_key(page.0 as i64, created),
+            },
+        ]);
+        self.persistence.force_flush()?;
+        Ok(label)
     }
     pub fn can_move_block_to(&self, id: BlockId, index: usize) -> bool {
         !self.page.locked
@@ -4736,6 +4893,23 @@ impl Session {
         self.end_typing();
         self.persistence.record(vec![Change::PageDeleted { id }]);
         for page_id in &subtree {
+            if let Some(versions) = self.page_versions.remove(&page_id.0) {
+                let mut changes = Vec::with_capacity(versions.len() * 2);
+                for (created, _) in versions {
+                    let _ = quire_core::storage::versions::remove(
+                        &self.path,
+                        page_id.0 as i64,
+                        created,
+                    );
+                    changes.push(Change::MetaDelete {
+                        key: quire_core::storage::versions::label_key(page_id.0 as i64, created),
+                    });
+                    changes.push(Change::MetaDelete {
+                        key: quire_core::storage::versions::files_key(page_id.0 as i64, created),
+                    });
+                }
+                self.persistence.record(changes);
+            }
             self.document.drop_page(*page_id);
         }
         self.pages.retain(|page| !subtree.contains(&page.id));
@@ -7256,6 +7430,37 @@ mod tests {
         assert!(reopened.organizer.trashed_tasks().next().is_none());
         assert!(reopened.organizer.task(task_a).is_none());
         assert!(reopened.organizer.task(task_b).is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn page_versions_save_diff_restore_undo_delete_and_reopen() -> Result<()> {
+        let scratch = quire_core::testing::ScratchDir::new("gpui-page-versions");
+        let path = scratch.path().join("versions.db");
+        let mut session = Session::open(&path)?;
+        let page = session.page.id;
+        let block = session.blocks()[0].id;
+        session.replace(block, "before snapshot".into(), true);
+        let label = session.save_page_version(page, "before edit")?;
+        assert_eq!(label, "before edit");
+        let created = session.page_versions(page)[0].0;
+
+        session.replace(block, "after snapshot".into(), true);
+        let diff = session.version_diff(page, created)?;
+        assert_eq!(diff.len(), 2);
+        assert_eq!(session.restore_page_version(page, created)?, 1);
+        assert_eq!(session.blocks()[0].text, "before snapshot");
+        session.undo();
+        assert_eq!(session.blocks()[0].text, "after snapshot");
+
+        let deleted = session.delete_page_version(page, created)?;
+        assert_eq!(deleted, "before edit");
+        assert!(session.page_versions(page).is_empty());
+        drop(session);
+
+        let reopened = Session::open(&path)?;
+        assert!(reopened.page_versions(page).is_empty());
+        assert!(!quire_core::storage::versions::path_for(&path, page.0 as i64, created).exists());
         Ok(())
     }
 }

@@ -1508,6 +1508,11 @@ pub struct Workspace {
     page_history_back: Vec<quire_core::core::types::PageId>,
     page_history_forward: Vec<quire_core::core::types::PageId>,
     title_input: Entity<TextInput>,
+    version_name_input: Entity<TextInput>,
+    version_name_subscription: Option<Subscription>,
+    versions_open: bool,
+    version_selected: Option<i64>,
+    version_diff_rows: Vec<quire_core::core::diff::DiffLine>,
     title_subscription: Option<Subscription>,
     title_edit_original: Option<String>,
     sync_name_input: Entity<TextInput>,
@@ -1725,6 +1730,11 @@ impl Workspace {
         let title_input =
             cx.new(|cx| TextInput::new(session.page.title.clone(), Vec::new(), 38., window, cx));
         title_input.update(cx, |input, _| input.font_weight = FontWeight::BOLD);
+        let version_name_input =
+            cx.new(|cx| TextInput::new(String::new(), Vec::new(), 12., window, cx));
+        version_name_input.update(cx, |input, _| {
+            input.placeholder = Some("命名此版本…".into());
+        });
         let search_input = cx.new(|cx| TextInput::new(String::new(), Vec::new(), 12., window, cx));
         search_input.update(cx, |input, _| {
             input.placeholder = Some("搜索页面…".into());
@@ -1805,6 +1815,7 @@ impl Workspace {
         let input_fg = Palette::color(&Palette::load(theme).fg);
         for input in [
             title_input.clone(),
+            version_name_input.clone(),
             search_input.clone(),
             find_input.clone(),
             link_target_input.clone(),
@@ -1879,6 +1890,11 @@ impl Workspace {
         let sync_cmd_tx = quire_core::services::sync::engine::Engine::start(sync_self, sync_job_tx);
         let mut this = Self {
             session,
+            version_name_input,
+            version_name_subscription: None,
+            versions_open: false,
+            version_selected: None,
+            version_diff_rows: Vec::new(),
             page_history_back: Vec::new(),
             page_history_forward: Vec::new(),
             title_input,
@@ -2103,6 +2119,19 @@ impl Workspace {
                     this.restore_focus(window, cx);
                     cx.notify();
                 }
+            },
+        ));
+        let version_name_input = this.version_name_input.clone();
+        this.version_name_subscription = Some(cx.subscribe_in(
+            &version_name_input,
+            window,
+            |this, _, event, window, cx| match event {
+                InputEvent::Edited { .. } => cx.notify(),
+                InputEvent::Split(_) => this.save_page_version(window, cx),
+                InputEvent::DismissSlash => {
+                    this.close_page_versions(window, cx);
+                }
+                _ => {}
             },
         ));
         let database_filter_value_input = this.database_filter_value_input.clone();
@@ -2768,6 +2797,44 @@ impl Workspace {
                     this.navigate_page_history(false, window, cx);
                     assert_eq!(this.session.page.id, original_page);
                     eprintln!("SMOKE: page history back/forward and branch reset passed");
+                    let version_page = this.session.page.id;
+                    let version_block = this.session.blocks()[0].id;
+                    this.session.replace(version_block, "版本历史 smoke 原文".into(), true);
+                    let label = this
+                        .session
+                        .save_page_version(version_page, "窗口历史 smoke")
+                        .expect("the isolated smoke library should save page versions");
+                    assert_eq!(label, "窗口历史 smoke");
+                    let created = this.session.page_versions(version_page)[0].0;
+                    this.session.replace(version_block, "版本历史 smoke 修改".into(), true);
+                    this.versions_open = true;
+                    this.view_page_version(created, cx);
+                    cx.notify();
+                    assert!(this.version_selected.is_some());
+                    assert_eq!(this.version_diff_rows.len(), 2);
+                });
+                cx.background_executor()
+                    .timer(Duration::from_millis(300))
+                    .await;
+                let _ = weak.update_in(cx, |this, window, cx| {
+                    assert!(this.versions_open && this.version_selected.is_some());
+                    assert!(this.smoke_mode);
+                    assert_eq!(this.version_diff_rows.len(), 2);
+                    this.restore_page_version(window, cx);
+                    assert_eq!(this.session.blocks()[0].text, "版本历史 smoke 原文");
+                    this.session.undo();
+                    assert_eq!(this.session.blocks()[0].text, "版本历史 smoke 修改");
+                    let created = this.session.page_versions(this.session.page.id)[0].0;
+                    this.view_page_version(created, cx);
+                    let version_page = this.session.page.id;
+                    let version_block = this.session.blocks()[0].id;
+                    this.delete_page_version(created, cx);
+                    assert!(this.session.page_versions(version_page).is_empty());
+                    this.session.replace(version_block, String::new(), true);
+                    this.sync_inputs(window, cx);
+                    this.versions_open = false;
+                    this.schedule_save(true, window, cx);
+                    eprintln!("SMOKE: named page version, diff, restore undo and delete passed");
                     crate::platform::set_main_window_maximized(window, true);
                 });
                 cx.background_executor()
@@ -7471,6 +7538,100 @@ impl Workspace {
         self.session.end_typing();
         self.sync_inputs(window, cx);
         self.schedule_save(true, window, cx);
+    }
+    fn open_page_versions(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.title_edit_original = None;
+        self.session.end_typing();
+        self.versions_open = true;
+        self.version_selected = None;
+        self.version_diff_rows.clear();
+        self.version_name_input.update(cx, |input, cx| {
+            input.reset(String::new(), Vec::new(), 0, cx);
+        });
+        window.focus(&self.version_name_input.read(cx).focus);
+        cx.notify();
+    }
+    fn close_page_versions(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.versions_open = false;
+        self.version_selected = None;
+        self.version_diff_rows.clear();
+        self.restore_focus(window, cx);
+        cx.notify();
+    }
+    fn save_page_version(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let label = self.version_name_input.read(cx).buffer.text.clone();
+        match self.session.save_page_version(self.session.page.id, &label) {
+            Ok(label) => {
+                self.version_name_input.update(cx, |input, cx| {
+                    input.reset(String::new(), Vec::new(), 0, cx);
+                });
+                self.status = format!("已保存版本“{label}”");
+                self.error = false;
+                self.schedule_save(true, window, cx);
+            }
+            Err(error) => {
+                self.status = format!("版本未能保存：{error}");
+                self.error = true;
+                cx.notify();
+            }
+        }
+    }
+    fn view_page_version(&mut self, created: i64, cx: &mut Context<Self>) {
+        match self.session.version_diff(self.session.page.id, created) {
+            Ok(rows) => {
+                self.version_selected = Some(created);
+                self.version_diff_rows = rows;
+            }
+            Err(error) => {
+                self.status = format!("无法读取该版本：{error}");
+                self.error = true;
+            }
+        }
+        cx.notify();
+    }
+    fn restore_page_version(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(created) = self.version_selected else {
+            return;
+        };
+        match self
+            .session
+            .restore_page_version(self.session.page.id, created)
+        {
+            Ok(count) => {
+                self.version_selected = None;
+                self.version_diff_rows.clear();
+                self.sync_inputs(window, cx);
+                self.schedule_save(true, window, cx);
+                self.status = format!("已从版本恢复 {count} 个内容块，可用 Ctrl+Z 撤销");
+                self.error = false;
+                cx.notify();
+            }
+            Err(error) => {
+                self.status = format!("版本未能恢复：{error}");
+                self.error = true;
+                cx.notify();
+            }
+        }
+    }
+    fn delete_page_version(&mut self, created: i64, cx: &mut Context<Self>) {
+        match self
+            .session
+            .delete_page_version(self.session.page.id, created)
+        {
+            Ok(label) => {
+                if self.version_selected == Some(created) {
+                    self.version_selected = None;
+                    self.version_diff_rows.clear();
+                }
+                self.status = format!("已删除版本“{label}”；页面内容未变");
+                self.error = false;
+            }
+            Err(error) => {
+                self.status = format!("版本未能删除：{error}");
+                self.error = true;
+            }
+        }
+        cx.notify();
     }
     fn activate_page(
         &mut self,
@@ -17985,6 +18146,20 @@ impl Render for Workspace {
                                 )
                                 .child(
                                     div()
+                                        .id("page-versions-open")
+                                        .px(px(7.))
+                                        .py(px(4.))
+                                        .rounded(px(5.))
+                                        .cursor_pointer()
+                                        .text_color(muted)
+                                        .hover(|s| s.bg(Palette::color(&p.elevated)))
+                                        .on_click(cx.listener(|this, _, window, cx| {
+                                            this.open_page_versions(window, cx)
+                                        }))
+                                        .child("版本历史"),
+                                )
+                                .child(
+                                    div()
                                         .id("page-backlinks-toggle")
                                         .px(px(7.))
                                         .py(px(4.))
@@ -18524,6 +18699,210 @@ impl Render for Workspace {
                 root.child(command_overlay)
             })
             .when_some(settings_overlay, |root, overlay| root.child(overlay))
+            .when(self.versions_open, |root| {
+                let page_id = self.session.page.id;
+                let versions = self.session.page_versions(page_id).to_vec();
+                let selected = self.version_selected;
+                let selected_label = selected
+                    .and_then(|created| versions.iter().find(|(at, _)| *at == created))
+                    .map(|(_, label)| label.clone());
+                let diff_rows = self.version_diff_rows.clone();
+                let version_content = div()
+                    .id("page-versions-content")
+                    .flex_1()
+                    .min_h_0()
+                    .overflow_y_scroll()
+                    .flex()
+                    .flex_col()
+                    .gap(px(4.))
+                    .when(selected.is_none(), |content| {
+                        if versions.is_empty() {
+                            content.child(
+                                div()
+                                    .flex_1()
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .text_color(muted)
+                                    .child("此页面还没有版本。为它此刻的样子命名，它就不会消失。"),
+                            )
+                        } else {
+                            content.children(versions.iter().map(|(created, label)| {
+                                let created = *created;
+                                div()
+                                    .id(SharedString::from(format!("page-version-{created}")))
+                                    .w_full()
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(8.))
+                                    .px(px(8.))
+                                    .py(px(6.))
+                                    .rounded(px(5.))
+                                    .hover(|row| row.bg(Palette::color(&p.bg).opacity(0.28)))
+                                    .child(
+                                        div()
+                                            .id(SharedString::from(format!("page-version-view-{created}")))
+                                            .flex_1()
+                                            .cursor_pointer()
+                                            .on_click(cx.listener(move |this, _, _, cx| {
+                                                this.view_page_version(created, cx)
+                                            }))
+                                            .child(div().text_size(px(13.)).text_color(text).child(label.clone()))
+                                            .child(div().text_size(px(10.)).text_color(muted).child(
+                                                quire_core::core::diff::age_text(
+                                                    i64::try_from(quire_core::services::sync::engine::now_unix())
+                                                        .unwrap_or(i64::MAX)
+                                                        .saturating_sub(created),
+                                                ),
+                                            )),
+                                    )
+                                    .child(
+                                        div()
+                                            .id(SharedString::from(format!("page-version-delete-{created}")))
+                                            .px(px(7.))
+                                            .py(px(4.))
+                                            .rounded(px(4.))
+                                            .cursor_pointer()
+                                            .text_color(rgb(0xe5534b))
+                                            .hover(|button| button.bg(Palette::color(&p.bg).opacity(0.35)))
+                                            .on_click(cx.listener(move |this, _, _, cx| {
+                                                this.delete_page_version(created, cx);
+                                            }))
+                                            .child("删除"),
+                                    )
+                            }))
+                        }
+                    })
+                    .when_some(selected, |content, _| {
+                        if diff_rows.is_empty() {
+                            content.child(
+                                div()
+                                    .flex_1()
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .text_color(muted)
+                                    .child("没有差异。此版本即为当前页面。"),
+                            )
+                        } else {
+                            content.children(diff_rows.iter().map(|line| {
+                                let (marker, tint) = match line.mark {
+                                    quire_core::core::diff::DiffMark::Added => ("+", rgb(0x55a36a)),
+                                    quire_core::core::diff::DiffMark::Removed => ("−", rgb(0xe5534b)),
+                                };
+                                div()
+                                    .w_full()
+                                    .flex()
+                                    .items_start()
+                                    .gap(px(8.))
+                                    .px(px(8.))
+                                    .py(px(3.))
+                                    .child(div().w(px(12.)).text_color(tint).child(marker))
+                                    .child(div().w(px(84.)).text_size(px(10.)).text_color(muted)
+                                        .child(format!("{:?}", line.kind)))
+                                    .child(div().flex_1().text_size(px(12.)).text_color(text)
+                                        .child(if line.text.is_empty() { "—".to_owned() } else { line.text.clone() }))
+                            }))
+                        }
+                    });
+                root.child(
+                    div()
+                        .id("page-versions-overlay")
+                        .absolute()
+                        .top(px(0.))
+                        .left(px(0.))
+                        .right(px(0.))
+                        .bottom(px(0.))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .bg(hsla(0., 0., 0., 0.42))
+                        .on_mouse_down(MouseButton::Left, cx.listener(|_, _, _, cx| cx.stop_propagation()))
+                        .child(
+                            div()
+                                .id("page-versions-panel")
+                                .w(px(620.))
+                                .h(px(500.))
+                                .max_w(px(760.))
+                                .max_h(px(650.))
+                                .flex()
+                                .flex_col()
+                                .gap(px(10.))
+                                .p(px(18.))
+                                .rounded(px(10.))
+                                .border_1()
+                                .border_color(Palette::color(&p.border))
+                                .bg(elevated)
+                                .shadow_lg()
+                                .child(
+                                    div().w_full().flex().items_center().gap(px(8.))
+                                        .child(div().flex_1().text_size(px(17.)).font_weight(FontWeight::SEMIBOLD)
+                                            .text_color(text).child(if let Some(label) = &selected_label {
+                                                format!("版本历史 — {label}")
+                                            } else {
+                                                format!("版本历史 — {}", self.session.page.title)
+                                            }))
+                                        .child(div().id("page-versions-close").px(px(9.)).py(px(5.))
+                                            .rounded(px(5.)).cursor_pointer().text_color(muted)
+                                            .hover(|button| button.bg(Palette::color(&p.bg).opacity(0.3)))
+                                            .on_click(cx.listener(|this, _, window, cx| {
+                                                this.close_page_versions(window, cx)
+                                            }))
+                                            .child("完成")),
+                                )
+                                .child(div().text_size(px(11.)).text_color(muted).child(format!(
+                                    "此页面共有 {} 个版本；最多保留 {} 个，较早版本会自动清理。",
+                                    versions.len(), quire_core::storage::versions::MAX_PER_PAGE
+                                )))
+                                .child(version_content)
+                                .when(selected.is_none(), |panel| {
+                                    panel.child(
+                                        div().h(px(34.)).rounded(px(5.)).border_1()
+                                            .border_color(Palette::color(&p.border)).bg(Palette::color(&p.bg))
+                                            .px(px(7.)).child(self.version_name_input.clone()),
+                                    )
+                                    .child(
+                                        div().w_full().flex().justify_end().child(
+                                            div().id("page-version-save").px(px(10.)).py(px(6.))
+                                                .rounded(px(5.)).cursor_pointer().text_color(rgb(0xffffff))
+                                                .bg(accent).on_click(cx.listener(|this, _, window, cx| {
+                                                    this.save_page_version(window, cx)
+                                                })).child("保存版本"),
+                                        ),
+                                    )
+                                })
+                                .when(selected.is_some(), |panel| {
+                                    panel.child(
+                                        div().w_full().flex().items_center().gap(px(8.))
+                                            .child(div().flex_1().text_size(px(11.)).text_color(muted).child(format!(
+                                                "新增 {} 行，删除 {} 行。恢复会整体替换页面内容。",
+                                                diff_rows.iter().filter(|line| matches!(line.mark, quire_core::core::diff::DiffMark::Added)).count(),
+                                                diff_rows.iter().filter(|line| matches!(line.mark, quire_core::core::diff::DiffMark::Removed)).count()
+                                            )))
+                                            .child(div().id("page-version-back").px(px(8.)).py(px(5.)).cursor_pointer()
+                                                .text_color(muted).on_click(cx.listener(|this, _, _, cx| {
+                                                    this.version_selected = None;
+                                                    this.version_diff_rows.clear();
+                                                    cx.notify();
+                                                })).child("后退"))
+                                            .child(div().id("page-version-delete-selected").px(px(8.)).py(px(5.))
+                                                .cursor_pointer().text_color(rgb(0xe5534b))
+                                                .on_click(cx.listener(|this, _, _, cx| {
+                                                    if let Some(created) = this.version_selected {
+                                                        this.delete_page_version(created, cx);
+                                                    }
+                                                })).child("删除版本"))
+                                            .child(div().id("page-version-restore").px(px(9.)).py(px(5.))
+                                                .rounded(px(4.)).cursor_pointer().text_color(rgb(0xffffff)).bg(accent)
+                                                .when(self.session.page.locked, |button| button.opacity(0.45))
+                                                .on_click(cx.listener(|this, _, window, cx| {
+                                                    this.restore_page_version(window, cx)
+                                                })).child("恢复")),
+                                    )
+                                }),
+                        ),
+                )
+            })
             .when_some(self.startup_notice.clone(), |root, notice| {
                 root.child(
                     div()
