@@ -833,3 +833,16 @@ GPUI 已覆盖主编辑器、整理区、独立速记与标签建议、Windows �
 - 清单行加入直接配色、改名与删除入口；改名使用 inline TextInput，Enter/失焦提交、Escape 取消、拒绝空名称；颜色面板列出 core 全部十种 `ColorKind`。更新由 `Command::UpdateTaskList` 写入 organizer 历史，改名和选色可独立撤销/重做。
 - ScratchDir 回归覆盖名称 trim/空值拒绝、改名与颜色 undo/redo 及 SQLite 重开；Release smoke 经 Workspace 编辑实体提交改名、配色并走历史撤销/重做。旧版统一锚定“⋯”菜单仍是记录中的界面差异，功能入口均可用。
 - 验证：全量 62 项自动测试、`cargo check -j 8`、`cargo fmt --all -- --check`、`git diff --check`、Release 构建及隔离 Release `--smoke-test --smoke-blocks 1000` 通过；同次 smoke 覆盖 MCP、回收站、命令面板、页面历史、窗口最大化/还原、远端查找/滚动、速记和托盘。仅使用新建临时数据库。
+
+## 第一百二十七轮：任务清单统一菜单
+
+- 清单行现在通过“⋯”菜单统一提供重命名、颜色和删除清单；颜色打开九种非默认颜色的纵向子页，带当前颜色勾选与“‹ 返回”。Escape 从颜色子页回到主菜单，再次 Escape 关闭菜单。改名、颜色、删除沿用已有 core organizer 命令和撤销记录。
+- 菜单改为在对应清单行下方展开，以便在固定窄侧栏中完整展示；与旧版绝对坐标浮窗的锚定/边缘碰撞定位仍有视觉差异，已更新 PARITY 与 DIFFERENCES。
+- 验证：62 项自动测试、`cargo check -j 8`、格式检查、`git diff --check`、Release 构建通过；隔离 Release smoke 经 Workspace 验证菜单和颜色子页状态、改名/选色及撤销/重做，并继续通过 MCP、回收站、命令面板、页面历史、窗口状态、长文档查找/滚动、速记和托盘路径。使用新建临时库。
+
+## 第一百二十八轮：速记 / 托盘 / 同步 / MCP 优先回归
+
+- 补强 MCP Streamable HTTP：支持 2025-11-25 版本协商及 `MCP-Protocol-Version` 回传；校验客户端同时接受 JSON 与 SSE、拒绝不支持的协议版本；对携带非本机 Origin 的请求返回 403，保留仅监听 127.0.0.1 与 Bearer token。stdio 桥同步声明 Streamable HTTP 所需的 Accept 类型。
+- MCP 自动回归覆盖 2025-11-25 initialize、版本回传、拒绝恶意 Origin / 未知版本、工具调用、鉴权、请求大小上限、stdio 转发、notification 空响应与相同端口重启。官方 MCP 2026-07-28 新版采用无握手/每请求元数据，本轮明确未实现；暂不能声称兼容当前最新协议。
+- 速记窗口、托盘隐藏/恢复与唯一草稿复用、同步 engine 的隔离双 Session HTTP 拉取/推送/合并已有 Release smoke 或自动测试；本轮未运行真人托盘点击，也未做两台 Windows 设备之间的 UDP 广播、防火墙和离线重连验收。所有测试使用新的临时库。
+- 验证：全量 62 项 `cargo test -j 8`、`cargo check -j 8`、`cargo fmt --all -- --check`、`git diff --check`、Release 构建及新临时库 `--smoke-test --smoke-blocks 1000` 均通过。Smoke 覆盖 MCP initialize/initialized/HTTP Bearer → UI Session 创建笔记、速记启动/事件重触发复用/标签提交、托盘隐藏/恢复、同步和窗口路径；没有真人点击托盘菜单或两台实体设备 UDP 互通验收。

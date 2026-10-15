@@ -63,8 +63,8 @@ pub fn now_label() -> String {
 
 /// 我们能原样回给客户端的协议版本。协商规则：请求带来的版本在这张表里
 /// 就回它，否则回最新的——MCP 规范要求服务端这样降级。
-const SUPPORTED_VERSIONS: [&str; 3] = ["2024-11-05", "2025-03-26", "2025-06-18"];
-const LATEST_VERSION: &str = "2025-06-18";
+const SUPPORTED_VERSIONS: [&str; 4] = ["2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25"];
+const LATEST_VERSION: &str = "2025-11-25";
 
 /// 一个工具的定义，原样进 `tools/list` 的响应。
 #[derive(Debug, Clone)]
@@ -310,6 +310,20 @@ impl McpServer {
                 .map(|v| v.as_str() == self.token)
                 .unwrap_or(false);
 
+        // Streamable HTTP must validate browser origins even when the service
+        // is loopback-only: DNS rebinding can still target a local listener.
+        if headers
+            .get("origin")
+            .is_some_and(|origin| !is_local_origin(origin))
+        {
+            return respond(
+                &stream,
+                403,
+                "application/json",
+                "{\"error\":\"origin not allowed\"}",
+            );
+        }
+
         let path = path.split('?').next().unwrap_or(path);
         if path != "/mcp" {
             return respond(
@@ -337,6 +351,28 @@ impl McpServer {
                 "{\"error\":\"POST only\"}",
             );
         }
+        let accept = headers.get("accept").map(String::as_str).unwrap_or("");
+        if !accepts_mcp_json(accept) {
+            return respond(
+                &stream,
+                400,
+                "application/json",
+                "{\"error\":\"Accept must include application/json and text/event-stream\"}",
+            );
+        }
+        let protocol_version = headers
+            .get("mcp-protocol-version")
+            .map(String::as_str)
+            // MCP 2025-11-25 specifies this fallback for stateless servers.
+            .unwrap_or("2025-03-26");
+        if !SUPPORTED_VERSIONS.contains(&protocol_version) {
+            return respond(
+                &stream,
+                400,
+                "application/json",
+                "{\"error\":\"unsupported MCP protocol version\"}",
+            );
+        }
         if content_length > MAX_HTTP_BODY_BYTES {
             return respond(
                 &stream,
@@ -348,11 +384,59 @@ impl McpServer {
         let mut body = vec![0u8; content_length];
         reader.read_exact(&mut body)?;
         let body = String::from_utf8_lossy(&body).to_string();
+        let response_version = serde_json::from_str::<Value>(&body)
+            .ok()
+            .filter(|message| message.get("method").and_then(Value::as_str) == Some("initialize"))
+            .map(|message| {
+                let requested = message
+                    .pointer("/params/protocolVersion")
+                    .and_then(Value::as_str)
+                    .unwrap_or(LATEST_VERSION);
+                if SUPPORTED_VERSIONS.contains(&requested) {
+                    requested.to_owned()
+                } else {
+                    LATEST_VERSION.to_owned()
+                }
+            })
+            .unwrap_or_else(|| protocol_version.to_owned());
         match handle_request(&self.tools, &body, &self.call) {
-            Some(text) => respond(&stream, 200, "application/json", &text),
+            Some(text) => respond_with_headers(
+                &stream,
+                200,
+                "application/json",
+                &text,
+                &[("MCP-Protocol-Version", &response_version)],
+            ),
             None => respond(&stream, 202, "text/plain", ""),
         }
     }
+}
+
+fn accepts_mcp_json(accept: &str) -> bool {
+    let mut json = false;
+    let mut event_stream = false;
+    for media_type in accept.split(',').map(|value| value.trim()) {
+        let media_type = media_type.split(';').next().unwrap_or("").trim();
+        json |= media_type.eq_ignore_ascii_case("application/json");
+        event_stream |= media_type.eq_ignore_ascii_case("text/event-stream");
+    }
+    json && event_stream
+}
+
+fn is_local_origin(origin: &str) -> bool {
+    let Ok(url) = url::Url::parse(origin) else {
+        return false;
+    };
+    if !matches!(url.scheme(), "http" | "https")
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.path() != "/"
+        || url.query().is_some()
+        || url.fragment().is_some()
+    {
+        return false;
+    }
+    matches!(url.host_str(), Some("localhost" | "127.0.0.1" | "::1"))
 }
 
 pub struct McpServerHandle {
@@ -375,20 +459,39 @@ impl Drop for McpServerHandle {
     }
 }
 
-fn respond(mut stream: &TcpStream, code: u16, ctype: &str, body: &str) -> std::io::Result<()> {
+fn respond(stream: &TcpStream, code: u16, ctype: &str, body: &str) -> std::io::Result<()> {
+    respond_with_headers(stream, code, ctype, body, &[])
+}
+
+fn respond_with_headers(
+    mut stream: &TcpStream,
+    code: u16,
+    ctype: &str,
+    body: &str,
+    headers: &[(&str, &str)],
+) -> std::io::Result<()> {
     let reason = match code {
         200 => "OK",
         202 => "Accepted",
         401 => "Unauthorized",
+        403 => "Forbidden",
+        400 => "Bad Request",
         413 => "Payload Too Large",
         404 => "Not Found",
         405 => "Method Not Allowed",
         _ => "Internal Server Error",
     };
-    let head = format!(
-        "HTTP/1.1 {code} {reason}\r\nContent-Type: {ctype}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+    let mut head = format!(
+        "HTTP/1.1 {code} {reason}\r\nContent-Type: {ctype}\r\nContent-Length: {}\r\nConnection: close\r\n",
         body.len()
     );
+    for (name, value) in headers {
+        head.push_str(name);
+        head.push_str(": ");
+        head.push_str(value);
+        head.push_str("\r\n");
+    }
+    head.push_str("\r\n");
     stream.write_all(head.as_bytes())?;
     stream.write_all(body.as_bytes())?;
     stream.flush()
@@ -462,7 +565,7 @@ fn forward_stdio_message(port: u16, token: &str, body: &str) -> Result<Option<St
         .map_err(|error| error.to_string())?;
     write!(
         stream,
-        "POST /mcp HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nAuthorization: Bearer {token}\r\nContent-Type: application/json\r\nAccept: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        "POST /mcp HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nAuthorization: Bearer {token}\r\nContent-Type: application/json\r\nAccept: application/json, text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
         body.len()
     )
     .map_err(|error| format!("send MCP request: {error}"))?;
@@ -570,20 +673,23 @@ mod tests {
 
     #[test]
     fn loopback_http_requires_token_and_dispatches_tools() {
-        fn post(port: u16, token: Option<&str>, body: &str) -> String {
+        fn post_with_headers(port: u16, token: Option<&str>, extra: &str, body: &str) -> String {
             let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
             let auth = token
                 .map(|token| format!("Authorization: Bearer {token}\r\n"))
                 .unwrap_or_default();
             write!(
                 stream,
-                "POST /mcp HTTP/1.1\r\nHost: 127.0.0.1\r\n{auth}Content-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                "POST /mcp HTTP/1.1\r\nHost: 127.0.0.1\r\n{auth}Content-Type: application/json\r\nAccept: application/json, text/event-stream\r\n{extra}Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
                 body.len()
             )
             .unwrap();
             let mut response = String::new();
             stream.read_to_string(&mut response).unwrap();
             response
+        }
+        fn post(port: u16, token: Option<&str>, body: &str) -> String {
+            post_with_headers(port, token, "", body)
         }
 
         let port = TcpListener::bind(("127.0.0.1", 0))
@@ -614,10 +720,36 @@ mod tests {
             }
         };
         assert!(unauthorized.starts_with("HTTP/1.1 401 Unauthorized"));
+        let forbidden_origin = post_with_headers(
+            port,
+            Some("secret"),
+            "Origin: https://attacker.example\r\n",
+            r#"{"jsonrpc":"2.0","id":1,"method":"ping","params":{}}"#,
+        );
+        assert!(forbidden_origin.starts_with("HTTP/1.1 403 Forbidden"));
+        let unsupported_version = post_with_headers(
+            port,
+            Some("secret"),
+            "MCP-Protocol-Version: 2026-07-28\r\n",
+            r#"{"jsonrpc":"2.0","id":1,"method":"ping","params":{}}"#,
+        );
+        assert!(unsupported_version.starts_with("HTTP/1.1 400 Bad Request"));
+        let initialize = post(
+            port,
+            Some("secret"),
+            r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"smoke","version":"1"}}}"#,
+        );
+        assert!(initialize.starts_with("HTTP/1.1 200 OK"));
+        assert!(initialize.contains("MCP-Protocol-Version: 2025-11-25\r\n"));
+        assert!(initialize.contains("\"protocolVersion\":\"2025-11-25\""));
+        assert!(accepts_mcp_json("application/json, text/event-stream"));
+        assert!(!accepts_mcp_json("application/json"));
+        assert!(is_local_origin("http://localhost:5880"));
+        assert!(!is_local_origin("https://localhost.attacker.example"));
         let mut oversized = TcpStream::connect(("127.0.0.1", port)).unwrap();
         write!(
             oversized,
-            "POST /mcp HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer secret\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            "POST /mcp HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer secret\r\nAccept: application/json, text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
             MAX_HTTP_BODY_BYTES + 1
         )
         .unwrap();

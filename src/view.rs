@@ -1374,6 +1374,7 @@ pub struct Workspace {
     organizer_excluded_tags: BTreeSet<String>,
     selected_task_list: quire_core::core::organizer::ListId,
     task_list_editing: Option<quire_core::core::organizer::ListId>,
+    task_list_menu_open: Option<quire_core::core::organizer::ListId>,
     task_list_color_open: Option<quire_core::core::organizer::ListId>,
     task_list_name_draft: String,
     selected_task_smart_view: Option<i32>,
@@ -1712,6 +1713,7 @@ impl Workspace {
             organizer_excluded_tags: BTreeSet::new(),
             selected_task_list: quire_core::core::organizer::ListId::INBOX,
             task_list_editing: None,
+            task_list_menu_open: None,
             task_list_color_open: None,
             task_list_name_draft: String::new(),
             selected_task_smart_view: Some(0),
@@ -2209,6 +2211,11 @@ impl Workspace {
                 });
                 let _ = weak.update_in(cx, |this, window, cx| {
                     let smoke_list = this.session.create_task_list("smoke 清单".into());
+                    this.toggle_task_list_menu(smoke_list, cx);
+                    assert_eq!(this.task_list_menu_open, Some(smoke_list));
+                    this.toggle_task_list_color_picker(smoke_list, cx);
+                    assert_eq!(this.task_list_color_open, Some(smoke_list));
+                    this.task_list_color_open = None;
                     this.start_task_list_rename(smoke_list, window, cx);
                     this.task_list_name_draft = "桌面回归清单".into();
                     this.task_list_name_input.update(cx, |input, cx| {
@@ -2241,7 +2248,7 @@ impl Workspace {
                     assert!(this.session.redo_organizer());
                     assert!(this.session.delete_task_list(smoke_list).is_some());
                     this.selected_task_list = quire_core::core::organizer::ListId::INBOX;
-                    eprintln!("SMOKE: organizer list rename, color and undo/redo passed");
+                    eprintln!("SMOKE: organizer list menu, color submenu, rename and undo/redo passed");
 
                     this.organizer_trash = true;
                     this.organizer_tasks = false;
@@ -5676,6 +5683,8 @@ impl Workspace {
             return;
         }
         self.commit_note_draft(window, cx);
+        self.task_list_menu_open = None;
+        self.task_list_color_open = None;
         self.organizer_tasks = tasks;
         self.search_query.clear();
         self.search_input.update(cx, |input, cx| {
@@ -5720,6 +5729,8 @@ impl Workspace {
             }
         }
         self.commit_note_draft(window, cx);
+        self.task_list_menu_open = None;
+        self.task_list_color_open = None;
         self.selected_task_ids.clear();
         self.selected_task_smart_view = None;
         self.selected_task_list = list;
@@ -5731,6 +5742,8 @@ impl Workspace {
             return;
         }
         self.commit_note_draft(window, cx);
+        self.task_list_menu_open = None;
+        self.task_list_color_open = None;
         self.selected_task_ids.clear();
         self.selected_task_smart_view = Some(view);
         self.selected_task_list = quire_core::core::organizer::ListId::INBOX;
@@ -5832,6 +5845,8 @@ impl Workspace {
         else {
             return;
         };
+        self.task_list_menu_open = None;
+        self.task_list_color_open = None;
         self.task_list_editing = Some(list);
         self.task_list_name_draft = name.clone();
         self.task_list_name_input.update(cx, |input, cx| {
@@ -5845,10 +5860,39 @@ impl Workspace {
         self.task_list_name_draft.clear();
         cx.notify();
     }
+    fn toggle_task_list_menu(
+        &mut self,
+        id: quire_core::core::organizer::ListId,
+        cx: &mut Context<Self>,
+    ) {
+        self.task_list_menu_open = (self.task_list_menu_open != Some(id)).then_some(id);
+        self.task_list_color_open = None;
+        cx.notify();
+    }
+    fn task_list_menu_key_down(
+        &mut self,
+        event: &KeyDownEvent,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if event.keystroke.key.as_str() != "escape"
+            || event.keystroke.modifiers.modified()
+            || self.task_list_menu_open.is_none()
+        {
+            return;
+        }
+        if self.task_list_color_open.take().is_none() {
+            self.task_list_menu_open = None;
+        }
+        cx.stop_propagation();
+        cx.notify();
+    }
     fn commit_task_list_rename(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(id) = self.task_list_editing.take() else {
             return;
         };
+        self.task_list_menu_open = None;
+        self.task_list_color_open = None;
         let Some(list) = self.session.organizer.list(id) else {
             return;
         };
@@ -5885,6 +5929,7 @@ impl Workspace {
             return;
         };
         let name = list.name.clone();
+        self.task_list_menu_open = None;
         self.task_list_color_open = None;
         if self.session.update_task_list(id, name, color) {
             self.status = "清单颜色已更新（Ctrl+Z 可撤销）".into();
@@ -5899,6 +5944,8 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.task_list_menu_open = None;
+        self.task_list_color_open = None;
         let Some(count) = self.session.delete_task_list(list) else {
             return;
         };
@@ -6042,6 +6089,8 @@ impl Workspace {
     }
     fn toggle_organizer_trash(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.commit_note_draft(window, cx);
+        self.task_list_menu_open = None;
+        self.task_list_color_open = None;
         self.organizer_trash = !self.organizer_trash;
         self.selected_task_ids.clear();
         self.selected_note = None;
@@ -7819,13 +7868,26 @@ impl Workspace {
 }
 
 fn smoke_mcp_create_note(port: u16, token: &str) -> Result<String, String> {
-    use std::io::{Read, Write};
-
-    let mut stream = std::net::TcpStream::connect(("127.0.0.1", port))
-        .map_err(|error| format!("connect to MCP smoke server: {error}"))?;
-    stream
-        .set_read_timeout(Some(Duration::from_secs(5)))
-        .map_err(|error| format!("set MCP smoke timeout: {error}"))?;
+    let initialize = smoke_mcp_post(
+        port,
+        token,
+        r#"{"jsonrpc":"2.0","id":0,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"quire-gpui-smoke","version":"0.1.0"}}}"#,
+    )?;
+    if !initialize.contains("\"protocolVersion\":\"2025-11-25\"") {
+        return Err(format!(
+            "MCP initialize did not negotiate 2025-11-25: {initialize}"
+        ));
+    }
+    let initialized = smoke_mcp_post(
+        port,
+        token,
+        r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#,
+    )?;
+    if !initialized.starts_with("HTTP/1.1 202 Accepted") {
+        return Err(format!(
+            "MCP initialized notification was not accepted: {initialized}"
+        ));
+    }
     let body = serde_json::json!({
         "jsonrpc": "2.0",
         "id": 1,
@@ -7840,9 +7902,20 @@ fn smoke_mcp_create_note(port: u16, token: &str) -> Result<String, String> {
         }
     })
     .to_string();
+    smoke_mcp_post(port, token, &body)
+}
+
+fn smoke_mcp_post(port: u16, token: &str, body: &str) -> Result<String, String> {
+    use std::io::{Read, Write};
+
+    let mut stream = std::net::TcpStream::connect(("127.0.0.1", port))
+        .map_err(|error| format!("connect to MCP smoke server: {error}"))?;
+    stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .map_err(|error| format!("set MCP smoke timeout: {error}"))?;
     write!(
         stream,
-        "POST /mcp HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nAuthorization: Bearer {token}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        "POST /mcp HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nAuthorization: Bearer {token}\r\nContent-Type: application/json\r\nAccept: application/json, text/event-stream\r\nMCP-Protocol-Version: 2025-11-25\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
         body.len()
     )
     .map_err(|error| format!("send MCP smoke request: {error}"))?;
@@ -13099,6 +13172,8 @@ impl Render for Workspace {
                 let list_name = list.name.clone();
                 let list_color = list.color;
                 let editing = self.task_list_editing == Some(id);
+                let menu_open = self.task_list_menu_open == Some(id);
+                let color_menu_open = self.task_list_color_open == Some(id);
                 let count = self
                     .session
                     .organizer
@@ -13127,14 +13202,10 @@ impl Render for Workspace {
                             .flex()
                             .items_center()
                             .justify_center()
-                            .cursor_pointer()
                             .text_size(px(12.))
                             .text_color(
                                 Palette::load(&self.theme_choice).block_text(list_color.slot()),
                             )
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.toggle_task_list_color_picker(id, cx)
-                            }))
                             .child("●"),
                     )
                     .when(editing, |row| {
@@ -13183,62 +13254,24 @@ impl Render for Workspace {
                         row.child(
                             div()
                                 .id(SharedString::from(format!(
-                                    "organizer-list-rename-button-{id:?}"
+                                    "organizer-list-menu-button-{id:?}"
                                 )))
-                                .px(px(4.))
-                                .py(px(4.))
-                                .rounded(px(4.))
+                                .w(px(24.))
+                                .h(px(25.))
+                                .px(px(8.))
+                                .rounded(px(5.))
                                 .cursor_pointer()
-                                .text_color(muted)
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .text_color(if menu_open { accent } else { muted })
                                 .hover(|button| button.text_color(accent))
-                                .on_click(cx.listener(move |this, _, window, cx| {
-                                    this.start_task_list_rename(id, window, cx)
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.toggle_task_list_menu(id, cx)
                                 }))
-                                .child("✎"),
+                                .child("⋯"),
                         )
-                    })
-                    .child(
-                        div()
-                            .id(SharedString::from(format!("organizer-list-{id:?}")))
-                            .flex_1()
-                            .min_w_0()
-                            .px(px(8.))
-                            .py(px(5.))
-                            .rounded(px(5.))
-                            .cursor_pointer()
-                            .text_color(
-                                if self.selected_task_smart_view.is_none()
-                                    && self.selected_task_list == id
-                                {
-                                    accent
-                                } else {
-                                    muted
-                                },
-                            )
-                            .when(
-                                self.selected_task_smart_view.is_none()
-                                    && self.selected_task_list == id,
-                                |chip| chip.bg(Palette::color(&p.elevated)),
-                            )
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                this.select_task_list(id, window, cx)
-                            }))
-                            .child(format!("{} · {count}", list.name)),
-                    )
-                    .child(
-                        div()
-                            .id(SharedString::from(format!("organizer-list-delete-{id:?}")))
-                            .px(px(5.))
-                            .py(px(4.))
-                            .rounded(px(4.))
-                            .cursor_pointer()
-                            .text_color(muted)
-                            .hover(|button| button.text_color(rgb(0xe5534b)))
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                this.delete_task_list(id, window, cx)
-                            }))
-                            .child("×"),
-                    );
+                    });
                 div()
                     .id(SharedString::from(format!(
                         "organizer-list-container-{id:?}"
@@ -13246,33 +13279,184 @@ impl Render for Workspace {
                     .flex()
                     .flex_col()
                     .child(row)
-                    .when(self.task_list_color_open == Some(id), |container| {
+                    .when(menu_open && !color_menu_open, |container| {
+                        container.child(
+                            div()
+                                .id(SharedString::from(format!("organizer-list-menu-{id:?}")))
+                                .ml(px(22.))
+                                .mb(px(4.))
+                                .p(px(4.))
+                                .rounded(px(6.))
+                                .border_1()
+                                .border_color(Palette::color(&p.border))
+                                .bg(Palette::color(&p.elevated))
+                                .flex()
+                                .flex_col()
+                                .gap(px(2.))
+                                .child(
+                                    div()
+                                        .id(SharedString::from(format!(
+                                            "organizer-list-menu-rename-{id:?}"
+                                        )))
+                                        .w_full()
+                                        .h(px(27.))
+                                        .px(px(8.))
+                                        .flex()
+                                        .items_center()
+                                        .rounded(px(4.))
+                                        .cursor_pointer()
+                                        .text_size(px(12.))
+                                        .text_color(text)
+                                        .hover(|item| item.bg(Palette::color(&p.bg).opacity(0.35)))
+                                        .on_click(cx.listener(move |this, _, window, cx| {
+                                            this.start_task_list_rename(id, window, cx)
+                                        }))
+                                        .child("重命名"),
+                                )
+                                .child(
+                                    div()
+                                        .id(SharedString::from(format!(
+                                            "organizer-list-menu-color-{id:?}"
+                                        )))
+                                        .w_full()
+                                        .h(px(27.))
+                                        .px(px(8.))
+                                        .flex()
+                                        .items_center()
+                                        .justify_between()
+                                        .rounded(px(4.))
+                                        .cursor_pointer()
+                                        .text_size(px(12.))
+                                        .text_color(text)
+                                        .hover(|item| item.bg(Palette::color(&p.bg).opacity(0.35)))
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            this.toggle_task_list_color_picker(id, cx)
+                                        }))
+                                        .child("颜色")
+                                        .child(
+                                            div()
+                                                .text_color(
+                                                    Palette::load(&self.theme_choice)
+                                                        .block_text(list_color.slot()),
+                                                )
+                                                .child("●  ›"),
+                                        ),
+                                )
+                                .child(
+                                    div()
+                                        .id(SharedString::from(format!(
+                                            "organizer-list-menu-delete-{id:?}"
+                                        )))
+                                        .w_full()
+                                        .h(px(27.))
+                                        .px(px(8.))
+                                        .flex()
+                                        .items_center()
+                                        .rounded(px(4.))
+                                        .cursor_pointer()
+                                        .text_size(px(12.))
+                                        .text_color(Hsla::from(rgb(0xe5534b)))
+                                        .hover(|item| item.bg(Palette::color(&p.bg).opacity(0.35)))
+                                        .on_click(cx.listener(move |this, _, window, cx| {
+                                            this.delete_task_list(id, window, cx)
+                                        }))
+                                        .child("删除清单"),
+                                ),
+                        )
+                    })
+                    .when(menu_open && color_menu_open, |container| {
                         container.child(
                             div()
                                 .id(SharedString::from(format!("organizer-list-colors-{id:?}")))
-                                .flex()
-                                .items_center()
-                                .justify_between()
                                 .ml(px(22.))
-                                .mr(px(26.))
                                 .mb(px(4.))
-                                .children(ColorKind::ALL.into_iter().map(|color| {
-                                    let color_id = id;
+                                .p(px(4.))
+                                .rounded(px(6.))
+                                .border_1()
+                                .border_color(Palette::color(&p.border))
+                                .bg(Palette::color(&p.elevated))
+                                .flex()
+                                .flex_col()
+                                .gap(px(2.))
+                                .child(
                                     div()
                                         .id(SharedString::from(format!(
-                                            "organizer-list-color-{id:?}-{}",
-                                            color.slot()
+                                            "organizer-list-menu-color-back-{id:?}"
                                         )))
-                                        .w(px(14.))
-                                        .h(px(14.))
-                                        .rounded(px(7.))
-                                        .bg(Palette::load(&self.theme_choice)
-                                            .block_text(color.slot()))
+                                        .w_full()
+                                        .h(px(27.))
+                                        .px(px(8.))
+                                        .flex()
+                                        .items_center()
+                                        .rounded(px(4.))
                                         .cursor_pointer()
-                                        .on_click(cx.listener(move |this, _, window, cx| {
-                                            this.set_task_list_color(color_id, color, window, cx)
+                                        .text_size(px(12.))
+                                        .text_color(muted)
+                                        .hover(|item| item.bg(Palette::color(&p.bg).opacity(0.35)))
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            this.task_list_color_open = None;
+                                            cx.notify();
                                         }))
-                                })),
+                                        .child("‹ 返回"),
+                                )
+                                .children(
+                                    ColorKind::ALL
+                                        .into_iter()
+                                        .filter(|color| *color != ColorKind::Default)
+                                        .map(|color| {
+                                            let color_id = id;
+                                            let selected = color == list_color;
+                                            let label = match color {
+                                                ColorKind::Gray => "灰色",
+                                                ColorKind::Brown => "棕色",
+                                                ColorKind::Orange => "橙色",
+                                                ColorKind::Yellow => "黄色",
+                                                ColorKind::Green => "绿色",
+                                                ColorKind::Blue => "蓝色",
+                                                ColorKind::Purple => "紫色",
+                                                ColorKind::Pink => "粉色",
+                                                ColorKind::Red => "红色",
+                                                ColorKind::Default => "默认",
+                                            };
+                                            div()
+                                                .id(SharedString::from(format!(
+                                                    "organizer-list-color-{id:?}-{}",
+                                                    color.slot()
+                                                )))
+                                                .w_full()
+                                                .h(px(25.))
+                                                .px(px(8.))
+                                                .flex()
+                                                .items_center()
+                                                .gap(px(8.))
+                                                .rounded(px(4.))
+                                                .cursor_pointer()
+                                                .text_size(px(12.))
+                                                .text_color(text)
+                                                .hover(|item| {
+                                                    item.bg(Palette::color(&p.bg).opacity(0.35))
+                                                })
+                                                .on_click(cx.listener(
+                                                    move |this, _, window, cx| {
+                                                        this.set_task_list_color(
+                                                            color_id, color, window, cx,
+                                                        )
+                                                    },
+                                                ))
+                                                .child(
+                                                    div()
+                                                        .w(px(10.))
+                                                        .h(px(10.))
+                                                        .rounded(px(5.))
+                                                        .bg(Palette::load(&self.theme_choice)
+                                                            .block_text(color.slot())),
+                                                )
+                                                .child(label)
+                                                .when(selected, |item| {
+                                                    item.child(div().flex_1()).child("✓")
+                                                })
+                                        }),
+                                ),
                         )
                     })
             })
@@ -14393,6 +14577,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::zoom_in))
             .on_action(cx.listener(Self::zoom_out))
             .on_action(cx.listener(Self::zoom_reset))
+            .capture_key_down(cx.listener(Self::task_list_menu_key_down))
             .when_some(self.transition_palette.clone(), |root, old_palette| {
                 root.child(
                     div()
