@@ -3782,6 +3782,58 @@ impl Workspace {
                     this.mention_menu = None;
                     eprintln!("SMOKE: @today inserts a Date atom and undoes atomically");
 
+                    this.session.execute(Command::AppendBlock {
+                        kind: BlockKind::Paragraph,
+                        text: "bold smoke".into(),
+                    });
+                    let mark_block = this.session.blocks().last().unwrap().id;
+                    let mark_input = this
+                        .session
+                        .document
+                        .block(mark_block)
+                        .unwrap()
+                        .clone();
+                    this.ensure_block_input(&mark_input, window, cx)
+                        .expect("mark smoke paragraph should mount an input");
+                    this.inputs[&mark_block.0].update(cx, |input, _| {
+                        input.buffer.selection = 0..4;
+                    });
+                    this.input_event(
+                        mark_block,
+                        &InputEvent::ToggleMark(MarkKind::Bold),
+                        window,
+                        cx,
+                    );
+                    assert!(this
+                        .session
+                        .document
+                        .block(mark_block)
+                        .unwrap()
+                        .marks
+                        .iter()
+                        .any(|mark| mark.kind == MarkKind::Bold && mark.start == 0 && mark.end == 4));
+                    this.session.undo();
+                    assert!(!this
+                        .session
+                        .document
+                        .block(mark_block)
+                        .unwrap()
+                        .marks
+                        .iter()
+                        .any(|mark| mark.kind == MarkKind::Bold));
+                    this.session.redo();
+                    assert!(this
+                        .session
+                        .document
+                        .block(mark_block)
+                        .unwrap()
+                        .marks
+                        .iter()
+                        .any(|mark| mark.kind == MarkKind::Bold && mark.start == 0 && mark.end == 4));
+                    this.session.execute(Command::DeleteBlock { id: mark_block });
+                    this.sync_inputs(window, cx);
+                    eprintln!("SMOKE: selected-text bold mark applies and undoes/redoes as one action");
+
                     let (embed_id, embed_original_text) = this
                         .session
                         .blocks()
