@@ -22268,7 +22268,13 @@ impl Render for Workspace {
                                     .flex()
                                     .flex_col()
                                     .size_full()
-                                    .child(header)
+                                    .child(
+                                        div()
+                                            .w_full()
+                                            .flex()
+                                            .justify_center()
+                                            .child(header),
+                                    )
                                     .child(
                                         div()
                                             .id("empty-page-start")
@@ -22286,7 +22292,12 @@ impl Render for Workspace {
                                     )
                                     .into_any_element()
                             } else {
-                                header
+                                div()
+                                    .w_full()
+                                    .flex()
+                                    .justify_center()
+                                    .child(header)
+                                    .into_any_element()
                             }
                         })
                         .unwrap_or_else(|_| div().into_any_element());
@@ -22329,21 +22340,23 @@ impl Render for Workspace {
                     };
                     div()
                         .w_full()
-                        .max_w(px(row_width))
-                        .mx_auto()
-                        .child(this.render_document_block(
-                            index,
-                            &block,
-                            window,
-                            cx,
-                            row_text,
-                            row_muted,
-                            row_accent,
-                            row_elevated,
-                            &palette,
-                            database_width,
-                            sync_sources,
-                            page_candidates,
+                        .flex()
+                        .justify_center()
+                        .child(div().w_full().max_w(px(row_width)).child(
+                            this.render_document_block(
+                                index,
+                                &block,
+                                window,
+                                cx,
+                                row_text,
+                                row_muted,
+                                row_accent,
+                                row_elevated,
+                                &palette,
+                                database_width,
+                                sync_sources,
+                                page_candidates,
+                            ),
                         ))
                         .into_any_element()
                 })

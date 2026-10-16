@@ -1612,3 +1612,8 @@
 
 - 复核 organizer 行为后确认旧版 Slint 与 GPUI 都只保存任务 Repeat 枚举；两边完成任务都只更新 `done` / `completed_at`，不会自动生成下一条。此前 sidecar 把“自动滚动生成尚未实现”写成 GPUI 缺口，现改为准确的跨版本语义。
 - 依据旧版 `src/app/state.rs` 的 `org_task_repeat` 与 `org_task_done` 实现核对；没有改变产品行为。矩阵生成与差异检查待本次收尾命令确认；性能评测继续留到功能收尾后。
+
+## 第二百五十九轮：修正文档列在虚拟列表中的水平居中（2026-10-16）
+
+- 同尺寸 1280×800 截图对照发现旧版 760px 文档列从 x≈390 开始，而 GPUI 标题从 x≈308 开始，GPUI 页头与正文行的 `mx_auto()` 在虚拟列表项内未产生预期居中。现在两处都由满宽 flex 容器显式 `justify_center()`，内层最大宽度继续按标准 760px / 全宽 1120px 限制；空页提示仍独立占满剩余高度。
+- `cargo fmt --all`、`cargo check --all-targets --locked -j 8`、全量 `cargo test --locked -j 8`（108 项）及 Release 构建（43.52 秒）通过。新 `%TEMP%` SQLite 上的 1000 块 Release GUI smoke 全程通过，包含空页起始、模板、数据库视图、最大化/还原、虚拟滚动、速记/托盘和 MCP；未触及真实库。构建峰值内存没有测量，性能对比继续留到最后。修复后的逐像素截图复核仍待后续视觉回归。
