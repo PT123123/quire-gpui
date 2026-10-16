@@ -1622,3 +1622,8 @@
 
 - 用当前 Release 重打 `dist/Quire-GPUI-0.1.0-windows-x64.zip`，包内 EXE SHA-256 与 `target/release/quire-gpui.exe` 一致：`D26533B7AD521B4F0B1F222F88340CD594A7874FBFBFAB56DACF082B403666A5`；ZIP SHA-256：`8BA2E7B5EFF7C56240FF50014E180C03073587657CB2AABBD87493580787B569`。全新 `%TEMP%` 解压目录运行 1000 块隔离 GUI smoke，`PORTABLE_PACKAGE_SMOKE=PASS`。
 - 旧版同库往返脚本此前在 Windows PowerShell 5.1 因无 BOM 中文源码和 HTTP 请求体默认编码失败；脚本已改为 UTF-8 BOM 与 UTF-8 JSON 请求体，并在 PowerShell 5.1 实跑通过 `LEGACY_ROUNDTRIP=PASS`（测试数据库仅位于 `%TEMP%`）。原同步 wire 脚本在 PowerShell 7 实跑通过：附件拉取与推送二进制均一致、旧版 v4 snapshot 171 行往返成功，`LEGACY_SYNC_WIRE=PASS`。PowerShell 5.1 的同步 wire 脚本兼容未完成，推荐继续用仓库既有 PowerShell 7 路径；安装器编译仍缺 Inno Setup。未访问真实用户库；性能复测依用户要求留到功能完成后。
+
+## 第二百六十一轮：验证并保护 Windows DPI manifest（2026-10-16）
+
+- 用 Win32 `LoadLibraryEx` / `FindResource` 直接读取实际 Release 和便携 staging EXE 的 RT_MANIFEST 资源，二者均含 `dpiAware=true` 与 `dpiAwareness=PerMonitorV2`；这确认清单已进二进制，而不只是源码资源文件存在。
+- 新增 `tools/verify-windows-manifest.ps1`，并接入 `install/build-release.ps1`，打包前检查构建产物、复制后再检查 staging EXE。PowerShell 5.1 下对两份 EXE 的读取和 `build-release.ps1 -SkipBuild` 均通过，便携 ZIP 已刷新。实际 100/125/150/200% 显示器缩放、跨屏移动和 IME 候选框位置仍须真窗口验收；未运行性能评测。

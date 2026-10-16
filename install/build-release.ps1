@@ -22,6 +22,8 @@ if (-not $SkipBuild) {
 if (-not (Test-Path -LiteralPath $exe -PathType Leaf)) {
     throw "Release executable not found in target directory '$buildTarget': $exe"
 }
+$manifestCheck = Join-Path $PSScriptRoot '..\tools\verify-windows-manifest.ps1'
+& $manifestCheck -Path $exe
 
 $version = [regex]::Match((Get-Content -LiteralPath $manifest -Raw), '(?m)^version\s*=\s*"([^"]+)"').Groups[1].Value
 if (-not $version) { throw 'Could not read package version from Cargo.toml' }
@@ -30,6 +32,7 @@ $stage = Join-Path $dist "Quire-GPUI-$version-windows-x64"
 $zip = "$stage.zip"
 New-Item -ItemType Directory -Force -Path $stage | Out-Null
 Copy-Item -LiteralPath $exe -Destination $stage -Force
+& $manifestCheck -Path (Join-Path $stage 'quire-gpui.exe')
 Copy-Item -LiteralPath (Join-Path $root 'README.md') -Destination $stage -Force
 Copy-Item -LiteralPath (Join-Path $root 'THIRD-PARTY-NOTICES.md') -Destination $stage -Force
 @'
