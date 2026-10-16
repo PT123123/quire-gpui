@@ -1,20 +1,26 @@
 param(
     [switch] $SkipBuild,
-    [switch] $BuildInstaller
+    [switch] $BuildInstaller,
+    [string] $TargetDir = 'target'
 )
 
 $ErrorActionPreference = 'Stop'
 $root = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $manifest = Join-Path $root 'Cargo.toml'
-$exe = Join-Path $root 'target\release\quire-gpui.exe'
-$cargoArgs = @('build', '--release', '--locked', '--manifest-path', $manifest)
+$buildTarget = if ([IO.Path]::IsPathRooted($TargetDir)) {
+    [IO.Path]::GetFullPath($TargetDir)
+} else {
+    [IO.Path]::GetFullPath((Join-Path $root $TargetDir))
+}
+$exe = Join-Path $buildTarget 'release\quire-gpui.exe'
+$cargoArgs = @('build', '--release', '--locked', '--manifest-path', $manifest, '--target-dir', $buildTarget)
 
 if (-not $SkipBuild) {
     & cargo @cargoArgs
     if ($LASTEXITCODE -ne 0) { throw "cargo build failed with exit code $LASTEXITCODE" }
 }
 if (-not (Test-Path -LiteralPath $exe -PathType Leaf)) {
-    throw "Release executable not found: $exe"
+    throw "Release executable not found in target directory '$buildTarget': $exe"
 }
 
 $version = [regex]::Match((Get-Content -LiteralPath $manifest -Raw), '(?m)^version\s*=\s*"([^"]+)"').Groups[1].Value
