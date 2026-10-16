@@ -24,20 +24,24 @@ cargo run -- --db "$env:TEMP/quire-gpui-scratch/quire.db" --theme jade
 
 可用主题 ID 见 `src/palettes.json`。默认数据库位于 `%LOCALAPPDATA%/QuireGPUI/quire.db`。不要把旧版真实数据库作为 `--db` 参数；需先复制一份测试副本。开发构建已在本机通过，完整的窗口交互、输入法与关闭重开流程尚待使用反馈。
 
-### Release 编译基准（Windows x64，2026-10-16）
+### Release 编译开销（Windows x64，2026-10-17）
 
-最新任务详情调整版：`cargo build --release --locked --target-dir target-measure` 增量构建 **55.03 秒**，EXE **26,343,936 字节（25.12 MiB）**，位于 `target-measure/release/quire-gpui.exe`。本次未重采编译峰值内存；以下是此前的冷构建基准。
+GPUI 的冷构建使用全新的隔离 target 目录，避免现有构建缓存影响，并保留已有 `target/`。Slint 数据复制自 [`quire-desktop/README.md`](../quire-desktop/README.md)；它记录两次确认的构建，而 GPUI 是一次冷构建，因此总耗时不代表严格同口径的单次编译对比。两者都是本机单次记录。
 
-使用 `cargo build --release --locked`，将 Cargo 输出放在独立的 `target-measure/`，避免正在运行的 `target/release/quire-gpui.exe` 锁住而无法覆盖。全新 target 的依赖与应用冷编译成功，耗时 **377.44 秒（6 分 17 秒）**；Cargo 自身报告 6 分 16 秒。测量脚本以 250 ms 间隔采样 cargo/rustc/linker 进程总量，峰值工作集 **3497.1 MiB（3.42 GiB）**、私有内存 **4080.1 MiB（3.98 GiB）**。产物 `target-measure/release/quire-gpui.exe` 为 **26,198,528 字节（24.98 MiB）**。
+| shell | 构建口径 | 耗时 | 峰值构建内存 | target 缓存变化 | EXE 大小 |
+|-------|----------|-----:|--------------:|---------------:|---------:|
+| Slint 0.1.27 | 两次确认的 Release 构建，最后一次 9m53s | 14m46s | 未记录 | +311,096,092 B（296.6 MiB）；最终 24,017,763,693 B（22.37 GiB） | 38,380,032 B（36.60 MiB） |
+| GPUI 0.1.0 | 全新 target 的 Release 冷构建 | 246.74s（4m07s） | Working Set 3,170.6 MiB（3.10 GiB）；Private 4,057.7 MiB（3.96 GiB） | +1,932,341,652 B（1.80 GiB） | 26,258,432 B（25.04 MiB） |
 
-环境：Rust/Cargo 1.98.0，`x86_64-pc-windows-msvc`，Release 优化配置，锁文件依赖。时间和内存是本机单次冷构建测量，不代表所有机器；EXE 大小是未打包的主程序，不含 ZIP/安装包。
+Slint 的 target 数字是其完整仓库 `target/` 的构建前后净变化，含其他 renderer / shot target；GPUI 数字只统计本次新建的独立目录 `target-benchmark-20261017/`。缓存组成不同，不能据此断言某个框架的编译缓存更省。GPUI 的 250 ms 采样统计 Cargo、rustc、link 和 lld-link 进程的内存总量；峰值是编译期间所有采样进程的最大合计。Slint 没有记录峰值，故不作比较。两边 EXE 均为未打包主程序。
 
-复测：先移除独立测量目录以得到冷构建，再运行脚本（记录 JSON 与日志写在 `%TEMP%`）：
+本机环境：Windows x64，Rust/Cargo 1.98.0，`x86_64-pc-windows-msvc`，Release 优化配置，锁文件依赖。Slint 的硬件与操作系统信息见其 README（Core Ultra 9 185H、32 GB、Windows 11 26200）。GPUI 本轮记录 commit `37ddf2b5f0febbfe3b9da8f2de8e05b4271737f0`。结果受本机缓存、并行度和系统负载影响，不代表所有机器。
+
+复测：指定一个不存在的隔离 target 目录以得到冷构建，记录 JSON 与日志写在 `%TEMP%`：
 
 ```powershell
-Remove-Item -Recurse -Force target-measure -ErrorAction SilentlyContinue
 powershell -ExecutionPolicy Bypass -File tools/measure-build.ps1 `
-  -Repo . -TouchFile src/view.rs -TargetDir target-measure `
+  -Repo . -TouchFile src/view.rs -TargetDir target-benchmark-YYYYMMDD `
   -Output "$env:TEMP/quire-gpui-build.json"
 ```
 
