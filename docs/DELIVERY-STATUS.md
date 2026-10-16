@@ -1692,3 +1692,9 @@
 
 - 补齐垂直目标列状态的生命周期：全选、文档首尾跳转及输入框失焦会清除旧目标列，避免输入框重新聚焦或跳至其他块后继承过期 x 坐标。
 - 格式检查、全量 `cargo test --locked -j 8`（113 项）、`cargo check --all-targets --locked -j 8`、`git diff --check` 和 1000 块隔离 Release GUI smoke 通过。Release 构建用时 46.70 秒；这是单次构建记录，未测编译峰值内存或做 Slint 性能对比。便携包/安装器从此候选刷新，staging 与 Release EXE SHA-256 一致：`2B9BEAD248C67C04012B26CC71C176763FF2B69550098B7DD80E036010E20F1F`；ZIP SHA-256 `6EA3507215A575D0159B2B7CE84DB562C4CBAD3D73E469D6C3760A414E5AF222`，安装器 SHA-256 `F1632C8C3917E800ABD686E75B5F0DBAD17AD1191825DC72AD015848B944A081`。测试库仅在 `%TEMP%`，未访问真实用户库。
+
+## 第二百七十四轮：接通运行期间滚动数据库备份（2026-10-16）
+
+- 发现 GPUI 只依赖 SQLite 启动备份，未将 core 已有的 10 分钟活动期周期快照接到 `PersistenceService`，导致长会话中的 `.bak1` 落后到启动时。现在每次保存会推进周期快照；快照失败不会把已落库的编辑误报为保存失败，会显示可关闭的“数据已保存、恢复点未更新”提醒，设置中手动备份成功后清除此提醒。
+- 新增隔离 Session 回归：用零间隔注入同一 SQLite 快照服务，删除启动备份后编辑并 force-flush，确认生成新的 `.bak1`；提醒文案测试区分主库保存成功与快照失败。格式检查、全量 `cargo test --locked -j 8`（114 项）、`cargo check --all-targets --locked -j 8`、`git diff --check` 均通过。
+- Release 构建通过，1000 块全新 `%TEMP%` SQLite GUI smoke 覆盖 MCP、速记/托盘、最大化/还原、数据库视图与虚拟滚动。构建时间记录为 66 秒；未采集峰值内存、未运行 Slint 对比。便携包与安装器从此 Release 刷新，staging EXE SHA-256 与 Release 一致：`0DE5EAB6BFD24527AF44E16D38B0F19B832E6AF4366AF0F1EFD73DEBE14A7CE9`；ZIP SHA-256 `4F168D3B9A72D8C01787CF98A70C29442F0E93D968DC2F66E44B9D0BF75A3E3C`；安装器 SHA-256 `7BE63BF43228757336B05E87053E540F3974B23EF6B1A5724AFA2C0FC80469AB`。未访问真实用户库，未改动 Slint/core。

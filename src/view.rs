@@ -1137,6 +1137,10 @@ fn notes_auto_input_enabled(value: Option<&str>) -> bool {
     value.is_none_or(|value| !matches!(value, "0" | "false"))
 }
 
+fn periodic_snapshot_failure_notice(error: &dyn std::fmt::Display) -> String {
+    format!("数据库更改已保存，但自动恢复点更新失败：{error}。请到 设置 → 存储 → 立即备份 重试。")
+}
+
 fn settings_section_visible(query: &str, selected_tab: usize, tab: usize, keywords: &str) -> bool {
     if query.trim().is_empty() {
         selected_tab == tab
@@ -1210,9 +1214,10 @@ mod view_tests {
         mention_date_matches, notes_auto_input_enabled, order_database_groups,
         organizer_notes_copy_payload, organizer_tag_matches_path, organizer_tag_tree_rows,
         organizer_tags_exclude, organizer_task_drop_accepted, palette_matches, parse_mcp_port,
-        parse_organizer_tags, push_history, settings_matches, settings_section_visible,
-        slash_items, slash_query, sort_organizer_notes, sort_organizer_tasks, sync_peer_is_recent,
-        sync_targets, system_palette_id_for_appearance, toc_headings,
+        parse_organizer_tags, periodic_snapshot_failure_notice, push_history, settings_matches,
+        settings_section_visible, slash_items, slash_query, sort_organizer_notes,
+        sort_organizer_tasks, sync_peer_is_recent, sync_targets, system_palette_id_for_appearance,
+        toc_headings,
     };
     use gpui::{
         AppContext, Context, InteractiveElement, IntoElement, Render, Styled, TestAppContext,
@@ -1226,6 +1231,15 @@ mod view_tests {
     use quire_core::core::types::{
         Block, BlockId, BlockKind, ColorKind, Lang, Mark, MarkKind, OrderKey, PageId,
     };
+
+    #[test]
+    fn periodic_snapshot_failure_is_distinguished_from_a_failed_save() {
+        let notice = periodic_snapshot_failure_notice(&"disk is full");
+        assert!(notice.contains("数据库更改已保存"));
+        assert!(notice.contains("自动恢复点更新失败"));
+        assert!(notice.contains("disk is full"));
+        assert!(notice.contains("立即备份"));
+    }
 
     #[gpui::test]
     fn document_column_is_centered_in_the_available_viewport(cx: &mut TestAppContext) {
@@ -2481,6 +2495,7 @@ pub struct Workspace {
     database_calendar_property_open: Option<(u64, u64)>,
     database_timeline_end_property_open: Option<(u64, u64)>,
     startup_notice: Option<String>,
+    snapshot_notice: Option<String>,
     active: Option<BlockId>,
     save_task: Option<gpui::Task<()>>,
     flush_lock: Arc<Mutex<()>>,
@@ -2925,6 +2940,7 @@ impl Workspace {
             database_calendar_property_open: None,
             database_timeline_end_property_open: None,
             startup_notice,
+            snapshot_notice: None,
             active: None,
             save_task: None,
             flush_lock: Arc::new(Mutex::new(())),
@@ -10057,6 +10073,7 @@ impl Workspace {
             Ok(()) => {
                 self.status = "已创建新的数据库备份".into();
                 self.error = false;
+                self.snapshot_notice = None;
             }
             Err(error) => {
                 self.status = error;
@@ -12215,11 +12232,13 @@ impl Workspace {
         };
         self.save_task = Some(cx.spawn_in(window, async move |weak, cx| {
             cx.background_executor().timer(delay).await;
-            let result = cx
+            let (result, snapshot_error) = cx
                 .background_executor()
                 .spawn(async move {
                     let _guard = lock.lock().unwrap_or_else(|e| e.into_inner());
-                    persistence.force_flush()
+                    let result = persistence.force_flush();
+                    let snapshot_error = persistence.take_snapshot_error();
+                    (result, snapshot_error)
                 })
                 .await;
             let _ = weak.update_in(cx, |this, window, cx| {
@@ -12227,6 +12246,9 @@ impl Workspace {
                     Ok(()) => {
                         this.status = "已保存".into();
                         this.error = false;
+                        if let Some(error) = snapshot_error {
+                            this.snapshot_notice = Some(periodic_snapshot_failure_notice(&error));
+                        }
                         if this.closing {
                             eprintln!("saved {}", this.session.path.display());
                             window.remove_window();
@@ -17514,6 +17536,11 @@ impl Render for Workspace {
         let sidebar_transition = self.sidebar_transition;
         let p = self.palette.clone();
         let maximized = window.is_maximized();
+        let snapshot_notice_top = if self.startup_notice.is_some() {
+            px(100.)
+        } else {
+            px(46.)
+        };
         let database_width = (window.bounds().size.width - px(356.))
             .min(px(760.))
             .max(px(200.));
@@ -23803,6 +23830,48 @@ impl Render for Workspace {
                                 .hover(|button| button.bg(rgb(0x765322)))
                                 .on_click(cx.listener(|this, _, _, cx| {
                                     this.startup_notice = None;
+                                    cx.notify();
+                                }))
+                                .child("关闭"),
+                        ),
+                )
+            })
+            .when_some(self.snapshot_notice.clone(), |root, notice| {
+                root.child(
+                    div()
+                        .id("periodic-snapshot-notice")
+                        .absolute()
+                        .top(snapshot_notice_top)
+                        .left(px(276.))
+                        .right(px(12.))
+                        .flex()
+                        .items_start()
+                        .gap(px(10.))
+                        .p(px(10.))
+                        .rounded(px(6.))
+                        .border_1()
+                        .border_color(rgb(0xd99b38))
+                        .bg(rgb(0x4b351b))
+                        .shadow_lg()
+                        .child(
+                            div()
+                                .flex_1()
+                                .text_size(px(12.))
+                                .text_color(rgb(0xffe1a6))
+                                .child(notice),
+                        )
+                        .child(
+                            div()
+                                .id("dismiss-periodic-snapshot-notice")
+                                .px(px(7.))
+                                .py(px(2.))
+                                .rounded(px(4.))
+                                .text_size(px(12.))
+                                .text_color(rgb(0xffe1a6))
+                                .cursor_pointer()
+                                .hover(|button| button.bg(rgb(0x765322)))
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.snapshot_notice = None;
                                     cx.notify();
                                 }))
                                 .child("关闭"),

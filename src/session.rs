@@ -661,6 +661,10 @@ fn sync_organizer_changes(
 
 impl Session {
     pub fn open(path: &Path) -> Result<Self> {
+        Self::open_with_snapshot_interval(path, None)
+    }
+
+    fn open_with_snapshot_interval(path: &Path, snapshot_interval_ms: Option<i64>) -> Result<Self> {
         if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
             std::fs::create_dir_all(parent)?;
         }
@@ -760,7 +764,17 @@ impl Session {
                     .collect(),
             );
         }
-        let persistence = Arc::new(PersistenceService::with_default_clock(repo.clone()));
+        let persistence = if let Some(interval_ms) = snapshot_interval_ms {
+            let snapshot_repo = repo.clone();
+            Arc::new(
+                PersistenceService::with_default_clock(repo.clone())
+                    .with_snapshotter(interval_ms, move || snapshot_repo.snapshot()),
+            )
+        } else {
+            Arc::new(
+                PersistenceService::with_default_clock(repo.clone()).with_database_snapshots(&repo),
+            )
+        };
         if create_initial_page {
             persistence.record(vec![Change::PageCreated(page.clone())]);
         }
@@ -6510,6 +6524,25 @@ mod tests {
         let reopened = Session::open(&path)?;
         assert_eq!(reopened.startup_area, "docs");
         assert_eq!(reopened.page.id, expected_page);
+        Ok(())
+    }
+
+    #[test]
+    fn session_snapshots_after_a_flushed_change_when_the_interval_is_due() -> Result<()> {
+        let scratch = quire_core::testing::ScratchDir::new("gpui-periodic-snapshot");
+        let path = scratch.path().join("quire.db");
+        let mut session = Session::open_with_snapshot_interval(&path, Some(0))?;
+        let newest = quire_core::storage::backup::slot(&path, 1);
+        std::fs::remove_file(&newest)?;
+
+        session.set_page_title("Periodic backup probe".into());
+        session.persistence.force_flush()?;
+
+        assert!(
+            newest.is_file(),
+            "a durable edit should create a new backup"
+        );
+        assert!(session.persistence.take_snapshot_error().is_none());
         Ok(())
     }
 
