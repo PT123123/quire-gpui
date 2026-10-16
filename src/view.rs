@@ -2432,6 +2432,9 @@ pub struct Workspace {
     page_context_focus_return: Option<FocusHandle>,
     page_context_selection: usize,
     fixed_context_menu: Option<(u8, f32, f32)>,
+    fixed_context_focus: FocusHandle,
+    fixed_context_focus_return: Option<FocusHandle>,
+    fixed_context_selection: usize,
     organizer_context_menu: Option<(u8, u64, f32, f32)>,
     hovered_note: Option<quire_core::core::organizer::NoteId>,
     hovered_task: Option<quire_core::core::organizer::TaskId>,
@@ -2806,6 +2809,7 @@ impl Workspace {
         let sync_cmd_tx = crate::sync_client::start(sync_job_tx);
         let task_list_menu_focus = cx.focus_handle();
         let page_context_focus = cx.focus_handle();
+        let fixed_context_focus = cx.focus_handle();
         let mut this = Self {
             session,
             version_name_input,
@@ -2882,6 +2886,9 @@ impl Workspace {
             page_context_focus_return: None,
             page_context_selection: 0,
             fixed_context_menu: None,
+            fixed_context_focus,
+            fixed_context_focus_return: None,
+            fixed_context_selection: 0,
             organizer_context_menu: None,
             hovered_note: None,
             hovered_task: None,
@@ -4190,9 +4197,17 @@ impl Workspace {
                     drop(page_menu_frame);
                     this.escape_page_context_menu(window);
                     assert_eq!(window.focused(cx), page_menu_return_focus);
+                    let fixed_menu_return_focus = window.focused(cx);
+                    this.open_fixed_context_menu_at(3, 80., 80., window, cx);
+                    assert!(this.fixed_context_focus.is_focused(window));
+                    let fixed_menu_frame = this.render(window, cx);
+                    drop(fixed_menu_frame);
+                    this.escape_fixed_context_menu(window);
+                    assert_eq!(window.focused(cx), fixed_menu_return_focus);
                     this.schedule_save(true, window, cx);
                     eprintln!("SMOKE: organizer note/task context menus and their actions passed");
                     eprintln!("SMOKE: page context menu captures and restores keyboard focus");
+                    eprintln!("SMOKE: fixed sidebar menu captures and restores keyboard focus");
                     assert!(this.command_palette_open);
                     assert_eq!(this.command_palette_query, "设置");
                     assert_eq!(this.palette_items().len(), 1);
@@ -11272,18 +11287,84 @@ impl Workspace {
         &mut self,
         target: u8,
         event: &MouseDownEvent,
-        window: &Window,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_fixed_context_menu_at(
+            target,
+            f32::from(event.position.x),
+            f32::from(event.position.y),
+            window,
+            cx,
+        );
+    }
+    fn open_fixed_context_menu_at(
+        &mut self,
+        target: u8,
+        x: f32,
+        y: f32,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         let scale = quire_gpui::ui_scale::get();
         let bounds = window.bounds().size;
         let width = 190.;
         let height = 112.;
-        let x = (f32::from(event.position.x) / scale)
-            .clamp(0., (f32::from(bounds.width) / scale - width).max(0.));
-        let y = (f32::from(event.position.y) / scale)
-            .clamp(0., (f32::from(bounds.height) / scale - height).max(0.));
+        let x = (x / scale).clamp(0., (f32::from(bounds.width) / scale - width).max(0.));
+        let y = (y / scale).clamp(0., (f32::from(bounds.height) / scale - height).max(0.));
+        if self.fixed_context_menu.is_none() {
+            self.fixed_context_focus_return = window.focused(cx);
+        }
         self.fixed_context_menu = Some((target, x, y));
+        self.fixed_context_selection = 0;
+        window.focus(&self.fixed_context_focus);
+        cx.stop_propagation();
+        cx.notify();
+    }
+    fn restore_fixed_context_focus(&mut self, window: &mut Window) {
+        if let Some(focus) = self.fixed_context_focus_return.take() {
+            window.focus(&focus);
+        }
+    }
+    fn escape_fixed_context_menu(&mut self, window: &mut Window) {
+        self.fixed_context_menu = None;
+        self.restore_fixed_context_focus(window);
+    }
+    fn fixed_context_menu_key_down(
+        &mut self,
+        event: &KeyDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some((target, _, _)) = self.fixed_context_menu else {
+            return;
+        };
+        if event.keystroke.modifiers.modified() {
+            return;
+        }
+        let actions: &[u8] = match target {
+            0 => &[0, 1, 2],
+            1 | 2 => &[0, 1],
+            3 | 4 => &[0],
+            _ => return,
+        };
+        match event.keystroke.key.as_str() {
+            "escape" => self.escape_fixed_context_menu(window),
+            "up" | "down" => {
+                self.fixed_context_selection = next_menu_selection(
+                    self.fixed_context_selection,
+                    actions.len(),
+                    event.keystroke.key.as_str(),
+                )
+                .expect("fixed context menu has at least one action");
+            }
+            "enter" | "space" => {
+                if let Some(action) = actions.get(self.fixed_context_selection) {
+                    self.run_fixed_context_action(target, *action, window, cx);
+                }
+            }
+            _ => return,
+        }
         cx.stop_propagation();
         cx.notify();
     }
@@ -11426,6 +11507,7 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         self.fixed_context_menu = None;
+        self.restore_fixed_context_focus(window);
         match (target, action) {
             (0, 0) => self.add_page(window, cx),
             (0, 1) => self.open_data_folder(cx),
@@ -19482,10 +19564,12 @@ impl Render for Workspace {
                 .on_mouse_down_out(cx.listener(|_, _, window, cx| {
                     cx.defer_in(window, |this, _window, cx| {
                         this.fixed_context_menu = None;
+                        this.fixed_context_focus_return = None;
                         cx.notify();
                     });
                 }))
-                .children(actions.iter().map(|(label, action)| {
+                .track_focus(&self.fixed_context_focus)
+                .children(actions.iter().enumerate().map(|(index, (label, action))| {
                     div()
                         .id(SharedString::from(format!(
                             "fixed-context-{target}-{action}"
@@ -19499,6 +19583,9 @@ impl Render for Workspace {
                         .text_size(px(12.))
                         .text_color(text)
                         .hover(|row| row.bg(Palette::color(&p.bg).opacity(0.38)))
+                        .when(self.fixed_context_selection == index, |row| {
+                            row.bg(Palette::color(&p.bg).opacity(0.38))
+                        })
                         .on_click(cx.listener(move |this, _, window, cx| {
                             this.run_fixed_context_action(target, *action, window, cx)
                         }))
@@ -22788,6 +22875,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::zoom_out))
             .on_action(cx.listener(Self::zoom_reset))
             .capture_key_down(cx.listener(Self::page_context_menu_key_down))
+            .capture_key_down(cx.listener(Self::fixed_context_menu_key_down))
             .capture_key_down(cx.listener(Self::task_list_menu_key_down))
             .capture_key_down(cx.listener(Self::editor_rich_paste_key_down))
             .when_some(self.transition_palette.clone(), |root, old_palette| {

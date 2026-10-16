@@ -1789,3 +1789,9 @@
 - 页面树右键菜单打开时记录原焦点并将焦点交给菜单；上下键在十项操作间循环高亮，Enter/Space 执行当前页操作，Escape 关闭并恢复焦点。页面行为继续路由到已有 Workspace/core 操作；点击菜单外时不强行抢回目标控件焦点。
 - `cargo test --locked --bin quire-gpui -j 8 -- --quiet`（55 项）与 `cargo check --all-targets --locked -j 8` 通过。Release build 与 `--smoke-test --smoke-blocks 1000` 在新建 `%TEMP%` SQLite 上通过；日志明确包含页面 context menu 焦点接管与 Escape 恢复，完整 1000 块流程正常退出。选择环绕边界由 `next_menu_selection` 单测覆盖。
 - 自动窗口路径没有合成物理右键或键盘按键，因此真实右键命中和按键体验仍需候选真人桌面验收。未访问真实用户库或修改 Slint/core；本轮未做性能评测。
+
+## 第二百八十九轮：固定侧栏入口菜单键盘操作（2026-10-16）
+
+- 工作区、笔记、任务、搜索和设置固定入口的右键菜单现在接管 GPUI 焦点；上下键循环高亮可用操作，Enter/Space 执行，Escape 关闭并恢复打开前焦点。点击菜单外关闭保留目标控件的焦点。
+- `cargo fmt --all`、`cargo check --all-targets --locked -j 8`、二进制测试（55 项）和 `git diff --check` 通过。当前源码 Release GUI smoke 在全新 `%TEMP%` SQLite、1000 块场景通过，覆盖设置入口菜单的焦点接管、渲染和 Escape 恢复，并完成已有全流程场景。真实右键/物理按键仍未由自动化合成。
+- 未访问真实用户库或修改 Slint/core；未运行性能评测，按用户要求留到最后。
