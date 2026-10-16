@@ -1762,3 +1762,8 @@
 
 - 以 `e23dc23` 的 Release 运行代码刷新便携 ZIP 与 Inno Setup 6.7.3 per-user 安装器；打包前后 Win32 manifest 检查均为 `PerMonitorV2 PASS`。Release/staging EXE SHA-256 一致：`1C7FD541680714C04B22C714DF10960144A8AD344884C9894971C23906EDD520`；ZIP SHA-256：`AD92C1A4CE115C09CE1FAD6B018D8F67D9542AC479E64CEC07D18D1C26E4FD9C`；安装器 SHA-256：`F82F4AE72CEF1B6B785F9CDC2A5CFBB3DEC43C3A35E5A8C8915965210CE2986B`。
 - 使用唯一随机 `%TEMP%` 路径完成新版安装器静默安装，确认安装程序与 EXE 存在且安装 EXE 哈希等于 Release，再执行卸载并确认临时安装目录消失：`CANDIDATE_PACKAGE=PASS`。未启动安装后的窗口，未触碰真实用户数据库；工作树代码没有变化。真实用户升级、数据保留和回退仍属于用户实际切换时的验收。
+
+## 第二百八十四轮：共享基线后的同步双向收敛回归（2026-10-16）
+
+- 扩展 `tests/sync_loopback.rs`：两节点先交换并共享基线，再分别产生独立改动（A 更新既有笔记标题、正文和标签；B 新建任务并写入备注），通过 B→A 合并和合并快照 A→B 回传后，逐字段检查两端内容一致；关闭并重开两个隔离数据库后，再逐字段读回核验。
+- `cargo fmt --all` 与 `cargo test --locked --test sync_loopback -j 8 -- --nocapture` 通过。全量 `cargo test --locked -j 8 -- --quiet`（115 项）、`cargo check --all-targets --locked -j 8`、`cargo fmt --all -- --check`、`git diff --check` 通过；`tools/test-legacy-roundtrip.ps1` 输出 `LEGACY_ROUNDTRIP=PASS`，`tools/test-sync-legacy-wire.ps1` 输出 `LEGACY_SYNC_WIRE=PASS`（v4 快照 171 行、2 个附件双向传输并逐字节一致）。该测试验证独立并发改动，不代表同一字段冲突策略已验收；冲突行为和两台真实设备网络仍在 P7 未验收项中。数据只写入脚本创建的临时 SQLite，未访问真实用户库或修改 Slint/core。本轮没有执行性能评测。

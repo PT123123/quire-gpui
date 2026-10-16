@@ -310,6 +310,50 @@ fn two_isolated_sessions_exchange_changes_over_sync_http_and_reopen() -> anyhow:
         quire_core::core::database::CellValue::Items(vec![database_attachment_id.to_string()])
     );
 
+    // Both sessions now share the same sync baseline. Make independent edits
+    // on each side before the next exchange and require the merge response to
+    // bring both nodes to the same organizer state.
+    let peer_a = PeerRecord {
+        id: info_a.id.clone(),
+        name: info_a.name.clone(),
+        kind: info_a.kind.clone(),
+        ip: "127.0.0.1".into(),
+        port: port_a,
+        paired: true,
+        last_seen: 0,
+        last_sync: String::new(),
+    };
+    a.update_note_editor(
+        note_a,
+        "共享基线后的 A 笔记更新".into(),
+        "A 在共同基线上更新了正文".into(),
+        vec!["A-side".into()],
+    );
+    let task_b = b.create_task("共享基线后的 B 任务".into());
+    assert!(b.update_task_editor(
+        task_b,
+        "共享基线后的 B 任务".into(),
+        "B 在共同基线上新增了任务".into(),
+        None,
+    ));
+    let concurrent_b = b.sync_export()?;
+    let merged_on_a = a.sync_apply_remote(&concurrent_b, &[], &peer_b)?;
+    let note = a.organizer.note(note_a).expect("A note merged on A");
+    assert_eq!(note.title, "共享基线后的 A 笔记更新");
+    assert_eq!(note.body, "A 在共同基线上更新了正文");
+    assert_eq!(note.tags, ["A-side"]);
+    let task = a.organizer.task(task_b).expect("B task merged on A");
+    assert_eq!(task.title, "共享基线后的 B 任务");
+    assert_eq!(task.notes, "B 在共同基线上新增了任务");
+    b.sync_apply_remote(&merged_on_a, &[], &peer_a)?;
+    let note = b.organizer.note(note_a).expect("A note merged on B");
+    assert_eq!(note.title, "共享基线后的 A 笔记更新");
+    assert_eq!(note.body, "A 在共同基线上更新了正文");
+    assert_eq!(note.tags, ["A-side"]);
+    let task = b.organizer.task(task_b).expect("B task retained on B");
+    assert_eq!(task.title, "共享基线后的 B 任务");
+    assert_eq!(task.notes, "B 在共同基线上新增了任务");
+
     // Database file removals travel as normal value tombstones. The attachment
     // bytes stay available for recovery; re-adding the reference after the
     // delete must make it visible in a later snapshot again.
@@ -332,16 +376,6 @@ fn two_isolated_sessions_exchange_changes_over_sync_http_and_reopen() -> anyhow:
         a.repo.cell(record_b, files_property_b)?,
         quire_core::core::database::CellValue::Empty
     );
-    let peer_a = PeerRecord {
-        id: info_a.id.clone(),
-        name: info_a.name.clone(),
-        kind: info_a.kind.clone(),
-        ip: "127.0.0.1".into(),
-        port: port_a,
-        paired: true,
-        last_seen: 0,
-        last_sync: String::new(),
-    };
     b.sync_apply_remote(&deleted_on_a, &[], &peer_a)?;
     assert!(b.set_database_cell_many(
         database_block_b,
@@ -379,6 +413,18 @@ fn two_isolated_sessions_exchange_changes_over_sync_http_and_reopen() -> anyhow:
     let reopened_a = Session::open(&path_a)?;
     let reopened_b = Session::open(&path_b)?;
     assert!(reopened_a.organizer.note(note_a).is_some());
+    assert_eq!(
+        reopened_a.organizer.note(note_a).map(|note| (
+            note.title.as_str(),
+            note.body.as_str(),
+            note.tags.as_slice()
+        )),
+        Some((
+            "共享基线后的 A 笔记更新",
+            "A 在共同基线上更新了正文",
+            &["A-side".to_string()][..]
+        ))
+    );
     assert!(
         reopened_a
             .pages
@@ -386,6 +432,23 @@ fn two_isolated_sessions_exchange_changes_over_sync_http_and_reopen() -> anyhow:
             .any(|page| page.title == "来自 B 的页面")
     );
     assert!(reopened_b.organizer.note(note_a).is_some());
+    assert_eq!(
+        reopened_b.organizer.note(note_a).map(|note| (
+            note.title.as_str(),
+            note.body.as_str(),
+            note.tags.as_slice()
+        )),
+        Some((
+            "共享基线后的 A 笔记更新",
+            "A 在共同基线上更新了正文",
+            &["A-side".to_string()][..]
+        ))
+    );
+    for session in [&reopened_a, &reopened_b] {
+        let task = session.organizer.task(task_b).expect("B task persisted");
+        assert_eq!(task.title, "共享基线后的 B 任务");
+        assert_eq!(task.notes, "B 在共同基线上新增了任务");
+    }
     assert!(
         reopened_b
             .document
