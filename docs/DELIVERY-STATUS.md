@@ -1490,7 +1490,7 @@
 
 ## 第二百三十六轮：旧版与 GPUI 的隔离库往返兼容抽验（2026-10-16）
 
-- 使用旧版 Release `quire.exe`（`quire-desktop` commit `911246743cf79c43c96b38dfd39dffac3fb4d53c`）在 `%TEMP%\quire-gpui-legacy-roundtrip-ec1496b-20261016-retry\legacy.db` 建立新测试库；GPUI `Session::open` 读出旧库并导入一页含中文、标题、粗体/斜体、项目符号和已完成待办的 Markdown，强制 flush；随后旧版以 `--dump-state --auto-exit 2` 打开并正常退出，最后 GPUI Release `--dump-state` 再读，确认该页（ID 124）及四个块的类型和中文内容仍在，页面总数为 25。过程中只访问这一随机隔离测试库。
-- 结果：基本页面与常见块内容完成旧版 → GPUI 写入 → 旧版启动/保存 → GPUI 读回的同库往返。旧版日志记录 `pages=25`；最终 GPUI JSON 精确保留标题、正文文本及 heading/bullet/todo 类型。未对附件文件哈希、数据库 schema/记录、整理区数据、同步 snapshot 或旧 MCP 客户端做跨版本往返，所以 P7 的附件/协议兼容门仍保持未完成；不将本次抽验扩写成全量兼容通过。
-- 证据日志与测试库保留于上述 `%TEMP%` 目录。首个尝试因 PowerShell 重定向提前关闭 stderr 而使旧版在写诊断时 panic，该目录不是有效样本；最终结论仅使用 `-retry` 目录中退出码为 0 的两次旧版启动及 GPUI JSON 读回。Slint 源码工作树保持干净。
-- 复验：`cargo fmt --all -- --check` 通过；`cargo test --locked -j 8` 通过（106 项：54 库、50 二进制、MCP stdio 与 sync loopback 集成）。有两条 GPUI vendor float 类型未来兼容警告和 MCP `serve` dead-code 警告，未影响测试；本轮没有生产 Rust 源码改动。
+- 使用旧版 Release `quire.exe`（`quire-desktop` commit `911246743cf79c43c96b38dfd39dffac3fb4d53c`）在 `%TEMP%\quire-gpui-legacy-roundtrip-ec1496b-20261016-retry\legacy.db` 建立新库；GPUI `Session::open` 读出后写入含中文标题、粗体/斜体、列表和待办的页面。旧版以 `--dump-state --auto-exit 2` 打开并正常退出，再由 GPUI 读回验证。随后 GPUI 在同库加入文本属性数据库及一条文本记录、带标签笔记、带子任务的任务和文件附件；旧版再次退出码 0 打开并保存，最终 GPUI 校验各项字段和附件文件字节与输入完全一致。页面数为 25；GPUI 侧对象 ID 为 database/property/record/note/task/attachment `1/2/1/1/1/1`。整个过程只访问此临时测试库。
+- 结果：基本页面/常见块、一个文本属性数据库记录、笔记/任务/子任务和附件字节完成旧版 → GPUI 写入 → 旧版启动/保存 → GPUI 读回的同库往返。另用 GPUI Release `--stdio --db <同一隔离库>` 作为 MCP 客户端连接旧版 Release 的 `127.0.0.1:5880` 服务，按共同支持的 MCP `2025-06-18` 协议读取 10 项旧工具目录，调用旧 `list_notes`/`list_tasks` 读到 GPUI 数据，并经旧 `create_note` 写入一条测试笔记；旧版退出后 GPUI 重开库验证正文与标签持久化。MCP 绑定仅在 loopback。复杂数据库属性/关系、组织数据删除/恢复及同步 snapshot 尚未做跨版本互通，所以 P7 完整兼容门仍未关闭。
+- 证据日志、临时夹具和附件留在上述 `%TEMP%` 目录。旧版只使用该目录旁的测试库与 MCP 指针；最终结论仅使用退出码为 0 的旧版启动、GPUI 显式对象/字节断言和 MCP 桥接调用结果。Slint 源码工作树保持干净。
+- GPUI 侧临时 Session 探针的 `cargo run --locked --example legacy_roundtrip_probe -- write/verify <isolated-db>` 两种模式均通过；探针文件随后删除，未修改生产 Rust 代码。全量 `cargo fmt --all -- --check` 与 `cargo test --locked -j 8` 通过（106 项：54 库、50 二进制、MCP stdio 与 sync loopback 集成）。已有 vendor float 类型未来兼容和 MCP dead-code 警告未影响结果。
