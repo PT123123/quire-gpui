@@ -23,6 +23,7 @@ const SELECT: &str = "单选";
 const STATUS: &str = "状态";
 const FILES: &str = "文件";
 const ATTACHMENT_BYTES: &[u8] = b"legacy schema attachment bytes\0\xff";
+const SECOND_ATTACHMENT_BYTES: &[u8] = b"second legacy attachment bytes\x00\x01";
 
 fn main() -> Result<()> {
     let args: Vec<String> = env::args().collect();
@@ -52,7 +53,9 @@ fn configure(path: &Path, port: &str, token: &str) -> Result<()> {
 
 fn write(path: &Path) -> Result<()> {
     let attachment_source = path.with_file_name("compat-attachment.bin");
+    let second_attachment_source = path.with_file_name("compat-attachment-2.bin");
     std::fs::write(&attachment_source, ATTACHMENT_BYTES)?;
+    std::fs::write(&second_attachment_source, SECOND_ATTACHMENT_BYTES)?;
     let mut s = Session::open(path)?;
     let block = s.blocks()[0].id;
     let db = s
@@ -135,7 +138,12 @@ fn write(path: &Path) -> Result<()> {
     s.set_database_cell(block, left, phone, "+1 555 0100")?;
     s.set_database_cell(block, left, select, "重点")?;
     s.set_database_cell(block, left, status, "进行中")?;
-    assert!(s.import_database_files(block, left, files, &[attachment_source])?);
+    assert!(s.import_database_files(
+        block,
+        left,
+        files,
+        &[attachment_source, second_attachment_source]
+    )?);
     s.set_database_cell(block, right, score, "7")?;
     s.set_database_cell(
         block,
@@ -254,16 +262,19 @@ fn verify(path: &Path) -> Result<()> {
         );
     }
     let file_ids = match s.repo.cell(left.id, files.id)? {
-        CellValue::Items(ids) if ids.len() == 1 => ids,
+        CellValue::Items(ids) if ids.len() == 2 => ids,
         value => bail!("unexpected file cell value: {value:?}"),
     };
-    let attachment_id = file_ids[0]
-        .parse::<u64>()
-        .context("invalid attachment id")?;
-    let stored_path = s
-        .attachment_path(quire_core::core::types::AttachmentId(attachment_id))
-        .context("attachment path missing")?;
-    assert_eq!(std::fs::read(stored_path)?, ATTACHMENT_BYTES);
+    for (id, expected_bytes) in file_ids
+        .iter()
+        .zip([ATTACHMENT_BYTES, SECOND_ATTACHMENT_BYTES])
+    {
+        let attachment_id = id.parse::<u64>().context("invalid attachment id")?;
+        let stored_path = s
+            .attachment_path(quire_core::core::types::AttachmentId(attachment_id))
+            .context("attachment path missing")?;
+        assert_eq!(std::fs::read(stored_path)?, expected_bytes);
+    }
     let options = PropertyOptions::from_config(&tags.config);
     let expected_tags = BTreeSet::from(["Alpha".to_owned(), "Beta".to_owned()]);
     assert_eq!(
@@ -300,7 +311,7 @@ fn verify(path: &Path) -> Result<()> {
         "legacy MCP note did not survive GPUI reopen"
     );
     println!(
-        "verified database={} paired relation, formula and rollup config, multi-select and common typed cells, attachment bytes, and old-version MCP note",
+        "verified database={} paired relation, formula and rollup config, multi-select and common typed cells, ordered attachment set bytes, and old-version MCP note",
         db.id
     );
     Ok(())
