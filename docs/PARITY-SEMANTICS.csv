@@ -1,7 +1,7 @@
 ﻿回调名,实现状态,验证状态,差异,人工语义
 toggle-mark,已实现,已验证,工具条和快捷键支持粗体、斜体、删除线、行内代码；选中文字可创建或替换链接目标，Ctrl+点击可打开网页或跳转本地页面；数学块点击后可编辑 LaTeX 源文并在失焦后显示 core Unicode 预览,隔离 Release smoke 选中 UTF-8 字节范围并经 Workspace 输入事件处理器应用粗体；断言标记范围并验证单步撤销/重做。未覆盖真实工具条点击、系统快捷键或复杂混排视觉
 open-link,已实现,未验证,"Ctrl+点击普通链接或 @页面提及可打开网页/跳转目标页；Embed 卡片点击后可编辑地址，标题与安全打开地址随正文派生",@页面由 core InsertReference 原子命令写入 page URI；外链只允许 http/https/mailto 交给系统打开
-command-invoked,已实现,未验证,Ctrl+K 打开可过滤的命令面板；Enter 或点击运行当前选择，Escape 关闭，页面命令可跳转,命令、页面列表按名称和分区筛选，键盘最多选择前八条；新建/搜索/侧栏/主题/设置/整理区/页面复制删除/Markdown 导入导出/页面历史前进后退/HTML 默认浏览器打开均路由至现有应用操作
+command-invoked,已实现,已验证,Ctrl+K 打开可过滤的命令面板；Enter 或点击运行当前选择，Escape 关闭，页面命令可跳转,隔离 Release GUI smoke 按“设置”筛选后调用当前命令并断言主题设置打开；命令过滤与打开状态复位也有独立断言。未模拟 OS 物理快捷键或真实点击
 palette-move,已实现,已验证,命令面板焦点输入框的上下键移动当前命令选择,"按过滤后的列表索引夹取在 0 到 min(结果数,8)-1"
 palette-query-changed,已实现,已验证,输入文本实时筛选命令和页面标题,与页面搜索共用单行输入实体；面板打开时事件只更新命令查询状态
 palette-open-requested,已实现,已验证,Ctrl+K 打开面板并聚焦命令输入框,关闭其他页面搜索层并重置查询及选择索引
@@ -9,7 +9,7 @@ duplicate-block,已实现,未验证,Ctrl+D 或行尾副本入口复制当前块�
 move-block,已实现,未验证,编辑块悬停操作中的上下箭头及 Ctrl+Shift+↑/↓ 在当前页面内移动块；GPUI 修复旧版普通块先命中无修饰上下导航、导致修饰键块移动分支不可达的问题,快捷键经 TextInput 事件路由到 core MoveBlock，保持当前编辑焦点并进入同一撤销历史；组合输入期间不触发
 block-menu-action,已实现,未验证,块菜单增加“移动到页面”子菜单、“复制块/粘贴到下方”和图片宽度 25/50/100% 子页；复制块保留格式与嵌套子块，数据库/表格单元格/分栏列块不开放粘贴,调用 core MoveBlockToPage 一次移动整棵子树并单步撤销；内部复制使用 InsertForest 保留标记/格式并生成新 ID，一次撤销整棵子树；Ctrl+V 结构化 Markdown 保留 marks/checked/lang，以 InsertForest + 可选空行删除形成一个 undo entry；纯文本/inline-only 内容走原生插入，图片 clipboard entry 进入附件存储；图片宽度走 core SetImageWidth 并持久化；ScratchDir 覆盖块与 Markdown 粘贴、撤销和重开持久化，菜单鼠标仍待桌面验收
 block-drag-hover,已实现,未验证,GPUI 拖动手柄按目标行上/下半区分别放到前/后，并显示相应行缘落点线；core 拒绝跨兄弟范围、子树内部或自身的无效落点,纯 Session 回归覆盖有效/无效落点、撤销/重做和 SQLite 重开；真实鼠标拖动仍待验收
-block-plus,已实现,未验证,块悬停手柄“＋”在当前块后插入空段落并打开块类型菜单；整行文字过滤、上下键选择、Enter 转换类型，Escape 只关闭菜单并保留空段落；菜单可选图片和文件并在选择附件后转换此占位块,GPUI 通过 core InsertBlockAfter 插入 Paragraph；insert-mode 按整行过滤，普通 slash 转换忽略开头斜线；插入与类型转换分别撤销；隔离 Release GUI smoke 覆盖 h2 过滤和撤销；真实鼠标命中与菜单位置仍待视觉验收
+block-plus,已实现,已验证,块悬停手柄“＋”在当前块后插入空段落并打开块类型菜单；整行文字过滤、上下键选择、Enter 转换类型，Escape 只关闭菜单并保留空段落；菜单可选图片和文件并在选择附件后转换此占位块,隔离 Release GUI smoke 通过 Workspace 插入菜单路径按 h2 过滤并选择 Heading2，验证类型转换和两步撤销；真实鼠标命中、菜单位置及附件选择仍待验收
 block-dropped,已实现,未验证,在块行上释放时重排到该行之前；文档末尾空白区释放时追加到末尾；不允许锁定页面、跨页或破坏子树,使用 core MoveBlockTo 单步写入并防抖持久化，焦点/光标按 BlockId 恢复
 find-start,已实现,已验证,Ctrl+F 打开当前页面查找浮条；搜索块正文，不包含页面标题、折叠子树与不可编辑容器内容,可从当前文本选区预填查询；命中按可见块顺序枚举，ASCII 大小写不敏感
 find-step,已实现,已验证,查找浮条提供上/下一个并显示命中位置；定位块并选中 UTF-8 文本区间,每次移动重扫当前页；虚拟列表视口外命中会先滚动，等待编辑器挂载后再选中，循环遍历并聚焦
@@ -22,7 +22,7 @@ backlink-toggle,已实现,未验证,页面工具栏开关反向链接面板，�
 indent-list,已实现,未验证,Tab 只缩进 core 允许的列表项，目前最多一级嵌套,将列表项设为前一个兼容列表项的子项；缩进后保持可编辑
 outdent-list,已实现,未验证,Shift+Tab 只对 core 允许的嵌套列表项生效,将列表项提升到父列表之后；提升后保持可编辑
 todo-toggled,已实现,未验证,待办标记由行首复选框点击；视觉仍待与旧版对照,调用 core ToggleTodoChecked 切换当前块完成状态并保存
-page-create-requested,已实现,未验证,"支持侧栏根/子页面创建；页面可跨层级拖放重排并防循环；命令面板可从模板创建页面；Release smoke 覆盖操作路径，真人鼠标落点仍待验收",新建页面写入 core PageCreated 并创建首段落；树拖放重排可撤销持久化；模板建页复制模板内容并生成普通页面
+page-create-requested,已实现,已验证,"支持侧栏根/子页面创建；页面可跨层级拖放重排并防循环；命令面板可从模板创建页面；Release smoke 覆盖操作路径，真人鼠标落点仍待验收",隔离 Release GUI smoke 创建空白页与模板页，核对模板内容，再通过 Workspace 拖放入口测试安全重挂、根级移动及循环拒绝；真实鼠标拖放落点仍待验收
 set-theme,已实现,未验证,外观页包含系统跟随与 12 套渐变主题，按 4 列卡片排列；选择后立即切换并写入独立 GPUI 设置。跟随系统时按当前窗口 appearance 选择 light 或 midnight，并监听运行时外观变化即时切换；其他平台由 GPUI 窗口 appearance 提供系统状态；主题渐变遮罩在 220ms 动画后清理。,主题选择状态与实际 palette 分离保存；“跟随系统”启动/选择时按窗口 appearance 选择 light 或 midnight，系统明暗外观改变时即时更新 palette；显式主题选择不受系统外观变化影响。
 toggle-theme,已实现,未验证,Ctrl+Shift+L 在 light 与 midnight 之间切换；命令面板也提供同一操作；主题渐变遮罩在 220ms 动画后清理,遵循旧版语义：从 light 切到 midnight，其他 palette（含 system）切到 light；切换写入 GPUI 主题设置
 window-maximized-changed,已实现,已验证,GPUI 使用原生最大化/还原窗口控制；最大化期间持续保留最近的窗口化尺寸/位置，关闭时只保存正常窗口几何,隔离 Release GUI smoke 已最大化并恢复窗口；窗口几何观察器跳过最大化/全屏 bounds，避免把屏幕尺寸当作窗口化尺寸
@@ -155,7 +155,7 @@ lock-nudge,已实现,未验证,锁定页上的文本编辑、拆分合并、缩�
 empty-page-started,已实现,未验证,空白文档区点击或标题输入框按 Enter 会创建首个空段落并将焦点置于起点,锁定空页显示解锁提示；创建后进入普通编辑与持久化流程
 column-removed,已实现,未验证,仅在超过两列时可移除最右侧列,删除列时 core 将其内容并入前一列并维持块内容
 column-fill,已实现,未验证,空列显示整块可点击的空状态，点击后创建并聚焦首个段落,入口复用 ColumnsAddBlock 并保存；下方添加内容按钮仍可用
-toggle-fold,已实现,未验证,Toggle 块与可折叠标题可切换折叠状态并隐藏/展开后代,通过 core ToggleFold 进入页面撤销历史并持久化；隔离 Session 测试覆盖折叠撤销重做与重开
+toggle-fold,已实现,已验证,Toggle 块与可折叠标题可切换折叠状态并隐藏/展开后代,隔离 Release GUI smoke 通过 Workspace ToggleFold 命令检查后代隐藏/展开，并验证撤销和重做；未覆盖真实鼠标折叠控件视觉
 rich-paste,已实现,未验证,Ctrl+V 对结构化 Markdown 粘贴转换为块子树，纯文本仍走原生剪贴板；支持剪贴板图片导入,结构粘贴为单条撤销操作并从首个新块恢复焦点；有集成单测与 Release smoke 覆盖
 editing-changed,已实现,未验证,文本编辑同步到 core，支持 Markdown 前缀转换、slash 命令和正文 @页面/日期候选；slash 可将当前块转为图片或文件并链接到已有数据库,图片和文件转换在选取成功后才应用并与清理 slash 前缀合成单条撤销记录；取消选择保留原文；链接数据库弹窗支持过滤、方向键、Enter、点击和 Escape；core 隔离测试覆盖撤销重做和重开读回
 enter-at-caret,已实现,未验证,Enter 在 UTF-8 字节插入点拆分当前块并把焦点放到新块，表格单元格 Enter 导航到下一格,slash 与 mention 候选打开时 Enter 优先应用当前候选；命令由 core 记录撤销历史

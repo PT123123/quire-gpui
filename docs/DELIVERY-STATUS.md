@@ -1932,3 +1932,9 @@
 - 新建 `%TEMP%` SQLite 的完整 1000 块 Release GUI smoke 通过，退出码为 0；其中普通表格键盘导航及最小行列结构回归仍通过。PARITY 当前为 33 项已验证、213 项未验证，另有 2 项不适用。
 - 本轮性能评测仍按用户要求留到功能收尾之后；测试没有访问真实用户库或修改 Slint/core。
 - 追加复跑 `tools/test-legacy-roundtrip.ps1` 与 `tools/test-sync-legacy-wire.ps1` 均通过：前者覆盖旧版读取 GPUI 的复杂数据库 schema/类型值/有序附件字节和 MCP 笔记/任务恢复；后者覆盖 v4 snapshot 的 171 行合并往返及 Slint→GPUI、GPUI→Slint 两向各 2 个附件逐字节传输。fixture 均在新建 `%TEMP%` 目录。
+
+## 第三百一十三轮：从 Release smoke 补记四项既有操作路径（2026-10-16）
+
+- 审核完整 1000 块 Release smoke 日志与相应断言后，将 `command-invoked`、`block-plus`、`page-create-requested`、`toggle-fold` 标为已验证：命令面板筛选并执行设置 action；块插入菜单筛选 Heading2 并两步撤销；创建空白页/模板页并验证安全树重挂、根级移动和循环拒绝；Toggle 折叠后代并撤销/重做。验证边界保留在 sidecar：不代表真实快捷键、鼠标命中/拖放或控件视觉验收。
+- 本次只调整矩阵/计划记录，没有新增代码；已有 Release GUI smoke 日志退出码为 0。PARITY 当前为 37 项已验证、209 项未验证，另有 2 项不适用。
+- Slint/GPUI 性能评测继续留到功能完成后；既有兼容脚本结果见上一轮记录。
