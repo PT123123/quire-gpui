@@ -1580,3 +1580,9 @@
 
 - 复核发现表格/列表单元格已计算显示 Formula/Rollup，但画廊和看板卡片直接读取数据库行的原始 `row.cells`，派生列因此显示为空。现在两种卡片布局按列类型调用同一套公式与汇总求值，保留错误占位和不可编辑行为。
 - `cargo fmt --all -- --check`、`git diff --check`、全量 `cargo test --locked -j 8`（108 项）及 `cargo build --release --locked -j 8` 通过。全新 `%TEMP%` 隔离库 Release GUI smoke 完整通过，实际渲染了 gallery 卡片与分组 board 卡片；本轮构建耗时 40.84 秒，未测编译峰值内存，只作为单次记录，性能对比留待功能收尾后。未访问真实用户库。
+
+## 第二百五十三轮：重跑旧版兼容往返与同步协议验收（2026-10-16）
+
+- 用隔离库重新运行 `tools/test-legacy-roundtrip.ps1`，结果 `LEGACY_ROUNDTRIP=PASS`；GPUI → Slint Release → GPUI 的同库检查确认双向 relation/mirror、公式/汇总配置、多选及常用类型值、附件顺序与字节，并验证 Slint MCP 创建/回收站/恢复笔记和任务后 GPUI 可重读。
+- `tools/test-sync-legacy-wire.ps1` 全程通过：旧版→GPUI 附件拉取 `files=2 bytes=32/32`，GPUI→旧版自动推送两份任意二进制附件并逐字节重开校验，复杂 schema snapshot 往返 `version=4 rows=171`。`tools/verify-sync-core-compat.ps1` 确认两版锁定的 sync 源码一致且协议版本均为 4。所有数据库仅在 `%TEMP%`，未访问真实用户库。
+- 这轮扩大隔离兼容覆盖后，仍需两台真实设备网络验收、完整真实用户库冲突/撤销场景及候选安装升级回退；性能对比依用户要求留到功能收尾后。
