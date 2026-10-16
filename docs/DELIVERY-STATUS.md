@@ -1586,3 +1586,9 @@
 - 用隔离库重新运行 `tools/test-legacy-roundtrip.ps1`，结果 `LEGACY_ROUNDTRIP=PASS`；GPUI → Slint Release → GPUI 的同库检查确认双向 relation/mirror、公式/汇总配置、多选及常用类型值、附件顺序与字节，并验证 Slint MCP 创建/回收站/恢复笔记和任务后 GPUI 可重读。
 - `tools/test-sync-legacy-wire.ps1` 全程通过：旧版→GPUI 附件拉取 `files=2 bytes=32/32`，GPUI→旧版自动推送两份任意二进制附件并逐字节重开校验，复杂 schema snapshot 往返 `version=4 rows=171`。`tools/verify-sync-core-compat.ps1` 确认两版锁定的 sync 源码一致且协议版本均为 4。所有数据库仅在 `%TEMP%`，未访问真实用户库。
 - 这轮扩大隔离兼容覆盖后，仍需两台真实设备网络验收、完整真实用户库冲突/撤销场景及候选安装升级回退；性能对比依用户要求留到功能收尾后。
+
+## 第二百五十四轮：构建并启动便携候选包（2026-10-16）
+
+- 以当前 release 源码构建 `dist/Quire-GPUI-0.1.0-windows-x64.zip`，解压到全新 `%TEMP%` 目录后直接从解压路径运行应用，使用独立临时数据库完整跑过 GUI smoke，结果 `PORTABLE_PACKAGE_SMOKE=PASS`。覆盖 MCP 16 工具启动、速记提交、托盘隐藏/唤回、数据库视图及窗口最大化/还原等流程。
+- 当前 ZIP SHA-256：`453A79B9B7FB1D3A908BB9CBBF0AD60F28195664EA5FB4AEFC114A098EF3EC7C`；解压 EXE SHA-256：`044E80EA5125C89229449B17A18471983C05DCFDB5C7E2D38E11B403FAF88ADB`。构建耗时 38.74 秒，未采集编译峰值内存；只作单次候选构建记录，不纳入 Slint 比较。dist 为忽略目录，包保留在本地。
+- 这验证了便携包的隔离解压启动；真实安装升级/数据保留/回退，以及功能冻结后最终性能对比仍未完成。
