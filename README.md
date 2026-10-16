@@ -32,6 +32,8 @@ powershell -ExecutionPolicy Bypass -File install/build-release.ps1
 
 产物位于 `dist/`，包含程序、README 与第三方许可。可选安装 Inno Setup 6，再加 `-BuildInstaller` 生成按当前用户安装的安装器；脚本会从 PATH 或常见的 per-user 安装目录查找编译器。GPUI 使用独立的 Windows AppUserModelID、嵌入图标/版本信息、独立 `%LOCALAPPDATA%/QuireGPUI` 数据目录；卸载不会删除数据，也不会替换 Slint 版。
 
+候选版切换前备份、隔离兼容测试与回退步骤见 [`docs/RELEASE-AND-ROLLBACK.md`](docs/RELEASE-AND-ROLLBACK.md)。
+
 ## 阅读顺序
 
 1. `AGENTS.md`：执行规则、完成定义与边界。
