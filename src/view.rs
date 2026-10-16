@@ -4308,11 +4308,34 @@ impl Workspace {
                     this.invoke_palette_command(window, cx);
                     assert!(this.theme_picker_open);
                     let settings_return_focus = this.settings_focus_return.clone();
+                    let saved_settings_tab = this.settings_tab;
+                    let saved_sync_status = std::mem::replace(
+                        &mut this.sync_status,
+                        "隔离 smoke：较长的同步状态文本应在固定宽度设置对话框内折行显示，而不是撑宽内容列".into(),
+                    );
+                    let saved_sync_warning = this.sync_listener_warning.replace(
+                        "隔离 smoke：较长的监听诊断文本需要完整折行，并保持同步设置和右侧操作在对话框范围内".into(),
+                    );
+                    this.settings_tab = 2;
+                    let sync_settings_frame = this.render(window, cx);
+                    drop(sync_settings_frame);
+                    this.settings_tab = 3;
+                    let saved_mcp_status = std::mem::replace(
+                        &mut this.mcp_status,
+                        "隔离 smoke：MCP listener has a longer diagnostic message that must wrap inside the settings dialog".into(),
+                    );
+                    let mcp_settings_frame = this.render(window, cx);
+                    drop(mcp_settings_frame);
+                    this.settings_tab = saved_settings_tab;
+                    this.sync_status = saved_sync_status;
+                    this.sync_listener_warning = saved_sync_warning;
+                    this.mcp_status = saved_mcp_status;
                     this.close_settings(window, cx);
                     if let Some(focus) = settings_return_focus {
                         assert!(focus.is_focused(window), "closing settings restores its previous focus");
                     }
                     eprintln!("SMOKE: Ctrl+K command palette filtering and settings action passed");
+                    eprintln!("SMOKE: long sync and MCP diagnostics render in constrained settings tabs");
                     let search_return_focus = window.focused(cx);
                     this.open_search(&SearchPages, window, cx);
                     assert!(this.search_input.read(cx).focus.is_focused(window));
@@ -18792,6 +18815,13 @@ impl Render for Workspace {
         let mcp_status = self.mcp_status.clone();
         let mcp_endpoint = format!("http://127.0.0.1:{}/mcp", self.mcp_port);
         let mcp_token = self.mcp_token.clone();
+        let mcp_token_display = mcp_token
+            .chars()
+            .collect::<Vec<_>>()
+            .chunks(12)
+            .map(String::from_iter)
+            .collect::<Vec<_>>()
+            .join("\u{200b}");
         let hotkey_alt_n = self.session.setting("gpui.hotkey.alt-n").unwrap_or("true") == "true";
         let hotkey_alt_m = self.session.setting("gpui.hotkey.alt-m").unwrap_or("false") == "true";
         let quick_note_on_start = self
@@ -19220,18 +19250,18 @@ impl Render for Workspace {
                                 ))),
                         ))
                         .when(settings_section_visible(&self.search_query, self.settings_tab, 2, "同步 局域网 设备 名称 广播 自动同步 间隔 立即同步 端口 5878 连接 配对 清理 日志"), |dialog| dialog.child(
-                            div().flex().flex_col().gap(px(8.))
+                            div().w_full().min_w_0().flex().flex_col().gap(px(8.))
                                 .child(div().flex().items_center().justify_between()
-                                    .child(div().flex().flex_col().gap(px(2.))
+                                    .child(div().flex_1().min_w_0().flex().flex_col().gap(px(2.))
                                         .child(div().text_size(px(20.)).font_weight(FontWeight::SEMIBOLD).child("局域网同步"))
-                                        .child(div().text_size(px(10.)).text_color(muted).child(format!("本机：{sync_device_name}"))))
+                                        .child(div().w_full().min_w_0().text_size(px(10.)).text_color(muted).child(format!("本机：{sync_device_name}"))))
                                     .child(div().id("sync-now-all").px(px(10.)).py(px(6.)).rounded(px(5.))
                                         .bg(Palette::color(&p.accent)).text_color(Palette::color(&p.fg)).cursor_pointer().text_size(px(11.))
                                         .on_click(cx.listener(|this, _, window, cx| this.sync_now_all(window, cx)))
                                         .child("立即同步")))
-                                .child(div().text_size(px(10.)).text_color(muted).child(sync_status.clone()))
+                                .child(div().w_full().min_w_0().text_size(px(10.)).text_color(muted).child(sync_status.clone()))
                                 .when_some(sync_listener_warning, |panel, warning| panel.child(
-                                    div().text_size(px(10.)).text_color(rgb(0xd9a441)).child(warning),
+                                    div().w_full().min_w_0().text_size(px(10.)).text_color(rgb(0xd9a441)).child(warning),
                                 ))
                                 .child(div().flex().items_center().gap(px(6.))
                                     .child(div().h(px(27.)).flex_1().min_w_0().px(px(7.)).rounded(px(4.))
@@ -19241,7 +19271,7 @@ impl Render for Workspace {
                                         .bg(Palette::color(&p.accent)).text_color(Palette::color(&p.fg)).cursor_pointer().text_size(px(9.))
                                         .on_click(cx.listener(|this, _, window, cx| this.apply_sync_name(window, cx)))
                                         .child("保存并重启")))
-                                .child(div().text_size(px(9.)).text_color(muted).child("设备名称应用后重启 Quire，新的名称才会广播到局域网。"))
+                                .child(div().w_full().min_w_0().text_size(px(9.)).text_color(muted).child("设备名称应用后重启 Quire，新的名称才会广播到局域网。"))
                                 .child(div().flex().items_center().gap(px(5.))
                                     .child(div().text_size(px(10.)).child(if sync_auto { "自动同步" } else { "手动同步" }))
                                     .child(div().id("sync-auto-toggle").px(px(7.)).py(px(4.)).rounded(px(4.))
@@ -19363,14 +19393,14 @@ impl Render for Workspace {
                                             cx.notify();
                                         }))
                                         .child("清空")))
-                                .children(sync_logs.iter().rev().take(3).map(|line| div().text_size(px(9.)).text_color(muted).child(format!("{} · {} · {}", line.at, line.peer, line.message))))
+                                .children(sync_logs.iter().rev().take(3).map(|line| div().w_full().min_w_0().text_size(px(9.)).text_color(muted).child(format!("{} · {} · {}", line.at, line.peer, line.message))))
                         ))
                         .when(settings_section_visible(&self.search_query, self.settings_tab, 3, "mcp ai agent 人工智能 接口 端口 5880 客户端 配置 令牌 token 日志 页面 笔记 任务"), |dialog| dialog.child(
-                            div().flex().flex_col().gap(px(10.))
+                            div().w_full().min_w_0().flex().flex_col().gap(px(10.))
                                 .child(div().flex().items_center().justify_between()
-                                    .child(div().flex().items_center().gap(px(10.))
+                                    .child(div().flex_1().min_w_0().flex().items_center().gap(px(10.))
                                         .child(div().text_size(px(20.)).font_weight(FontWeight::SEMIBOLD).child("MCP"))
-                                        .child(div().text_size(px(11.)).text_color(muted).child(mcp_status.clone())))
+                                        .child(div().min_w_0().text_size(px(11.)).text_color(muted).child(mcp_status.clone())))
                                     .child(div().flex().items_center().gap(px(5.))
                                         .when(mcp_enabled, |row| row.child(div().id("mcp-restart").px(px(8.)).py(px(5.)).rounded(px(5.))
                                             .border_1().border_color(Palette::color(&p.border)).cursor_pointer().text_size(px(10.))
@@ -19392,8 +19422,8 @@ impl Render for Workspace {
                                         .border_1().border_color(Palette::color(&p.border)).cursor_pointer().text_size(px(10.))
                                         .on_click(cx.listener(|this, _, window, cx| this.apply_mcp_port(window, cx)))
                                         .child(if mcp_enabled { "应用并重启" } else { "应用端口" })))
-                                .child(div().text_size(px(11.)).text_color(muted).child(format!("Endpoint  {mcp_endpoint}")))
-                                .child(div().text_size(px(11.)).text_color(muted).child(format!("Authorization: Bearer {mcp_token}")))
+                                .child(div().w_full().min_w_0().text_size(px(11.)).text_color(muted).child(format!("Endpoint  {mcp_endpoint}")))
+                                .child(div().w_full().min_w_0().text_size(px(11.)).text_color(muted).child(format!("Authorization: Bearer {mcp_token_display}")))
                                 .child(div().flex().gap(px(8.))
                                     .child(div().id("mcp-copy-config").px(px(9.)).py(px(5.)).rounded(px(4.))
                                         .border_1().border_color(Palette::color(&p.border)).cursor_pointer().text_size(px(10.))
