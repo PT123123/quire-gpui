@@ -13,13 +13,13 @@
 ## P0 — 参考冻结与依赖验证
 
 - [x] 阅读全部交接文档，核对快照 manifest 与旧版工作区差异。113 个文件 SHA-256 全量重算一致；`git_status_short` 与 `../quire-desktop` 当前 10 个脏文件逐行一致；本地 `quire-core` HEAD 正是 pin 的 `db0e95f`（2026-10-14 复核）。
-- [~] 从组件、UIState 回调、controller、state、core 服务建立完整功能矩阵。`docs/PARITY.csv` 含 246 callback，`PARITY-SEMANTICS.csv` 已为全部回调记录实现/适用状态、验证情况与语义；`PARITY-STATE.csv` 记录 261 properties，场景目录含 188 场景 / 44 个 .slint。core 50 个 Command 已逐一反向核对至 GPUI 实现入口或 Session 封装并修复发现的附件转换、数据库链接、模板撤销和折叠撤销缺口；221 条 callback 的界面验收仍待完成，不能把代码/隔离测试标记当成真人验收。
+- [~] 从组件、UIState 回调、controller、state、core 服务建立完整功能矩阵。`docs/PARITY.csv` 含 246 callback，`PARITY-SEMANTICS.csv` 已为全部回调记录实现/适用状态、验证情况与语义；`PARITY-STATE.csv` 记录 261 properties，场景目录含 188 场景 / 44 个 .slint。core 50 个 Command 已逐一反向核对至 GPUI 实现入口或 Session 封装并修复发现的附件转换、数据库链接、模板撤销和折叠撤销缺口；220 条 callback 的界面验收仍待完成，不能把代码/隔离测试标记当成真人验收。
 - [~] 以官方资料核对 GPUI 与 GPUI Kit/组件库组合。一手事实已核验并写入 `docs/ADR-001-GPUI-STACK.md`。官方最小窗和输入示例在本机成功编译运行；GPUI 应用也已打开真实窗口。剩余窗口、DPI、IME 定位等探针仍按 ADR 逐项验收。
 - [~] Rust 1.98.0 通过 `rust-toolchain.toml` 固定，GPUI 0.2.2、core revision 和 `Cargo.lock` 已钉；dev/release 均可构建。MSVC/SDK 环境可用（SDK 10.0.26100，fxc 10.0.26100.7705）；完整安装与多机复现尚未验。
 - [~] 确定独立应用标识、开发数据目录、日志目录和测试库策略。core 侧事实已查清（`APP_DIR_NAME="Quire"`、`--db` 压倒一切、`--portable`、legacy 迁移），**已定（2026-10-14）：独立数据目录 + 保留旧版并存**，见 `docs/13-DECISIONS-NEEDED.md` 第 4 条。
 - [x] 在同机采集旧版主要页面和 12 主题参考图，保存采集命令与版本。312 张 PNG / 30.6MB 在 `reference/shots/`，含二进制 SHA-256、构建命令、重复哈希读出的五条事实与未覆盖清单，见 `docs/14-REFERENCE-SHOTS.md`。
 
-交付：可运行最小窗口、选型 ADR、参考图索引、无遗漏的初始矩阵。当前状态：程序已有完整 GPUI 主壳与主要页面功能；功能矩阵包含 246 个 callback（语义、实现状态和验证状态均已填写）、261 个 properties、188 个场景。自动测试和隔离 Release smoke 持续通过；221 项界面行为仍需继续验收，不能视为已验证。
+交付：可运行最小窗口、选型 ADR、参考图索引、无遗漏的初始矩阵。当前状态：程序已有完整 GPUI 主壳与主要页面功能；功能矩阵包含 246 个 callback（语义、实现状态和验证状态均已填写）、261 个 properties、188 个场景。自动测试和隔离 Release smoke 持续通过；220 项界面行为仍需继续验收，不能视为已验证。
 
 ## P1 — 编辑器技术闸门
 

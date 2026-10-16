@@ -1895,3 +1895,9 @@
 - 在当前 Release 二进制上以全新 `%TEMP%` SQLite 重跑 1000 块隔离 GUI smoke。测试通过真实命令面板输入实体发送文本更新，断言查询状态更新、模板结果过滤为单项，并执行模板插入、单步撤销和重做；全流程正常退出。`palette-query-changed` 从“未验证”更新为“已验证”，证据只覆盖查询/过滤路径，不扩展到全部命令路由或真人键盘输入。
 - `cargo fmt --all -- --check`、全量 `cargo test --locked -j 8 -- --quiet`（117 项）、`cargo check --all-targets --locked -j 8` 与 `git diff --check` 通过。PARITY 生成器重跑得到 246 callback、261 property、188 场景，并成功合并 246 条 sidecar 记录；当前 25 项已验证、221 项未验证，另有 2 项不适用。
 - 未访问真实用户库或修改 Slint/core；最终性能评测留待功能收尾后重测。
+
+## 第三百零七轮：验证命令面板方向键边界（2026-10-16）
+
+- 将命令面板方向键选择抽成纯逻辑函数，覆盖空结果、单项首尾夹取、多个结果的中间移动、索引越界和最多八项可见限制。Release GUI smoke 从实际命令面板输入实体发送 `Navigate` 事件，断言单项结果不能移出有效范围；`palette-move` 标记为已验证。
+- `cargo fmt --all -- --check`、全量 `cargo test --locked -j 8 -- --quiet`（118 项）、`cargo check --all-targets --locked -j 8`、Release 构建和新建 `%TEMP%` SQLite 的 1000 块 Release GUI smoke 均通过。当前 PARITY 为 26 项已验证、220 项未验证，另有 2 项不适用。
+- 此证据覆盖选择边界和输入事件订阅，不代表系统级物理按键或全部视觉场景验收。未访问真实用户库或修改 Slint/core；最终性能评测留待功能收尾后重测。

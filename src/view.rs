@@ -45,6 +45,14 @@ fn next_search_selection(current: usize, item_count: usize, direction: i32) -> O
     Some((current as i32 + direction).clamp(0, item_count as i32 - 1) as usize)
 }
 
+fn next_palette_selection(current: usize, item_count: usize, direction: i32) -> Option<usize> {
+    let visible_count = item_count.min(8);
+    if visible_count == 0 {
+        return None;
+    }
+    Some((current as i32 + direction).clamp(0, visible_count as i32 - 1) as usize)
+}
+
 #[derive(Clone, Copy)]
 struct DatabaseColumnDrag {
     block: BlockId,
@@ -1240,13 +1248,13 @@ mod view_tests {
         database_property_kind_choices, evaluate_database_formula, evaluate_database_rollup,
         find_matches_in, gallery_columns_for_width, interpolated_sidebar_width,
         link_ranges_for_removal, link_target_range, mention_date_matches, next_menu_selection,
-        next_search_selection, notes_auto_input_enabled, order_database_groups,
-        organizer_notes_copy_payload, organizer_tag_matches_path, organizer_tag_tree_rows,
-        organizer_tags_exclude, organizer_task_drop_accepted, palette_matches, parse_mcp_port,
-        parse_organizer_tags, periodic_snapshot_failure_notice, push_history, settings_matches,
-        settings_section_visible, slash_items, slash_query, sort_organizer_notes,
-        sort_organizer_tasks, sync_peer_is_recent, sync_targets, system_palette_id_for_appearance,
-        toc_headings,
+        next_palette_selection, next_search_selection, notes_auto_input_enabled,
+        order_database_groups, organizer_notes_copy_payload, organizer_tag_matches_path,
+        organizer_tag_tree_rows, organizer_tags_exclude, organizer_task_drop_accepted,
+        palette_matches, parse_mcp_port, parse_organizer_tags, periodic_snapshot_failure_notice,
+        push_history, settings_matches, settings_section_visible, slash_items, slash_query,
+        sort_organizer_notes, sort_organizer_tasks, sync_peer_is_recent, sync_targets,
+        system_palette_id_for_appearance, toc_headings,
     };
     use gpui::{
         AppContext, Context, InteractiveElement, IntoElement, Render, Styled, TestAppContext,
@@ -1298,6 +1306,17 @@ mod view_tests {
         assert_eq!(next_search_selection(2, 3, -1), Some(1));
         assert_eq!(next_search_selection(9, 3, 1), Some(2));
         assert_eq!(next_search_selection(0, 0, 1), None);
+    }
+
+    #[test]
+    fn command_palette_keyboard_selection_clamps_to_eight_visible_results() {
+        assert_eq!(next_palette_selection(0, 3, -1), Some(0));
+        assert_eq!(next_palette_selection(0, 3, 1), Some(1));
+        assert_eq!(next_palette_selection(2, 3, 1), Some(2));
+        assert_eq!(next_palette_selection(2, 3, -1), Some(1));
+        assert_eq!(next_palette_selection(7, 20, 1), Some(7));
+        assert_eq!(next_palette_selection(99, 20, -1), Some(7));
+        assert_eq!(next_palette_selection(0, 0, 1), None);
     }
 
     #[test]
@@ -3479,12 +3498,12 @@ impl Workspace {
                 }
                 InputEvent::Navigate(direction) => {
                     if this.command_palette_open {
-                        let count = this.palette_items().len().min(8);
-                        if count > 0 {
-                            this.command_palette_selected = (this.command_palette_selected as i32
-                                + direction)
-                                .clamp(0, count as i32 - 1)
-                                as usize;
+                        if let Some(selection) = next_palette_selection(
+                            this.command_palette_selected,
+                            this.palette_items().len(),
+                            *direction,
+                        ) {
+                            this.command_palette_selected = selection;
                             cx.notify();
                         }
                         return;
@@ -4455,6 +4474,9 @@ impl Workspace {
                 let _ = weak.update_in(cx, |this, window, cx| {
                     assert_eq!(this.command_palette_query, "插入模板：Meeting notes");
                     assert_eq!(this.palette_items().len(), 1);
+                    this.search_input
+                        .update(cx, |_, cx| cx.emit(InputEvent::Navigate(1)));
+                    assert_eq!(this.command_palette_selected, 0);
                     let original_block_count = this.session.blocks().len();
                     this.invoke_palette_command(window, cx);
                     assert!(this.session.blocks().len() > original_block_count);
