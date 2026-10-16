@@ -4363,7 +4363,33 @@ impl Workspace {
                     assert_eq!(this.session.page.id, original_page);
                     assert!(this.active.is_some(), "navigating from search should focus the destination page");
                     this.activate_page(original_page, window, cx);
-                    eprintln!("SMOKE: search result navigation transfers focus to its destination page");
+                    let search_hit_query = "gpui-search-hit-keyboard-fixture";
+                    let search_hit_page = this.session.import_markdown(
+                        "Search hit keyboard fixture".into(),
+                        &format!("A body block contains {search_hit_query} for keyboard navigation."),
+                    );
+                    let search_hit_block = this
+                        .session
+                        .document
+                        .page_blocks(search_hit_page)
+                        .into_iter()
+                        .find(|block| this.session.editable(block.id)
+                            && block.text.to_lowercase().contains(search_hit_query))
+                        .expect("search fixture must contain an editable matching block")
+                        .id;
+                    this.activate_page(original_page, window, cx);
+                    this.open_search(&SearchPages, window, cx);
+                    this.search_query = search_hit_query.into();
+                    this.search_selected = this
+                        .search_result_ids()
+                        .iter()
+                        .position(|id| *id == search_hit_page)
+                        .expect("body search should find the fixture page");
+                    this.open_selected_search_result(window, cx);
+                    assert_eq!(this.session.page.id, search_hit_page);
+                    assert_eq!(this.active, Some(search_hit_block), "Enter should navigate to and focus the matching body block");
+                    this.activate_page(original_page, window, cx);
+                    eprintln!("SMOKE: keyboard search result navigates to and focuses its matching body block");
                     let palette_return_focus = window.focused(cx);
                     this.open_command_palette(window, cx);
                     assert!(this.search_input.read(cx).focus.is_focused(window));
@@ -11539,6 +11565,10 @@ impl Workspace {
         if let Some((block_id, range)) = selection {
             self.focus_selection(block_id, range, window, cx);
         }
+        // The selected result owns focus after navigation. Restoring the
+        // search panel's opening focus here would undo focus_selection when
+        // the hit editor is already mounted.
+        self.search_focus_return = None;
         self.close_search(window, cx);
     }
     fn palette_items(&self) -> Vec<PaletteItem> {
@@ -12026,11 +12056,8 @@ impl Workspace {
     fn open_selected_search_result(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let result = self.search_result_ids().get(self.search_selected).copied();
         if let Some(page_id) = result {
-            let old_page = self.session.page.id;
-            self.activate_page(page_id, window, cx);
-            if self.session.page.id != old_page {
-                self.search_focus_return = None;
-            }
+            self.open_search_hit(page_id, window, cx);
+            return;
         }
         self.close_search(window, cx);
     }
