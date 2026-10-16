@@ -1698,3 +1698,9 @@
 - 发现 GPUI 只依赖 SQLite 启动备份，未将 core 已有的 10 分钟活动期周期快照接到 `PersistenceService`，导致长会话中的 `.bak1` 落后到启动时。现在每次保存会推进周期快照；快照失败不会把已落库的编辑误报为保存失败，会显示可关闭的“数据已保存、恢复点未更新”提醒，设置中手动备份成功后清除此提醒。
 - 新增隔离 Session 回归：用零间隔注入同一 SQLite 快照服务，删除启动备份后编辑并 force-flush，确认生成新的 `.bak1`；提醒文案测试区分主库保存成功与快照失败。格式检查、全量 `cargo test --locked -j 8`（114 项）、`cargo check --all-targets --locked -j 8`、`git diff --check` 均通过。
 - Release 构建通过，1000 块全新 `%TEMP%` SQLite GUI smoke 覆盖 MCP、速记/托盘、最大化/还原、数据库视图与虚拟滚动。构建时间记录为 66 秒；未采集峰值内存、未运行 Slint 对比。便携包与安装器从此 Release 刷新，staging EXE SHA-256 与 Release 一致：`0DE5EAB6BFD24527AF44E16D38B0F19B832E6AF4366AF0F1EFD73DEBE14A7CE9`；ZIP SHA-256 `4F168D3B9A72D8C01787CF98A70C29442F0E93D968DC2F66E44B9D0BF75A3E3C`；安装器 SHA-256 `7BE63BF43228757336B05E87053E540F3974B23EF6B1A5724AFA2C0FC80469AB`。未访问真实用户库，未改动 Slint/core。
+
+## 第二百七十五轮：重跑旧版数据与同步兼容回归（2026-10-16）
+
+- `tools/test-legacy-roundtrip.ps1` 在全新 `%TEMP%` 库通过：Slint MCP 写入并恢复笔记/任务后，GPUI 重开逐项验证基础与复杂数据库 schema、双向关联、公式/汇总、多选、常见值类型及两份附件字节；`LEGACY_ROUNDTRIP=PASS`。
+- `tools/test-sync-legacy-wire.ps1` 在隔离库通过旧版→GPUI 附件拉取（2 个文件、32/32 字节）、GPUI→旧版附件推送（逐字节一致）与 v4 snapshot 往返（171 行）；`LEGACY_SYNC_WIRE=PASS`。
+- 两个脚本均只操作新建 `%TEMP%` fixture，未读取真实用户库、未更改 Slint 源码。此轮只重跑既有兼容验证，无产品代码改动，也未执行性能评测；最终 Slint/GPUI 性能对比仍待功能收尾后进行。
