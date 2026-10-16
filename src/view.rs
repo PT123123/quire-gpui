@@ -4216,6 +4216,52 @@ impl Workspace {
                     this.navigate_page_history(false, window, cx);
                     assert_eq!(this.session.page.id, original_page);
                     eprintln!("SMOKE: page history back/forward and branch reset passed");
+                    let template_source = this.session.blocks()[0].id;
+                    this.session
+                        .replace(template_source, "页面模板 smoke 内容".into(), true);
+                    this.sync_inputs(window, cx);
+                    let template_id = this
+                        .session
+                        .save_page_as_template("页面模板 smoke".into())
+                        .expect("editable page should save as a template");
+                    this.command_palette_open = true;
+                    this.command_palette_query = "从模板新建页面：页面模板 smoke".into();
+                    this.command_palette_selected = 0;
+                    let template_action = this.palette_items();
+                    assert_eq!(template_action.len(), 1);
+                    this.invoke_palette_command(window, cx);
+                    let template_page = this.session.page.id;
+                    assert_ne!(template_page, template_id);
+                    assert!(!this.session.page.template);
+                    assert!(this
+                        .session
+                        .blocks()
+                        .iter()
+                        .any(|block| block.text == "页面模板 smoke 内容"));
+                    let tree_parent = template_page;
+                    let tree_child = this.session.create_page(None);
+                    assert!(this.session.can_move_page_under(tree_child, Some(tree_parent)));
+                    this.drop_page_under(tree_child, Some(tree_parent), window, cx);
+                    assert_eq!(
+                        this.session
+                            .pages
+                            .iter()
+                            .find(|page| page.id == tree_child)
+                            .and_then(|page| page.parent),
+                        Some(tree_parent)
+                    );
+                    assert!(!this
+                        .session
+                        .can_move_page_under(tree_parent, Some(tree_child)));
+                    assert!(this.session.move_page_under(tree_child, None));
+                    assert!(this.session
+                        .pages
+                        .iter()
+                        .find(|page| page.id == tree_child)
+                        .is_some_and(|page| page.parent.is_none()));
+                    this.activate_page(original_page, window, cx);
+                    this.schedule_save(true, window, cx);
+                    eprintln!("SMOKE: page creation, template page creation and safe tree reparent passed");
                     let version_page = this.session.page.id;
                     let version_block = this.session.blocks()[0].id;
                     this.session.replace(version_block, "版本历史 smoke 原文".into(), true);
