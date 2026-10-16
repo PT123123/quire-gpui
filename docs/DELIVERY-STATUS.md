@@ -1919,3 +1919,9 @@
 - 普通表格 action 现在在 Workspace 层防止删除最后一行/列或越界索引，避免只依赖隐藏按钮保护最小结构。隔离 Release GUI smoke 在独立页里依 core 实际默认网格动态计算行列，验证末行/末列删除、新增与删除后的 undo/redo，并尝试删掉最后一行/列确认结构保持至少 1×1。`table-row-removed`、`table-column-added`、`table-column-removed` 标为已验证。
 - 全量 118 项测试、格式检查、all-target 检查、Release 构建和新建 `%TEMP%` SQLite 的 1000 块 Release GUI smoke 通过，退出码为 0。PARITY 当前为 31 项已验证、215 项未验证，另有 2 项不适用。
 - Smoke 验证 Workspace action/core 结构及撤销路径，不模拟真实鼠标点击；未访问真实用户库或修改 Slint/core。最终性能评测留待功能收尾后重测。
+
+## 第三百一十一轮：修复并验证普通表格单元格键盘导航（2026-10-16）
+
+- 修复普通表格的单元格编辑器没有随可见表格挂载的问题：同步输入实体时保留可见表格的单元格输入，渲染表格行时确保每个单元格编辑器已创建。隔离 Release GUI smoke 通过 Workspace 的输入事件处理路径验证 Tab / Shift+Tab、上下方向键按列移动、末尾 Tab 新增一行并将焦点移入新行；随后验证新行撤销。输入事件在 smoke 中直接调用 Workspace handler，不代表系统物理键盘注入或真实鼠标验收。`table-cell-move` 现标为已验证。
+- 同一 GUI smoke 还验证普通表格行列增删、至少保留一行一列及撤销/重做。完整 1000 块隔离 Release GUI smoke 退出码为 0。全量 118 项测试、`cargo check --all-targets --locked -j 8`、格式检查、Release 构建和 `git diff --check` 均通过。PARITY 当前为 32 项已验证、214 项未验证，另有 2 项不适用。
+- 测试只使用新建 `%TEMP%` SQLite；未访问真实用户库或修改 Slint/core。按用户要求，本轮没有进行性能评测；最终 Slint/GPUI 性能比较仍安排在功能收尾后。

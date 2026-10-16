@@ -4567,6 +4567,8 @@ impl Workspace {
                         kind: BlockKind::Table,
                     });
                     this.sync_inputs(window, cx);
+                    let table_frame = this.render(window, cx);
+                    drop(table_frame);
                     let table_columns = this
                         .session
                         .document
@@ -4584,6 +4586,64 @@ impl Workspace {
                             })
                             .count()
                     };
+                    let table_cell_ids = |this: &Workspace| {
+                        let mut cells = this
+                            .session
+                            .blocks()
+                            .iter()
+                            .filter(|block| {
+                                block.parent == Some(table_id)
+                                    && block.kind == BlockKind::TableCell
+                            })
+                            .collect::<Vec<_>>();
+                        cells.sort_by_key(|block| block.order);
+                        cells.iter().map(|block| block.id).collect::<Vec<_>>()
+                    };
+                    while count_table_cells(this).div_ceil(table_columns) < 2 {
+                        let row = count_table_cells(this).div_ceil(table_columns);
+                        this.add_table_row(table_id, row, window, cx);
+                    }
+                    for cell_id in table_cell_ids(this) {
+                        let cell = this
+                            .session
+                            .document
+                            .block(cell_id)
+                            .expect("table cell should exist before mounting its editor")
+                            .clone();
+                        this.ensure_block_input(&cell, window, cx)
+                            .expect("editable table cell should create an input entity");
+                    }
+                    let cells_before_navigation = table_cell_ids(this);
+                    let first_cell = cells_before_navigation[0];
+                    let second_cell = cells_before_navigation[1];
+                    this.input_event(first_cell, &InputEvent::Indent, window, cx);
+                    assert_eq!(this.active, Some(second_cell));
+                    assert!(this.inputs[&second_cell.0]
+                        .read(cx)
+                        .focus
+                        .is_focused(window));
+                    this.input_event(second_cell, &InputEvent::Outdent, window, cx);
+                    assert_eq!(this.active, Some(first_cell));
+                    this.input_event(first_cell, &InputEvent::Navigate(1), window, cx);
+                    let below_first = cells_before_navigation[table_columns];
+                    assert_eq!(this.active, Some(below_first));
+                    this.input_event(below_first, &InputEvent::Navigate(-1), window, cx);
+                    assert_eq!(this.active, Some(first_cell));
+                    let last_cell = *cells_before_navigation.last().unwrap();
+                    // Keep the table root in the smoke viewport so sync_inputs
+                    // mounts the newly appended row before focus is restored.
+                    this.active = Some(table_id);
+                    this.input_event(last_cell, &InputEvent::Indent, window, cx);
+                    let cells_after_tab = table_cell_ids(this);
+                    assert_eq!(cells_after_tab.len(), cells_before_navigation.len() + table_columns);
+                    assert_eq!(
+                        this.active,
+                        Some(cells_after_tab[cells_after_tab.len() - table_columns])
+                    );
+                    this.session.undo();
+                    this.sync_inputs(window, cx);
+                    assert_eq!(count_table_cells(this), cells_before_navigation.len());
+                    eprintln!("SMOKE: ordinary table Tab/Shift+Tab and arrow navigation retain cell focus");
                     let cells_before_row = count_table_cells(this);
                     assert!(cells_before_row > 0);
                     this.add_table_row(
@@ -5449,6 +5509,29 @@ impl Workspace {
         if let Some(active) = self.active {
             keep.insert(active.0);
         }
+        let visible_table_ids = keep
+            .iter()
+            .filter_map(|id| {
+                self.session
+                    .document
+                    .block(BlockId(*id))
+                    .filter(|block| block.kind == BlockKind::Table)
+                    .map(|block| block.id)
+            })
+            .collect::<HashSet<_>>();
+        let visible_table_cells = self
+            .session
+            .blocks()
+            .iter()
+            .filter(|block| {
+                block.kind == BlockKind::TableCell
+                    && block
+                        .parent
+                        .is_some_and(|parent| visible_table_ids.contains(&parent))
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        keep.extend(visible_table_cells.iter().map(|cell| cell.id.0));
         self.inputs.retain(|id, input| {
             keep.contains(id)
                 || input.read(cx).buffer.composing()
@@ -5466,6 +5549,9 @@ impl Workspace {
             {
                 self.ensure_block_input(&block, window, cx);
             }
+        }
+        for cell in visible_table_cells {
+            self.ensure_block_input(&cell, window, cx);
         }
         cx.notify();
     }
@@ -14637,6 +14723,9 @@ impl Workspace {
         } else {
             Vec::new()
         };
+        for cell in &table_cells {
+            self.ensure_block_input(cell, window, cx);
+        }
         let table_columns = usize::from(block.columns.max(1));
         let table_row_count = table_cells.len().div_ceil(table_columns);
         let table_rows = table_cells

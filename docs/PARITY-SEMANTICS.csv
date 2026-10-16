@@ -165,7 +165,7 @@ slash-move,已实现,未验证,slash 菜单打开时上下键在匹配项间循�
 slash-apply-selected,已实现,未验证,slash 命令通过 Enter 应用当前匹配项，mention 通过 Enter 插入选中的页面或日期引用,应用后关闭候选并同步输入、焦点和保存状态
 slash-close,已实现,未验证,Escape 关闭 slash 或 mention 菜单，清除插入模式与候选状态,正文后续输入不会因旧菜单模式而错误重开
 mention-typed,已实现,未验证,正文在光标末尾输入 @ 后过滤当前页面、其他普通页面和今天日期；选择后写为引用标记,基于 core trigger_at UTF-8 字节位置，输入法组合态期间不弹出候选
-table-cell-move,已实现,未验证,表格单元格 Tab / Shift+Tab 按序切换，方向键按行列移动，末尾 Tab 添加行,表格行列结构和移动后的焦点同步；单元格仍优先于多栏布局 Tab 行为
+table-cell-move,已实现,已验证,表格单元格 Tab / Shift+Tab 按序切换，方向键按行列移动，末尾 Tab 添加行,隔离 Release GUI smoke 同步执行 Workspace 输入事件处理路径，断言单元格焦点、垂直按列导航及末尾 Tab 新增行后的焦点；物理键盘和像素级视觉仍未测
 cell-changed,已实现,未验证,数据库编辑框输入先更新草稿，Enter 或失焦时按属性类型解析并提交单元格值,支持多选及关联属性拆分为多个目标；校验错误时保留输入并提示
 sidebar-section-toggled,已实现,未验证,收藏与最近页面分区标题可点击折叠/展开条目,折叠态仅存在当前 Workspace 会话，不写入数据库；无条目时不显示分区标题
 node-clicked,已实现,未验证,侧栏收藏/最近或页面树中的普通页面行点击后成为当前页面,不切换到模板；页面历史只在有效切换时追加
