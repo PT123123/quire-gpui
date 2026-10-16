@@ -4452,12 +4452,18 @@ impl Workspace {
                         this.activate_page(return_page, window, cx);
                         eprintln!("SMOKE: virtualized search hit selects the full body text and retains editor focus");
                     }
+                    this.open_search(&SearchPages, window, cx);
+                    this.search_query = "stale page query".into();
+                    this.search_selected = 3;
                     let palette_return_focus = window.focused(cx);
-                    this.open_command_palette(window, cx);
+                    this.open_palette_action(&OpenCommandPalette, window, cx);
+                    assert!(!this.search_open);
+                    assert!(this.command_palette_query.is_empty());
+                    assert_eq!(this.command_palette_selected, 0);
                     assert!(this.search_input.read(cx).focus.is_focused(window));
                     this.close_command_palette(window, cx);
                     assert_eq!(window.focused(cx), palette_return_focus);
-                    eprintln!("SMOKE: command palette restores its opening focus");
+                    eprintln!("SMOKE: Ctrl+K action resets command state, closes page search and restores focus");
                     this.open_command_palette(window, cx);
                     this.search_input.update(cx, |input, cx| {
                         input.replace_text_in_range(
