@@ -1617,3 +1617,8 @@
 
 - 同尺寸 1280×800 截图对照发现旧版 760px 文档列从 x≈390 开始，而 GPUI 标题从 x≈308 开始，GPUI 页头与正文行的 `mx_auto()` 在虚拟列表项内未产生预期居中。现在两处都由满宽 flex 容器显式 `justify_center()`，内层最大宽度继续按标准 760px / 全宽 1120px 限制；空页提示仍独立占满剩余高度。
 - `cargo fmt --all`、`cargo check --all-targets --locked -j 8`、全量 `cargo test --locked -j 8`（108 项）及 Release 构建（43.52 秒）通过。新 `%TEMP%` SQLite 上的 1000 块 Release GUI smoke 全程通过，包含空页起始、模板、数据库视图、最大化/还原、虚拟滚动、速记/托盘和 MCP；未触及真实库。构建峰值内存没有测量，性能对比继续留到最后。修复后的逐像素截图复核仍待后续视觉回归。
+
+## 第二百六十轮：刷新便携候选包与跨版本回归（2026-10-16）
+
+- 用当前 Release 重打 `dist/Quire-GPUI-0.1.0-windows-x64.zip`，包内 EXE SHA-256 与 `target/release/quire-gpui.exe` 一致：`D26533B7AD521B4F0B1F222F88340CD594A7874FBFBFAB56DACF082B403666A5`；ZIP SHA-256：`8BA2E7B5EFF7C56240FF50014E180C03073587657CB2AABBD87493580787B569`。全新 `%TEMP%` 解压目录运行 1000 块隔离 GUI smoke，`PORTABLE_PACKAGE_SMOKE=PASS`。
+- 旧版同库往返脚本此前在 Windows PowerShell 5.1 因无 BOM 中文源码和 HTTP 请求体默认编码失败；脚本已改为 UTF-8 BOM 与 UTF-8 JSON 请求体，并在 PowerShell 5.1 实跑通过 `LEGACY_ROUNDTRIP=PASS`（测试数据库仅位于 `%TEMP%`）。原同步 wire 脚本在 PowerShell 7 实跑通过：附件拉取与推送二进制均一致、旧版 v4 snapshot 171 行往返成功，`LEGACY_SYNC_WIRE=PASS`。PowerShell 5.1 的同步 wire 脚本兼容未完成，推荐继续用仓库既有 PowerShell 7 路径；安装器编译仍缺 Inno Setup。未访问真实用户库；性能复测依用户要求留到功能完成后。

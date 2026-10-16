@@ -1,4 +1,4 @@
-param(
+﻿param(
     [string]$LegacyExe = (Join-Path $PSScriptRoot '..\..\quire-desktop\target\release\quire.exe')
 )
 
@@ -18,6 +18,12 @@ $legacyProcess = $null
 function Invoke-GpuiProbe([string[]]$Arguments) {
     & cargo run --locked --manifest-path (Join-Path $repoRoot 'Cargo.toml') --example legacy_schema_probe -- @Arguments
     if ($LASTEXITCODE -ne 0) { throw "GPUI compatibility probe failed ($LASTEXITCODE): $Arguments" }
+}
+
+function Invoke-JsonPost([string]$Uri, [hashtable]$Headers, [string]$Body) {
+    $bodyBytes = [System.Text.Encoding]::UTF8.GetBytes($Body)
+    Invoke-RestMethod -Uri $Uri -Method Post -Headers $Headers `
+        -ContentType 'application/json; charset=utf-8' -Body $bodyBytes
 }
 
 try {
@@ -58,8 +64,7 @@ try {
             clientInfo = @{ name = 'quire-legacy-roundtrip-probe'; version = '1' }
         }
     } | ConvertTo-Json -Compress -Depth 8
-    $initialized = Invoke-RestMethod -Uri "http://127.0.0.1:$port/mcp" -Method Post `
-        -Headers $headers -ContentType 'application/json' -Body $initialize
+    $initialized = Invoke-JsonPost -Uri "http://127.0.0.1:$port/mcp" -Headers $headers -Body $initialize
     if (-not $initialized.result.protocolVersion) { throw 'Slint MCP initialization failed' }
 
     $createNote = @{
@@ -73,8 +78,7 @@ try {
             }
         }
     } | ConvertTo-Json -Compress -Depth 8
-    $created = Invoke-RestMethod -Uri "http://127.0.0.1:$port/mcp" -Method Post `
-        -Headers $headers -ContentType 'application/json' -Body $createNote
+    $created = Invoke-JsonPost -Uri "http://127.0.0.1:$port/mcp" -Headers $headers -Body $createNote
     if ($created.result.isError) { throw "Slint MCP rejected create_note: $($created.result.content[0].text)" }
     Write-Output "Slint MCP create_note result: $($created.result.content[0].text)"
     $noteId = [int64](($created.result.content[0].text | ConvertFrom-Json).id)
@@ -87,8 +91,7 @@ try {
             jsonrpc = '2.0'; id = $operation.Id; method = 'tools/call'
             params = @{ name = $operation.Name; arguments = @{ note_id = $noteId } }
         } | ConvertTo-Json -Compress -Depth 8
-        $transitionResult = Invoke-RestMethod -Uri "http://127.0.0.1:$port/mcp" -Method Post `
-            -Headers $headers -ContentType 'application/json' -Body $transition
+        $transitionResult = Invoke-JsonPost -Uri "http://127.0.0.1:$port/mcp" -Headers $headers -Body $transition
         if ($transitionResult.result.isError) {
             throw "Slint MCP $($operation.Name) failed: $($transitionResult.result.content[0].text)"
         }
@@ -106,8 +109,7 @@ try {
             }
         }
     } | ConvertTo-Json -Compress -Depth 8
-    $createdTask = Invoke-RestMethod -Uri "http://127.0.0.1:$port/mcp" -Method Post `
-        -Headers $headers -ContentType 'application/json' -Body $createTask
+    $createdTask = Invoke-JsonPost -Uri "http://127.0.0.1:$port/mcp" -Headers $headers -Body $createTask
     if ($createdTask.result.isError) {
         throw "Slint MCP rejected create_task: $($createdTask.result.content[0].text)"
     }
@@ -121,8 +123,7 @@ try {
             jsonrpc = '2.0'; id = $operation.Id; method = 'tools/call'
             params = @{ name = $operation.Name; arguments = @{ task_id = $taskId } }
         } | ConvertTo-Json -Compress -Depth 8
-        $transitionResult = Invoke-RestMethod -Uri "http://127.0.0.1:$port/mcp" -Method Post `
-            -Headers $headers -ContentType 'application/json' -Body $transition
+        $transitionResult = Invoke-JsonPost -Uri "http://127.0.0.1:$port/mcp" -Headers $headers -Body $transition
         if ($transitionResult.result.isError) {
             throw "Slint MCP $($operation.Name) failed: $($transitionResult.result.content[0].text)"
         }
