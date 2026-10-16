@@ -19342,11 +19342,11 @@ impl Render for Workspace {
                                     let sync_available = sync_peer_is_recent(peer_last_seen, now);
                                     let last_sync = if peer.last_sync.is_empty() { "尚未同步".to_owned() } else { peer.last_sync.clone() };
                                     let online = quire_core::services::sync::engine::now_unix().saturating_sub(peer.last_seen) <= 15;
-                                    div().flex().items_center().justify_between().gap(px(6.)).px(px(7.)).py(px(5.))
+                                    div().w_full().min_w_0().flex().items_center().justify_between().gap(px(6.)).px(px(7.)).py(px(5.))
                                         .rounded(px(5.)).border_1().border_color(Palette::color(&p.border))
-                                        .child(div().flex().flex_col().gap(px(2.))
-                                            .child(div().text_size(px(11.)).child(format!("{}  {}", if online { "●" } else { "○" }, peer.name)))
-                                            .child(div().text_size(px(9.)).text_color(muted).child(format!("{}:{} · {}", peer.ip, peer.port, last_sync))))
+                                        .child(div().flex_1().min_w_0().flex().flex_col().gap(px(2.))
+                                            .child(div().w_full().min_w_0().text_size(px(11.)).child(format!("{}  {}", if online { "●" } else { "○" }, peer.name)))
+                                            .child(div().w_full().min_w_0().text_size(px(9.)).text_color(muted).child(format!("{}:{} · {}", peer.ip, peer.port, last_sync))))
                                         .child(div().flex().gap(px(5.))
                                             .child(div().id(SharedString::from(format!("sync-peer-{peer_id}"))).px(px(7.)).py(px(4.)).rounded(px(4.))
                                                 .when(sync_available, |button| button.bg(Palette::color(&p.accent)).text_color(Palette::color(&p.fg)).cursor_pointer())
@@ -19400,7 +19400,7 @@ impl Render for Workspace {
                                 .child(div().flex().items_center().justify_between()
                                     .child(div().flex_1().min_w_0().flex().items_center().gap(px(10.))
                                         .child(div().text_size(px(20.)).font_weight(FontWeight::SEMIBOLD).child("MCP"))
-                                        .child(div().min_w_0().text_size(px(11.)).text_color(muted).child(mcp_status.clone())))
+                                        .child(div().flex_1().min_w_0().text_size(px(11.)).text_color(muted).child(mcp_status.clone())))
                                     .child(div().flex().items_center().gap(px(5.))
                                         .when(mcp_enabled, |row| row.child(div().id("mcp-restart").px(px(8.)).py(px(5.)).rounded(px(5.))
                                             .border_1().border_color(Palette::color(&p.border)).cursor_pointer().text_size(px(10.))
@@ -19478,7 +19478,7 @@ impl Render for Workspace {
                                     let ok = entry.get("ok").and_then(serde_json::Value::as_bool).unwrap_or(false);
                                     let tool = entry.get("tool").and_then(serde_json::Value::as_str).unwrap_or("tool");
                                     let message = entry.get("message").and_then(serde_json::Value::as_str).unwrap_or("");
-                                    div().text_size(px(10.)).text_color(muted)
+                                    div().w_full().min_w_0().text_size(px(10.)).text_color(muted)
                                         .child(format!("{}  {} · {}", if ok { "✓" } else { "!" }, tool, message.chars().take(72).collect::<String>()))
                                 }))
                                 .when(mcp_logs.is_empty(), |panel| panel.child(div().text_size(px(10.)).text_color(muted).child("尚无调用记录"))),
