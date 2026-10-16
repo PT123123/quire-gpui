@@ -1518,3 +1518,8 @@
 
 - 用已验证的 `target-release` 产物重建便携 ZIP：`install/build-release.ps1 -SkipBuild -TargetDir target-release`。解压到新 `%TEMP%` 目录后逐字节 SHA-256 与 Release EXE 一致（`78E32C31012639F216B61EEFA5B67E5F6A89D752C068462A776E780A28359E76`）；ZIP SHA-256 为 `E9080639EBDB4AA4461FE28941E46E7AC40B805DF3521B9875E094B90D213FE7`。解压包包含可执行文件、README、第三方声明和独立数据目录说明。
 - 本机未检测到 Inno Setup `ISCC.exe`，因此此轮只产出并验收便携 ZIP，未生成安装器。安装升级/数据保留的实际系统验收与完整回退演练仍需处理。未运行性能评测；最终 Slint/GPUI 比较等功能收尾后再做。
+
+## 第二百四十一轮：Parity sidecar 唯一键校验（2026-10-16）
+
+- 核对发现 `docs/PARITY-SEMANTICS.csv` 有 249 行却只有 246 个唯一回调名；笔记删除、任务删除、任务完成切换各有一条旧记录与一条新记录。生成器用 Map 静默保留最后一条，给手工维护造成覆盖风险。移除三条旧记录，并让 `tools/extract-parity.mjs` 遇到重复回调名时报错。
+- 重新生成后得到 246 callbacks / 261 properties / 188 scenes；sidecar 现在 246 行且唯一。连续运行生成器，`PARITY.csv` SHA-256 不变；其他生成文件无差异。未改动应用代码，本轮没有性能评测。

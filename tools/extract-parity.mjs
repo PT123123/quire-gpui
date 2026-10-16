@@ -175,6 +175,7 @@ if (fs.existsSync(SEM)) {
     const c = split(l);
     const name = (c[at[0]] || '').trim();
     if (!name) continue;
+    if (sem.has(name)) throw new Error(`docs/PARITY-SEMANTICS.csv 有重复回调名：${name}`);
     sem.set(name, { impl: (c[at[1]] || '').trim(), verify: (c[at[2]] || '').trim(), diff: (c[at[3]] || '').trim(), note: (c[at[4]] || '').trim() });
   }
 }
