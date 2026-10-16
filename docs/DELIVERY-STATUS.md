@@ -1777,3 +1777,9 @@
 
 - `cargo build --release --locked -j 8` 通过。以新建 `%TEMP%\quire-gpui-final-smoke-b341e40c569a4cd5849b554df19d327b\quire.db` 启动当前构建，运行 `--smoke-test --smoke-blocks 1000` 并正常退出。日志覆盖启动备份、MCP Streamable HTTP 发现与 16 工具、主题/侧栏反向动画、organizer 笔记/任务/菜单/撤销、命令面板、模板与块插入、链接数据库选择、页面图标/历史/版本、最大化/还原、Gallery/Calendar/Timeline/Board/Chart/表单/记录子页、视口外搜索与 1000 合成块滚动，以及速记保存和托盘隐藏/唤回。
 - 这是隔离 Release 主流程自动 smoke，不证明真人鼠标/IME、多屏 DPI、所有冻结截图视觉状态或真实设备网络已验收。没有运行 Slint/GPUI 性能测量，没有访问真实用户库，也未更改 Slint/core。
+
+## 第二百八十七轮：任务清单菜单键盘导航与焦点恢复（2026-10-16）
+
+- 任务清单“⋯”菜单现在在打开时取得 GPUI 焦点并记住原焦点；主菜单及颜色子页支持上下键循环高亮、Enter/Space 执行，Escape 从颜色子页返回主菜单，再按一次关闭并恢复打开前焦点。鼠标点外关闭仍保留目标控件的焦点，不把焦点抢回已关闭菜单。键盘选择器的边界/环绕规则有单测。
+- `cargo test --locked --lib -j 8 -- --nocapture`（59 项）、`cargo test --locked --bin quire-gpui -j 8 -- --quiet`（55 项）与 `cargo check --all-targets --locked -j 8` 通过。当前源码 `cargo build --release --locked -j 8` 通过；Release GUI smoke 使用全新 `%TEMP%` 库和 1000 块，焦点/菜单日志及此前全流程场景均通过，正常退出。
+- 此修复针对任务清单这一类菜单，不代表其他锚定弹层已统一键盘/焦点行为。未访问真实用户库或修改 Slint/core；没有做性能评测。

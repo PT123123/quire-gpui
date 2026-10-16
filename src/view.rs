@@ -26,6 +26,18 @@ fn interpolated_sidebar_width(from: f32, to: f32, started_at: Instant, now: Inst
     from + (to - from) * progress.clamp(0., 1.)
 }
 
+fn next_menu_selection(current: usize, item_count: usize, key: &str) -> Option<usize> {
+    if item_count == 0 {
+        return None;
+    }
+    Some(match key {
+        "up" if current == 0 => item_count - 1,
+        "up" => current.min(item_count - 1).saturating_sub(1),
+        "down" => (current.min(item_count - 1) + 1) % item_count,
+        _ => return None,
+    })
+}
+
 #[derive(Clone, Copy)]
 struct DatabaseColumnDrag {
     block: BlockId,
@@ -1220,13 +1232,13 @@ mod view_tests {
         database_filter_value_from_text, database_group_identity, database_group_label,
         database_property_kind_choices, evaluate_database_formula, evaluate_database_rollup,
         find_matches_in, gallery_columns_for_width, interpolated_sidebar_width,
-        link_ranges_for_removal, link_target_range, mention_date_matches, notes_auto_input_enabled,
-        order_database_groups, organizer_notes_copy_payload, organizer_tag_matches_path,
-        organizer_tag_tree_rows, organizer_tags_exclude, organizer_task_drop_accepted,
-        palette_matches, parse_mcp_port, parse_organizer_tags, periodic_snapshot_failure_notice,
-        push_history, settings_matches, settings_section_visible, slash_items, slash_query,
-        sort_organizer_notes, sort_organizer_tasks, sync_peer_is_recent, sync_targets,
-        system_palette_id_for_appearance, toc_headings,
+        link_ranges_for_removal, link_target_range, mention_date_matches, next_menu_selection,
+        notes_auto_input_enabled, order_database_groups, organizer_notes_copy_payload,
+        organizer_tag_matches_path, organizer_tag_tree_rows, organizer_tags_exclude,
+        organizer_task_drop_accepted, palette_matches, parse_mcp_port, parse_organizer_tags,
+        periodic_snapshot_failure_notice, push_history, settings_matches, settings_section_visible,
+        slash_items, slash_query, sort_organizer_notes, sort_organizer_tasks, sync_peer_is_recent,
+        sync_targets, system_palette_id_for_appearance, toc_headings,
     };
     use gpui::{
         AppContext, Context, InteractiveElement, IntoElement, Render, Styled, TestAppContext,
@@ -1258,6 +1270,16 @@ mod view_tests {
         assert!(
             (interpolated_sidebar_width(260., 0., started_at, reverse_ends_at) - 0.).abs() < 0.01
         );
+    }
+
+    #[test]
+    fn task_list_menu_keyboard_selection_wraps_and_clamps() {
+        assert_eq!(next_menu_selection(0, 3, "up"), Some(2));
+        assert_eq!(next_menu_selection(2, 3, "down"), Some(0));
+        assert_eq!(next_menu_selection(9, 3, "down"), Some(0));
+        assert_eq!(next_menu_selection(9, 3, "up"), Some(1));
+        assert_eq!(next_menu_selection(0, 0, "down"), None);
+        assert_eq!(next_menu_selection(0, 3, "left"), None);
     }
 
     #[test]
@@ -2488,6 +2510,9 @@ pub struct Workspace {
     selected_task_list: quire_core::core::organizer::ListId,
     task_list_editing: Option<quire_core::core::organizer::ListId>,
     task_list_menu_open: Option<quire_core::core::organizer::ListId>,
+    task_list_menu_focus: FocusHandle,
+    task_list_menu_focus_return: Option<FocusHandle>,
+    task_list_menu_selection: usize,
     task_list_color_open: Option<quire_core::core::organizer::ListId>,
     task_list_name_draft: String,
     selected_task_smart_view: Option<i32>,
@@ -2776,6 +2801,7 @@ impl Workspace {
             sync_job_tx.clone(),
         ));
         let sync_cmd_tx = crate::sync_client::start(sync_job_tx);
+        let task_list_menu_focus = cx.focus_handle();
         let mut this = Self {
             session,
             version_name_input,
@@ -2934,6 +2960,9 @@ impl Workspace {
             selected_task_list: quire_core::core::organizer::ListId::INBOX,
             task_list_editing: None,
             task_list_menu_open: None,
+            task_list_menu_focus,
+            task_list_menu_focus_return: None,
+            task_list_menu_selection: 0,
             task_list_color_open: None,
             task_list_name_draft: String::new(),
             selected_task_smart_view: Some(0),
@@ -3712,14 +3741,23 @@ impl Workspace {
                     eprintln!("SMOKE: math preview switches to an editable LaTeX source field");
 
                     let smoke_list = this.session.create_task_list("smoke 清单".into());
-                    this.toggle_task_list_menu(smoke_list, cx);
+                    let other_smoke_list = this.session.create_task_list("第二个 smoke 清单".into());
+                    let menu_return_focus = window.focused(cx);
+                    this.toggle_task_list_menu(smoke_list, window, cx);
                     assert_eq!(this.task_list_menu_open, Some(smoke_list));
+                    assert!(this.task_list_menu_focus.is_focused(window));
+                    this.toggle_task_list_menu(other_smoke_list, window, cx);
+                    assert_eq!(this.task_list_menu_open, Some(other_smoke_list));
+                    this.escape_task_list_menu(window);
+                    assert_eq!(window.focused(cx), menu_return_focus);
+                    assert_eq!(this.task_list_menu_open, None);
+                    this.toggle_task_list_menu(smoke_list, window, cx);
                     this.toggle_task_list_color_picker(smoke_list, cx);
                     assert_eq!(this.task_list_color_open, Some(smoke_list));
                     this.dismiss_task_list_menu(smoke_list, cx);
                     assert_eq!(this.task_list_menu_open, None);
                     assert_eq!(this.task_list_color_open, None);
-                    this.toggle_task_list_menu(smoke_list, cx);
+                    this.toggle_task_list_menu(smoke_list, window, cx);
                     this.task_list_color_open = None;
                     this.start_task_list_rename(smoke_list, window, cx);
                     this.task_list_name_draft = "桌面回归清单".into();
@@ -3737,6 +3775,7 @@ impl Workspace {
                         this.session.organizer.list(smoke_list).unwrap().color,
                         ColorKind::Purple
                     );
+                    eprintln!("SMOKE: task-list menu Escape restores focus; menu retains a keyboard focus target");
                     assert!(this.session.undo_organizer());
                     assert_ne!(
                         this.session.organizer.list(smoke_list).unwrap().color,
@@ -9550,6 +9589,7 @@ impl Workspace {
         };
         self.task_list_menu_open = None;
         self.task_list_color_open = None;
+        self.task_list_menu_focus_return = None;
         self.task_list_editing = Some(list);
         self.task_list_name_draft = name.clone();
         self.task_list_name_input.update(cx, |input, cx| {
@@ -9566,11 +9606,28 @@ impl Workspace {
     fn toggle_task_list_menu(
         &mut self,
         id: quire_core::core::organizer::ListId,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.task_list_menu_open = (self.task_list_menu_open != Some(id)).then_some(id);
+        if self.task_list_menu_open == Some(id) {
+            self.task_list_menu_open = None;
+            self.task_list_color_open = None;
+            self.restore_task_list_menu_focus(window);
+        } else {
+            if self.task_list_menu_open.is_none() || self.task_list_menu_focus_return.is_none() {
+                self.task_list_menu_focus_return = window.focused(cx);
+            }
+            self.task_list_menu_open = Some(id);
+            self.task_list_menu_selection = 0;
+            window.focus(&self.task_list_menu_focus);
+        }
         self.task_list_color_open = None;
         cx.notify();
+    }
+    fn restore_task_list_menu_focus(&mut self, window: &mut Window) {
+        if let Some(focus) = self.task_list_menu_focus_return.take() {
+            window.focus(&focus);
+        }
     }
     fn dismiss_task_list_menu(
         &mut self,
@@ -9580,6 +9637,7 @@ impl Workspace {
         if self.task_list_menu_open == Some(id) {
             self.task_list_menu_open = None;
             self.task_list_color_open = None;
+            self.task_list_menu_focus_return = None;
             cx.notify();
         }
     }
@@ -9599,20 +9657,63 @@ impl Workspace {
     fn task_list_menu_key_down(
         &mut self,
         event: &KeyDownEvent,
-        _: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if event.keystroke.key.as_str() != "escape"
-            || event.keystroke.modifiers.modified()
-            || self.task_list_menu_open.is_none()
-        {
+        let Some(list) = self.task_list_menu_open else {
+            return;
+        };
+        if event.keystroke.modifiers.modified() {
             return;
         }
-        if self.task_list_color_open.take().is_none() {
-            self.task_list_menu_open = None;
+        let key = event.keystroke.key.as_str();
+        let in_colors = self.task_list_color_open == Some(list);
+        let count = if in_colors { 10 } else { 3 };
+        match key {
+            "escape" => {
+                self.escape_task_list_menu(window);
+            }
+            "up" | "down" => {
+                self.task_list_menu_selection =
+                    next_menu_selection(self.task_list_menu_selection, count, key)
+                        .expect("menu selection has at least one item");
+            }
+            "enter" | "space" => {
+                if in_colors {
+                    if self.task_list_menu_selection == 0 {
+                        self.task_list_color_open = None;
+                        self.task_list_menu_selection = 0;
+                    } else if let Some(color) = ColorKind::ALL
+                        .into_iter()
+                        .filter(|color| *color != ColorKind::Default)
+                        .nth(self.task_list_menu_selection - 1)
+                    {
+                        self.set_task_list_color(list, color, window, cx);
+                    }
+                } else {
+                    match self.task_list_menu_selection {
+                        0 => self.start_task_list_rename(list, window, cx),
+                        1 => {
+                            self.toggle_task_list_color_picker(list, cx);
+                            self.task_list_menu_selection = 0;
+                        }
+                        2 => self.delete_task_list(list, window, cx),
+                        _ => {}
+                    }
+                }
+            }
+            _ => return,
         }
         cx.stop_propagation();
         cx.notify();
+    }
+    fn escape_task_list_menu(&mut self, window: &mut Window) {
+        if self.task_list_color_open.take().is_some() {
+            self.task_list_menu_selection = 0;
+        } else {
+            self.task_list_menu_open = None;
+            self.restore_task_list_menu_focus(window);
+        }
     }
     fn editor_rich_paste_key_down(
         &mut self,
@@ -9715,6 +9816,7 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         self.task_list_color_open = (self.task_list_color_open != Some(id)).then_some(id);
+        self.task_list_menu_selection = 0;
         cx.notify();
     }
     fn set_task_list_color(
@@ -9730,6 +9832,7 @@ impl Workspace {
         let name = list.name.clone();
         self.task_list_menu_open = None;
         self.task_list_color_open = None;
+        self.restore_task_list_menu_focus(window);
         if self.session.update_task_list(id, name, color) {
             self.status = "清单颜色已更新（Ctrl+Z 可撤销）".into();
             self.error = false;
@@ -9745,6 +9848,7 @@ impl Workspace {
     ) {
         self.task_list_menu_open = None;
         self.task_list_color_open = None;
+        self.restore_task_list_menu_focus(window);
         let Some(count) = self.session.delete_task_list(list) else {
             return;
         };
@@ -20789,8 +20893,8 @@ impl Render for Workspace {
                                     .justify_center()
                                     .text_color(if menu_open { accent } else { muted })
                                     .hover(|button| button.text_color(accent))
-                                    .on_click(cx.listener(move |this, _, _, cx| {
-                                        this.toggle_task_list_menu(id, cx)
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        this.toggle_task_list_menu(id, window, cx)
                                     }))
                                     .child("⋯"),
                             )
@@ -20820,6 +20924,7 @@ impl Render for Workspace {
                                         .flex()
                                         .flex_col()
                                         .gap(px(2.))
+                                        .track_focus(&self.task_list_menu_focus)
                                         .on_mouse_down_out(cx.listener(
                                             move |this, _, window, cx| {
                                                 this.dismiss_task_list_menu_after_mouse_down(
@@ -20842,6 +20947,9 @@ impl Render for Workspace {
                                                 .text_size(px(12.))
                                                 .text_color(text)
                                                 .hover(|item| {
+                                                    item.bg(Palette::color(&p.bg).opacity(0.35))
+                                                })
+                                                .when(self.task_list_menu_selection == 0, |item| {
                                                     item.bg(Palette::color(&p.bg).opacity(0.35))
                                                 })
                                                 .on_click(cx.listener(
@@ -20867,6 +20975,9 @@ impl Render for Workspace {
                                                 .text_size(px(12.))
                                                 .text_color(text)
                                                 .hover(|item| {
+                                                    item.bg(Palette::color(&p.bg).opacity(0.35))
+                                                })
+                                                .when(self.task_list_menu_selection == 1, |item| {
                                                     item.bg(Palette::color(&p.bg).opacity(0.35))
                                                 })
                                                 .on_click(cx.listener(move |this, _, _, cx| {
@@ -20899,6 +21010,9 @@ impl Render for Workspace {
                                                 .hover(|item| {
                                                     item.bg(Palette::color(&p.bg).opacity(0.35))
                                                 })
+                                                .when(self.task_list_menu_selection == 2, |item| {
+                                                    item.bg(Palette::color(&p.bg).opacity(0.35))
+                                                })
                                                 .on_click(cx.listener(
                                                     move |this, _, window, cx| {
                                                         this.delete_task_list(id, window, cx)
@@ -20927,6 +21041,7 @@ impl Render for Workspace {
                                         .flex()
                                         .flex_col()
                                         .gap(px(2.))
+                                        .track_focus(&self.task_list_menu_focus)
                                         .on_mouse_down_out(cx.listener(
                                             move |this, _, window, cx| {
                                                 this.dismiss_task_list_menu_after_mouse_down(
@@ -20951,8 +21066,12 @@ impl Render for Workspace {
                                                 .hover(|item| {
                                                     item.bg(Palette::color(&p.bg).opacity(0.35))
                                                 })
+                                                .when(self.task_list_menu_selection == 0, |item| {
+                                                    item.bg(Palette::color(&p.bg).opacity(0.35))
+                                                })
                                                 .on_click(cx.listener(move |this, _, _, cx| {
                                                     this.task_list_color_open = None;
+                                                    this.task_list_menu_selection = 0;
                                                     cx.notify();
                                                 }))
                                                 .child("‹ 返回"),
@@ -20961,7 +21080,8 @@ impl Render for Workspace {
                                             ColorKind::ALL
                                                 .into_iter()
                                                 .filter(|color| *color != ColorKind::Default)
-                                                .map(|color| {
+                                                .enumerate()
+                                                .map(|(index, color)| {
                                                     let color_id = id;
                                                     let selected = color == list_color;
                                                     let label = match color {
@@ -20996,6 +21116,14 @@ impl Render for Workspace {
                                                                 Palette::color(&p.bg).opacity(0.35)
                                                             )
                                                         })
+                                                        .when(
+                                                            self.task_list_menu_selection
+                                                                == index + 1,
+                                                            |item| {
+                                                                item.bg(Palette::color(&p.bg)
+                                                                    .opacity(0.35))
+                                                            },
+                                                        )
                                                         .on_click(cx.listener(
                                                             move |this, _, window, cx| {
                                                                 this.set_task_list_color(
