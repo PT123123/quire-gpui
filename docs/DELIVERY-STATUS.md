@@ -1767,3 +1767,8 @@
 
 - 扩展 `tests/sync_loopback.rs`：两节点先交换并共享基线，再分别产生独立改动（A 更新既有笔记标题、正文和标签；B 新建任务并写入备注），通过 B→A 合并和合并快照 A→B 回传后，逐字段检查两端内容一致；关闭并重开两个隔离数据库后，再逐字段读回核验。
 - `cargo fmt --all` 与 `cargo test --locked --test sync_loopback -j 8 -- --nocapture` 通过。全量 `cargo test --locked -j 8 -- --quiet`（115 项）、`cargo check --all-targets --locked -j 8`、`cargo fmt --all -- --check`、`git diff --check` 通过；`tools/test-legacy-roundtrip.ps1` 输出 `LEGACY_ROUNDTRIP=PASS`，`tools/test-sync-legacy-wire.ps1` 输出 `LEGACY_SYNC_WIRE=PASS`（v4 快照 171 行、2 个附件双向传输并逐字节一致）。该测试验证独立并发改动，不代表同一字段冲突策略已验收；冲突行为和两台真实设备网络仍在 P7 未验收项中。数据只写入脚本创建的临时 SQLite，未访问真实用户库或修改 Slint/core。本轮没有执行性能评测。
+
+## 第二百八十五轮：覆盖同字段并发编辑的同步收敛（2026-10-16）
+
+- 在共享基线双向同步回归中再增加同一笔记标题的并发修改：节点 A、B 分别写入不同标题，交换 B→A 合并结果并回传 A→B 后，断言双方标题一致且取自其中一个合法并发值；两端关闭重开后的断言沿用实际胜出值，同时核对正文、标签与另一端任务内容仍完整。
+- `cargo fmt --all` 与 `cargo test --locked --test sync_loopback -j 8 -- --nocapture` 通过。此证据验证本场景的收敛与持久化，不声称冲突胜出策略跨重复运行确定，真实设备网络与复杂用户库冲突仍待验收。测试只写临时 SQLite；未访问真实用户库或修改 Slint/core，未运行性能评测。

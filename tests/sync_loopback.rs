@@ -354,6 +354,41 @@ fn two_isolated_sessions_exchange_changes_over_sync_http_and_reopen() -> anyhow:
     assert_eq!(task.title, "共享基线后的 B 任务");
     assert_eq!(task.notes, "B 在共同基线上新增了任务");
 
+    // Same-field edits on a shared baseline must also converge through the
+    // merge response, even though the winner is determined by core policy.
+    a.update_note_editor(
+        note_a,
+        "共同基线冲突：节点 A".into(),
+        "A 在共同基线上更新了正文".into(),
+        vec!["A-side".into()],
+    );
+    b.update_note_editor(
+        note_a,
+        "共同基线冲突：节点 B".into(),
+        "A 在共同基线上更新了正文".into(),
+        vec!["A-side".into()],
+    );
+    let conflicting_b = b.sync_export()?;
+    let merged_conflict_on_a = a.sync_apply_remote(&conflicting_b, &[], &peer_b)?;
+    b.sync_apply_remote(&merged_conflict_on_a, &[], &peer_a)?;
+    let resolved_note_title = a
+        .organizer
+        .note(note_a)
+        .expect("conflicted note on A")
+        .title
+        .clone();
+    assert!(matches!(
+        resolved_note_title.as_str(),
+        "共同基线冲突：节点 A" | "共同基线冲突：节点 B"
+    ));
+    assert_eq!(
+        b.organizer
+            .note(note_a)
+            .expect("conflicted note on B")
+            .title,
+        resolved_note_title
+    );
+
     // Database file removals travel as normal value tombstones. The attachment
     // bytes stay available for recovery; re-adding the reference after the
     // delete must make it visible in a later snapshot again.
@@ -420,7 +455,7 @@ fn two_isolated_sessions_exchange_changes_over_sync_http_and_reopen() -> anyhow:
             note.tags.as_slice()
         )),
         Some((
-            "共享基线后的 A 笔记更新",
+            resolved_note_title.as_str(),
             "A 在共同基线上更新了正文",
             &["A-side".to_string()][..]
         ))
@@ -439,7 +474,7 @@ fn two_isolated_sessions_exchange_changes_over_sync_http_and_reopen() -> anyhow:
             note.tags.as_slice()
         )),
         Some((
-            "共享基线后的 A 笔记更新",
+            resolved_note_title.as_str(),
             "A 在共同基线上更新了正文",
             &["A-side".to_string()][..]
         ))
