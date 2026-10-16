@@ -1125,6 +1125,14 @@ fn gallery_columns_for_width(width: f32) -> usize {
     (((width.max(0.) + 8.) / 188.).floor() as usize).clamp(1, 4)
 }
 
+fn centered_document_column(width: Pixels, content: impl IntoElement) -> impl IntoElement {
+    div()
+        .w_full()
+        .flex()
+        .justify_center()
+        .child(div().w_full().max_w(width).child(content))
+}
+
 fn notes_auto_input_enabled(value: Option<&str>) -> bool {
     value.is_none_or(|value| !matches!(value, "0" | "false"))
 }
@@ -1195,7 +1203,7 @@ fn columns_layout_item_ids(blocks: &[Block], layout_id: BlockId) -> Vec<BlockId>
 mod view_tests {
     use super::{
         NavigationHistory, NavigationStop, OrganizerTaskDrag, Session, SlashAction,
-        capture_tag_replacement, capture_tags, columns_layout_item_ids,
+        capture_tag_replacement, capture_tags, centered_document_column, columns_layout_item_ids,
         database_filter_value_from_text, database_group_identity, database_group_label,
         database_property_kind_choices, evaluate_database_formula, evaluate_database_rollup,
         find_matches_in, gallery_columns_for_width, link_ranges_for_removal, link_target_range,
@@ -1206,7 +1214,10 @@ mod view_tests {
         slash_items, slash_query, sort_organizer_notes, sort_organizer_tasks, sync_peer_is_recent,
         sync_targets, system_palette_id_for_appearance, toc_headings,
     };
-    use gpui::WindowAppearance;
+    use gpui::{
+        AppContext, Context, InteractiveElement, IntoElement, Render, Styled, TestAppContext,
+        Window, WindowAppearance, div, point, px, size,
+    };
     use quire_core::core::database::PropertyKind;
     use quire_core::core::database_view::FilterValue;
     use quire_core::core::organizer::{
@@ -1215,6 +1226,33 @@ mod view_tests {
     use quire_core::core::types::{
         Block, BlockId, BlockKind, ColorKind, Lang, Mark, MarkKind, OrderKey, PageId,
     };
+
+    #[gpui::test]
+    fn document_column_is_centered_in_the_available_viewport(cx: &mut TestAppContext) {
+        struct TestColumn;
+        impl Render for TestColumn {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                centered_document_column(
+                    px(760.),
+                    div()
+                        .w_full()
+                        .h(px(12.))
+                        .debug_selector(|| "document-column-content".into()),
+                )
+            }
+        }
+
+        let cx = cx.add_empty_window();
+        cx.draw(point(px(0.), px(0.)), size(px(1024.), px(600.)), |_, cx| {
+            cx.new(|_| TestColumn)
+        });
+
+        let bounds = cx
+            .debug_bounds("document-column-content")
+            .expect("document content should have been laid out");
+        assert_eq!(bounds.origin.x, px(132.));
+        assert_eq!(bounds.size.width, px(760.));
+    }
 
     #[test]
     fn notes_auto_input_defaults_on_and_honors_persisted_off_values() {
@@ -12509,12 +12547,6 @@ impl Workspace {
             .and_then(|cover| self.session.attachment_display_path(cover));
         div()
             .w_full()
-            .max_w(px(if self.session.page.full_width {
-                1120.
-            } else {
-                760.
-            }))
-            .mx_auto()
             .pt(px(72.))
             .pb(px(16.))
             .flex()
@@ -22268,13 +22300,7 @@ impl Render for Workspace {
                                     .flex()
                                     .flex_col()
                                     .size_full()
-                                    .child(
-                                        div()
-                                            .w_full()
-                                            .flex()
-                                            .justify_center()
-                                            .child(header),
-                                    )
+                                    .child(centered_document_column(px(row_width), header))
                                     .child(
                                         div()
                                             .id("empty-page-start")
@@ -22292,12 +22318,7 @@ impl Render for Workspace {
                                     )
                                     .into_any_element()
                             } else {
-                                div()
-                                    .w_full()
-                                    .flex()
-                                    .justify_center()
-                                    .child(header)
-                                    .into_any_element()
+                                centered_document_column(px(row_width), header).into_any_element()
                             }
                         })
                         .unwrap_or_else(|_| div().into_any_element());
@@ -22338,27 +22359,24 @@ impl Render for Workspace {
                     let Some(block) = this.session.document.block(id).cloned() else {
                         return div().into_any_element();
                     };
-                    div()
-                        .w_full()
-                        .flex()
-                        .justify_center()
-                        .child(div().w_full().max_w(px(row_width)).child(
-                            this.render_document_block(
-                                index,
-                                &block,
-                                window,
-                                cx,
-                                row_text,
-                                row_muted,
-                                row_accent,
-                                row_elevated,
-                                &palette,
-                                database_width,
-                                sync_sources,
-                                page_candidates,
-                            ),
-                        ))
-                        .into_any_element()
+                    centered_document_column(
+                        px(row_width),
+                        this.render_document_block(
+                            index,
+                            &block,
+                            window,
+                            cx,
+                            row_text,
+                            row_muted,
+                            row_accent,
+                            row_elevated,
+                            &palette,
+                            database_width,
+                            sync_sources,
+                            page_candidates,
+                        ),
+                    )
+                    .into_any_element()
                 })
                 .unwrap_or_else(|_| div().into_any_element())
             },

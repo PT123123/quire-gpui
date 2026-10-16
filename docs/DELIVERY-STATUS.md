@@ -1627,3 +1627,9 @@
 
 - 用 Win32 `LoadLibraryEx` / `FindResource` 直接读取实际 Release 和便携 staging EXE 的 RT_MANIFEST 资源，二者均含 `dpiAware=true` 与 `dpiAwareness=PerMonitorV2`；这确认清单已进二进制，而不只是源码资源文件存在。
 - 新增 `tools/verify-windows-manifest.ps1`，并接入 `install/build-release.ps1`，打包前检查构建产物、复制后再检查 staging EXE。PowerShell 5.1 下对两份 EXE 的读取和 `build-release.ps1 -SkipBuild` 均通过，便携 ZIP 已刷新。实际 100/125/150/200% 显示器缩放、跨屏移动和 IME 候选框位置仍须真窗口验收；未运行性能评测。
+
+## 第二百六十二轮：锁定文档列居中回归并刷新便携包（2026-10-16）
+
+- 将 760px / 1120px 文档列统一放入满宽居中容器，确保虚拟列表中的页头、空页头和正文行都按视口居中；新增 GPUI layout test，在 1024px 视口上断言 760px 内容起点 x=132。该测试通过。
+- `cargo fmt --all -- --check`、`git diff --check` 与全量 `cargo test --locked -j 8` 通过（109 项：56 library、51 binary、2 integration）；Release 构建已通过（本轮沿用已构建产物）。1000 块隔离 Release smoke 通过，覆盖空页/模板/数据库视图、窗口最大化还原、虚拟滚动、速记输入与托盘隐藏唤回，数据库只写在新建 `%TEMP%` 目录。
+- `install/build-release.ps1 -SkipBuild` 通过并刷新便携 ZIP；staging EXE 与 Release EXE SHA-256 一致（`8B046D895EED4C4A7BC4715A9F4978536107FC11E1F168485760D1A6597F6029`），ZIP SHA-256 `3BFF99F2561C8FD8B14876A1AA61F1296F36164D08B30B795FAAE271BC499486`。性能比较仍按用户要求留待功能完成后；真实屏幕 DPI/IME 与完整视觉矩阵尚未完成。
