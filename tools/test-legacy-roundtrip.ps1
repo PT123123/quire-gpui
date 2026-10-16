@@ -77,6 +77,23 @@ try {
         -Headers $headers -ContentType 'application/json' -Body $createNote
     if ($created.result.isError) { throw "Slint MCP rejected create_note: $($created.result.content[0].text)" }
     Write-Output "Slint MCP create_note result: $($created.result.content[0].text)"
+    $noteId = [int64](($created.result.content[0].text | ConvertFrom-Json).id)
+
+    foreach ($operation in @(
+        @{ Id = 3; Name = 'trash_note' },
+        @{ Id = 4; Name = 'restore_note' }
+    )) {
+        $transition = @{
+            jsonrpc = '2.0'; id = $operation.Id; method = 'tools/call'
+            params = @{ name = $operation.Name; arguments = @{ note_id = $noteId } }
+        } | ConvertTo-Json -Compress -Depth 8
+        $transitionResult = Invoke-RestMethod -Uri "http://127.0.0.1:$port/mcp" -Method Post `
+            -Headers $headers -ContentType 'application/json' -Body $transition
+        if ($transitionResult.result.isError) {
+            throw "Slint MCP $($operation.Name) failed: $($transitionResult.result.content[0].text)"
+        }
+        Write-Output "Slint MCP $($operation.Name) for isolated note ${noteId}: PASS"
+    }
 
     Wait-Process -Id $legacyProcess.Id -Timeout 15
     $legacyProcess.Refresh()
