@@ -1855,3 +1855,9 @@
 - 替换了手写 HTTP 假服务器测试：测试从隔离 SQLite 建立源笔记，启动 `quire_core::LanServer`，再通过 GPUI 客户端拉取到另一份隔离 SQLite，并核对标题、正文及当前选中页。另向分享端发出 `POST /api/export`，确认只读服务返回 405。
 - 针对性 LAN 测试和全量 `cargo test --locked -j 8 -- --quiet` 通过（116 项）。本轮变更只加强真实 core 分享服务的集成证据；不能代表真实设备网络及复杂网络环境验收。
 - 未访问真实用户库或修改 Slint/core；最终 GPUI/Slint 性能比较按用户要求留到功能完成后。
+
+## 第三百轮：复跑 GPUI 与 Slint 隔离往返（2026-10-16）
+
+- `tools/test-legacy-roundtrip.ps1` 输出 `LEGACY_ROUNDTRIP=PASS`：GPUI 写入的复杂数据库 schema、双向关联、公式/汇总配置、多选与常见类型值、附件有序集合和字节，以及 Slint MCP 创建/回收/恢复后的记录均由 GPUI 重读核验。
+- `tools/test-sync-legacy-wire.ps1` 输出 `LEGACY_SYNC_WIRE=PASS`：GPUI 与 Slint 的 v4 同步快照 171 行往返成功，两个附件在拉取和推送方向逐字节一致。所有库均由脚本建立在 `%TEMP%`；此验证不覆盖完整真实用户库迁移和双设备网络。
+- 未访问真实用户库或修改 Slint/core；没有运行性能评测，按用户要求留待功能收尾。
