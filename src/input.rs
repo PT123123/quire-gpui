@@ -606,13 +606,30 @@ struct TextLayout {
 }
 impl TextLayout {
     fn line_boundary(&self, byte: usize, to_end: bool) -> usize {
-        text_line_boundary(
-            self.lines
-                .iter()
-                .map(|(start, _, line)| (*start, line.len())),
-            byte,
-            to_end,
-        )
+        for (start, _, line) in &self.lines {
+            if byte <= start.saturating_add(line.len()) {
+                let local_byte = byte.saturating_sub(*start);
+                let wrapped_row = line
+                    .wrap_boundaries()
+                    .iter()
+                    .filter(|boundary| {
+                        line.unwrapped_layout.runs[boundary.run_ix].glyphs[boundary.glyph_ix].index
+                            <= local_byte
+                    })
+                    .count();
+                let x = if to_end { self.width } else { px(0.) };
+                let local = line
+                    .closest_index_for_position(
+                        point(x, self.line_height * wrapped_row as f32),
+                        self.line_height,
+                    )
+                    .unwrap_or_else(|index| index);
+                return *start + local;
+            }
+        }
+        self.lines
+            .last()
+            .map_or(0, |(start, _, line)| start + line.len())
     }
 
     fn shape(
@@ -806,39 +823,6 @@ impl TextLayout {
             }
         }
         self.lines.last().map_or(0, |(s, _, l)| s + l.len())
-    }
-}
-
-fn text_line_boundary(
-    lines: impl IntoIterator<Item = (usize, usize)>,
-    byte: usize,
-    to_end: bool,
-) -> usize {
-    let mut last_end = 0;
-    for (start, len) in lines {
-        let end = start.saturating_add(len);
-        if byte <= end {
-            return if to_end { end } else { start };
-        }
-        last_end = end;
-    }
-    last_end
-}
-
-#[cfg(test)]
-mod navigation_tests {
-    use super::text_line_boundary;
-
-    #[test]
-    fn home_and_end_use_the_current_wrapped_line_and_utf8_offsets() {
-        let lines = [(0, 6), (7, 9), (17, 3)];
-        assert_eq!(text_line_boundary(lines, 4, false), 0);
-        assert_eq!(text_line_boundary(lines, 4, true), 6);
-        assert_eq!(text_line_boundary(lines, 11, false), 7);
-        assert_eq!(text_line_boundary(lines, 11, true), 16);
-        assert_eq!(text_line_boundary(lines, 18, false), 17);
-        assert_eq!(text_line_boundary(lines, 18, true), 20);
-        assert_eq!(text_line_boundary(lines, usize::MAX, true), 20);
     }
 }
 
@@ -1118,18 +1102,19 @@ pub fn bind_keys(cx: &mut App) {
 mod input_tests {
     use super::{TextInput, bind_keys};
     use gpui::{
-        AppContext, Context, Entity, IntoElement, ParentElement, Render, Styled, TestAppContext,
-        Window, div,
+        AppContext, Context, Entity, IntoElement, ParentElement, Pixels, Render, Styled,
+        TestAppContext, Window, div, px,
     };
     use quire_core::core::types::Mark;
 
     struct InputHarness {
         input: Entity<TextInput>,
+        width: Pixels,
     }
 
     impl Render for InputHarness {
         fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-            div().size_full().child(self.input.clone())
+            div().w(self.width).child(self.input.clone())
         }
     }
 
@@ -1139,6 +1124,7 @@ mod input_tests {
         let (root, cx) = cx.add_window_view(|window, cx| InputHarness {
             input: cx
                 .new(|cx| TextInput::new("one two".into(), Vec::<Mark>::new(), 14., window, cx)),
+            width: px(48.),
         });
         let input = cx.update(|_, app| root.read(app).input.clone());
         let focus = cx.update(|_, app| input.read(app).focus.clone());
@@ -1179,5 +1165,39 @@ mod input_tests {
         cx.simulate_keystrokes("shift-home");
         let selection = cx.update(|_, app| input.read(app).buffer.selection.clone());
         assert_eq!(selection, "one\n".len().."one\ntwo".len());
+
+        let wrapped = "alpha bravo charlie delta echo";
+        cx.update(|_, app| {
+            input.update(app, |input, cx| {
+                input.reset(wrapped.into(), Vec::new(), wrapped.len(), cx)
+            })
+        });
+        cx.run_until_parked();
+        let expected_home = cx.update(|_, app| {
+            let input = input.read(app);
+            let layout = input
+                .layout
+                .as_ref()
+                .expect("wrapped input should be laid out");
+            assert!(
+                layout
+                    .lines
+                    .iter()
+                    .any(|(_, _, line)| !line.wrap_boundaries().is_empty()),
+                "test width {:?} should wrap the input text",
+                layout.width,
+            );
+            layout.line_boundary(input.buffer.caret(), false)
+        });
+        assert!(
+            expected_home > 0,
+            "caret should begin on a wrapped continuation row"
+        );
+        cx.simulate_keystrokes("home");
+        let caret = cx.update(|_, app| input.read(app).buffer.caret());
+        assert_eq!(caret, expected_home);
+        cx.simulate_keystrokes("shift-end");
+        let selection = cx.update(|_, app| input.read(app).buffer.selection.clone());
+        assert_eq!(selection, expected_home..wrapped.len());
     }
 }

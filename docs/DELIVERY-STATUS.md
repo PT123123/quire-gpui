@@ -1675,3 +1675,9 @@
 
 - 扩展 GPUI 输入控件按键分发测试：在实际 TextInput 中装载带换行的“两行”文本，发送 Home、End、Shift+Home，检查第二行的 caret 与选区边界；同一测试也验证 Ctrl+左右、Ctrl+Shift+Left、Ctrl+Delete 与 Ctrl+Backspace 的事件处理。此轮只改 `#[cfg(test)]`，不改变 Release 运行代码。
 - 全量 `cargo test --locked -j 8`（113 项）、`cargo check --all-targets --locked -j 8`、格式检查和差异检查通过。候选 Release/安装包来自上一轮已验证的相同运行代码；未访问真实用户库，未执行性能评测。
+
+## 第二百七十一轮：修复自动换行边界上的 Home/End（2026-10-16）
+
+- 把 Home/End 从显式换行段扩展到 GPUI 实际排版生成的自动换行可视行。GPUI 在换行边界的字节索引默认归属上一行；现在根据 `WrappedLine` 的 wrap boundary 计算当前行号，再查询该行首尾，确保 Home 后接 Shift+End 能选中整条自动换行行。
+- GPUI 输入分发测试在窄视口中实际触发自动折行，验证 Home 与 Shift+End 的位置/选区，并覆盖已有词级移动、选择、删除和显式换行路径。格式检查、全量 `cargo test --locked -j 8`（113 项）、`cargo check --all-targets --locked -j 8` 与 `git diff --check` 通过。
+- Release 构建通过；全新 `%TEMP%` SQLite 上的 1000 块 GUI smoke 通过，覆盖编辑、数据库视图、速记/托盘、MCP、最大化/还原与虚拟滚动。便携包和安装器已从该 Release 刷新，staging EXE SHA-256 与 Release 一致（`70E238194791C9118B5FECAC2A770BA65DB0D901B5BD9F49AA0BC63D9EE38751`）；ZIP SHA-256 `AD53DF1D4AD2420341064EEC555FA80F27AD7681DDE613872DF84A50779544C0`，安装器 SHA-256 `5156DCB8F5AB6D4DCC3BF0EE430EFDDA2A4544081EF885DB4341E7C80306B4F0`。未访问真实用户库，未运行性能评测。
