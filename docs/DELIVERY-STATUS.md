@@ -1639,3 +1639,8 @@
 - 追查数据库筛选“嵌套规则不可编辑”缺口后，核对锁定 quire-core 的 `FilterNode` / `FlatFilter` 约束与 Slint `DatabaseFilterPopup.slint`：旧版面板同样只接受单层 and/or 及逐条 not，遇到嵌套组只保留 SQL 筛选结果并拒绝重写。GPUI 当前行为是兼容保护，不应将用户筛选树扁平化，因此暂不扩展编辑器。
 - 用全新 `%TEMP%` 数据库启动 Release 窗口检查界面时，Windows 首次为 `Quire GPUI - local notes and organizer` 显示网络访问询问；主窗口已创建，启动图像被系统授权弹窗遮挡。未选择允许/取消，也未访问真实用户库。发布候选需在用户桌面确认网络授权选择与托盘同步体验；本项是系统级人工验收，不作为自动化测试替代。
 - 未运行性能评测；功能收尾后再按用户要求完成 GPUI/Slint 比较。
+
+## 第二百六十四轮：重建并隔离验证 per-user 安装器（2026-10-16）
+
+- 本机 Inno Setup 6.7.3 已可用；`install/build-release.ps1 -SkipBuild -BuildInstaller` 成功刷新便携 ZIP 并构建 `dist/Quire-GPUI-0.1.0-windows-x64-setup.exe`。Release EXE 与安装后 EXE SHA-256 一致：`8B046D895EED4C4A7BC4715A9F4978536107FC11E1F168485760D1A6597F6029`；安装器 SHA-256：`B2E03FC8FEC99AD033279AF277E1B13E549377DA1921BE4DD93F53E6166C5D04`。
+- 使用 `%TEMP%` 随机目录完成静默安装，确认 EXE 与卸载程序存在，再静默卸载并确认安装目录已移除：`TEMP_INSTALL_UNINSTALL=PASS`。未启动安装后的 GUI，未触碰用户数据库。真实用户安装升级、数据保留及回滚仍需最终候选验收；网络提示需用户自行决定。未运行性能评测。
