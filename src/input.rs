@@ -15,6 +15,8 @@ actions!(
     [
         Backspace,
         Delete,
+        WordBackspace,
+        WordDelete,
         Left,
         Right,
         WordLeft,
@@ -173,6 +175,33 @@ impl TextInput {
         }
         if self.buffer.selection.is_empty() {
             self.buffer.select_to(self.buffer.next());
+        }
+        self.replace_text_in_range(None, "", window, cx);
+    }
+    fn word_backspace(&mut self, _: &WordBackspace, window: &mut Window, cx: &mut Context<Self>) {
+        if self.buffer.composing() {
+            return;
+        }
+        if self.buffer.selection.is_empty() && self.buffer.caret() == 0 {
+            cx.emit(InputEvent::Merge);
+            return;
+        }
+        if self.buffer.selection.is_empty() {
+            self.buffer.select_to(self.buffer.previous_word());
+        }
+        self.replace_text_in_range(None, "", window, cx);
+    }
+    fn word_delete(&mut self, _: &WordDelete, window: &mut Window, cx: &mut Context<Self>) {
+        if self.buffer.composing() {
+            return;
+        }
+        if self.buffer.selection.is_empty() {
+            let target = self.buffer.next_word();
+            if target == self.buffer.caret() && target < self.buffer.text.len() {
+                self.buffer.select_to(self.buffer.next());
+            } else {
+                self.buffer.select_to(target);
+            }
         }
         self.replace_text_in_range(None, "", window, cx);
     }
@@ -997,6 +1026,8 @@ impl Render for TextInput {
             .cursor(CursorStyle::IBeam)
             .on_action(cx.listener(Self::backspace))
             .on_action(cx.listener(Self::delete))
+            .on_action(cx.listener(Self::word_backspace))
+            .on_action(cx.listener(Self::word_delete))
             .on_action(cx.listener(Self::left))
             .on_action(cx.listener(Self::right))
             .on_action(cx.listener(Self::word_left))
@@ -1044,6 +1075,8 @@ pub fn bind_keys(cx: &mut App) {
     cx.bind_keys([
         KeyBinding::new("backspace", Backspace, context),
         KeyBinding::new("delete", Delete, context),
+        KeyBinding::new("ctrl-backspace", WordBackspace, context),
+        KeyBinding::new("ctrl-delete", WordDelete, context),
         KeyBinding::new("left", Left, context),
         KeyBinding::new("right", Right, context),
         KeyBinding::new("ctrl-left", WordLeft, context),

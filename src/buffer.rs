@@ -109,13 +109,7 @@ impl Buffer {
         let caret = self.caret();
         UnicodeSegmentation::unicode_word_indices(self.text.as_str())
             .find_map(|(start, _)| (start > caret).then_some(start))
-            .unwrap_or_else(|| {
-                if caret < self.text.len() {
-                    self.next()
-                } else {
-                    self.text.len()
-                }
-            })
+            .unwrap_or(self.text.len())
     }
     pub fn utf8_range(&self, range: &Range<usize>) -> Range<usize> {
         let start = from_utf16(&self.text, range.start);
@@ -241,6 +235,22 @@ mod tests {
         assert_eq!(b.previous_word(), 0);
 
         b.move_to("hello, world".len());
-        assert!(text.is_char_boundary(b.next_word()));
+        assert_eq!(b.next_word(), "hello, world ".len());
+    }
+
+    #[test]
+    fn word_deletion_ranges_remove_the_expected_text_without_splitting_utf8() {
+        let text = "hello, world 中文";
+        let mut backspace = Buffer::new(text.to_owned());
+        backspace.move_to(text.len());
+        backspace.select_to(backspace.previous_word());
+        backspace.replace(None, "");
+        assert_eq!(backspace.text, "hello, world 中");
+
+        let mut delete = Buffer::new(text.to_owned());
+        delete.move_to(0);
+        delete.select_to(delete.next_word());
+        delete.replace(None, "");
+        assert_eq!(delete.text, "world 中文");
     }
 }

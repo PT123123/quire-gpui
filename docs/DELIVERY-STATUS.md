@@ -1659,3 +1659,9 @@
 
 - 将 Ctrl+Right 行为校准为跳至下一个 Unicode 词起点（含从词首、词中和空白处测试），Ctrl+Left 到前一词起点；Ctrl+Shift 组合扩展对应词级范围。最终代码全量测试 111 项、`cargo check --all-targets --locked -j 8`、格式检查、Release 构建（52.22 秒）及 1000 块隔离 GUI smoke 全通过。
 - `install/build-release.ps1 -SkipBuild -BuildInstaller` 已按当前 Release 刷新便携 ZIP 与 per-user 安装器。便携 staging EXE 与 Release SHA-256 一致：`88312B113E3E8470AC67061862DC831EE9E1606FEAC249FE317B2BCF0376F930`；ZIP SHA-256：`AF182AE49AC62F3374900A70039977E9BB46719D47EA17A52061839126CD6F4E`；安装器 SHA-256：`0D042BB0F69C50D12B5E9DC7D7C88BD04007987B4614CD4303B26F7075E910A1`。未访问真实用户库，未运行性能评测。
+
+## 第二百六十八轮：补齐词级删除快捷键并刷新候选包（2026-10-16）
+
+- 自绘编辑器新增 Ctrl+Backspace/Ctrl+Delete，按 Unicode word boundary 删除前/后词；选区存在时删除选区，composition 期间保持原输入法预览，Ctrl+Backspace 在块首沿用 Backspace 的合并行为。修正 Ctrl+Right 最后一个词跳转到块尾；连续汉字按 Unicode word segmentation 的单字边界移动/删除。
+- 新增中英文、空白/标点、UTF-8 安全及词级删除范围回归。格式检查、全量 `cargo test --locked -j 8`（112 项）、`cargo check --all-targets --locked -j 8`、Release 构建（52.31 秒）与 1000 块隔离 Release GUI smoke 全通过。
+- 便携 ZIP 与 per-user 安装器按最终 Release 刷新；staging EXE 与 Release SHA-256 一致：`A9905B61C847B63F3DA500475E86B4E119967022455D92F3FF5A89D496959B32`；ZIP SHA-256：`05859C2B87D8C20E5AB82822F530D5664472C70321E252C1D9651B4437038E0B`；安装器 SHA-256：`877DEAC384612B01279006AAE40E0644656A265EE3FE2FEA1053040AD9021676`。未访问真实用户库，未运行性能评测。
