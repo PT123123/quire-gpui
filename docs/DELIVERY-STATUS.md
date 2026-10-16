@@ -1575,3 +1575,8 @@
 
 - Release smoke 曾从 Session 全部 block 中按索引取搜索目标；真实测试库包含数据库容器等非文本块，可能导致“搜索结果恰好为一条”的断言触发进程崩溃。现在目标从当前可见、可编辑且正文非空的文档块中选择，保持覆盖虚拟列表中的搜索跳转。
 - `cargo build --release --locked -j 8` 通过（本轮单次构建 39.94 秒）；用全新 `%TEMP%` 数据库运行 `target/release/quire-gpui.exe --db <temp>\\quire.db --smoke-test`，完整输出 `RELEASE_GUI_SMOKE=PASS`。覆盖设置、MCP、整理区、常用块编辑、数据库视图、速记/托盘、虚拟列表搜索和窗口最大化/还原。`cargo fmt --all -- --check`、`git diff --check` 及全量 `cargo test --locked -j 8` 通过（108 项：56 库 + 50 二进制 + 2 集成）。本轮没有测量编译峰值内存，39.94 秒只作一次构建记录，不作为性能对比；Slint 对比按要求留到功能收尾后。全部 smoke 数据位于 `%TEMP%`，未访问真实用户库。
+
+## 第二百五十二轮：在画廊与看板卡片显示计算列（2026-10-16）
+
+- 复核发现表格/列表单元格已计算显示 Formula/Rollup，但画廊和看板卡片直接读取数据库行的原始 `row.cells`，派生列因此显示为空。现在两种卡片布局按列类型调用同一套公式与汇总求值，保留错误占位和不可编辑行为。
+- `cargo fmt --all -- --check`、`git diff --check`、全量 `cargo test --locked -j 8`（108 项）及 `cargo build --release --locked -j 8` 通过。全新 `%TEMP%` 隔离库 Release GUI smoke 完整通过，实际渲染了 gallery 卡片与分组 board 卡片；本轮构建耗时 40.84 秒，未测编译峰值内存，只作为单次记录，性能对比留待功能收尾后。未访问真实用户库。

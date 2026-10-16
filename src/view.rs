@@ -13809,12 +13809,16 @@ impl Workspace {
                                     let board_repo = repo.clone();
                                     let gallery_repo = repo.clone();
                                     let gallery_columns = query_columns.clone();
+                                    let gallery_formula_properties = formula_properties.clone();
+                                    let gallery_all_properties = all_database_properties.clone();
                                     let gallery_sorts = row_sorts.clone();
                                     let gallery_filter = row_filter.clone();
                                     let gallery_search = row_search.clone();
                                     let gallery_total = total;
                                     let gallery_cards_per_row =
                                         gallery_columns_for_width(f32::from(database_width));
+                                    let board_formula_properties = formula_properties.clone();
+                                    let board_all_properties = all_database_properties.clone();
                                     let calendar_repo = repo.clone();
                                     let calendar_columns = query_columns.clone();
                                     let calendar_sorts = row_sorts.clone();
@@ -15099,6 +15103,29 @@ impl Workspace {
                                                                     .zip(row.cells.iter())
                                                                     .take(3)
                                                                     .map(|(property, value)| {
+                                                                        let computed = match property.kind {
+                                                                            quire_core::core::database::PropertyKind::Formula => evaluate_database_formula(
+                                                                                property.id,
+                                                                                &gallery_formula_properties,
+                                                                                &gallery_repo,
+                                                                                quire_core::core::database::RecordId(row.record),
+                                                                                0,
+                                                                            ),
+                                                                            quire_core::core::database::PropertyKind::Rollup => evaluate_database_rollup(
+                                                                                property.id,
+                                                                                &gallery_all_properties,
+                                                                                &gallery_repo,
+                                                                                quire_core::core::database::RecordId(row.record),
+                                                                            ),
+                                                                            _ => Err(quire_core::core::database_formula::FormulaError::Eval(String::new())),
+                                                                        };
+                                                                        let value = if property.kind.is_computed() {
+                                                                            computed
+                                                                                .map(|value| quire_core::core::database_formula::display(&value))
+                                                                                .unwrap_or_else(|_| quire_core::core::database_formula::FORMULA_ERROR_PAINT.into())
+                                                                        } else {
+                                                                            value.clone()
+                                                                        };
                                                                         let value = if value.trim().is_empty() { "—".to_owned() } else { value.chars().take(48).collect::<String>() };
                                                                         div()
                                                                             .w_full()
@@ -15204,6 +15231,8 @@ impl Workspace {
                                             .map(|(group_index, (group_key, count, label))| {
                                                 let card_repo = board_repo.clone();
                                                 let card_columns = board_query_columns.clone();
+                                                let card_formula_properties = board_formula_properties.clone();
+                                                let card_all_properties = board_all_properties.clone();
                                                 let card_sorts = board_row_sorts.clone();
                                                 let card_filter = board_row_filter.clone();
                                                 let card_search = board_row_search.clone();
@@ -15273,6 +15302,26 @@ impl Workspace {
                                                                         .zip(row.cells.iter())
                                                                         .take(2)
                                                                         .map(|(property, value)| {
+                                                                            let value = match property.kind {
+                                                                                quire_core::core::database::PropertyKind::Formula => evaluate_database_formula(
+                                                                                    property.id,
+                                                                                    &card_formula_properties,
+                                                                                    &card_repo,
+                                                                                    quire_core::core::database::RecordId(row.record),
+                                                                                    0,
+                                                                                )
+                                                                                .map(|value| quire_core::core::database_formula::display(&value))
+                                                                                .unwrap_or_else(|_| quire_core::core::database_formula::FORMULA_ERROR_PAINT.into()),
+                                                                                quire_core::core::database::PropertyKind::Rollup => evaluate_database_rollup(
+                                                                                    property.id,
+                                                                                    &card_all_properties,
+                                                                                    &card_repo,
+                                                                                    quire_core::core::database::RecordId(row.record),
+                                                                                )
+                                                                                .map(|value| quire_core::core::database_formula::display(&value))
+                                                                                .unwrap_or_else(|_| quire_core::core::database_formula::FORMULA_ERROR_PAINT.into()),
+                                                                                _ => value.clone(),
+                                                                            };
                                                                             let shown = if value.trim().is_empty() {
                                                                                 "—".to_owned()
                                                                             } else {
