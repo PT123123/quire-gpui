@@ -1745,3 +1745,9 @@
 
 - 扩展 `examples/legacy_schema_probe.rs` 的隔离 v4 快照夹具，增加 Text、Date、Checkbox、URL、Email、Phone、MultiSelect、Status、Files 属性及可写值；GPUI 导出后由真实 Slint Release 同步服务合并并回传，GPUI 现在逐项检查新增属性类型、文本/布尔/选项值与原有 Number、Select、Relation/Mirror、Formula、Rollup 和创建/编辑时间属性。两份二进制附件仍经双向同步逐字节核验，结果 `LEGACY_SYNC_WIRE=PASS`（回传 v4 快照 171 行）。
 - `cargo fmt --all`、`cargo check --locked --examples -j 8`、全量 `cargo test --locked -j 8 -- --quiet`（114 项）与 `tools/test-sync-legacy-wire.ps1` 均通过。所有数据库和附件仅位于 `%TEMP%` 隔离夹具；未访问真实用户库，未修改 Slint/core 文件，也未执行性能评测。性能结果保留在本文件第二百七十七轮，后续只有功能代码出现会影响测量对象的变化时才重测。
+
+## 第二百八十一轮：清理完成态的主题与侧栏动画（2026-10-16）
+
+- 修复动画结束后仍保留 GPUI 状态的问题：主题遮罩在 220ms 动画后加 20ms 渲染缓冲清除，侧栏结束过渡后回到普通展开/关闭渲染路径；两者都用递增序号保护，避免快速反向切换时旧延时任务清掉新动画。
+- Release GUI smoke 在新 `%TEMP%` 数据库上快速反向切换主题和侧栏，验证旧任务期限到达时新动画仍存在，并确认最终遮罩与过渡状态清除、最终主题和展开状态正确。`cargo fmt --all`、全量 `cargo test --locked -j 8 -- --quiet`（114 项）、`cargo check --all-targets --locked -j 8`、Release 构建（73 秒）和 1000 块 Release GUI smoke 均通过。未访问真实用户库，未修改 Slint/core；本次未采集构建峰值内存，也未重跑性能对比。
+- `PLAN.md` 与 `docs/DIFFERENCES.md` 已同步更新。主题/侧栏 220ms 中间帧的视觉轨迹和真人点击命中仍待候选验收。

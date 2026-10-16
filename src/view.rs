@@ -2416,6 +2416,7 @@ pub struct Workspace {
     subscriptions: Vec<Subscription>,
     palette: Palette,
     transition_palette: Option<Palette>,
+    transition_palette_seq: u64,
     theme_choice: String,
     ui_zoom: f32,
     theme_picker_open: bool,
@@ -2861,6 +2862,7 @@ impl Workspace {
                 &theme_choice
             }),
             transition_palette: None,
+            transition_palette_seq: 0,
             theme_choice,
             ui_zoom,
             theme_picker_open: false,
@@ -3507,6 +3509,45 @@ impl Workspace {
                 "the settings backup action must create the newest snapshot"
             );
             eprintln!("SMOKE: settings backup flushes and creates an isolated database snapshot");
+            let transition_theme = this.palette.id.clone();
+            this.apply_palette("jade", window, cx);
+            this.toggle_sidebar(cx);
+            let transition_weak = cx.entity().downgrade();
+            cx.spawn_in(window, async move |weak, cx| {
+                cx.background_executor()
+                    .timer(Duration::from_millis(100))
+                    .await;
+                let _ = weak.update_in(cx, |this, window, cx| {
+                    this.apply_palette(&transition_theme, window, cx);
+                    this.toggle_sidebar(cx);
+                });
+                cx.background_executor()
+                    .timer(Duration::from_millis(160))
+                    .await;
+                let _ = weak.update_in(cx, |this, _, _| {
+                    assert!(
+                        this.transition_palette.is_some(),
+                        "an earlier theme timer must not clear a newer transition"
+                    );
+                    assert!(
+                        this.sidebar_transition.is_some(),
+                        "an earlier sidebar timer must not clear a newer transition"
+                    );
+                });
+                cx.background_executor()
+                    .timer(Duration::from_millis(100))
+                    .await;
+                let _ = transition_weak.update_in(cx, |this, _, _| {
+                    assert!(this.transition_palette.is_none());
+                    assert!(this.sidebar_transition.is_none());
+                    assert!(this.sidebar_open);
+                    assert_eq!(this.palette.id, transition_theme);
+                    eprintln!(
+                        "SMOKE: theme and sidebar transitions expire without stale-timer races"
+                    );
+                });
+            })
+            .detach();
             let mcp_port = this.mcp_port;
             let mcp_token = this.mcp_token.clone();
             let (mcp_result_tx, mcp_result_rx) = std::sync::mpsc::channel();
@@ -6750,6 +6791,8 @@ impl Workspace {
         self.schedule_save(false, window, cx);
     }
     fn apply_palette(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
+        self.transition_palette_seq = self.transition_palette_seq.wrapping_add(1);
+        let transition_seq = self.transition_palette_seq;
         self.transition_palette = Some(self.palette.clone());
         self.palette = Palette::load(id);
         let fg = Palette::color(&self.palette.fg);
@@ -6779,6 +6822,18 @@ impl Workspace {
         }
         self.sync_inputs(window, cx);
         cx.notify();
+        cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(Duration::from_millis(240))
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                if this.transition_palette_seq == transition_seq {
+                    this.transition_palette = None;
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
     }
     fn select_theme(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
         self.theme_choice = id.to_owned();
@@ -10112,8 +10167,21 @@ impl Workspace {
             0.
         };
         self.sidebar_transition_seq = self.sidebar_transition_seq.wrapping_add(1);
-        self.sidebar_transition = Some((self.sidebar_transition_seq, from, to));
+        let transition_seq = self.sidebar_transition_seq;
+        self.sidebar_transition = Some((transition_seq, from, to));
         cx.notify();
+        cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(Duration::from_millis(240))
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                if this.sidebar_transition_seq == transition_seq {
+                    this.sidebar_transition = None;
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
     }
     fn toggle_icon_picker(&mut self, cx: &mut Context<Self>) {
         self.icon_picker_open = !self.icon_picker_open;
