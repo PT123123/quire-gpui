@@ -1,6 +1,6 @@
 ﻿回调名,实现状态,验证状态,差异,人工语义
 toggle-mark,已实现,未验证,工具条和快捷键支持粗体、斜体、删除线、行内代码；选中文字可创建或替换链接目标，Ctrl+点击可打开网页或跳转本地页面；数学块提供 core LaTeX 子集 Unicode 预览,富文本工具条对链接选区以单条可撤销历史项更新 Link 标记，同时保留所选范围外的旧链接片段；其他格式按 UTF-8 字节范围调用 core ToggleMark
-open-link,已实现,未验证,Ctrl+点击普通链接或 @页面提及可打开网页/跳转目标页；Embed 卡片使用同一安全地址校验打开外链,@页面由 core InsertReference 原子命令写入 page URI；外链只允许 http/https/mailto 交给系统打开
+open-link,已实现,未验证,"Ctrl+点击普通链接或 @页面提及可打开网页/跳转目标页；Embed 卡片点击后可编辑地址，标题与安全打开地址随正文派生",@页面由 core InsertReference 原子命令写入 page URI；外链只允许 http/https/mailto 交给系统打开
 command-invoked,已实现,未验证,Ctrl+K 打开可过滤的命令面板；Enter 或点击运行当前选择，Escape 关闭，页面命令可跳转,命令、页面列表按名称和分区筛选，键盘最多选择前八条；新建/搜索/侧栏/主题/设置/整理区/页面复制删除/Markdown 导入导出/页面历史前进后退/HTML 默认浏览器打开均路由至现有应用操作
 palette-move,已实现,未验证,命令面板焦点输入框的上下键移动当前命令选择,"按过滤后的列表索引夹取在 0 到 min(结果数,8)-1"
 palette-query-changed,已实现,未验证,输入文本实时筛选命令和页面标题,与页面搜索共用单行输入实体；面板打开时事件只更新命令查询状态
@@ -152,7 +152,7 @@ org-mode-picked,已实现,未验证,在列表与按清单分列的任务看板�
 org-reply-submitted,已实现,未验证,在笔记详情创建一条指向当前笔记的评论并按时间显示,在线父笔记下创建 title 为空且 ref_note 指向父项的 note；评论独立入 organizer history、支持 undo/redo 与 SQLite 重开；被引用评论从顶层列表过滤并由 MCP list_notes 暴露 ref_note；隔离 smoke 构造完整详情视图树，真人提交/布局待验收
 column-item-move,已实现,未验证,多栏布局内 Tab / Shift+Tab 按列从左至右及列内树序切换内容块焦点；边界停留不触发列表缩进，表格单元格仍优先执行表格导航,跳过 Column 容器，折叠块不遍历隐藏后代，嵌套 Column 不重复计入
 lock-nudge,已实现,未验证,锁定页上的文本编辑、拆分合并、缩进、格式化、删除或复制输入会恢复原文并在状态栏说明如何解锁,core 继续拒绝所有修改；GPUI 阻止输入框暂态文本与持久内容分离
-empty-page-started,已实现,未验证,空白文档区点击或标题输入框按 Enter 会创建首个空段落并将焦点置于起点,锁定空页显示解锁提示；创建后进入普通编辑与持久化流程column-added
+empty-page-started,已实现,未验证,空白文档区点击或标题输入框按 Enter 会创建首个空段落并将焦点置于起点,锁定空页显示解锁提示；创建后进入普通编辑与持久化流程
 column-removed,已实现,未验证,仅在超过两列时可移除最右侧列,删除列时 core 将其内容并入前一列并维持块内容
 column-fill,已实现,未验证,空列显示整块可点击的空状态，点击后创建并聚焦首个段落,入口复用 ColumnsAddBlock 并保存；下方添加内容按钮仍可用
 toggle-fold,已实现,未验证,Toggle 块与可折叠标题可切换折叠状态并隐藏/展开后代,通过 core ToggleFold 进入页面撤销历史并持久化；隔离 Session 测试覆盖折叠撤销重做与重开

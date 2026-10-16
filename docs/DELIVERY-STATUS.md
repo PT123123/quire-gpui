@@ -1533,3 +1533,9 @@
 
 - 设置、整理区速记草稿、JSON 指令三个对话框，以及页面搜索和命令面板现在分别保存打开前 `Window::focused()` 返回的 GPUI `FocusHandle`；取消、遮罩或 Escape 关闭时恢复原焦点，提交速记则让详情编辑器接管焦点。原来的通用 fallback 只会聚焦正文块，整理区打开的弹窗因此可能关闭后跳回文档，现已修正。Ctrl+F 搜索结果仍按既有语义把焦点交给命中块，避免关闭查找栏时焦点跳离结果。
 - Release smoke 加入设置、速记草稿、JSON 指令、页面搜索和命令面板覆盖层打开后输入框获得焦点、关闭后原焦点恢复的断言；另验证页面搜索结果切换页面后将焦点交给目标页。`cargo fmt --all -- --check` 与全量 `cargo test --locked -j 8`（106 项）通过。Release 重建后隔离 1000 块 GUI smoke 通过，覆盖以上焦点路径及既有 MCP 16 工具、速记保存、托盘隐藏/唤回、最大化/还原和数据库视图。所有数据位于 `%TEMP%`，未访问真实用户库。性能评测未运行，仍留到功能收尾后。
+
+
+## 第二百四十四轮：恢复 Embed 卡片地址内联编辑（2026-10-16）
+
+- 对照 Slint 的 EditorBlock 行为后发现，Embed 卡片地址存于块正文且应可点击编辑；GPUI 只显示派生卡片与打开按钮，Session::editable 也排除了 Embed。现将 Embed 地址纳入普通文本输入/撤销/保存路径，卡片点击聚焦当前地址，编辑时保留卡片布局；空地址显示提示，安全打开按钮继续只允许 core 认可的外链。
+- 新增隔离 Session 回归覆盖 Embed 地址更新、撤销/重做、flush 与 SQLite 重开；Release GUI smoke 确认地址 TextInput 可挂载并在聚焦状态下渲染。全量 cargo test --locked -j 8 通过（107 项：55 库 + 50 二进制 + 2 集成），cargo fmt --all -- --check、git diff --check、Release build（39.37s）及 1000 块隔离 GUI smoke 通过。PARITY-SEMANTICS.csv/生成的 PARITY.csv 已记入此行为，并修正了 empty-page-started 语义行误并入 column-added 的文本。真实鼠标命中和地址输入仍待桌面验收；没有访问真实用户库。性能比较未运行，按用户要求留到功能冻结后。

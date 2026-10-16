@@ -3520,6 +3520,42 @@ impl Workspace {
                     this.mention_menu = None;
                     eprintln!("SMOKE: @today inserts a Date atom and undoes atomically");
 
+                    let (embed_id, embed_original_text) = this
+                        .session
+                        .blocks()
+                        .into_iter()
+                        .find(|block| {
+                            block.kind == BlockKind::Paragraph && this.session.editable(block.id)
+                        })
+                        .map(|block| (block.id, block.text.clone()))
+                        .expect("smoke document should contain an editable paragraph");
+                    this.session.execute(Command::SetBlockType {
+                        id: embed_id,
+                        kind: BlockKind::Embed,
+                    });
+                    this.session
+                        .replace(embed_id, "https://old.example/watch".into(), true);
+                    this.sync_inputs(window, cx);
+                    let embed_frame = this.render(window, cx);
+                    drop(embed_frame);
+                    this.focus(embed_id, "https://old.example/watch".len(), window, cx);
+                    let editing_embed_frame = this.render(window, cx);
+                    drop(editing_embed_frame);
+                    let embed_input = this
+                        .inputs
+                        .get(&embed_id.0)
+                        .expect("focused embed should mount an address editor")
+                        .clone();
+                    assert!(embed_input.read(cx).focus.is_focused(window));
+                    assert_eq!(embed_input.read(cx).buffer.committed(), "https://old.example/watch");
+                    this.session.execute(Command::SetBlockType {
+                        id: embed_id,
+                        kind: BlockKind::Paragraph,
+                    });
+                    this.session.replace(embed_id, embed_original_text, true);
+                    this.sync_inputs(window, cx);
+                    eprintln!("SMOKE: embed card opens an editable address field");
+
                     let smoke_list = this.session.create_task_list("smoke 清单".into());
                     this.toggle_task_list_menu(smoke_list, cx);
                     assert_eq!(this.task_list_menu_open, Some(smoke_list));
@@ -4917,6 +4953,8 @@ impl Workspace {
             input.font_weight = weight;
             input.text_color =
                 Some(block_text_color.unwrap_or_else(|| Palette::color(&self.palette.fg)));
+            input.placeholder =
+                (block.kind == BlockKind::Embed).then(|| "输入或粘贴链接地址".into());
             input.code_lang = if block.kind == BlockKind::Code {
                 block.lang
             } else {
@@ -12507,6 +12545,12 @@ impl Workspace {
         let is_todo = block.kind == BlockKind::Todo;
         let is_toggle = block.kind == BlockKind::Toggle;
         let kind = block.kind;
+        let embed_editing = kind == BlockKind::Embed
+            && input
+                .as_ref()
+                .is_some_and(|input| input.read(cx).focus.is_focused(window));
+        let embed_input = input.clone();
+        let embed_caret = block.text.len();
         let database_table = if kind == BlockKind::Database {
             block.db_ref.and_then(|db_id| {
                 self.session.databases.database(db_id)?;
@@ -16848,20 +16892,63 @@ impl Workspace {
                                 let url = block.text.clone();
                                 let title = quire_core::core::embed::describe(&url);
                                 let openable = quire_core::core::embed::is_openable(&url);
-                                view.flex_col()
-                                    .gap(px(5.))
+                                view.flex()
+                                    .items_center()
+                                    .gap(px(9.))
                                     .rounded(px(6.))
                                     .border_1()
                                     .border_color(Palette::color(&p.border))
                                     .px(px(10.))
                                     .py(px(8.))
                                     .bg(Palette::color(&p.elevated))
-                                    .child(div().font_weight(FontWeight::SEMIBOLD).child(title))
+                                    .on_mouse_down(
+                                        MouseButton::Left,
+                                        cx.listener(move |this, _, window, cx| {
+                                            let editing = this
+                                                .inputs
+                                                .get(&block_id.0)
+                                                .is_some_and(|input| {
+                                                    input.read(cx).focus.is_focused(window)
+                                                });
+                                            if !this.session.page.locked && !editing {
+                                                this.focus(block_id, embed_caret, window, cx);
+                                            }
+                                        }),
+                                    )
+                                    .child(div().text_color(muted).child("↗"))
                                     .child(
                                         div()
-                                            .text_size(px(12.))
-                                            .text_color(muted)
-                                            .child(url.clone()),
+                                            .flex_1()
+                                            .min_w(px(0.))
+                                            .flex_col()
+                                            .gap(px(3.))
+                                            .when(!embed_editing || url.is_empty(), |content| {
+                                                content
+                                                    .child(
+                                                        div()
+                                                            .font_weight(FontWeight::SEMIBOLD)
+                                                            .child(if title.is_empty() {
+                                                                "链接卡片".to_owned()
+                                                            } else {
+                                                                title.clone()
+                                                            }),
+                                                    )
+                                                    .child(
+                                                        div()
+                                                            .text_size(px(12.))
+                                                            .text_color(muted)
+                                                            .child(if url.is_empty() {
+                                                                "还没有地址".to_owned()
+                                                            } else {
+                                                                quire_core::core::embed::with_scheme(&url)
+                                                            }),
+                                                    )
+                                            })
+                                            .when(embed_editing, |content| {
+                                                content.when_some(embed_input.clone(), |content, input| {
+                                                    content.child(input)
+                                                })
+                                            }),
                                     )
                                     .when(openable, |card| {
                                         card.child(
@@ -16974,6 +17061,7 @@ impl Workspace {
                                     && kind != BlockKind::Synced
                                     && kind != BlockKind::Page
                                     && kind != BlockKind::Link
+                                    && kind != BlockKind::Embed
                                     && kind != BlockKind::Image
                                     && kind != BlockKind::File,
                                 |view| {

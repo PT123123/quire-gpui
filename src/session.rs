@@ -6071,6 +6071,7 @@ impl Session {
                         | BlockKind::Code
                         | BlockKind::Callout
                         | BlockKind::Toggle
+                        | BlockKind::Embed
                 );
                 let valid_child = b.parent.is_some_and(|parent| {
                     self.document.block(parent).is_some_and(|parent| {
@@ -9131,6 +9132,44 @@ mod tests {
         assert_eq!(image.attachment, Some(attachment));
         assert_eq!(image.img_percent, 25);
         assert!(reopened.attachment_path(attachment).unwrap().exists());
+        Ok(())
+    }
+
+    #[test]
+    fn embed_address_is_editable_undoable_and_persists() -> Result<()> {
+        let scratch = quire_core::testing::ScratchDir::new("gpui-embed-address");
+        let path = scratch.path().join("test.db");
+        let id;
+        {
+            let mut session = Session::open(&path)?;
+            id = session.blocks()[0].id;
+            session.execute(Command::SetBlockType {
+                id,
+                kind: BlockKind::Embed,
+            });
+            assert!(session.editable(id));
+            session.replace(id, "https://old.example/watch".into(), true);
+            session.replace(id, "https://new.example/watch?v=1".into(), true);
+            assert_eq!(
+                session.document.block(id).unwrap().text,
+                "https://new.example/watch?v=1"
+            );
+            session.undo();
+            assert_eq!(
+                session.document.block(id).unwrap().text,
+                "https://old.example/watch"
+            );
+            session.redo();
+            assert_eq!(
+                session.document.block(id).unwrap().text,
+                "https://new.example/watch?v=1"
+            );
+            session.persistence.force_flush()?;
+        }
+        let reopened = Session::open(&path)?;
+        let block = reopened.document.block(id).unwrap();
+        assert_eq!(block.kind, BlockKind::Embed);
+        assert_eq!(block.text, "https://new.example/watch?v=1");
         Ok(())
     }
 
