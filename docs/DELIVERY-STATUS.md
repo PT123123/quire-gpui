@@ -1554,3 +1554,8 @@
 
 - 扩展 `examples/legacy_schema_probe.rs sync-pull`：从旧版 `/sync/info`、`/sync/snapshot` 读取设备和 v4 snapshot，逐项 GET 所有附件字节，再经 GPUI `sync_apply_remote` 导入、flush、关闭并重开，按附件名逐字节比较。附件 fixture 与接收库均在独立临时目录；为避免两个独立库默认页面的数值 ID 冲突，此探针仅合并附件元数据和 payload，不伪装成整库同步。
 - `tools/test-sync-legacy-wire.ps1` 先在临时 Slint 库种入两份任意二进制附件并启动旧版真实服务，GPUI 从 `127.0.0.1:5878` 拉取验证成功：`SYNC_LEGACY_ATTACHMENTS=PASS version=4 files=2 bytes=32/32`。随后原有 GPUI→Slint 复杂 schema snapshot 仍通过：`LEGACY_SYNC_WIRE=PASS`、`SYNC_LEGACY_RESPONSE=PASS version=4 rows=171`。两项都使用 `%TEMP%` fixture，未访问真实用户库。GPUI→Slint 方向附件推送、附件删除/恢复和完整共享基线上的双向附件变更仍未验证；性能评测未运行。
+
+## 第二百四十八轮：扩充同步 schema 的关联与汇总覆盖（2026-10-16）
+
+- 在相同隔离 v4 wire probe 中增加 Relation / 双向 Mirror / Rollup：真实 Slint 服务 merge 并回传 snapshot 后，逐项检查两侧目标数据库 ID 与镜像 Property ID、Rollup 关联列/数值列/Sum 聚合配置，以及两个记录间的双向 relation cell IDs。GPUI 应用返回 snapshot 后再 export、flush、重开验证同一组配置和值。
+- 本机完整运行 `tools/test-sync-legacy-wire.ps1` 通过，附件拉取仍报 `SYNC_LEGACY_ATTACHMENTS=PASS version=4 files=2 bytes=32/32`；复杂 schema 来回仍报 `LEGACY_SYNC_WIRE=PASS` 和 `SYNC_LEGACY_RESPONSE=PASS version=4 rows=171`。全程 `%TEMP%` 临时库；未访问真实用户库，未运行性能比较。计算列呈现、GPUI→Slint 附件推送和附件删除/恢复语义仍未覆盖。

@@ -35,6 +35,9 @@ const SYNC_SCORE: &str = "同步分数";
 const SYNC_FORMULA: &str = "同步公式";
 const SYNC_SELECT: &str = "同步选项";
 const SYNC_SELECT_VALUE: &str = "跨版本可选";
+const SYNC_RELATION: &str = "同步关联";
+const SYNC_MIRROR: &str = "同步反向关联";
+const SYNC_ROLLUP: &str = "同步汇总";
 
 fn main() -> Result<()> {
     let args: Vec<String> = env::args().collect();
@@ -212,11 +215,33 @@ fn sync_seed_export(path: &Path, snapshot_path: &Path) -> Result<()> {
     let select = session
         .add_database_property(database_block, SYNC_SELECT.into(), PropertyKind::Select)
         .context("create sync select property")?;
+    let relation = session
+        .add_database_property(database_block, SYNC_RELATION.into(), PropertyKind::Relation)
+        .context("create sync relation property")?;
+    let mirror = session
+        .add_database_property(database_block, SYNC_MIRROR.into(), PropertyKind::Relation)
+        .context("create sync mirror property")?;
+    let rollup = session
+        .add_database_property(database_block, SYNC_ROLLUP.into(), PropertyKind::Rollup)
+        .context("create sync rollup property")?;
     assert!(session.set_database_formula(database_block, formula, "1 + [同步分数]")?);
     assert!(session.add_database_property_option(database_block, select, SYNC_SELECT_VALUE)?);
+    assert!(session.set_database_relation_target(database_block, relation, Some(database))?);
+    assert!(session.set_database_relation_target(database_block, mirror, Some(database))?);
+    assert!(session.set_database_relation_mirror(database_block, relation, mirror)?);
+    assert!(session.set_database_rollup(
+        database_block,
+        rollup,
+        Some(relation),
+        Some(score),
+        quire_core::core::database_rollup::Aggregate::Sum,
+    )?);
     let record = session
         .add_database_record(database_block)
         .context("create sync database record")?;
+    let target_record = session
+        .add_database_record(database_block)
+        .context("create sync relation target record")?;
     let title_property = session
         .databases
         .title_property(database)
@@ -229,6 +254,19 @@ fn sync_seed_export(path: &Path, snapshot_path: &Path) -> Result<()> {
         "Slint 跨版本数据库行"
     )?);
     assert!(session.set_database_cell(database_block, record, score, "42")?);
+    assert!(session.set_database_cell(
+        database_block,
+        target_record,
+        title_property,
+        "同步关联目标"
+    )?);
+    assert!(session.set_database_cell(database_block, target_record, score, "9")?);
+    assert!(session.set_database_relation_cell(
+        database_block,
+        record,
+        relation,
+        &[target_record]
+    )?);
     assert!(session.set_database_cell(database_block, record, select, SYNC_SELECT_VALUE)?);
     let device = session.sync_self_info();
     session.persistence.force_flush()?;
@@ -383,6 +421,21 @@ fn assert_sync_database(database: &quire_core::services::sync::model::SDatabase)
         .iter()
         .find(|property| property.name == SYNC_SELECT)
         .context("legacy sync response omitted select property")?;
+    let relation = database
+        .properties
+        .iter()
+        .find(|property| property.name == SYNC_RELATION)
+        .context("legacy sync response omitted relation property")?;
+    let mirror = database
+        .properties
+        .iter()
+        .find(|property| property.name == SYNC_MIRROR)
+        .context("legacy sync response omitted mirror property")?;
+    let rollup = database
+        .properties
+        .iter()
+        .find(|property| property.name == SYNC_ROLLUP)
+        .context("legacy sync response omitted rollup property")?;
     assert_eq!(score.kind, "number");
     assert_eq!(formula.kind, "formula");
     assert_eq!(
@@ -390,6 +443,40 @@ fn assert_sync_database(database: &quire_core::services::sync::model::SDatabase)
         Some("1 + [同步分数]")
     );
     assert_eq!(select.kind, "select");
+    assert_eq!(relation.kind, "relation");
+    assert_eq!(mirror.kind, "relation");
+    assert_eq!(rollup.kind, "rollup");
+    let relation_config = quire_core::core::database_relation::config_relation(&relation.config);
+    let mirror_config = quire_core::core::database_relation::config_relation(&mirror.config);
+    assert_eq!(
+        relation_config.mirror,
+        Some(quire_core::core::database::PropertyId(mirror.id))
+    );
+    assert_eq!(
+        mirror_config.mirror,
+        Some(quire_core::core::database::PropertyId(relation.id))
+    );
+    assert_eq!(
+        relation_config.target,
+        Some(quire_core::core::database::DatabaseId(database.id))
+    );
+    assert_eq!(
+        mirror_config.target,
+        Some(quire_core::core::database::DatabaseId(database.id))
+    );
+    let rollup_config = quire_core::core::database_rollup::config_rollup(&rollup.config);
+    assert_eq!(
+        rollup_config.relation,
+        Some(quire_core::core::database::PropertyId(relation.id))
+    );
+    assert_eq!(
+        rollup_config.column,
+        Some(quire_core::core::database::PropertyId(score.id))
+    );
+    assert_eq!(
+        rollup_config.aggregate,
+        quire_core::core::database_rollup::Aggregate::Sum
+    );
     let options = PropertyOptions::from_config(&select.config);
     let option = options
         .iter()
@@ -413,6 +500,31 @@ fn assert_sync_database(database: &quire_core::services::sync::model::SDatabase)
         value.record == record.id
             && value.property == select.id
             && value.text.as_deref() == Some(&option.id.0.to_string())
+    }));
+    let relation_value = database
+        .values
+        .iter()
+        .find(|value| value.record == record.id && value.property == relation.id)
+        .context("legacy sync response omitted relation cell")?;
+    let target_record = database
+        .records
+        .iter()
+        .find(|record| {
+            database.values.iter().any(|value| {
+                value.record == record.id
+                    && value.property == title.id
+                    && value.text.as_deref() == Some("同步关联目标")
+            })
+        })
+        .context("legacy sync response omitted relation target")?;
+    assert_eq!(
+        relation_value.items.as_deref(),
+        Some(&[target_record.id.to_string()][..])
+    );
+    assert!(database.values.iter().any(|value| {
+        value.record == target_record.id
+            && value.property == mirror.id
+            && value.items.as_deref() == Some(&[record.id.to_string()][..])
     }));
     Ok(())
 }
