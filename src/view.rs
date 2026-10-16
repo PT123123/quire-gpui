@@ -2436,6 +2436,9 @@ pub struct Workspace {
     fixed_context_focus_return: Option<FocusHandle>,
     fixed_context_selection: usize,
     organizer_context_menu: Option<(u8, u64, f32, f32)>,
+    organizer_context_focus: FocusHandle,
+    organizer_context_focus_return: Option<FocusHandle>,
+    organizer_context_selection: usize,
     hovered_note: Option<quire_core::core::organizer::NoteId>,
     hovered_task: Option<quire_core::core::organizer::TaskId>,
     inputs: BTreeMap<u64, Entity<TextInput>>,
@@ -2810,6 +2813,7 @@ impl Workspace {
         let task_list_menu_focus = cx.focus_handle();
         let page_context_focus = cx.focus_handle();
         let fixed_context_focus = cx.focus_handle();
+        let organizer_context_focus = cx.focus_handle();
         let mut this = Self {
             session,
             version_name_input,
@@ -2890,6 +2894,9 @@ impl Workspace {
             fixed_context_focus_return: None,
             fixed_context_selection: 0,
             organizer_context_menu: None,
+            organizer_context_focus,
+            organizer_context_focus_return: None,
+            organizer_context_selection: 0,
             hovered_note: None,
             hovered_task: None,
             inputs: BTreeMap::new(),
@@ -4177,16 +4184,22 @@ impl Workspace {
                     assert!(this.session.organizer.live_notes().any(|note| note.title == "GPUI command smoke"));
                     eprintln!("SMOKE: organizer JSON command overlay and note batch execution passed");
                     let menu_note = this.session.create_note_with_content("GPUI menu smoke".into(), "copyable menu note".into(), Vec::new());
+                    let organizer_menu_return_focus = window.focused(cx);
                     this.open_organizer_context_menu(0, menu_note.0, 80., 80., window, cx);
                     let menu_frame = this.render(window, cx);
                     drop(menu_frame);
                     assert!(this.organizer_context_menu.is_some());
+                    assert!(this.organizer_context_focus.is_focused(window));
                     this.run_organizer_context_action(0, menu_note.0, 2, window, cx);
                     assert!(this.session.organizer.note(menu_note).unwrap().pinned);
                     let menu_task = this.session.create_task("GPUI task menu smoke".into());
                     this.open_organizer_context_menu(1, menu_task.0, 80., 80., window, cx);
                     let menu_frame = this.render(window, cx);
                     drop(menu_frame);
+                    assert!(this.organizer_context_focus.is_focused(window));
+                    this.escape_organizer_context_menu(window);
+                    assert_eq!(window.focused(cx), organizer_menu_return_focus);
+                    this.open_organizer_context_menu(1, menu_task.0, 80., 80., window, cx);
                     this.run_organizer_context_action(1, menu_task.0, 2, window, cx);
                     assert!(this.session.organizer.task(menu_task).unwrap().done);
                     let page_menu_return_focus = window.focused(cx);
@@ -4206,6 +4219,7 @@ impl Workspace {
                     assert_eq!(window.focused(cx), fixed_menu_return_focus);
                     this.schedule_save(true, window, cx);
                     eprintln!("SMOKE: organizer note/task context menus and their actions passed");
+                    eprintln!("SMOKE: organizer row context menus capture and restore keyboard focus");
                     eprintln!("SMOKE: page context menu captures and restores keyboard focus");
                     eprintln!("SMOKE: fixed sidebar menu captures and restores keyboard focus");
                     assert!(this.command_palette_open);
@@ -11374,7 +11388,7 @@ impl Workspace {
         id: u64,
         x: f32,
         y: f32,
-        window: &Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         if self.organizer_trash || self.note_multi_select || self.task_multi_select {
@@ -11384,12 +11398,17 @@ impl Workspace {
         let bounds = window.bounds().size;
         let width = 196.;
         let height = if kind == 0 { 170. } else { 142. };
+        if self.organizer_context_menu.is_none() {
+            self.organizer_context_focus_return = window.focused(cx);
+        }
         self.organizer_context_menu = Some((
             kind,
             id,
             (x / scale).clamp(0., (f32::from(bounds.width) / scale - width).max(0.)),
             (y / scale).clamp(0., (f32::from(bounds.height) / scale - height).max(0.)),
         ));
+        self.organizer_context_selection = 0;
+        window.focus(&self.organizer_context_focus);
         cx.stop_propagation();
         cx.notify();
     }
@@ -11398,7 +11417,7 @@ impl Workspace {
         kind: u8,
         id: u64,
         event: &MouseDownEvent,
-        window: &Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         self.open_organizer_context_menu(
@@ -11415,7 +11434,7 @@ impl Workspace {
         kind: u8,
         id: u64,
         event: &ClickEvent,
-        window: &Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         self.open_organizer_context_menu(
@@ -11427,6 +11446,55 @@ impl Workspace {
             cx,
         );
     }
+    fn restore_organizer_context_focus(&mut self, window: &mut Window) {
+        if let Some(focus) = self.organizer_context_focus_return.take() {
+            window.focus(&focus);
+        }
+    }
+    fn escape_organizer_context_menu(&mut self, window: &mut Window) {
+        self.organizer_context_menu = None;
+        self.restore_organizer_context_focus(window);
+    }
+    fn organizer_context_menu_key_down(
+        &mut self,
+        event: &KeyDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some((kind, _, _, _)) = self.organizer_context_menu else {
+            return;
+        };
+        if event.keystroke.modifiers.modified() {
+            return;
+        }
+        let actions: &[u8] = if self.organizer_trash {
+            &[5, 6]
+        } else if kind == 0 {
+            &[0, 1, 2, 3, 4]
+        } else {
+            &[0, 1, 2, 4]
+        };
+        match event.keystroke.key.as_str() {
+            "escape" => self.escape_organizer_context_menu(window),
+            "up" | "down" => {
+                self.organizer_context_selection = next_menu_selection(
+                    self.organizer_context_selection,
+                    actions.len(),
+                    event.keystroke.key.as_str(),
+                )
+                .expect("organizer context menu has at least one action");
+            }
+            "enter" | "space" => {
+                if let Some(action) = actions.get(self.organizer_context_selection) {
+                    let (_, id, _, _) = self.organizer_context_menu.expect("menu is open");
+                    self.run_organizer_context_action(kind, id, *action, window, cx);
+                }
+            }
+            _ => return,
+        }
+        cx.stop_propagation();
+        cx.notify();
+    }
     fn run_organizer_context_action(
         &mut self,
         kind: u8,
@@ -11436,6 +11504,7 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         self.organizer_context_menu = None;
+        self.restore_organizer_context_focus(window);
         if kind == 0 {
             let id = quire_core::core::organizer::NoteId(id);
             match action {
@@ -19710,32 +19779,42 @@ impl Render for Workspace {
                 .on_mouse_down_out(cx.listener(|_, _, window, cx| {
                     cx.defer_in(window, |this, _, cx| {
                         this.organizer_context_menu = None;
+                        this.organizer_context_focus_return = None;
                         cx.notify();
                     });
                 }))
-                .children(actions.into_iter().map(|(label, action)| {
-                    div()
-                        .id(SharedString::from(format!(
-                            "organizer-context-{kind}-{id}-{action}"
-                        )))
-                        .h(px(29.))
-                        .px(px(9.))
-                        .flex()
-                        .items_center()
-                        .rounded(px(4.))
-                        .cursor_pointer()
-                        .text_size(px(12.))
-                        .text_color(if action == 4 || action == 6 {
-                            Hsla::from(rgb(0xe5534b))
-                        } else {
-                            text
-                        })
-                        .hover(|row| row.bg(Palette::color(&p.bg).opacity(0.38)))
-                        .on_click(cx.listener(move |this, _, window, cx| {
-                            this.run_organizer_context_action(kind, id, action, window, cx)
-                        }))
-                        .child(label)
-                }))
+                .track_focus(&self.organizer_context_focus)
+                .children(
+                    actions
+                        .into_iter()
+                        .enumerate()
+                        .map(|(index, (label, action))| {
+                            div()
+                                .id(SharedString::from(format!(
+                                    "organizer-context-{kind}-{id}-{action}"
+                                )))
+                                .h(px(29.))
+                                .px(px(9.))
+                                .flex()
+                                .items_center()
+                                .rounded(px(4.))
+                                .cursor_pointer()
+                                .text_size(px(12.))
+                                .text_color(if action == 4 || action == 6 {
+                                    Hsla::from(rgb(0xe5534b))
+                                } else {
+                                    text
+                                })
+                                .hover(|row| row.bg(Palette::color(&p.bg).opacity(0.38)))
+                                .when(self.organizer_context_selection == index, |row| {
+                                    row.bg(Palette::color(&p.bg).opacity(0.38))
+                                })
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    this.run_organizer_context_action(kind, id, action, window, cx)
+                                }))
+                                .child(label)
+                        }),
+                )
         });
         let kind_buttons =
             [
@@ -22876,6 +22955,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::zoom_reset))
             .capture_key_down(cx.listener(Self::page_context_menu_key_down))
             .capture_key_down(cx.listener(Self::fixed_context_menu_key_down))
+            .capture_key_down(cx.listener(Self::organizer_context_menu_key_down))
             .capture_key_down(cx.listener(Self::task_list_menu_key_down))
             .capture_key_down(cx.listener(Self::editor_rich_paste_key_down))
             .when_some(self.transition_palette.clone(), |root, old_palette| {

@@ -1795,3 +1795,9 @@
 - 工作区、笔记、任务、搜索和设置固定入口的右键菜单现在接管 GPUI 焦点；上下键循环高亮可用操作，Enter/Space 执行，Escape 关闭并恢复打开前焦点。点击菜单外关闭保留目标控件的焦点。
 - `cargo fmt --all`、`cargo check --all-targets --locked -j 8`、二进制测试（55 项）和 `git diff --check` 通过。当前源码 Release GUI smoke 在全新 `%TEMP%` SQLite、1000 块场景通过，覆盖设置入口菜单的焦点接管、渲染和 Escape 恢复，并完成已有全流程场景。真实右键/物理按键仍未由自动化合成。
 - 未访问真实用户库或修改 Slint/core；未运行性能评测，按用户要求留到最后。
+
+## 第二百九十轮：整理区笔记/任务行菜单键盘操作（2026-10-16）
+
+- 笔记和任务行的“⋯”及右键菜单打开时接管 GPUI 焦点；上下键循环高亮，Enter/Space 执行，Escape 关闭并恢复原焦点。普通菜单与回收站的恢复/彻底删除动作使用对应菜单顺序；菜单外点击关闭时不抢回焦点。
+- `cargo fmt --all`、`cargo check --all-targets --locked -j 8`、二进制测试（55 项）与 Release 构建通过。新建 `%TEMP%` SQLite 的 1000 块 Release GUI smoke 通过，包含笔记置顶、任务完成、菜单焦点接管、Escape 恢复及此前完整流程。
+- 自动 smoke 不合成真人右键坐标与物理按键；未访问真实用户库或修改 Slint/core。本轮没有运行性能评测。
