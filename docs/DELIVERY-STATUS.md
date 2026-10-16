@@ -1491,7 +1491,7 @@
 ## 第二百三十六轮：旧版与 GPUI 的隔离库往返兼容抽验（2026-10-16）
 
 - 使用旧版 Release `quire.exe`（`quire-desktop` commit `911246743cf79c43c96b38dfd39dffac3fb4d53c`）在 `%TEMP%\quire-gpui-legacy-roundtrip-ec1496b-20261016-retry\legacy.db` 建立新库；GPUI `Session::open` 读出后写入含中文标题、粗体/斜体、列表和待办的页面。旧版以 `--dump-state --auto-exit 2` 打开并正常退出，再由 GPUI 读回验证。随后 GPUI 在同库加入文本属性数据库及一条文本记录、带标签笔记、带子任务的任务和文件附件；旧版再次退出码 0 打开并保存，最终 GPUI 校验各项字段和附件文件字节与输入完全一致。页面数为 25；GPUI 侧对象 ID 为 database/property/record/note/task/attachment `1/2/1/1/1/1`。整个过程只访问此临时测试库。
-- 结果：基本页面/常见块、一个文本属性数据库记录、笔记/任务/子任务和附件字节完成旧版 → GPUI 写入 → 旧版启动/保存 → GPUI 读回的同库往返。随后在新隔离库增加双向关联配置/双侧记录值、多选选项/单元格值、公式表达式配置及汇总关联/目标列/聚合方式，并扩展到普通文本、日期、勾选、网址、邮箱、电话、单选和状态单元格，经 Slint Release 打开保存后由 GPUI 逐字段和逐关联目标重读，均保持一致。MCP 方面，GPUI Release `--stdio --db <隔离库>` 连接旧版 Release 的 loopback HTTP 服务，按共同支持的 MCP `2025-06-18` 协议读取旧工具目录及 GPUI 笔记/任务，并通过旧 `create_note` 回写；另将旧版 MCP 指向专用隔离端口，由旧 `create_note` 创建笔记，随后 GPUI 重开同库核验正文与标签。可重跑流程为 `tools/test-legacy-roundtrip.ps1`，脚本自动建 `%TEMP%` fixture、启动隐藏的 Slint Release 实例并在结束后由 GPUI 断言。公式/汇总计算呈现、其他复杂 schema、附件集合及删除/恢复语义，以及完整同步 snapshot 的跨版本互通仍未覆盖，所以 P7 完整兼容门仍未关闭。
+- 结果：基本页面/常见块、一个文本属性数据库记录、笔记/任务/子任务和附件字节完成旧版 → GPUI 写入 → 旧版启动/保存 → GPUI 读回的同库往返。随后在新隔离库增加双向关联配置/双侧记录值、多选选项/单元格值、公式表达式配置及汇总关联/目标列/聚合方式，并扩展到普通文本、日期、勾选、网址、邮箱、电话、单选和状态单元格，经 Slint Release 打开保存后由 GPUI 逐字段和逐关联目标重读，均保持一致。MCP 方面，GPUI Release `--stdio --db <隔离库>` 连接旧版 Release 的 loopback HTTP 服务，按共同支持的 MCP `2025-06-18` 协议读取旧工具目录及 GPUI 笔记/任务，并通过旧 `create_note` 回写；另将旧版 MCP 指向专用隔离端口，由旧 `create_note` 创建笔记，随后 GPUI 重开同库核验正文与标签。可重跑流程为 `tools/test-legacy-roundtrip.ps1`，脚本自动建 `%TEMP%` fixture、启动隐藏的 Slint Release 实例并在结束后由 GPUI 断言。公式/汇总计算呈现、其他复杂 schema、附件集合及删除/恢复语义，以及同步数据库/附件 snapshot 的跨版本互通仍未覆盖，所以 P7 完整兼容门仍未关闭。
 - 证据日志、临时夹具和附件留在上述 `%TEMP%` 目录。旧版只使用该目录旁的测试库与 MCP 指针；最终结论仅使用退出码为 0 的旧版启动、GPUI 显式对象/字节断言和 MCP 桥接调用结果。Slint 源码工作树保持干净。
 - 后续扩展同一隔离脚本并重跑：除前述属性和 MCP 断言外，新增文件列中的两份不同二进制附件，在 Slint Release 打开保存后由 GPUI 按顺序重读并逐字节比较，结果通过。夹具仍位于 `%TEMP%`，不触及用户库。附件删除/恢复语义仍未测。
 - 旧版 MCP 回写笔记与任务的同一脚本现在分别调用 `trash_note` / `restore_note`、`trash_task` / `restore_task`；四步均返回成功，旧版正常退出后 GPUI 重开仍读到完整且未删除的笔记和任务。附件删除/恢复仍未覆盖。
@@ -1499,5 +1499,11 @@
 
 ## 第二百三十七轮：便携发布包构建入口复核（2026-10-16）
 
+- 新增 `tools/verify-sync-core-compat.ps1`，从 GPUI/Slint 两边的 `Cargo.toml` 读取锁定 revision，确认两版 core 同步模块源码无差异且 snapshot 版本均为 4。脚本通过；它验证共用的 core wire/merge/transport 实现，未替代桌面应用进程之间的同步集成测试。
 - `install/build-release.ps1` 新增可配置 `-TargetDir`，避免 Release 构建与隔离 smoke 共用默认 target 时互相占用；默认仍为 `target`。实际运行 `.\install\build-release.ps1 -TargetDir target-ui-fix` 完成 locked Release 构建并生成便携 ZIP。重新打包后解压核对 EXE SHA-256 与构建产物一致（`60BEAEC553374A121874C8E26917DB001ED8320EACC56D2C88B242357BEC08AA`），版本资源和便携数据目录说明正确。
 - 清除一个无调用点的旧 MCP `serve` 辅助方法，服务继续使用可停机的 `start()` 路径。`cargo fmt --all -- --check`、`cargo check --all-targets --locked -j 8`、全量 `cargo test --locked -j 8`（106 项：54 库、50 二进制、MCP stdio 与 sync loopback 集成）及 Release 构建均通过；MCP dead-code 警告已消除。剩余 vendor GPUI 浮点字面量未来兼容和依赖未来兼容提示未影响构建。GPUI/Slint 性能最终复测按用户要求留到功能收尾后再做。
+
+## 第二百三十八轮：Slint 与 GPUI 同步应用进程往返（2026-10-16）
+
+- 新增 `tools/test-sync-legacy-wire.ps1` 与 `legacy_schema_probe` 的 `sync-seed-export` / `sync-verify` 模式。脚本只建立 `%TEMP%` 隔离库和测试数据，检查 5878 端口空闲后启动隐藏的 Slint Release 服务；先完成 `/sync/info` 与 `/sync/pair`，再由 GPUI Session 推送 v4 snapshot。Slint 应用服务在线程中合并并返回快照，GPUI 应用响应后 flush、关闭并重开隔离库，断言页面、笔记和任务内容均保留。整条 loopback 跨版本测试通过，证明页面/organizer 的实际应用进程 wire 往返；它未覆盖两机 UDP 发现、真实网络、数据库/附件 snapshot 或 GPUI GUI 内的定时出站 worker。
+- 修正 P6/P7 中“应用间同步完全未测”的过期描述，保留以上尚未覆盖项。同步 core revision 与 v4 检查仍可由 `tools/verify-sync-core-compat.ps1` 单独重跑。功能仍在继续，按用户要求此轮没有重测性能；Slint/GPUI 最终性能对比安排在功能收尾之后。

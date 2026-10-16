@@ -27,7 +27,9 @@ const SECOND_ATTACHMENT_BYTES: &[u8] = b"second legacy attachment bytes\x00\x01"
 
 fn main() -> Result<()> {
     let args: Vec<String> = env::args().collect();
-    let mode = args.get(1).context("write|configure|verify <db>")?;
+    let mode = args
+        .get(1)
+        .context("write|configure|verify|sync-seed-export|sync-verify <db> [path]")?;
     let path = Path::new(args.get(2).context("database path")?);
     match mode.as_str() {
         "write" => write(path),
@@ -37,8 +39,144 @@ fn main() -> Result<()> {
             args.get(4).context("token")?,
         ),
         "verify" => verify(path),
-        _ => bail!("expected write, configure or verify"),
+        "sync-seed-export" => sync_seed_export(
+            path,
+            Path::new(args.get(3).context("snapshot output path")?),
+        ),
+        "sync-verify" => sync_verify(
+            path,
+            Path::new(args.get(3).context("snapshot response path")?),
+        ),
+        _ => bail!("expected write, configure, verify, sync-seed-export or sync-verify"),
     }
+}
+
+fn sync_seed_export(path: &Path, snapshot_path: &Path) -> Result<()> {
+    let mut session = Session::open(path)?;
+    session.set_page_title("GPUI 跨版本同步验收".into());
+    let block = session.blocks()[0].id;
+    session.replace(block, "GPUI → Slint → GPUI 页面数据".into(), true);
+    session.create_note_with_content(
+        "GPUI 同步笔记".into(),
+        "旧版同步服务应完整接收这条笔记".into(),
+        vec!["同步验收".into()],
+    );
+    let task = session.create_task("GPUI 同步任务".into());
+    assert!(session.update_task_editor_tags(
+        task,
+        "GPUI 同步任务".into(),
+        "旧版同步服务应完整接收任务备注".into(),
+        None,
+        vec!["同步验收".into()]
+    ));
+    let device = session.sync_self_info();
+    session.persistence.force_flush()?;
+    let snapshot = session.sync_export()?;
+    std::fs::write(snapshot_path, snapshot.to_json())?;
+    println!("SYNC_SOURCE_DEVICE={}", device.id);
+    println!("SYNC_SOURCE_ROWS={}", snapshot.row_count());
+    Ok(())
+}
+
+fn sync_verify(path: &Path, snapshot_path: &Path) -> Result<()> {
+    use quire_core::services::sync::{
+        SYNC_PORT,
+        engine::PeerRecord,
+        model::{SNAPSHOT_VERSION, SyncSnapshot},
+    };
+
+    let text = std::fs::read_to_string(snapshot_path)?;
+    let remote = SyncSnapshot::from_json(&text).map_err(anyhow::Error::msg)?;
+    assert_eq!(remote.version, SNAPSHOT_VERSION);
+    assert!(
+        !remote.device_id.is_empty(),
+        "response lost legacy device id"
+    );
+    assert!(
+        remote
+            .pages
+            .iter()
+            .any(|page| page.title == "GPUI 跨版本同步验收")
+    );
+    assert!(
+        remote
+            .blocks
+            .iter()
+            .any(|block| block.text == "GPUI → Slint → GPUI 页面数据")
+    );
+    assert!(remote.notes.iter().any(|note| {
+        note.title == "GPUI 同步笔记"
+            && note.body == "旧版同步服务应完整接收这条笔记"
+            && note.tags == ["同步验收"]
+    }));
+    assert!(remote.tasks.iter().any(|task| {
+        task.title == "GPUI 同步任务"
+            && task.notes == "旧版同步服务应完整接收任务备注"
+            && task.tags == ["同步验收"]
+    }));
+
+    let mut session = Session::open(path)?;
+    let peer = PeerRecord {
+        id: remote.device_id.clone(),
+        name: remote.device.clone(),
+        kind: "pc".into(),
+        ip: "127.0.0.1".into(),
+        port: SYNC_PORT,
+        paired: true,
+        last_seen: 0,
+        last_sync: String::new(),
+    };
+    let merged = session.sync_apply_remote(&remote, &[], &peer)?;
+    assert!(
+        session
+            .pages
+            .iter()
+            .any(|page| page.title == "GPUI 跨版本同步验收")
+    );
+    assert!(
+        session
+            .blocks()
+            .iter()
+            .any(|block| block.text == "GPUI → Slint → GPUI 页面数据")
+    );
+    assert!(
+        session
+            .organizer
+            .notes
+            .iter()
+            .any(|note| note.title == "GPUI 同步笔记")
+    );
+    assert!(
+        session
+            .organizer
+            .tasks
+            .iter()
+            .any(|task| task.title == "GPUI 同步任务")
+    );
+    session.persistence.force_flush()?;
+    drop(session);
+
+    let reopened = Session::open(path)?;
+    assert!(
+        reopened
+            .organizer
+            .notes
+            .iter()
+            .any(|note| note.title == "GPUI 同步笔记")
+    );
+    assert!(
+        reopened
+            .organizer
+            .tasks
+            .iter()
+            .any(|task| task.title == "GPUI 同步任务")
+    );
+    println!(
+        "SYNC_LEGACY_RESPONSE=PASS version={} rows={}",
+        merged.version,
+        merged.row_count()
+    );
+    Ok(())
 }
 
 fn configure(path: &Path, port: &str, token: &str) -> Result<()> {
