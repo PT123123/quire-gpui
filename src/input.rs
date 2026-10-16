@@ -1232,5 +1232,18 @@ mod input_tests {
             caret >= "abcdefghij\nx\n".len() + 7,
             "vertical navigation should retain its original horizontal goal after a short line; caret={caret}"
         );
+        cx.update(|_, app| {
+            input.update(app, |input, cx| {
+                input.reset(vertical.into(), Vec::new(), "abcdefgh".len(), cx)
+            })
+        });
+        cx.run_until_parked();
+        cx.simulate_keystrokes("shift-down shift-down");
+        let selection = cx.update(|_, app| input.read(app).buffer.selection.clone());
+        assert_eq!(selection.start, "abcdefgh".len());
+        assert!(
+            selection.end >= "abcdefghij\nx\n".len() + 7,
+            "Shift+Down should retain its original horizontal goal after a short line; selection={selection:?}"
+        );
     }
 }
