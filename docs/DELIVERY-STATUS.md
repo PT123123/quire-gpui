@@ -1907,3 +1907,9 @@
 - Release GUI smoke 调用与 Ctrl+K 绑定相同的 `OpenCommandPalette` action；先创建旧页面搜索状态，再断言 action 关闭搜索、清空命令查询、将选择归零、聚焦命令输入，并在关闭时恢复焦点。`palette-open-requested` 标记为已验证。
 - 全量 118 项测试、格式检查、all-target 检查、Release 构建和新 `%TEMP%` 数据库 1000 块 Release GUI smoke 均通过。PARITY 当前为 27 项已验证、219 项未验证，另有 2 项不适用。
 - Smoke 调用应用 action，不模拟操作系统物理 Ctrl+K；未访问真实用户库或修改 Slint/core。最终性能评测留待功能收尾后重测。
+
+## 第三百零九轮：隔离验证普通表格追加行（2026-10-16）
+
+- Release GUI smoke 在单独的临时页面创建普通表格，通过 `Workspace::add_table_row` 实际 action 追加一行，断言新增单元格数等于列数，并验证单步撤销/重做及保存调度；使用独立页面避免影响其他 smoke 场景的页面版本差异。`table-row-added` 标为已验证。
+- 完整 1000 块 Release GUI smoke 退出码为 0；普通表格、命令面板、速记、托盘、MCP、最大化/还原、页面版本和数据库各视图场景均通过。全量测试 118 项、all-target 检查、格式检查、Release 构建及 `git diff --check` 通过。PARITY 当前为 28 项已验证、218 项未验证，另有 2 项不适用。
+- 测试只使用新建 `%TEMP%` SQLite；不声称真实鼠标点选或用户库迁移已验收，未修改 Slint/core。最终性能评测留待功能收尾后重测。

@@ -4541,6 +4541,67 @@ impl Workspace {
                     this.sync_inputs(window, cx);
                     assert_eq!(this.session.blocks().len(), original_block_count);
                     eprintln!("SMOKE: block plus insertion menu filtering, selection and undo passed");
+                    let table_return_page = this.session.page.id;
+                    this.add_page(window, cx);
+                    let table_anchor = this.session.blocks()[0].id;
+                    let existing_ids = this
+                        .session
+                        .blocks()
+                        .iter()
+                        .map(|block| block.id)
+                        .collect::<HashSet<_>>();
+                    this.session.execute(Command::InsertBlockAfter {
+                        id: table_anchor,
+                        kind: BlockKind::Paragraph,
+                        text: String::new(),
+                    });
+                    let table_id = this
+                        .session
+                        .blocks()
+                        .iter()
+                        .find(|block| !existing_ids.contains(&block.id))
+                        .expect("table smoke should insert a block")
+                        .id;
+                    this.session.execute(Command::SetBlockType {
+                        id: table_id,
+                        kind: BlockKind::Table,
+                    });
+                    this.sync_inputs(window, cx);
+                    let table_columns = this
+                        .session
+                        .document
+                        .block(table_id)
+                        .expect("table block should exist")
+                        .columns
+                        .max(1) as usize;
+                    let count_table_cells = |this: &Workspace| {
+                        this.session
+                            .blocks()
+                            .iter()
+                            .filter(|block| {
+                                block.parent == Some(table_id)
+                                    && block.kind == BlockKind::TableCell
+                            })
+                            .count()
+                    };
+                    let cells_before_row = count_table_cells(this);
+                    assert!(cells_before_row > 0);
+                    this.add_table_row(
+                        table_id,
+                        cells_before_row.div_ceil(table_columns),
+                        window,
+                        cx,
+                    );
+                    assert_eq!(count_table_cells(this), cells_before_row + table_columns);
+                    this.session.undo();
+                    this.sync_inputs(window, cx);
+                    assert_eq!(count_table_cells(this), cells_before_row);
+                    this.session.redo();
+                    this.sync_inputs(window, cx);
+                    assert_eq!(count_table_cells(this), cells_before_row + table_columns);
+                    this.schedule_save(true, window, cx);
+                    this.activate_page(table_return_page, window, cx);
+                    eprintln!("SMOKE: ordinary table row action adds one row and supports undo/redo");
                     let (source_db, source_name) = this
                         .session
                         .blocks()
