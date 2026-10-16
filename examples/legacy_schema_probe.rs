@@ -29,6 +29,8 @@ const PHONE: &str = "电话";
 const SELECT: &str = "单选";
 const STATUS: &str = "状态";
 const FILES: &str = "文件";
+const CREATED: &str = "创建时间";
+const LAST_EDITED: &str = "最后编辑时间";
 const ATTACHMENT_BYTES: &[u8] = b"legacy schema attachment bytes\0\xff";
 const SECOND_ATTACHMENT_BYTES: &[u8] = b"second legacy attachment bytes\x00\x01";
 const SYNC_SCORE: &str = "同步分数";
@@ -717,6 +719,10 @@ fn write(path: &Path) -> Result<()> {
     let files = s
         .add_database_property(block, FILES.into(), PropertyKind::Files)
         .context("files")?;
+    s.add_database_property(block, CREATED.into(), PropertyKind::CreatedTime)
+        .context("created time")?;
+    s.add_database_property(block, LAST_EDITED.into(), PropertyKind::LastEditedTime)
+        .context("last edited time")?;
     assert!(s.set_database_relation_target(block, relation, Some(db))?);
     assert!(s.set_database_relation_target(block, mirror, Some(db))?);
     assert!(s.set_database_relation_mirror(block, relation, mirror)?);
@@ -800,6 +806,15 @@ fn verify(path: &Path) -> Result<()> {
     let select = find(SELECT)?;
     let status = find(STATUS)?;
     let files = find(FILES)?;
+    assert_eq!(
+        s.databases
+            .title_property(db.id)
+            .context("title property")?
+            .kind,
+        PropertyKind::Title
+    );
+    assert_eq!(find(CREATED)?.kind, PropertyKind::CreatedTime);
+    assert_eq!(find(LAST_EDITED)?.kind, PropertyKind::LastEditedTime);
     let relation_config = quire_core::core::database_relation::config_relation(&relation.config);
     let mirror_config = quire_core::core::database_relation::config_relation(&mirror.config);
     assert_eq!(relation_config.target, Some(db.id));

@@ -1704,3 +1704,8 @@
 - `tools/test-legacy-roundtrip.ps1` 在全新 `%TEMP%` 库通过：Slint MCP 写入并恢复笔记/任务后，GPUI 重开逐项验证基础与复杂数据库 schema、双向关联、公式/汇总、多选、常见值类型及两份附件字节；`LEGACY_ROUNDTRIP=PASS`。
 - `tools/test-sync-legacy-wire.ps1` 在隔离库通过旧版→GPUI 附件拉取（2 个文件、32/32 字节）、GPUI→旧版附件推送（逐字节一致）与 v4 snapshot 往返（171 行）；`LEGACY_SYNC_WIRE=PASS`。
 - 两个脚本均只操作新建 `%TEMP%` fixture，未读取真实用户库、未更改 Slint 源码。此轮只重跑既有兼容验证，无产品代码改动，也未执行性能评测；最终 Slint/GPUI 性能对比仍待功能收尾后进行。
+
+## 第二百七十六轮：补齐只读派生属性的旧版往返（2026-10-16）
+
+- 扩展 `examples/legacy_schema_probe.rs` 的隔离同库兼容夹具，增加 `Title`、`CreatedTime`、`LastEditedTime` schema 断言。旧版 Slint MCP 往返后，GPUI 重新打开确认三种属性仍保留正确类型；此前已覆盖的可写属性与附件断言继续通过，`LEGACY_ROUNDTRIP=PASS`。
+- `cargo fmt --all -- --check`、`cargo check --all-targets --locked -j 8`、`git diff --check` 通过。此次未运行性能评测；性能对比仍留到功能验收收尾后。
