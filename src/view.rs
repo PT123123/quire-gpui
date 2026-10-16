@@ -2489,6 +2489,9 @@ pub struct Workspace {
     page_options_open: bool,
     link_editor_open: bool,
     color_picker: Option<(BlockId, bool)>,
+    block_color_focus: FocusHandle,
+    block_color_focus_return: Option<FocusHandle>,
+    block_color_selection: usize,
     confirm_delete_page: Option<quire_core::core::types::PageId>,
     slash_menu: Option<BlockId>,
     slash_selection: usize,
@@ -2818,6 +2821,7 @@ impl Workspace {
         let fixed_context_focus = cx.focus_handle();
         let organizer_context_focus = cx.focus_handle();
         let block_menu_focus = cx.focus_handle();
+        let block_color_focus = cx.focus_handle();
         let mut this = Self {
             session,
             version_name_input,
@@ -2955,6 +2959,9 @@ impl Workspace {
             page_options_open: false,
             link_editor_open: false,
             color_picker: None,
+            block_color_focus,
+            block_color_focus_return: None,
+            block_color_selection: 0,
             confirm_delete_page: None,
             slash_menu: None,
             slash_selection: 0,
@@ -4237,12 +4244,19 @@ impl Workspace {
                     drop(block_menu_frame);
                     this.escape_block_context_menu(window);
                     assert_eq!(window.focused(cx), block_menu_return_focus);
+                    this.toggle_color_picker(menu_block, false, window, cx);
+                    assert!(this.block_color_focus.is_focused(window));
+                    let block_color_frame = this.render(window, cx);
+                    drop(block_color_frame);
+                    this.escape_block_color_picker(window);
+                    assert_eq!(window.focused(cx), block_menu_return_focus);
                     this.schedule_save(true, window, cx);
                     eprintln!("SMOKE: organizer note/task context menus and their actions passed");
                     eprintln!("SMOKE: organizer row context menus capture and restore keyboard focus");
                     eprintln!("SMOKE: page context menu captures and restores keyboard focus");
                     eprintln!("SMOKE: fixed sidebar menu captures and restores keyboard focus");
                     eprintln!("SMOKE: block context menu captures and restores keyboard focus");
+                    eprintln!("SMOKE: block color picker captures and restores keyboard focus");
                     assert!(this.command_palette_open);
                     assert_eq!(this.command_palette_query, "设置");
                     assert_eq!(this.palette_items().len(), 1);
@@ -6692,17 +6706,76 @@ impl Workspace {
             self.schedule_save(false, window, cx);
         }
     }
-    fn toggle_color_picker(&mut self, id: BlockId, background: bool, cx: &mut Context<Self>) {
-        self.color_picker = if self.color_picker == Some((id, background)) {
-            None
+    fn toggle_color_picker(
+        &mut self,
+        id: BlockId,
+        background: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.color_picker == Some((id, background)) {
+            self.color_picker = None;
+            self.restore_block_color_focus(window);
         } else {
-            Some((id, background))
+            if self.color_picker.is_none() {
+                self.block_color_focus_return = window.focused(cx);
+            }
+            self.color_picker = Some((id, background));
+            self.block_color_selection = 0;
+            window.focus(&self.block_color_focus);
+        }
+        cx.notify();
+    }
+    fn restore_block_color_focus(&mut self, window: &mut Window) {
+        if let Some(focus) = self.block_color_focus_return.take() {
+            window.focus(&focus);
+        }
+    }
+    fn escape_block_color_picker(&mut self, window: &mut Window) {
+        self.color_picker = None;
+        self.restore_block_color_focus(window);
+    }
+    fn block_color_picker_key_down(
+        &mut self,
+        event: &KeyDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some((id, background)) = self.color_picker else {
+            return;
         };
+        if event.keystroke.modifiers.modified() {
+            return;
+        }
+        match event.keystroke.key.as_str() {
+            "escape" => self.escape_block_color_picker(window),
+            "left" | "up" => {
+                self.block_color_selection =
+                    (self.block_color_selection + ColorKind::ALL.len() - 1) % ColorKind::ALL.len();
+            }
+            "right" | "down" => {
+                self.block_color_selection =
+                    (self.block_color_selection + 1) % ColorKind::ALL.len();
+            }
+            "enter" | "space" => {
+                self.set_block_color(
+                    id,
+                    background,
+                    self.block_color_selection as i32,
+                    window,
+                    cx,
+                );
+                self.restore_block_color_focus(window);
+            }
+            _ => return,
+        }
+        cx.stop_propagation();
         cx.notify();
     }
     fn dismiss_color_picker(&mut self, id: BlockId, background: bool, cx: &mut Context<Self>) {
         if self.color_picker == Some((id, background)) {
             self.color_picker = None;
+            self.block_color_focus_return = None;
             cx.notify();
         }
     }
@@ -6912,7 +6985,7 @@ impl Workspace {
             }
             1 | 2 => {
                 self.close_block_context_menu(window);
-                self.toggle_color_picker(block_id, action == 2, cx);
+                self.toggle_color_picker(block_id, action == 2, window, cx);
             }
             3 => {
                 self.close_block_context_menu(window);
@@ -6969,6 +7042,7 @@ impl Workspace {
             background: bg,
         });
         self.color_picker = None;
+        self.restore_block_color_focus(window);
         self.sync_inputs(window, cx);
         self.schedule_save(false, window, cx);
     }
@@ -14016,6 +14090,7 @@ impl Workspace {
                                 .border_color(Palette::color(&p.border))
                                 .bg(Palette::color(&p.elevated))
                                 .shadow_lg()
+                                .track_focus(&self.block_color_focus)
                                 .children(ColorKind::ALL.into_iter().enumerate().map(
                                     |(slot, _)| {
                                         let slot = slot as i32;
@@ -14031,7 +14106,13 @@ impl Workspace {
                                             .size(px(19.))
                                             .rounded(px(4.))
                                             .border_1()
-                                            .border_color(Palette::color(&p.border))
+                                            .border_color(
+                                                if self.block_color_selection == slot as usize {
+                                                    accent
+                                                } else {
+                                                    Palette::color(&p.border)
+                                                },
+                                            )
                                             .bg(swatch)
                                             .cursor_pointer()
                                             .on_click(cx.listener(move |this, _, window, cx| {
@@ -18003,8 +18084,8 @@ impl Workspace {
                                         .px(px(3.))
                                         .cursor_pointer()
                                         .text_color(self.palette.block_text(block.color.slot()))
-                                        .on_click(cx.listener(move |this, _, _, cx| {
-                                            this.toggle_color_picker(block_id, false, cx)
+                                            .on_click(cx.listener(move |this, _, window, cx| {
+                                                this.toggle_color_picker(block_id, false, window, cx)
                                         }))
                                         .child("A"),
                                 )
@@ -18016,8 +18097,8 @@ impl Workspace {
                                         .px(px(3.))
                                         .cursor_pointer()
                                         .text_color(muted)
-                                        .on_click(cx.listener(move |this, _, _, cx| {
-                                            this.toggle_color_picker(block_id, true, cx)
+                                            .on_click(cx.listener(move |this, _, window, cx| {
+                                                this.toggle_color_picker(block_id, true, window, cx)
                                         }))
                                         .child("▧"),
                                 )
@@ -23162,6 +23243,7 @@ impl Render for Workspace {
             .capture_key_down(cx.listener(Self::fixed_context_menu_key_down))
             .capture_key_down(cx.listener(Self::organizer_context_menu_key_down))
             .capture_key_down(cx.listener(Self::block_context_menu_key_down))
+            .capture_key_down(cx.listener(Self::block_color_picker_key_down))
             .capture_key_down(cx.listener(Self::task_list_menu_key_down))
             .capture_key_down(cx.listener(Self::editor_rich_paste_key_down))
             .when_some(self.transition_palette.clone(), |root, old_palette| {

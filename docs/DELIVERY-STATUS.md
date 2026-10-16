@@ -1807,3 +1807,9 @@
 - 编辑器块“⋮”菜单现在接管焦点；上下键循环高亮，Enter/Space 执行。转换、图片宽度和移动页面子菜单支持键盘选择；Escape 从子菜单返回主菜单，再次 Escape 关闭并恢复原焦点。现有鼠标操作统一走相同动作处理。
 - `cargo fmt --all`、`cargo check --all-targets --locked -j 8`、二进制测试（55 项）及 Release 构建通过。隔离 `%TEMP%` SQLite 的 1000 块 Release GUI smoke 通过，覆盖菜单焦点接管、渲染和 Escape 恢复及完整既有流程。
 - 自动 smoke 未模拟物理按键/鼠标，因此键盘选择动作尚无 OS 输入级证据；未访问真实用户库或修改 Slint/core，本轮未运行性能评测。
+
+## 第二百九十二轮：编辑器块颜色选择器键盘操作（2026-10-16）
+
+- 块文字/背景十色选择器打开后现在取得键盘焦点并高亮当前色块；方向键循环选择，Enter/Space 应用，Escape 关闭并恢复原焦点。点外关闭继续保留目标控件焦点。
+- `cargo fmt --all`、`cargo check --all-targets --locked -j 8`、二进制测试（55 项）和 Release 构建通过。全新 `%TEMP%` SQLite 上的 1000 块 Release GUI smoke 通过色板焦点接管、渲染和 Escape 恢复，以及此前全流程场景。
+- 自动 smoke 未合成物理按键；未访问真实用户库或修改 Slint/core，本轮未运行性能评测。
