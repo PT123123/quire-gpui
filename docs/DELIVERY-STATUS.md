@@ -1801,3 +1801,9 @@
 - 笔记和任务行的“⋯”及右键菜单打开时接管 GPUI 焦点；上下键循环高亮，Enter/Space 执行，Escape 关闭并恢复原焦点。普通菜单与回收站的恢复/彻底删除动作使用对应菜单顺序；菜单外点击关闭时不抢回焦点。
 - `cargo fmt --all`、`cargo check --all-targets --locked -j 8`、二进制测试（55 项）与 Release 构建通过。新建 `%TEMP%` SQLite 的 1000 块 Release GUI smoke 通过，包含笔记置顶、任务完成、菜单焦点接管、Escape 恢复及此前完整流程。
 - 自动 smoke 不合成真人右键坐标与物理按键；未访问真实用户库或修改 Slint/core。本轮没有运行性能评测。
+
+## 第二百九十一轮：编辑器块操作菜单键盘导航（2026-10-16）
+
+- 编辑器块“⋮”菜单现在接管焦点；上下键循环高亮，Enter/Space 执行。转换、图片宽度和移动页面子菜单支持键盘选择；Escape 从子菜单返回主菜单，再次 Escape 关闭并恢复原焦点。现有鼠标操作统一走相同动作处理。
+- `cargo fmt --all`、`cargo check --all-targets --locked -j 8`、二进制测试（55 项）及 Release 构建通过。隔离 `%TEMP%` SQLite 的 1000 块 Release GUI smoke 通过，覆盖菜单焦点接管、渲染和 Escape 恢复及完整既有流程。
+- 自动 smoke 未模拟物理按键/鼠标，因此键盘选择动作尚无 OS 输入级证据；未访问真实用户库或修改 Slint/core，本轮未运行性能评测。

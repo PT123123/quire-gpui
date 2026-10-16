@@ -2425,6 +2425,9 @@ pub struct Workspace {
     backlinks_open: bool,
     hovered_block: Option<BlockId>,
     block_menu_open: Option<(BlockId, BlockMenuMode)>,
+    block_menu_focus: FocusHandle,
+    block_menu_focus_return: Option<FocusHandle>,
+    block_menu_selection: usize,
     block_clipboard: Option<Vec<Block>>,
     hovered_page: Option<quire_core::core::types::PageId>,
     page_context_menu: Option<(quire_core::core::types::PageId, f32, f32)>,
@@ -2814,6 +2817,7 @@ impl Workspace {
         let page_context_focus = cx.focus_handle();
         let fixed_context_focus = cx.focus_handle();
         let organizer_context_focus = cx.focus_handle();
+        let block_menu_focus = cx.focus_handle();
         let mut this = Self {
             session,
             version_name_input,
@@ -2883,6 +2887,9 @@ impl Workspace {
             backlinks_open: false,
             hovered_block: None,
             block_menu_open: None,
+            block_menu_focus,
+            block_menu_focus_return: None,
+            block_menu_selection: 0,
             block_clipboard: None,
             hovered_page: None,
             page_context_menu: None,
@@ -4217,11 +4224,25 @@ impl Workspace {
                     drop(fixed_menu_frame);
                     this.escape_fixed_context_menu(window);
                     assert_eq!(window.focused(cx), fixed_menu_return_focus);
+                    let block_menu_return_focus = window.focused(cx);
+                    let menu_block = this
+                        .session
+                        .blocks()
+                        .first()
+                        .map(|block| block.id)
+                        .expect("smoke document contains a block");
+                    this.toggle_block_context_menu(menu_block, window, cx);
+                    assert!(this.block_menu_focus.is_focused(window));
+                    let block_menu_frame = this.render(window, cx);
+                    drop(block_menu_frame);
+                    this.escape_block_context_menu(window);
+                    assert_eq!(window.focused(cx), block_menu_return_focus);
                     this.schedule_save(true, window, cx);
                     eprintln!("SMOKE: organizer note/task context menus and their actions passed");
                     eprintln!("SMOKE: organizer row context menus capture and restore keyboard focus");
                     eprintln!("SMOKE: page context menu captures and restores keyboard focus");
                     eprintln!("SMOKE: fixed sidebar menu captures and restores keyboard focus");
+                    eprintln!("SMOKE: block context menu captures and restores keyboard focus");
                     assert!(this.command_palette_open);
                     assert_eq!(this.command_palette_query, "设置");
                     assert_eq!(this.palette_items().len(), 1);
@@ -6708,9 +6729,215 @@ impl Workspace {
                 .is_some_and(|(open_id, _)| open_id == id)
             {
                 this.block_menu_open = None;
+                this.block_menu_focus_return = None;
                 cx.notify();
             }
         });
+    }
+    fn toggle_block_context_menu(
+        &mut self,
+        id: BlockId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self
+            .block_menu_open
+            .is_some_and(|(open_id, _)| open_id == id)
+        {
+            self.close_block_context_menu(window);
+        } else {
+            if self.block_menu_open.is_none() {
+                self.block_menu_focus_return = window.focused(cx);
+            }
+            self.block_menu_open = Some((id, BlockMenuMode::Actions));
+            self.block_menu_selection = 0;
+            window.focus(&self.block_menu_focus);
+            cx.notify();
+        }
+    }
+    fn close_block_context_menu(&mut self, window: &mut Window) {
+        self.block_menu_open = None;
+        if let Some(focus) = self.block_menu_focus_return.take() {
+            window.focus(&focus);
+        }
+    }
+    fn escape_block_context_menu(&mut self, window: &mut Window) {
+        if let Some((id, mode)) = self.block_menu_open {
+            if mode != BlockMenuMode::Actions {
+                self.block_menu_open = Some((id, BlockMenuMode::Actions));
+                self.block_menu_selection = 0;
+            } else {
+                self.close_block_context_menu(window);
+            }
+        }
+    }
+    fn block_menu_action_ids(&self, id: BlockId) -> Vec<u8> {
+        let mut actions = Vec::new();
+        if self
+            .session
+            .document
+            .block(id)
+            .is_some_and(|block| block.kind == BlockKind::Image)
+        {
+            actions.push(8);
+        }
+        actions.extend([0, 1, 2, 3, 6, 4, 5]);
+        if !self.session.page.locked
+            && self
+                .block_clipboard
+                .as_deref()
+                .is_some_and(block_clipboard_pasteable)
+        {
+            actions.push(7);
+        }
+        actions
+    }
+    fn block_context_menu_key_down(
+        &mut self,
+        event: &KeyDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some((id, mode)) = self.block_menu_open else {
+            return;
+        };
+        if event.keystroke.modifiers.modified() {
+            return;
+        }
+        let count = match mode {
+            BlockMenuMode::Actions => self.block_menu_action_ids(id).len(),
+            BlockMenuMode::Convert => self
+                .session
+                .document
+                .block(id)
+                .map(|block| {
+                    slash_items()
+                        .iter()
+                        .filter(|(_, _, action)| *action != SlashAction::Convert(block.kind))
+                        .count()
+                        + 1
+                })
+                .unwrap_or(1),
+            BlockMenuMode::ImageWidth => 4,
+            BlockMenuMode::MoveToPage => (1 + self
+                .session
+                .pages
+                .iter()
+                .filter(|page| !page.template && page.id != self.session.page.id && !page.locked)
+                .count())
+            .max(2),
+        };
+        match event.keystroke.key.as_str() {
+            "escape" => self.escape_block_context_menu(window),
+            "up" | "down" => {
+                self.block_menu_selection = next_menu_selection(
+                    self.block_menu_selection,
+                    count,
+                    event.keystroke.key.as_str(),
+                )
+                .unwrap_or(0);
+            }
+            "enter" | "space" => match mode {
+                BlockMenuMode::Actions => {
+                    if let Some(action) = self
+                        .block_menu_action_ids(id)
+                        .get(self.block_menu_selection)
+                    {
+                        self.run_block_context_action(id, *action, window, cx);
+                    }
+                }
+                BlockMenuMode::Convert => {
+                    if self.block_menu_selection == 0 {
+                        self.block_menu_open = Some((id, BlockMenuMode::Actions));
+                        self.block_menu_selection = 0;
+                    } else if let Some(kind) =
+                        self.session.document.block(id).map(|block| block.kind)
+                    {
+                        if let Some((_, _, action)) = slash_items()
+                            .into_iter()
+                            .filter(|(_, _, action)| *action != SlashAction::Convert(kind))
+                            .nth(self.block_menu_selection - 1)
+                        {
+                            self.close_block_context_menu(window);
+                            self.select_slash_action(id, *action, window, cx);
+                        }
+                    }
+                }
+                BlockMenuMode::ImageWidth => {
+                    if self.block_menu_selection == 0 {
+                        self.block_menu_open = Some((id, BlockMenuMode::Actions));
+                        self.block_menu_selection = 0;
+                    } else if let Some(percent) =
+                        [25u16, 50, 100].get(self.block_menu_selection - 1)
+                    {
+                        self.close_block_context_menu(window);
+                        self.set_image_width(id, *percent, window, cx);
+                    }
+                }
+                BlockMenuMode::MoveToPage => {
+                    if self.block_menu_selection == 0 {
+                        self.block_menu_open = Some((id, BlockMenuMode::Actions));
+                        self.block_menu_selection = 0;
+                    } else if let Some(target) = self
+                        .session
+                        .pages
+                        .iter()
+                        .filter(|page| {
+                            !page.template && page.id != self.session.page.id && !page.locked
+                        })
+                        .nth(self.block_menu_selection - 1)
+                        .map(|page| page.id)
+                    {
+                        self.close_block_context_menu(window);
+                        self.move_block_to_page(id, target, window, cx);
+                    }
+                }
+            },
+            _ => return,
+        }
+        cx.stop_propagation();
+        cx.notify();
+    }
+    fn run_block_context_action(
+        &mut self,
+        block_id: BlockId,
+        action: u8,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match action {
+            0 => {
+                self.block_menu_open = Some((block_id, BlockMenuMode::Convert));
+                self.block_menu_selection = 0;
+            }
+            1 | 2 => {
+                self.close_block_context_menu(window);
+                self.toggle_color_picker(block_id, action == 2, cx);
+            }
+            3 => {
+                self.close_block_context_menu(window);
+                self.duplicate_block(block_id, window, cx);
+            }
+            6 => self.copy_block_to_clipboard(block_id, cx),
+            4 => {
+                self.close_block_context_menu(window);
+                self.delete_block(block_id, window, cx);
+            }
+            5 => {
+                self.block_menu_open = Some((block_id, BlockMenuMode::MoveToPage));
+                self.block_menu_selection = 0;
+            }
+            7 => {
+                self.close_block_context_menu(window);
+                self.paste_block_from_clipboard(block_id, window, cx);
+            }
+            8 => {
+                self.block_menu_open = Some((block_id, BlockMenuMode::ImageWidth));
+                self.block_menu_selection = 0;
+            }
+            _ => {}
+        }
+        cx.notify();
     }
     fn set_block_color(
         &mut self,
@@ -13824,7 +14051,8 @@ impl Workspace {
                         slash_items()
                             .iter()
                             .filter(|(_, _, action)| *action != SlashAction::Convert(kind))
-                            .map(|(label, _, action)| {
+                            .enumerate()
+                            .map(|(index, (label, _, action))| {
                                 let action = *action;
                                 div()
                                     .id(SharedString::from(format!(
@@ -13840,8 +14068,11 @@ impl Workspace {
                                     .text_size(px(12.))
                                     .text_color(text)
                                     .hover(|item| item.bg(Palette::color(&p.bg).opacity(0.3)))
+                                    .when(self.block_menu_selection == index + 1, |item| {
+                                        item.bg(Palette::color(&p.bg).opacity(0.38))
+                                    })
                                     .on_click(cx.listener(move |this, _, window, cx| {
-                                        this.block_menu_open = None;
+                                        this.close_block_context_menu(window);
                                         this.select_slash_action(block_id, action, window, cx);
                                     }))
                                     .child(*label)
@@ -13856,7 +14087,8 @@ impl Workspace {
                             .map(|block| block.img_percent);
                         [25u16, 50, 100]
                             .into_iter()
-                            .map(|percent| {
+                            .enumerate()
+                            .map(|(index, percent)| {
                                 let is_selected = selected == Some(percent);
                                 div()
                                     .id(SharedString::from(format!(
@@ -13873,7 +14105,11 @@ impl Workspace {
                                     .text_size(px(12.))
                                     .text_color(text)
                                     .hover(|item| item.bg(Palette::color(&p.bg).opacity(0.3)))
+                                    .when(self.block_menu_selection == index + 1, |item| {
+                                        item.bg(Palette::color(&p.bg).opacity(0.38))
+                                    })
                                     .on_click(cx.listener(move |this, _, window, cx| {
+                                        this.close_block_context_menu(window);
                                         this.set_image_width(block_id, percent, window, cx);
                                     }))
                                     .child(format!("{percent}%"))
@@ -13888,7 +14124,8 @@ impl Workspace {
                             .filter(|page| {
                                 !page.template && page.id != self.session.page.id && !page.locked
                             })
-                            .map(|page| {
+                            .enumerate()
+                            .map(|(index, page)| {
                                 let target = page.id;
                                 div()
                                     .id(SharedString::from(format!(
@@ -13905,8 +14142,11 @@ impl Workspace {
                                     .text_size(px(12.))
                                     .text_color(text)
                                     .hover(|item| item.bg(Palette::color(&p.bg).opacity(0.3)))
+                                    .when(self.block_menu_selection == index + 1, |item| {
+                                        item.bg(Palette::color(&p.bg).opacity(0.38))
+                                    })
                                     .on_click(cx.listener(move |this, _, window, cx| {
-                                        this.block_menu_open = None;
+                                        this.close_block_context_menu(window);
                                         this.move_block_to_page(block_id, target, window, cx);
                                     }))
                                     .child(page.title.clone())
@@ -13937,7 +14177,8 @@ impl Workspace {
                         }
                         actions
                             .into_iter()
-                            .map(|(label, action)| {
+                            .enumerate()
+                            .map(|(index, (label, action))| {
                                 div()
                                     .id(SharedString::from(format!(
                                         "block-menu-action-{block_id:?}-{action}"
@@ -13956,44 +14197,11 @@ impl Workspace {
                                         text
                                     })
                                     .hover(|item| item.bg(Palette::color(&p.bg).opacity(0.3)))
+                                    .when(self.block_menu_selection == index, |item| {
+                                        item.bg(Palette::color(&p.bg).opacity(0.38))
+                                    })
                                     .on_click(cx.listener(move |this, _, window, cx| {
-                                        match action {
-                                            0 => {
-                                                this.block_menu_open =
-                                                    Some((block_id, BlockMenuMode::Convert))
-                                            }
-                                            1 => {
-                                                this.block_menu_open = None;
-                                                this.toggle_color_picker(block_id, false, cx);
-                                            }
-                                            2 => {
-                                                this.block_menu_open = None;
-                                                this.toggle_color_picker(block_id, true, cx);
-                                            }
-                                            3 => {
-                                                this.block_menu_open = None;
-                                                this.duplicate_block(block_id, window, cx);
-                                            }
-                                            6 => {
-                                                this.copy_block_to_clipboard(block_id, cx);
-                                            }
-                                            4 => {
-                                                this.block_menu_open = None;
-                                                this.delete_block(block_id, window, cx);
-                                            }
-                                            5 => {
-                                                this.block_menu_open =
-                                                    Some((block_id, BlockMenuMode::MoveToPage))
-                                            }
-                                            7 => this
-                                                .paste_block_from_clipboard(block_id, window, cx),
-                                            8 => {
-                                                this.block_menu_open =
-                                                    Some((block_id, BlockMenuMode::ImageWidth));
-                                            }
-                                            _ => {}
-                                        }
-                                        cx.notify();
+                                        this.run_block_context_action(block_id, action, window, cx);
                                     }))
                                     .child(label.to_owned())
                                     .into_any_element()
@@ -14030,8 +14238,12 @@ impl Workspace {
                                 .text_size(px(12.))
                                 .text_color(muted)
                                 .hover(|item| item.bg(Palette::color(&p.bg).opacity(0.3)))
+                                .when(self.block_menu_selection == 0, |item| {
+                                    item.bg(Palette::color(&p.bg).opacity(0.38))
+                                })
                                 .on_click(cx.listener(move |this, _, _, cx| {
                                     this.block_menu_open = Some((block_id, BlockMenuMode::Actions));
+                                    this.block_menu_selection = 0;
                                     cx.notify();
                                 }))
                                 .child("‹  返回")
@@ -14048,6 +14260,7 @@ impl Workspace {
                                 .on_mouse_down_out(cx.listener(move |this, _, window, cx| {
                                     this.dismiss_block_menu_after_mouse_down(block_id, window, cx)
                                 }))
+                                .track_focus(&self.block_menu_focus)
                                 .w(px(184.))
                                 .max_h(px(320.))
                                 .overflow_y_scroll()
@@ -17885,16 +18098,8 @@ impl Workspace {
                                             .cursor_pointer()
                                             .text_color(muted)
                                             .hover(|button| button.text_color(accent))
-                                            .on_click(cx.listener(move |this, _, _, cx| {
-                                                this.block_menu_open = if this
-                                                    .block_menu_open
-                                                    .is_some_and(|(open_id, _)| open_id == block_id)
-                                                {
-                                                    None
-                                                } else {
-                                                    Some((block_id, BlockMenuMode::Actions))
-                                                };
-                                                cx.notify();
+                                            .on_click(cx.listener(move |this, _, window, cx| {
+                                                this.toggle_block_context_menu(block_id, window, cx);
                                             }))
                                             .child("⋮"),
                                     )
@@ -22956,6 +23161,7 @@ impl Render for Workspace {
             .capture_key_down(cx.listener(Self::page_context_menu_key_down))
             .capture_key_down(cx.listener(Self::fixed_context_menu_key_down))
             .capture_key_down(cx.listener(Self::organizer_context_menu_key_down))
+            .capture_key_down(cx.listener(Self::block_context_menu_key_down))
             .capture_key_down(cx.listener(Self::task_list_menu_key_down))
             .capture_key_down(cx.listener(Self::editor_rich_paste_key_down))
             .when_some(self.transition_palette.clone(), |root, old_palette| {
