@@ -1649,3 +1649,13 @@
 
 - 修正自绘编辑器的 Home/End 语义：普通按键现在跳到当前 GPUI 排版行的首/尾，Shift+Home/End 扩展选区到当前显示行；Ctrl+Home/End 保留为文档首尾导航。对多行及自动换行文本不再把 Home/End 误当整块首尾操作，composition 期间仍不干预输入。
 - 新增 UTF-8 字节偏移和多行/折行边界的纯函数回归；`cargo fmt --all -- --check`、全量 `cargo test --locked -j 8`（110 项）、`cargo check --all-targets --locked -j 8`、Release 构建（40.65 秒）通过。新 `%TEMP%` 数据库上的 1000 块 Release GUI smoke 完整通过，含数据库视图、虚拟滚动、速记和托盘；未访问真实用户库。未执行性能评测。
+
+## 第二百六十六轮：补齐词级键盘导航（2026-10-16）
+
+- 自绘输入控件新增 Ctrl+Left/Right 词级跳转、Ctrl+Shift+Left/Right 词级选择；沿用 Unicode word boundary 并以 UTF-8 字节位置更新 Buffer，输入法 composition 期间不处理导航。与本轮已完成的视觉行 Home/End、Shift+Home/End 和 Ctrl+Home/End 文档跳转组成常见键盘导航路径。
+- 中英文、标点/空白与 Unicode 字节边界单测通过；`cargo fmt --all -- --check`、全量 `cargo test --locked -j 8`（111 项）、`cargo check --all-targets --locked -j 8`、Release 构建（53.77 秒）及 1000 块隔离 Release GUI smoke 通过。测试只使用新建 `%TEMP%` SQLite；未访问真实用户库，也未运行性能评测。其余键盘路径的人工输入验收仍未关闭。
+
+## 第二百六十七轮：刷新含词级导航的候选构建（2026-10-16）
+
+- 将 Ctrl+Right 行为校准为跳至下一个 Unicode 词起点（含从词首、词中和空白处测试），Ctrl+Left 到前一词起点；Ctrl+Shift 组合扩展对应词级范围。最终代码全量测试 111 项、`cargo check --all-targets --locked -j 8`、格式检查、Release 构建（52.22 秒）及 1000 块隔离 GUI smoke 全通过。
+- `install/build-release.ps1 -SkipBuild -BuildInstaller` 已按当前 Release 刷新便携 ZIP 与 per-user 安装器。便携 staging EXE 与 Release SHA-256 一致：`88312B113E3E8470AC67061862DC831EE9E1606FEAC249FE317B2BCF0376F930`；ZIP SHA-256：`AF182AE49AC62F3374900A70039977E9BB46719D47EA17A52061839126CD6F4E`；安装器 SHA-256：`0D042BB0F69C50D12B5E9DC7D7C88BD04007987B4614CD4303B26F7075E910A1`。未访问真实用户库，未运行性能评测。

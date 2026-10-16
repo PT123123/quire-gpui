@@ -17,8 +17,12 @@ actions!(
         Delete,
         Left,
         Right,
+        WordLeft,
+        WordRight,
         Up,
         Down,
+        SelectWordLeft,
+        SelectWordRight,
         SelectLeft,
         SelectRight,
         SelectUp,
@@ -203,6 +207,34 @@ impl TextInput {
         };
         self.buffer.move_to(p);
         cx.notify();
+    }
+    fn word_horizontal(&mut self, right: bool, select: bool, cx: &mut Context<Self>) {
+        if self.buffer.composing() {
+            return;
+        }
+        let target = if right {
+            self.buffer.next_word()
+        } else {
+            self.buffer.previous_word()
+        };
+        if select {
+            self.buffer.select_to(target);
+        } else {
+            self.buffer.move_to(target);
+        }
+        cx.notify();
+    }
+    fn word_left(&mut self, _: &WordLeft, _: &mut Window, cx: &mut Context<Self>) {
+        self.word_horizontal(false, false, cx);
+    }
+    fn word_right(&mut self, _: &WordRight, _: &mut Window, cx: &mut Context<Self>) {
+        self.word_horizontal(true, false, cx);
+    }
+    fn select_word_left(&mut self, _: &SelectWordLeft, _: &mut Window, cx: &mut Context<Self>) {
+        self.word_horizontal(false, true, cx);
+    }
+    fn select_word_right(&mut self, _: &SelectWordRight, _: &mut Window, cx: &mut Context<Self>) {
+        self.word_horizontal(true, true, cx);
     }
     fn select_left(&mut self, _: &SelectLeft, _: &mut Window, cx: &mut Context<Self>) {
         if !self.buffer.composing() {
@@ -967,8 +999,12 @@ impl Render for TextInput {
             .on_action(cx.listener(Self::delete))
             .on_action(cx.listener(Self::left))
             .on_action(cx.listener(Self::right))
+            .on_action(cx.listener(Self::word_left))
+            .on_action(cx.listener(Self::word_right))
             .on_action(cx.listener(Self::up))
             .on_action(cx.listener(Self::down))
+            .on_action(cx.listener(Self::select_word_left))
+            .on_action(cx.listener(Self::select_word_right))
             .on_action(cx.listener(Self::select_left))
             .on_action(cx.listener(Self::select_right))
             .on_action(cx.listener(Self::select_up))
@@ -1010,10 +1046,14 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("delete", Delete, context),
         KeyBinding::new("left", Left, context),
         KeyBinding::new("right", Right, context),
+        KeyBinding::new("ctrl-left", WordLeft, context),
+        KeyBinding::new("ctrl-right", WordRight, context),
         KeyBinding::new("up", Up, context),
         KeyBinding::new("down", Down, context),
         KeyBinding::new("shift-left", SelectLeft, context),
         KeyBinding::new("shift-right", SelectRight, context),
+        KeyBinding::new("ctrl-shift-left", SelectWordLeft, context),
+        KeyBinding::new("ctrl-shift-right", SelectWordRight, context),
         KeyBinding::new("shift-up", SelectUp, context),
         KeyBinding::new("shift-down", SelectDown, context),
         KeyBinding::new("shift-home", SelectHome, context),

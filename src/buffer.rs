@@ -98,6 +98,25 @@ impl Buffer {
             .find_map(|(i, _)| (i > self.caret()).then_some(i))
             .unwrap_or(self.text.len())
     }
+    pub fn previous_word(&self) -> usize {
+        UnicodeSegmentation::unicode_word_indices(self.text.as_str())
+            .take_while(|(start, _)| *start < self.caret())
+            .map(|(start, _)| start)
+            .last()
+            .unwrap_or(0)
+    }
+    pub fn next_word(&self) -> usize {
+        let caret = self.caret();
+        UnicodeSegmentation::unicode_word_indices(self.text.as_str())
+            .find_map(|(start, _)| (start > caret).then_some(start))
+            .unwrap_or_else(|| {
+                if caret < self.text.len() {
+                    self.next()
+                } else {
+                    self.text.len()
+                }
+            })
+    }
     pub fn utf8_range(&self, range: &Range<usize>) -> Range<usize> {
         let start = from_utf16(&self.text, range.start);
         start..from_utf16(&self.text, range.end).max(start)
@@ -198,5 +217,30 @@ mod tests {
         b.selection = previous..b.text.len();
         b.replace(None, "");
         assert_eq!(b.text, "中👩‍💻");
+    }
+
+    #[test]
+    fn word_navigation_skips_whitespace_and_stays_on_utf8_boundaries() {
+        let text = "hello, world 中文";
+        let mut b = Buffer::new(text.to_owned());
+        b.move_to(0);
+        assert_eq!(b.next_word(), "hello, ".len());
+
+        b.move_to("hel".len());
+        assert_eq!(b.next_word(), "hello, ".len());
+
+        b.move_to(text.len());
+        let before = b.previous_word();
+        assert!(before < text.len());
+        assert!(text.is_char_boundary(before));
+
+        b.move_to("hello, ".len());
+        let after = b.next_word();
+        assert_eq!(after, "hello, world ".len());
+        assert!(text.is_char_boundary(after));
+        assert_eq!(b.previous_word(), 0);
+
+        b.move_to("hello, world".len());
+        assert!(text.is_char_boundary(b.next_word()));
     }
 }
