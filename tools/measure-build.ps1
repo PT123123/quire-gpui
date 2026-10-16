@@ -1,6 +1,7 @@
 param(
     [Parameter(Mandatory = $true)][string]$Repo,
     [string]$TouchFile = "",
+    [string]$TargetDir = "",
     [string]$Output = ""
 )
 
@@ -27,13 +28,20 @@ if ($TouchFile -ne "") {
 $stdoutPath = "$outputPath.stdout.log"
 $stderrPath = "$outputPath.stderr.log"
 $cargoPath = (Get-Command cargo.exe).Source
+$cargoArgs = @("build", "--release", "--locked")
+if ($TargetDir -ne "") {
+    $targetPath = [IO.Path]::GetFullPath((Join-Path $repoPath $TargetDir))
+    $cargoArgs += @("--target-dir", $targetPath)
+} else {
+    $targetPath = Join-Path $repoPath "target"
+}
 $commit = (& git -C $repoPath rev-parse HEAD).Trim()
 $cargoVersion = (& cargo --version).Trim()
 $rustcVersion = (& rustc --version).Trim()
 $startedAt = [DateTime]::UtcNow
 $watch = [Diagnostics.Stopwatch]::StartNew()
 $process = Start-Process -FilePath $cargoPath `
-    -ArgumentList "build --release --locked" `
+    -ArgumentList $cargoArgs `
     -WorkingDirectory $repoPath -PassThru `
     -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath
 
@@ -54,16 +62,26 @@ while (-not $process.HasExited) {
     $process.Refresh()
 }
 $process.WaitForExit()
+$process.Refresh()
 $watch.Stop()
+$exitCode = $process.ExitCode
+if ($null -eq $exitCode) {
+    # Some Windows PowerShell builds do not populate ExitCode on the returned
+    # process wrapper after redirected child output. Cargo's final status is
+    # authoritative in that case.
+    $stderrText = Get-Content -LiteralPath $stderrPath -Raw
+    $exitCode = if ($stderrText -match "Finished .+target") { 0 } else { 1 }
+}
 
 $record = [ordered]@{
     repo = $repoPath
     commit = $commit
-    command = "cargo build --release --locked"
+    command = "cargo $($cargoArgs -join ' ')"
+    target_dir = $targetPath
     touched_source = $touchedPath
     started_at_utc = $startedAt.ToString("o")
     elapsed_seconds = [math]::Round($watch.Elapsed.TotalSeconds, 2)
-    exit_code = $process.ExitCode
+    exit_code = $exitCode
     sample_interval_ms = $sampleMs
     memory_sample_count = $samples
     peak_compiler_working_set_mb = [math]::Round($peakWorkingSet / 1MB, 1)
@@ -75,4 +93,4 @@ $record = [ordered]@{
 }
 $record | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $outputPath -Encoding utf8
 Get-Content -LiteralPath $outputPath
-if ($process.ExitCode -ne 0) { exit $process.ExitCode }
+if ($exitCode -ne 0) { exit $exitCode }

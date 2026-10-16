@@ -285,7 +285,11 @@ mod imp {
                 info_flags: 0,
                 guid_item: [0; 4],
             };
-            for (slot, ch) in data.tip.iter_mut().zip("Quire".encode_utf16()) {
+            for (slot, ch) in data
+                .tip
+                .iter_mut()
+                .zip(quire_gpui::APP_LABEL.encode_utf16())
+            {
                 *slot = ch;
             }
             data

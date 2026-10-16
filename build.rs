@@ -50,12 +50,12 @@ fn main() {
          END\n",
         icon = quote(&icon.display().to_string()),
         company = text("Quire"),
-        description = text("Quire GPUI - local notes and organizer"),
+        description = text(&format!("quire-{version}(gpui)")),
         file_version = text(&format!("{version}.0")),
         internal = text("quire-gpui"),
         original = text("quire-gpui.exe"),
-        product = text("Quire GPUI"),
-        product_version = text(&format!("Quire GPUI {version}")),
+        product = text(&format!("quire-{version}(gpui)")),
+        product_version = text(&version),
     );
 
     let out_dir = PathBuf::from(env::var_os("OUT_DIR").expect("OUT_DIR"));

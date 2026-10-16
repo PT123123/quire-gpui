@@ -333,7 +333,7 @@ fn run() -> Result<()> {
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
                 titlebar: Some(TitlebarOptions {
-                    title: Some("Quire".into()),
+                    title: Some(quire_gpui::APP_LABEL.into()),
                     // The reference uses its own 40px titlebar and window
                     // controls. GPUI's transparent titlebar enables the same
                     // client-side titlebar on Windows while preserving resize.

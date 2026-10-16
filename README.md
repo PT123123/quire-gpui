@@ -8,6 +8,8 @@
 
 ## 当前开发运行
 
+默认使用 `midnight` 深色主题。界面开发、预览和视觉验收也默认采用深色，不以全白主题作为设计基准。
+
 需要已安装 Rust 与 Windows C++ 构建工具。运行默认独立开发库：
 
 ```powershell
@@ -21,6 +23,23 @@ cargo run -- --db "$env:TEMP/quire-gpui-scratch/quire.db" --theme jade
 ```
 
 可用主题 ID 见 `src/palettes.json`。默认数据库位于 `%LOCALAPPDATA%/QuireGPUI/quire.db`。不要把旧版真实数据库作为 `--db` 参数；需先复制一份测试副本。开发构建已在本机通过，完整的窗口交互、输入法与关闭重开流程尚待使用反馈。
+
+### Release 编译基准（Windows x64，2026-10-16）
+
+最新任务详情调整版：`cargo build --release --locked --target-dir target-measure` 增量构建 **55.03 秒**，EXE **26,343,936 字节（25.12 MiB）**，位于 `target-measure/release/quire-gpui.exe`。本次未重采编译峰值内存；以下是此前的冷构建基准。
+
+使用 `cargo build --release --locked`，将 Cargo 输出放在独立的 `target-measure/`，避免正在运行的 `target/release/quire-gpui.exe` 锁住而无法覆盖。全新 target 的依赖与应用冷编译成功，耗时 **377.44 秒（6 分 17 秒）**；Cargo 自身报告 6 分 16 秒。测量脚本以 250 ms 间隔采样 cargo/rustc/linker 进程总量，峰值工作集 **3497.1 MiB（3.42 GiB）**、私有内存 **4080.1 MiB（3.98 GiB）**。产物 `target-measure/release/quire-gpui.exe` 为 **26,198,528 字节（24.98 MiB）**。
+
+环境：Rust/Cargo 1.98.0，`x86_64-pc-windows-msvc`，Release 优化配置，锁文件依赖。时间和内存是本机单次冷构建测量，不代表所有机器；EXE 大小是未打包的主程序，不含 ZIP/安装包。
+
+复测：先移除独立测量目录以得到冷构建，再运行脚本（记录 JSON 与日志写在 `%TEMP%`）：
+
+```powershell
+Remove-Item -Recurse -Force target-measure -ErrorAction SilentlyContinue
+powershell -ExecutionPolicy Bypass -File tools/measure-build.ps1 `
+  -Repo . -TouchFile src/view.rs -TargetDir target-measure `
+  -Output "$env:TEMP/quire-gpui-build.json"
+```
 
 ## Windows 候选包
 
