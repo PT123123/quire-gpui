@@ -2703,7 +2703,7 @@ impl Workspace {
         });
         let note_title_input =
             cx.new(|cx| TextInput::new(String::new(), Vec::new(), 24., window, cx));
-        note_title_input.update(cx, |input, _| input.placeholder = Some("笔记标题".into()));
+        note_title_input.update(cx, |input, _| input.placeholder = Some("任务标题".into()));
         let note_body_input =
             cx.new(|cx| TextInput::new(String::new(), Vec::new(), 15., window, cx));
         note_body_input.update(cx, |input, _| input.placeholder = Some("写点什么…".into()));
@@ -21306,11 +21306,6 @@ impl Render for Workspace {
                     .take(150)
                     .collect::<String>();
                 let tags = note.tags.clone();
-                let title = if note.title.trim().is_empty() {
-                    "无标题".to_owned()
-                } else {
-                    note.title
-                };
                 div()
                     .id(SharedString::from(format!("organizer-note-{id:?}")))
                     .w_full()
@@ -21337,9 +21332,12 @@ impl Render for Workspace {
                     .on_click(
                         cx.listener(move |this, _, window, cx| this.select_note(id, window, cx)),
                     )
-                    .on_mouse_down(MouseButton::Right, cx.listener(move |this, event, window, cx| {
-                        this.open_organizer_context_from_mouse(0, id.0, event, window, cx)
-                    }))
+                    .on_mouse_down(
+                        MouseButton::Right,
+                        cx.listener(move |this, event, window, cx| {
+                            this.open_organizer_context_from_mouse(0, id.0, event, window, cx)
+                        }),
+                    )
                     .on_hover(cx.listener(move |this, hovered, _, cx| {
                         if *hovered {
                             this.hovered_note = Some(id);
@@ -21378,100 +21376,76 @@ impl Render for Workspace {
                                 meta.child(div().text_color(accent).child("★"))
                             }),
                     )
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap(px(5.))
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .min_w_0()
-                                    .text_size(px(14.))
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .child(title),
-                            )
-                            .when(
-                                self.organizer_trash || self.hovered_note == Some(id),
-                                |header| {
-                                    header
-                                        .child(
-                                            div()
-                                                .id(SharedString::from(format!(
-                                                    "organizer-pin-{id:?}"
-                                                )))
-                                                .px(px(3.))
-                                                .text_color(if pinned { accent } else { muted })
-                                                .cursor_pointer()
-                                                .on_click(cx.listener(
-                                                    move |this, _, window, cx| {
-                                                        this.toggle_note_pin(id, window, cx)
-                                                    },
-                                                ))
-                                                .when(!self.organizer_trash, |button| {
-                                                    button.child(if pinned { "★" } else { "☆" })
-                                                }),
-                                        )
-                                        .child(
-                                            div()
-                                                .id(SharedString::from(format!(
-                                                    "organizer-trash-{id:?}"
-                                                )))
-                                                .px(px(3.))
-                                                .text_color(muted)
-                                                .cursor_pointer()
-                                                .hover(|button| button.text_color(rgb(0xe5534b)))
-                                                .on_click(cx.listener(
-                                                    move |this, _, window, cx| {
-                                                        if this.organizer_trash {
-                                                            this.restore_note(id, window, cx)
-                                                        } else {
-                                                            this.trash_note(id, window, cx)
-                                                        }
-                                                    },
-                                                ))
-                                                .child(if self.organizer_trash {
-                                                    "↩"
-                                                } else {
-                                                    "×"
-                                                }),
-                                        )
-                                        .when(self.organizer_trash, |header| {
-                                            header.child(
-                                                div()
-                                                    .id(SharedString::from(format!(
-                                                        "organizer-note-purge-{id:?}"
-                                                    )))
-                                                    .px(px(3.))
-                                                    .text_color(Hsla::from(rgb(0xe5534b)))
-                                                    .cursor_pointer()
-                                                    .hover(|button| {
-                                                        button.text_color(rgb(0xff8179))
-                                                    })
-                                                    .on_click(cx.listener(
-                                                        move |this, _, window, cx| {
-                                                            this.purge_note(id, window, cx)
-                                                        },
-                                                    ))
-                                                    .child("×"),
-                                            )
-                                        })
-                                        .when(!self.organizer_trash && !self.note_multi_select, |header| {
-                                            header.child(
-                                                div()
-                                                    .id(SharedString::from(format!("organizer-note-menu-{id:?}")))
-                                                    .px(px(3.))
-                                                    .text_color(muted)
-                                                    .cursor_pointer()
-                                                    .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
-                                                        this.open_organizer_context_from_click(0, id.0, event, window, cx)
-                                                    }))
-                                                    .child("⋯"),
-                                            )
-                                        })
-                                },
-                            ),
-                    )
+                    .child(div().flex().items_center().justify_end().gap(px(5.)).when(
+                        self.organizer_trash || self.hovered_note == Some(id),
+                        |header| {
+                            header
+                                .child(
+                                    div()
+                                        .id(SharedString::from(format!("organizer-pin-{id:?}")))
+                                        .px(px(3.))
+                                        .text_color(if pinned { accent } else { muted })
+                                        .cursor_pointer()
+                                        .on_click(cx.listener(move |this, _, window, cx| {
+                                            this.toggle_note_pin(id, window, cx)
+                                        }))
+                                        .when(!self.organizer_trash, |button| {
+                                            button.child(if pinned { "★" } else { "☆" })
+                                        }),
+                                )
+                                .child(
+                                    div()
+                                        .id(SharedString::from(format!("organizer-trash-{id:?}")))
+                                        .px(px(3.))
+                                        .text_color(muted)
+                                        .cursor_pointer()
+                                        .hover(|button| button.text_color(rgb(0xe5534b)))
+                                        .on_click(cx.listener(move |this, _, window, cx| {
+                                            if this.organizer_trash {
+                                                this.restore_note(id, window, cx)
+                                            } else {
+                                                this.trash_note(id, window, cx)
+                                            }
+                                        }))
+                                        .child(if self.organizer_trash { "↩" } else { "×" }),
+                                )
+                                .when(self.organizer_trash, |header| {
+                                    header.child(
+                                        div()
+                                            .id(SharedString::from(format!(
+                                                "organizer-note-purge-{id:?}"
+                                            )))
+                                            .px(px(3.))
+                                            .text_color(Hsla::from(rgb(0xe5534b)))
+                                            .cursor_pointer()
+                                            .hover(|button| button.text_color(rgb(0xff8179)))
+                                            .on_click(cx.listener(move |this, _, window, cx| {
+                                                this.purge_note(id, window, cx)
+                                            }))
+                                            .child("×"),
+                                    )
+                                })
+                                .when(!self.organizer_trash && !self.note_multi_select, |header| {
+                                    header.child(
+                                        div()
+                                            .id(SharedString::from(format!(
+                                                "organizer-note-menu-{id:?}"
+                                            )))
+                                            .px(px(3.))
+                                            .text_color(muted)
+                                            .cursor_pointer()
+                                            .on_click(cx.listener(
+                                                move |this, event: &ClickEvent, window, cx| {
+                                                    this.open_organizer_context_from_click(
+                                                        0, id.0, event, window, cx,
+                                                    )
+                                                },
+                                            ))
+                                            .child("⋯"),
+                                    )
+                                })
+                        },
+                    ))
                     .when(!preview.is_empty(), |card| {
                         card.child(
                             div()
@@ -23658,12 +23632,6 @@ impl Render for Workspace {
                                 )
                                 .child(
                                     div()
-                                        .text_size(px(30.))
-                                        .font_weight(FontWeight::BOLD)
-                                        .child(self.note_title_input.clone()),
-                                )
-                                .child(
-                                    div()
                                         .id("organizer-note-body")
                                         .flex_1()
                                         .min_h(px(300.))
@@ -23704,7 +23672,7 @@ impl Render for Workspace {
                         },
                     ),
                     )
-                    .child(
+                    .when(self.organizer_tasks, |container| container.child(
                         div()
                             .id("organizer-navigation")
                             .w(px(200.))
@@ -23717,13 +23685,6 @@ impl Render for Workspace {
                             .flex()
                             .flex_col()
                             .gap(px(8.))
-                            .child(
-                                div().flex().gap(px(6.)).child(
-                                    div().id("organizer-tab-notes").flex_1().px(px(9.)).py(px(6.)).rounded(px(5.)).cursor_pointer().text_color(if !self.organizer_tasks { accent } else { muted }).when(!self.organizer_tasks, |tab| tab.bg(Palette::color(&p.elevated))).on_click(cx.listener(|this, _, window, cx| this.open_organizer_tab(false, true, window, cx))).child("笔记")
-                                ).child(
-                                    div().id("organizer-tab-tasks").flex_1().px(px(9.)).py(px(6.)).rounded(px(5.)).cursor_pointer().text_color(if self.organizer_tasks { accent } else { muted }).when(self.organizer_tasks, |tab| tab.bg(Palette::color(&p.elevated))).on_click(cx.listener(|this, _, window, cx| this.open_organizer_tab(true, true, window, cx))).child("任务")
-                                ),
-                            )
                             .when(self.organizer_tasks, |nav| {
                                 nav.child(
                                     div()
@@ -23809,14 +23770,14 @@ impl Render for Workspace {
                             .child(
                                 div().id("organizer-trash-toggle").px(px(8.)).py(px(7.)).rounded(px(5.)).cursor_pointer().text_color(if self.organizer_trash { accent } else { muted }).when(self.organizer_trash, |row| row.bg(Palette::color(&p.elevated))).hover(|row| row.bg(Palette::color(&p.elevated))).on_click(cx.listener(|this, _, window, cx| this.toggle_organizer_trash(window, cx))).child(format!("回收站 · {}", self.session.organizer.trashed_notes().count() + self.session.organizer.trashed_tasks().count()))
                             ),
-                    )
+                    ))
                     .when(!self.organizer_tasks && !self.organizer_trash, |card| {
                         card.child(
                             div()
                                 .id("organizer-create-note-floating")
                                 .absolute()
                                 .bottom(px(20.))
-                                .right(px(220.))
+                                .right(px(20.))
                                 .w(px(56.))
                                 .h(px(56.))
                                 .rounded(px(28.))
@@ -23857,7 +23818,6 @@ impl Render for Workspace {
                                         .flex()
                                         .items_center()
                                         .justify_between()
-                                        .child(div().flex_1().text_size(px(18.)).font_weight(FontWeight::SEMIBOLD).child(self.note_title_input.clone()))
                                         .child(
                                             div()
                                                 .flex()
