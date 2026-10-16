@@ -2451,6 +2451,10 @@ pub struct Workspace {
     document_visible_range: Range<usize>,
     selected_database_views: HashMap<u64, ViewId>,
     database_columns_open: Option<(u64, u64)>,
+    database_columns_focus: FocusHandle,
+    database_columns_focus_return: Option<FocusHandle>,
+    database_columns_selection: usize,
+    database_property_kind_selection: usize,
     database_filter_open: Option<(u64, u64)>,
     database_filter_focus: FocusHandle,
     database_filter_focus_return: Option<FocusHandle>,
@@ -2830,6 +2834,7 @@ impl Workspace {
         let block_color_focus = cx.focus_handle();
         let database_filter_focus = cx.focus_handle();
         let database_group_focus = cx.focus_handle();
+        let database_columns_focus = cx.focus_handle();
         let mut this = Self {
             session,
             version_name_input,
@@ -2925,6 +2930,10 @@ impl Workspace {
             document_visible_range: 0..2,
             selected_database_views: HashMap::new(),
             database_columns_open: None,
+            database_columns_focus,
+            database_columns_focus_return: None,
+            database_columns_selection: 0,
+            database_property_kind_selection: 0,
             database_filter_open: None,
             database_filter_focus,
             database_filter_focus_return: None,
@@ -4830,6 +4839,14 @@ impl Workspace {
                     this.close_database_group_picker(window);
                     assert_eq!(window.focused(cx), group_focus_return);
                     eprintln!("SMOKE: database group picker captures and restores keyboard focus");
+                    let columns_focus_return = window.focused(cx);
+                    this.toggle_database_columns_picker(Some((block_id.0, view.0)), window, cx);
+                    assert!(this.database_columns_focus.is_focused(window));
+                    let columns_frame = this.render(window, cx);
+                    drop(columns_frame);
+                    this.close_database_columns_picker(window);
+                    assert_eq!(window.focused(cx), columns_focus_return);
+                    eprintln!("SMOKE: database column picker captures and restores keyboard focus");
                 });
                 cx.background_executor()
                     .timer(Duration::from_millis(150))
@@ -5661,6 +5678,7 @@ impl Workspace {
                     .is_some_and(|(columns_block, _)| columns_block != id.0)
                 {
                     self.database_columns_open = None;
+                    self.database_columns_focus_return = None;
                 }
                 if self
                     .block_menu_open
@@ -5735,6 +5753,9 @@ impl Workspace {
                     self.database_group_focus_return = None;
                 }
                 let columns_menu_closed = self.database_columns_open.take().is_some();
+                if columns_menu_closed {
+                    self.database_columns_focus_return = None;
+                }
                 self.database_filter_value_active = None;
                 if self.find_open {
                     self.close_find(window, cx);
@@ -8256,6 +8277,133 @@ impl Workspace {
                         database,
                         ViewId(view),
                         property,
+                        window,
+                        cx,
+                    );
+                }
+            }
+            _ => return,
+        }
+        cx.stop_propagation();
+        cx.notify();
+    }
+    fn toggle_database_columns_picker(
+        &mut self,
+        key: Option<(u64, u64)>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if key.is_some() && self.database_columns_open == key {
+            self.close_database_columns_picker(window);
+        } else {
+            if self.database_columns_open.is_none() {
+                self.database_columns_focus_return = window.focused(cx);
+            }
+            self.database_columns_open = key;
+            self.database_property_kind_open = None;
+            self.database_columns_selection = 0;
+            self.database_property_kind_selection = 0;
+            if key.is_some() {
+                window.focus(&self.database_columns_focus);
+            }
+        }
+        cx.notify();
+    }
+    fn close_database_columns_picker(&mut self, window: &mut Window) {
+        self.database_columns_open = None;
+        self.database_property_kind_open = None;
+        self.database_columns_selection = 0;
+        self.database_property_kind_selection = 0;
+        if let Some(focus) = self.database_columns_focus_return.take() {
+            window.focus(&focus);
+        }
+    }
+    fn database_columns_key_down(
+        &mut self,
+        event: &KeyDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some((block, view)) = self.database_columns_open else {
+            return;
+        };
+        if self.active_database_formula.is_some()
+            || self.active_database_option.is_some()
+            || self.active_database_relation.is_some()
+            || event.keystroke.modifiers.modified()
+        {
+            return;
+        }
+        let Some(database) = self
+            .session
+            .databases
+            .views
+            .iter()
+            .find(|candidate| candidate.id.0 == view)
+            .map(|candidate| candidate.db)
+        else {
+            return;
+        };
+        let properties = self
+            .session
+            .databases
+            .properties_of(database)
+            .cloned()
+            .collect::<Vec<_>>();
+        let kind_open = self
+            .database_property_kind_open
+            .filter(|(db, _)| *db == database.0);
+        let type_choices = database_property_kind_choices();
+        let count = if kind_open.is_some() {
+            type_choices.len()
+        } else {
+            properties.len()
+        };
+        match event.keystroke.key.as_str() {
+            "escape" => {
+                if kind_open.is_some() {
+                    self.database_property_kind_open = None;
+                    self.database_property_kind_selection = 0;
+                } else {
+                    self.close_database_columns_picker(window);
+                }
+            }
+            "up" | "down" => {
+                let selection = if kind_open.is_some() {
+                    &mut self.database_property_kind_selection
+                } else {
+                    &mut self.database_columns_selection
+                };
+                *selection = next_menu_selection(*selection, count, event.keystroke.key.as_str())
+                    .unwrap_or(0);
+            }
+            "right" if kind_open.is_none() => {
+                if let Some(property) = properties.get(self.database_columns_selection) {
+                    self.database_property_kind_open = Some((database.0, property.id.0));
+                    self.database_property_kind_selection = 0;
+                }
+            }
+            "left" if kind_open.is_some() => {
+                self.database_property_kind_open = None;
+                self.database_property_kind_selection = 0;
+            }
+            "enter" | "space" => {
+                if let Some((_, property_id)) = kind_open {
+                    if let Some(kind) = type_choices.get(self.database_property_kind_selection) {
+                        self.set_database_property_kind(
+                            BlockId(block),
+                            quire_core::core::database::PropertyId(property_id),
+                            *kind,
+                            window,
+                            cx,
+                        );
+                    }
+                } else if let Some(property) = properties.get(self.database_columns_selection) {
+                    self.toggle_database_column(
+                        BlockId(block),
+                        database,
+                        ViewId(view),
+                        property.id,
                         window,
                         cx,
                     );
@@ -17063,6 +17211,7 @@ impl Workspace {
                                                     if this.database_columns_open == Some(key) {
                                                         this.database_columns_open = None;
                                                         this.database_property_kind_open = None;
+                                                        this.database_columns_focus_return = None;
                                                         cx.notify();
                                                     }
                                                 });
@@ -17075,7 +17224,8 @@ impl Workspace {
                                             .gap(px(5.))
                                             .border_b_1()
                                             .border_color(db_border)
-                                            .children(all_columns.iter().map(|property| {
+                                            .track_focus(&self.database_columns_focus)
+                                            .children(all_columns.iter().enumerate().map(|(index, property)| {
                                                 let property_id = property.id;
                                                 let property_kind = property.kind;
                                                 let visible = columns
@@ -17096,6 +17246,7 @@ impl Workspace {
                                                     .rounded(px(4.))
                                                     .text_size(px(11.))
                                                     .text_color(if visible { text } else { muted })
+                                                    .when(self.database_columns_selection == index, |item| item.bg(db_hover))
                                                     .child(if visible { "☑" } else { "□" })
                                                     .child(property.name.clone());
                                                 if !self.session.page.locked {
@@ -17121,6 +17272,7 @@ impl Workspace {
                                                                         (this.database_property_kind_open != Some(key))
                                                                             .then_some(key);
                                                                     if this.database_property_kind_open == Some(key) {
+                                                                        this.database_property_kind_selection = 0;
                                                                         if property_kind == quire_core::core::database::PropertyKind::Formula {
                                                                             this.begin_database_formula_edit(block_id.0, db_id.0, property_id.0, window, cx);
                                                                         } else if matches!(property_kind, quire_core::core::database::PropertyKind::Select | quire_core::core::database::PropertyKind::Status | quire_core::core::database::PropertyKind::MultiSelect) {
@@ -17186,7 +17338,7 @@ impl Workspace {
                                                         .border_t_1()
                                                         .border_color(db_border)
                                                         .child(format!("{} 类型：", name))
-                                                        .children(database_property_kind_choices().into_iter().map(|kind| {
+                                                        .children(database_property_kind_choices().into_iter().enumerate().map(|(index, kind)| {
                                                             let selected = kind == property_kind;
                                                             div()
                                                                 .id(SharedString::from(format!(
@@ -17201,6 +17353,7 @@ impl Workspace {
                                                                 .text_size(px(11.))
                                                                 .text_color(if selected { Palette::color(&p.fg) } else { muted })
                                                                 .when(selected, |button| button.bg(accent.opacity(0.45)))
+                                                                .when(self.database_property_kind_selection == index, |button| button.border_1().border_color(accent))
                                                                 .when(!selected && !self.session.page.locked, |button| {
                                                                     button.cursor_pointer().hover(|button| button.bg(db_hover))
                                                                 })
@@ -17564,8 +17717,10 @@ impl Workspace {
                                                                         if this.database_group_open.is_some() {
                                                                             this.close_database_group_picker(window);
                                                                         }
+                                                                        if this.database_columns_open.is_some() {
+                                                                            this.close_database_columns_picker(window);
+                                                                        }
                                                                         this.toggle_database_filter_panel(key, window, cx);
-                                                                        this.database_columns_open = None;
                                                                     },
                                                                 ));
                                                             }
@@ -17669,10 +17824,10 @@ impl Workspace {
                                                                         if this.database_filter_open.is_some() {
                                                                             this.close_database_filter_panel(window);
                                                                         }
-                                                                        this.toggle_database_group_picker(key, window, cx);
-                                                                        if this.database_group_open.is_some() {
-                                                                            this.database_columns_open = None;
+                                                                        if this.database_columns_open.is_some() {
+                                                                            this.close_database_columns_picker(window);
                                                                         }
+                                                                        this.toggle_database_group_picker(key, window, cx);
                                                                     },
                                                                 ));
                                                             }
@@ -17706,23 +17861,20 @@ impl Workspace {
                                                                 button = button
                                                                     .cursor_pointer()
                                                                     .on_click(cx.listener(
-                                                                        move |this, _, window, cx| {
+                                                                            move |this, _, window, cx| {
                                                                             let key = selected_view
                                                                                 .map(|view| {
                                                                                     (block_id.0, view.0)
                                                                                 });
                                                                             let opening = key.is_some()
                                                                                 && this.database_columns_open != key;
+                                                                            if opening && this.database_filter_open.is_some() {
+                                                                                this.close_database_filter_panel(window);
+                                                                            }
                                                                             if opening && this.database_group_open.is_some() {
                                                                                 this.close_database_group_picker(window);
                                                                             }
-                                                                            this.database_columns_open =
-                                                                                key.filter(|key| {
-                                                                                    this.database_columns_open
-                                                                                        != Some(*key)
-                                                                                });
-                                                                            this.database_property_kind_open = None;
-                                                                            cx.notify();
+                                                                            this.toggle_database_columns_picker(key, window, cx);
                                                                         },
                                                                     ));
                                                             }
@@ -23553,6 +23705,7 @@ impl Render for Workspace {
             .capture_key_down(cx.listener(Self::block_color_picker_key_down))
             .capture_key_down(cx.listener(Self::database_filter_key_down))
             .capture_key_down(cx.listener(Self::database_group_key_down))
+            .capture_key_down(cx.listener(Self::database_columns_key_down))
             .capture_key_down(cx.listener(Self::task_list_menu_key_down))
             .capture_key_down(cx.listener(Self::editor_rich_paste_key_down))
             .when_some(self.transition_palette.clone(), |root, old_palette| {

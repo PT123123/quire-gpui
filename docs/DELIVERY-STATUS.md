@@ -1825,3 +1825,9 @@
 - 数据库分组属性选择器现在接管焦点；上下键循环选择“无分组”或支持的属性，Enter/Space 应用，Escape 关闭并恢复焦点。分组、筛选和列管理弹层之间切换时避免把焦点留在已关闭的弹层。
 - `cargo fmt --all`、全量 `cargo test --locked -j 8 -- --quiet`（116 项）、`cargo check --all-targets --locked -j 8`、Release 构建与隔离 `%TEMP%` 1000 块 GUI smoke 均通过。Smoke 验证筛选/分组选择器聚焦、渲染和 Escape 恢复，完整流程退出码为 0。
 - 自动 smoke 未模拟真实按键；未访问真实用户库或修改 Slint/core，本轮未做性能评测。
+
+## 第二百九十五轮：数据库列管理器键盘操作（2026-10-16）
+
+- 数据库列管理器现在接管键盘焦点；上下键循环浏览属性，Enter/Space 切换列，Right 打开属性类型子面板，Left/Escape 返回或关闭并恢复打开前焦点。公式、选项和关联编辑器打开时，按键继续交给相应输入控件。与筛选/分组面板切换时关闭旧面板并恢复其焦点状态。
+- `cargo fmt --all`、全量 `cargo test --locked -j 8 -- --quiet`（116 项）、`cargo check --all-targets --locked -j 8`、Release 构建和新建 `%TEMP%` SQLite 的 1000 块 GUI smoke 通过；smoke 验证列管理器焦点接管、渲染及 Escape 恢复，并完成既有全流程。
+- 自动 smoke 未合成方向键和鼠标输入，因此实际键盘选择仍待真人桌面验收；未访问真实用户库或修改 Slint/core。本轮没有重跑性能评测。
