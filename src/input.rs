@@ -1113,3 +1113,56 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("ctrl-end", DocumentEnd, context),
     ]);
 }
+
+#[cfg(test)]
+mod input_tests {
+    use super::{TextInput, bind_keys};
+    use gpui::{
+        AppContext, Context, Entity, IntoElement, ParentElement, Render, Styled, TestAppContext,
+        Window, div,
+    };
+    use quire_core::core::types::Mark;
+
+    struct InputHarness {
+        input: Entity<TextInput>,
+    }
+
+    impl Render for InputHarness {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div().size_full().child(self.input.clone())
+        }
+    }
+
+    #[gpui::test]
+    fn word_shortcuts_dispatch_move_select_and_delete_actions(cx: &mut TestAppContext) {
+        cx.update(bind_keys);
+        let (root, cx) = cx.add_window_view(|window, cx| InputHarness {
+            input: cx
+                .new(|cx| TextInput::new("one two".into(), Vec::<Mark>::new(), 14., window, cx)),
+        });
+        let input = cx.update(|_, app| root.read(app).input.clone());
+        let focus = cx.update(|_, app| input.read(app).focus.clone());
+        cx.update(|window, _| window.focus(&focus));
+
+        cx.simulate_keystrokes("ctrl-right");
+        let caret = cx.update(|_, app| input.read(app).buffer.caret());
+        assert_eq!(caret, "one ".len());
+
+        cx.simulate_keystrokes("ctrl-shift-left");
+        let selection = cx.update(|_, app| input.read(app).buffer.selection.clone());
+        assert_eq!(selection, 0.."one ".len());
+
+        cx.simulate_keystrokes("ctrl-right ctrl-delete");
+        let text = cx.update(|_, app| input.read(app).buffer.text.clone());
+        assert_eq!(text, "one ");
+
+        cx.update(|_, app| {
+            input.update(app, |input, cx| {
+                input.reset("one two".into(), Vec::new(), "one two".len(), cx)
+            })
+        });
+        cx.simulate_keystrokes("ctrl-backspace");
+        let text = cx.update(|_, app| input.read(app).buffer.text.clone());
+        assert_eq!(text, "one ");
+    }
+}

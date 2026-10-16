@@ -1665,3 +1665,8 @@
 - 自绘编辑器新增 Ctrl+Backspace/Ctrl+Delete，按 Unicode word boundary 删除前/后词；选区存在时删除选区，composition 期间保持原输入法预览，Ctrl+Backspace 在块首沿用 Backspace 的合并行为。修正 Ctrl+Right 最后一个词跳转到块尾；连续汉字按 Unicode word segmentation 的单字边界移动/删除。
 - 新增中英文、空白/标点、UTF-8 安全及词级删除范围回归。格式检查、全量 `cargo test --locked -j 8`（112 项）、`cargo check --all-targets --locked -j 8`、Release 构建（52.31 秒）与 1000 块隔离 Release GUI smoke 全通过。
 - 便携 ZIP 与 per-user 安装器按最终 Release 刷新；staging EXE 与 Release SHA-256 一致：`A9905B61C847B63F3DA500475E86B4E119967022455D92F3FF5A89D496959B32`；ZIP SHA-256：`05859C2B87D8C20E5AB82822F530D5664472C70321E252C1D9651B4437038E0B`；安装器 SHA-256：`877DEAC384612B01279006AAE40E0644656A265EE3FE2FEA1053040AD9021676`。未访问真实用户库，未运行性能评测。
+
+## 第二百六十九轮：按键分发级编辑器回归（2026-10-16）
+
+- 新增 GPUI `TestAppContext` 输入控件集成测试：真实聚焦输入实体并模拟 Ctrl+Right、Ctrl+Shift+Left、Ctrl+Delete、Ctrl+Backspace，断言焦点内 caret、选区和文本变化；验证快捷键注册、key context 与 action handler 的整条链路，而不只测 Buffer 词边界。
+- `cargo fmt --all -- --check`、全量 `cargo test --locked -j 8`（113 项）、`cargo check --all-targets --locked -j 8` 与 `git diff --check` 通过。本轮只新增 `#[cfg(test)]` 代码，Release 运行代码、已通过的 Release smoke 与候选包均未变化；未访问真实用户库，未运行性能评测。
