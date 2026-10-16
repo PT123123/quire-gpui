@@ -3,7 +3,7 @@ toggle-mark,已实现,未验证,工具条和快捷键支持粗体、斜体、删
 open-link,已实现,未验证,"Ctrl+点击普通链接或 @页面提及可打开网页/跳转目标页；Embed 卡片点击后可编辑地址，标题与安全打开地址随正文派生",@页面由 core InsertReference 原子命令写入 page URI；外链只允许 http/https/mailto 交给系统打开
 command-invoked,已实现,未验证,Ctrl+K 打开可过滤的命令面板；Enter 或点击运行当前选择，Escape 关闭，页面命令可跳转,命令、页面列表按名称和分区筛选，键盘最多选择前八条；新建/搜索/侧栏/主题/设置/整理区/页面复制删除/Markdown 导入导出/页面历史前进后退/HTML 默认浏览器打开均路由至现有应用操作
 palette-move,已实现,未验证,命令面板焦点输入框的上下键移动当前命令选择,"按过滤后的列表索引夹取在 0 到 min(结果数,8)-1"
-palette-query-changed,已实现,未验证,输入文本实时筛选命令和页面标题,与页面搜索共用单行输入实体；面板打开时事件只更新命令查询状态
+palette-query-changed,已实现,已验证,输入文本实时筛选命令和页面标题,与页面搜索共用单行输入实体；面板打开时事件只更新命令查询状态
 palette-open-requested,已实现,未验证,Ctrl+K 打开面板并聚焦命令输入框,关闭其他页面搜索层并重置查询及选择索引
 duplicate-block,已实现,未验证,Ctrl+D 或行尾副本入口复制当前块；表格/分栏保留网格子块，普通容器复制完整子树；界面交互待验,普通块含子块时以单条 InsertForest 历史项复制并重映射 parent；表格和分栏复用 core DuplicateBlock 专用结构复制
 move-block,已实现,未验证,编辑块悬停操作中的上下箭头及 Ctrl+Shift+↑/↓ 在当前页面内移动块；GPUI 修复旧版普通块先命中无修饰上下导航、导致修饰键块移动分支不可达的问题,快捷键经 TextInput 事件路由到 core MoveBlock，保持当前编辑焦点并进入同一撤销历史；组合输入期间不触发

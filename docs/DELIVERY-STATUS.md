@@ -1889,3 +1889,9 @@
 - 复核隔离 Release GUI smoke 的“立即备份”路径：运行实际 Workspace 备份操作后，断言新建 `%TEMP%` SQLite 的 `.bak1` 快照文件存在。F137 `backup-now` 从“未验证”更新为“已验证”。
 - 此证据验证当前数据库的手动快照操作，不延伸到用户目录权限、快照损坏恢复或真实数据迁移。PARITY 当前为 22 项已验证、222 项未验证，另有 2 项不适用。
 - 未访问真实用户库或修改 Slint/core；没有运行性能评测。
+
+## 第三百零六轮：核实命令面板查询回调（2026-10-16）
+
+- 在当前 Release 二进制上以全新 `%TEMP%` SQLite 重跑 1000 块隔离 GUI smoke。测试通过真实命令面板输入实体发送文本更新，断言查询状态更新、模板结果过滤为单项，并执行模板插入、单步撤销和重做；全流程正常退出。`palette-query-changed` 从“未验证”更新为“已验证”，证据只覆盖查询/过滤路径，不扩展到全部命令路由或真人键盘输入。
+- `cargo fmt --all -- --check`、全量 `cargo test --locked -j 8 -- --quiet`（117 项）、`cargo check --all-targets --locked -j 8` 与 `git diff --check` 通过。PARITY 生成器重跑得到 246 callback、261 property、188 场景，并成功合并 246 条 sidecar 记录；当前 25 项已验证、221 项未验证，另有 2 项不适用。
+- 未访问真实用户库或修改 Slint/core；最终性能评测留待功能收尾后重测。

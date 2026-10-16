@@ -1,6 +1,6 @@
 ﻿# GPUI 复刻实施计划
 
-状态：GPUI 主要功能、同步/MCP 和隔离兼容回归已接通，最终 Release 包已刷新。最终同机性能对比已于 2026-10-16 在 GPUI `b745d36` 与 Slint `9112467` 上完成，结果见 `docs/DELIVERY-STATUS.md` 第二百七十七轮。全量真人窗口验收、DPI/IME、真实设备网络和逐项视觉场景仍未关闭；以下阶段不是工时承诺，按阶段推进。
+状态：GPUI 主要功能、同步/MCP 和隔离兼容回归已接通，Release 包已刷新。GPUI `b745d36` 与 Slint `9112467` 的同机性能基线已记录在 `docs/DELIVERY-STATUS.md` 第二百七十七轮；按用户要求，待本轮功能收尾后以最终代码重测。全量真人窗口验收、DPI/IME、真实设备网络和逐项视觉场景仍未关闭；以下阶段不是工时承诺，按阶段推进。
 
 2026-10-14 第二轮记录（历史）：当时完成了 P0 的资料核验，并将需要真跑 GPUI 的条目标为未开始。后续窗口、功能与验证已持续推进；当前状态以各阶段条目和下方最新执行记录为准。
 
@@ -13,13 +13,13 @@
 ## P0 — 参考冻结与依赖验证
 
 - [x] 阅读全部交接文档，核对快照 manifest 与旧版工作区差异。113 个文件 SHA-256 全量重算一致；`git_status_short` 与 `../quire-desktop` 当前 10 个脏文件逐行一致；本地 `quire-core` HEAD 正是 pin 的 `db0e95f`（2026-10-14 复核）。
-- [~] 从组件、UIState 回调、controller、state、core 服务建立完整功能矩阵。`docs/PARITY.csv` 含 246 callback，`PARITY-SEMANTICS.csv` 已为全部回调记录实现/适用状态、验证情况与语义；`PARITY-STATE.csv` 记录 261 properties，场景目录含 188 场景 / 44 个 .slint。core 50 个 Command 已逐一反向核对至 GPUI 实现入口或 Session 封装并修复发现的附件转换、数据库链接、模板撤销和折叠撤销缺口；225 条 callback 的人工界面验收仍待完成，不能把代码/隔离测试标记当成真人验收。
+- [~] 从组件、UIState 回调、controller、state、core 服务建立完整功能矩阵。`docs/PARITY.csv` 含 246 callback，`PARITY-SEMANTICS.csv` 已为全部回调记录实现/适用状态、验证情况与语义；`PARITY-STATE.csv` 记录 261 properties，场景目录含 188 场景 / 44 个 .slint。core 50 个 Command 已逐一反向核对至 GPUI 实现入口或 Session 封装并修复发现的附件转换、数据库链接、模板撤销和折叠撤销缺口；221 条 callback 的界面验收仍待完成，不能把代码/隔离测试标记当成真人验收。
 - [~] 以官方资料核对 GPUI 与 GPUI Kit/组件库组合。一手事实已核验并写入 `docs/ADR-001-GPUI-STACK.md`。官方最小窗和输入示例在本机成功编译运行；GPUI 应用也已打开真实窗口。剩余窗口、DPI、IME 定位等探针仍按 ADR 逐项验收。
 - [~] Rust 1.98.0 通过 `rust-toolchain.toml` 固定，GPUI 0.2.2、core revision 和 `Cargo.lock` 已钉；dev/release 均可构建。MSVC/SDK 环境可用（SDK 10.0.26100，fxc 10.0.26100.7705）；完整安装与多机复现尚未验。
 - [~] 确定独立应用标识、开发数据目录、日志目录和测试库策略。core 侧事实已查清（`APP_DIR_NAME="Quire"`、`--db` 压倒一切、`--portable`、legacy 迁移），**已定（2026-10-14）：独立数据目录 + 保留旧版并存**，见 `docs/13-DECISIONS-NEEDED.md` 第 4 条。
 - [x] 在同机采集旧版主要页面和 12 主题参考图，保存采集命令与版本。312 张 PNG / 30.6MB 在 `reference/shots/`，含二进制 SHA-256、构建命令、重复哈希读出的五条事实与未覆盖清单，见 `docs/14-REFERENCE-SHOTS.md`。
 
-交付：可运行最小窗口、选型 ADR、参考图索引、无遗漏的初始矩阵。当前状态：程序已有完整 GPUI 主壳与主要页面功能；功能矩阵包含 246 个 callback（语义、实现状态和验证状态均已填写）、261 个 properties、188 个场景。自动测试和隔离 Release smoke 持续通过；222 项界面行为仍需继续验收，不能视为已验证。
+交付：可运行最小窗口、选型 ADR、参考图索引、无遗漏的初始矩阵。当前状态：程序已有完整 GPUI 主壳与主要页面功能；功能矩阵包含 246 个 callback（语义、实现状态和验证状态均已填写）、261 个 properties、188 个场景。自动测试和隔离 Release smoke 持续通过；221 项界面行为仍需继续验收，不能视为已验证。
 
 ## P1 — 编辑器技术闸门
 
@@ -92,7 +92,7 @@
 - [~] 当前源码 Release GUI smoke 已于 2026-10-16 以全新 `%TEMP%` 库、1000 块场景完整复跑；通过项覆盖启动备份/MCP、整理区与撤销、模板/块插入、页面历史/版本、任务清单/页面树/固定侧栏/organizer/块菜单/色板/页面选项、数据库筛选/分组/列管理器焦点接管及 Escape 恢复、数据库各布局与表单、最大化/还原、视口外搜索/虚拟滚动、速记保存及托盘隐藏唤回（见 `docs/DELIVERY-STATUS.md` 第二百九十六轮）。真实鼠标/IME、多屏/DPI、全主题视觉对照和未验证 parity 项仍待候选验收。
 - [ ] 全主题、尺寸、DPI 和交互状态视觉对照。
 - [ ] IME、人机交互、编辑正确性、数据库兼容全部通过。
-- [x] 功能收尾后的最终 GPUI/Slint 对比已完成：warm no-op、单文件 Release 重编与构建进程 Working Set/Private Bytes，以及空白和 10k 块场景下窗口出现时间、空闲 CPU、运行进程内存均按同机同脚本测量。结果、原始 JSON 路径和限制见 `docs/DELIVERY-STATUS.md` 第二百七十七轮。
+- [~] 已有 GPUI/Slint 同机性能基线覆盖 warm no-op、单文件 Release 重编与构建进程 Working Set/Private Bytes，以及空白和 10k 块场景下窗口出现时间、空闲 CPU、运行进程内存；功能收尾后按最终代码重测。历史结果、原始 JSON 路径和限制见 `docs/DELIVERY-STATUS.md` 第二百七十七轮。
 - [ ] 测试库完成全量旧版→新版→旧版往返，附件和协议兼容。已抽验基本页面/常见块、文件列中两份附件的顺序与字节、笔记/任务/子任务，以及文本/数字/日期/创建时间/最后编辑时间/勾选/网址/邮箱/电话/单选/多选/状态属性、双向关联、公式/汇总配置及创建/编辑时间派生值查询的隔离同库往返；GPUI 写入后由 Slint Release 打开并保存，再由 GPUI 重读断言。旧版 MCP 读写与笔记/任务分别移入回收站并恢复后的重读均通过。可用 `tools/test-legacy-roundtrip.ps1` 重跑隔离验证。页面/organizer 及复杂数据库 v4 snapshot 已由 `tools/test-sync-legacy-wire.ps1` 验证 GPUI Session → Slint Release 应用服务 → GPUI Session 的 loopback 往返；覆盖 Number、Text、Date、Checkbox、URL、Email、Phone、Select、MultiSelect、Status 的值，Files 列、CreatedTime/LastEditedTime schema、Formula 配置、双向 Relation/Mirror 配置与值、Rollup 配置，并由 GPUI 在合并后逐项断言类型和值。GPUI 应用后 flush、重开重读。旧版→GPUI 附件拉取和 GPUI→Slint 附件推送均已用两份任意二进制文件完成真实 Slint 服务/自动同步、隔离库重开与逐字节核验。双节点 loopback 覆盖数据库文件列附件传输、远端移除引用与重新关联恢复；也覆盖共享基线后的独立并发改动及同字段同时编辑，合并响应回传后双方收敛，并逐字段核验、关闭重开再读回。冲突胜出者符合 core 的合并结果，但未单独验证跨重复运行的确定性策略。Formula/Rollup 配置及表格/列表计算呈现已有查询测试，画廊/看板卡片现也计算显示；其他复杂 schema、附件实体回收/用户撤销恢复语义及完整真人网络迁移仍未覆盖，详见 `docs/DELIVERY-STATUS.md`。
 - [~] 候选版隔离安装、切换前备份、双版本不可并发写和回退步骤已记录在 `docs/RELEASE-AND-ROLLBACK.md`；按当前界面修复提交 `01c134e` 刷新便携 ZIP 与 Inno Setup 6 安装器，staging EXE 哈希与 Release 一致，DPI manifest 检查通过，并在随机 `%TEMP%` 目录完成 Release GUI smoke 与安装器静默安装/卸载。最终性能报告已完成；仍需逐场景真人桌面验收、剩余视觉/兼容门及真实用户升级迁移回退验收，不得把临时库验收写成真实迁移完成。
 
