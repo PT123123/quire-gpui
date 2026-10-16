@@ -1772,3 +1772,8 @@
 
 - 在共享基线双向同步回归中再增加同一笔记标题的并发修改：节点 A、B 分别写入不同标题，交换 B→A 合并结果并回传 A→B 后，断言双方标题一致且取自其中一个合法并发值；两端关闭重开后的断言沿用实际胜出值，同时核对正文、标签与另一端任务内容仍完整。
 - `cargo fmt --all` 与 `cargo test --locked --test sync_loopback -j 8 -- --nocapture` 通过。此证据验证本场景的收敛与持久化，不声称冲突胜出策略跨重复运行确定，真实设备网络与复杂用户库冲突仍待验收。测试只写临时 SQLite；未访问真实用户库或修改 Slint/core，未运行性能评测。
+
+## 第二百八十六轮：当前源码 Release 窗口全流程 smoke（2026-10-16）
+
+- `cargo build --release --locked -j 8` 通过。以新建 `%TEMP%\quire-gpui-final-smoke-b341e40c569a4cd5849b554df19d327b\quire.db` 启动当前构建，运行 `--smoke-test --smoke-blocks 1000` 并正常退出。日志覆盖启动备份、MCP Streamable HTTP 发现与 16 工具、主题/侧栏反向动画、organizer 笔记/任务/菜单/撤销、命令面板、模板与块插入、链接数据库选择、页面图标/历史/版本、最大化/还原、Gallery/Calendar/Timeline/Board/Chart/表单/记录子页、视口外搜索与 1000 合成块滚动，以及速记保存和托盘隐藏/唤回。
+- 这是隔离 Release 主流程自动 smoke，不证明真人鼠标/IME、多屏 DPI、所有冻结截图视觉状态或真实设备网络已验收。没有运行 Slint/GPUI 性能测量，没有访问真实用户库，也未更改 Slint/core。
