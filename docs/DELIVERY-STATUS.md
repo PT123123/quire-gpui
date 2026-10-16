@@ -1499,5 +1499,5 @@
 
 ## 第二百三十七轮：便携发布包构建入口复核（2026-10-16）
 
-- `install/build-release.ps1` 新增可配置 `-TargetDir`，避免 Release 构建与隔离 smoke 共用默认 target 时互相占用；默认仍为 `target`。实际运行 `.\install\build-release.ps1 -TargetDir target-ui-fix` 完成 locked Release 构建并生成便携 ZIP。解压后 EXE SHA-256 与构建产物一致（`89DC7522712321D5F49A1AEED1A5A7049163F4C67635E286473AC27023C7E208`），版本资源和便携数据目录说明正确。
-- 本次仅改发行脚本和交付记录，未改 GPUI 运行时代码。`cargo fmt --all -- --check` 与全量 `cargo test --locked -j 8` 通过（106 项：54 库、50 二进制、MCP stdio 与 sync loopback 集成）。构建仍报告 vendor GPUI 浮点字面量未来兼容警告及 MCP 未使用方法警告；未影响当前构建。GPUI/Slint 性能最终复测按用户要求留到功能收尾后再做。
+- `install/build-release.ps1` 新增可配置 `-TargetDir`，避免 Release 构建与隔离 smoke 共用默认 target 时互相占用；默认仍为 `target`。实际运行 `.\install\build-release.ps1 -TargetDir target-ui-fix` 完成 locked Release 构建并生成便携 ZIP。重新打包后解压核对 EXE SHA-256 与构建产物一致（`60BEAEC553374A121874C8E26917DB001ED8320EACC56D2C88B242357BEC08AA`），版本资源和便携数据目录说明正确。
+- 清除一个无调用点的旧 MCP `serve` 辅助方法，服务继续使用可停机的 `start()` 路径。`cargo fmt --all -- --check`、`cargo check --all-targets --locked -j 8`、全量 `cargo test --locked -j 8`（106 项：54 库、50 二进制、MCP stdio 与 sync loopback 集成）及 Release 构建均通过；MCP dead-code 警告已消除。剩余 vendor GPUI 浮点字面量未来兼容和依赖未来兼容提示未影响构建。GPUI/Slint 性能最终复测按用户要求留到功能收尾后再做。

@@ -260,22 +260,6 @@ impl McpServer {
         })
     }
 
-    /// 在已绑定的 listener 上服务到永远（调用方开线程）。
-    pub fn serve(&self, listener: TcpListener) {
-        for stream in listener.incoming() {
-            let Ok(stream) = stream else { continue };
-            let this = McpServer {
-                port: self.port,
-                token: self.token.clone(),
-                tools: self.tools.clone(),
-                call: self.call.clone(),
-            };
-            std::thread::spawn(move || {
-                let _ = this.handle_connection(stream);
-            });
-        }
-    }
-
     fn handle_connection(&self, stream: TcpStream) -> std::io::Result<()> {
         stream.set_read_timeout(Some(std::time::Duration::from_secs(15)))?;
         let mut reader = BufReader::new(stream.try_clone()?);
