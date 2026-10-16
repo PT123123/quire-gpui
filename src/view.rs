@@ -14,8 +14,17 @@ use std::{
     ops::Range,
     path::PathBuf,
     sync::{Arc, Mutex},
-    time::Duration,
+    time::{Duration, Instant},
 };
+
+const MOTION_DURATION: Duration = Duration::from_millis(220);
+const MOTION_SETTLE: Duration = Duration::from_millis(240);
+
+fn interpolated_sidebar_width(from: f32, to: f32, started_at: Instant, now: Instant) -> f32 {
+    let progress =
+        now.saturating_duration_since(started_at).as_secs_f32() / MOTION_DURATION.as_secs_f32();
+    from + (to - from) * progress.clamp(0., 1.)
+}
 
 #[derive(Clone, Copy)]
 struct DatabaseColumnDrag {
@@ -1210,14 +1219,14 @@ mod view_tests {
         capture_tag_replacement, capture_tags, centered_document_column, columns_layout_item_ids,
         database_filter_value_from_text, database_group_identity, database_group_label,
         database_property_kind_choices, evaluate_database_formula, evaluate_database_rollup,
-        find_matches_in, gallery_columns_for_width, link_ranges_for_removal, link_target_range,
-        mention_date_matches, notes_auto_input_enabled, order_database_groups,
-        organizer_notes_copy_payload, organizer_tag_matches_path, organizer_tag_tree_rows,
-        organizer_tags_exclude, organizer_task_drop_accepted, palette_matches, parse_mcp_port,
-        parse_organizer_tags, periodic_snapshot_failure_notice, push_history, settings_matches,
-        settings_section_visible, slash_items, slash_query, sort_organizer_notes,
-        sort_organizer_tasks, sync_peer_is_recent, sync_targets, system_palette_id_for_appearance,
-        toc_headings,
+        find_matches_in, gallery_columns_for_width, interpolated_sidebar_width,
+        link_ranges_for_removal, link_target_range, mention_date_matches, notes_auto_input_enabled,
+        order_database_groups, organizer_notes_copy_payload, organizer_tag_matches_path,
+        organizer_tag_tree_rows, organizer_tags_exclude, organizer_task_drop_accepted,
+        palette_matches, parse_mcp_port, parse_organizer_tags, periodic_snapshot_failure_notice,
+        push_history, settings_matches, settings_section_visible, slash_items, slash_query,
+        sort_organizer_notes, sort_organizer_tasks, sync_peer_is_recent, sync_targets,
+        system_palette_id_for_appearance, toc_headings,
     };
     use gpui::{
         AppContext, Context, InteractiveElement, IntoElement, Render, Styled, TestAppContext,
@@ -1231,6 +1240,25 @@ mod view_tests {
     use quire_core::core::types::{
         Block, BlockId, BlockKind, ColorKind, Lang, Mark, MarkKind, OrderKey, PageId,
     };
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn reversing_sidebar_motion_continues_at_the_interpolated_width() {
+        let started_at = Instant::now();
+        let reverse_at = started_at + Duration::from_millis(110);
+        let visible_width = interpolated_sidebar_width(260., 0., started_at, reverse_at);
+        assert!((visible_width - 130.).abs() < 0.01);
+
+        let reverse_ends_at = reverse_at + Duration::from_millis(220);
+        assert!(
+            (interpolated_sidebar_width(visible_width, 260., reverse_at, reverse_ends_at) - 260.)
+                .abs()
+                < 0.01
+        );
+        assert!(
+            (interpolated_sidebar_width(260., 0., started_at, reverse_ends_at) - 0.).abs() < 0.01
+        );
+    }
 
     #[test]
     fn periodic_snapshot_failure_is_distinguished_from_a_failed_save() {
@@ -2446,7 +2474,7 @@ pub struct Workspace {
     sidebar_open: bool,
     favorites_collapsed: bool,
     recents_collapsed: bool,
-    sidebar_transition: Option<(u64, f32, f32)>,
+    sidebar_transition: Option<(u64, f32, f32, Instant)>,
     sidebar_transition_seq: u64,
     sidebar_width: f32,
     sidebar_resizing: bool,
@@ -3519,7 +3547,16 @@ impl Workspace {
                     .await;
                 let _ = weak.update_in(cx, |this, window, cx| {
                     this.apply_palette(&transition_theme, window, cx);
+                    let expected_from = this.sidebar_transition.map_or(0.,
+                        |(_, from, to, started_at)| interpolated_sidebar_width(from, to, started_at, Instant::now()));
                     this.toggle_sidebar(cx);
+                    let (_, from, _, _) = this
+                        .sidebar_transition
+                        .expect("reopened sidebar should have a transition");
+                    assert!(
+                        (from - expected_from).abs() < 0.1,
+                        "reversing a sidebar animation should start at its interpolated visible width"
+                    );
                 });
                 cx.background_executor()
                     .timer(Duration::from_millis(160))
@@ -6823,9 +6860,7 @@ impl Workspace {
         self.sync_inputs(window, cx);
         cx.notify();
         cx.spawn(async move |this, cx| {
-            cx.background_executor()
-                .timer(Duration::from_millis(240))
-                .await;
+            cx.background_executor().timer(MOTION_SETTLE).await;
             let _ = this.update(cx, |this, cx| {
                 if this.transition_palette_seq == transition_seq {
                     this.transition_palette = None;
@@ -10155,11 +10190,17 @@ impl Workspace {
         cx.notify();
     }
     fn toggle_sidebar(&mut self, cx: &mut Context<Self>) {
-        let from = if self.sidebar_open {
-            self.sidebar_width
-        } else {
-            0.
-        };
+        let now = Instant::now();
+        let from = self.sidebar_transition.map_or_else(
+            || {
+                if self.sidebar_open {
+                    self.sidebar_width
+                } else {
+                    0.
+                }
+            },
+            |(_, from, to, started_at)| interpolated_sidebar_width(from, to, started_at, now),
+        );
         self.sidebar_open = !self.sidebar_open;
         let to = if self.sidebar_open {
             self.sidebar_width
@@ -10168,12 +10209,10 @@ impl Workspace {
         };
         self.sidebar_transition_seq = self.sidebar_transition_seq.wrapping_add(1);
         let transition_seq = self.sidebar_transition_seq;
-        self.sidebar_transition = Some((transition_seq, from, to));
+        self.sidebar_transition = Some((transition_seq, from, to, now));
         cx.notify();
         cx.spawn(async move |this, cx| {
-            cx.background_executor()
-                .timer(Duration::from_millis(240))
-                .await;
+            cx.background_executor().timer(MOTION_SETTLE).await;
             let _ = this.update(cx, |this, cx| {
                 if this.sidebar_transition_seq == transition_seq {
                     this.sidebar_transition = None;
@@ -22557,7 +22596,7 @@ impl Render for Workspace {
                         .color_space(ColorSpace::Srgb))
                         .with_animation(
                             "theme-fade",
-                            Animation::new(Duration::from_millis(220)),
+                            Animation::new(MOTION_DURATION),
                             |overlay, progress| overlay.opacity(1. - progress),
                         ),
                 )
@@ -22585,11 +22624,11 @@ impl Render for Workspace {
                             .top_0()
                             .h(px(40.))
                             .bg(Palette::color(&p.elevated));
-                        if let Some((key, from, to)) = sidebar_transition {
+                        if let Some((key, from, to, _)) = sidebar_transition {
                             rail.w(px(from))
                                 .with_animation(
                                     ("sidebar-rail", key),
-                                    Animation::new(Duration::from_millis(220)),
+                                    Animation::new(MOTION_DURATION),
                                     move |rail, progress| rail.w(px(from + (to - from) * progress)),
                                 )
                                 .into_any_element()
@@ -23402,10 +23441,10 @@ impl Render for Workspace {
                                         }),
                                     ),
                             );
-                        if let Some((key, from, to)) = sidebar_transition {
+                        if let Some((key, from, to, _)) = sidebar_transition {
                             body.child(sidebar.with_animation(
                                 ("sidebar-panel", key),
-                                Animation::new(Duration::from_millis(220)),
+                                Animation::new(MOTION_DURATION),
                                 move |sidebar, progress| {
                                     sidebar.w(px(from + (to - from) * progress))
                                 },

@@ -1751,3 +1751,9 @@
 - 修复动画结束后仍保留 GPUI 状态的问题：主题遮罩在 220ms 动画后加 20ms 渲染缓冲清除，侧栏结束过渡后回到普通展开/关闭渲染路径；两者都用递增序号保护，避免快速反向切换时旧延时任务清掉新动画。
 - Release GUI smoke 在新 `%TEMP%` 数据库上快速反向切换主题和侧栏，验证旧任务期限到达时新动画仍存在，并确认最终遮罩与过渡状态清除、最终主题和展开状态正确。`cargo fmt --all`、全量 `cargo test --locked -j 8 -- --quiet`（114 项）、`cargo check --all-targets --locked -j 8`、Release 构建（73 秒）和 1000 块 Release GUI smoke 均通过。未访问真实用户库，未修改 Slint/core；本次未采集构建峰值内存，也未重跑性能对比。
 - `PLAN.md` 与 `docs/DIFFERENCES.md` 已同步更新。主题/侧栏 220ms 中间帧的视觉轨迹和真人点击命中仍待候选验收。
+
+## 第二百八十二轮：侧栏动画快速反向时保持连续（2026-10-16）
+
+- 将侧栏当前线性动画的插值宽度用于下一次切换的起点；收起中重新展开不再从逻辑状态的 0 宽度跳变，展开中再次收起同样接续当前可见宽度。动画持续时间统一为 220ms，结束状态仍由上一轮的 240ms 序号保护清理。
+- 新增确定性插值边界测试；Release GUI smoke 在真实 GPUI 窗口中触发快速反向，按当时旧动画状态对比新动画起点，并验证旧 timer 不清新状态、最终状态清理。格式检查、全量 `cargo test --locked -j 8 -- --quiet`（115 项）、`cargo check --all-targets --locked -j 8`、Release 构建（46.06 秒）与全新 `%TEMP%` 数据库 1000 块 Release GUI smoke 通过。测试库位于 `%TEMP%`；未访问真实用户库，未修改 Slint/core。未采集本次构建峰值内存、未重跑性能对比。
+- `PLAN.md` 和 `docs/DIFFERENCES.md` 已更新。仍需对照 `sidebar-toggle` 中间帧和真实鼠标命中；动画逻辑与快速反向连续性已通过自动证据。
