@@ -2428,6 +2428,9 @@ pub struct Workspace {
     block_clipboard: Option<Vec<Block>>,
     hovered_page: Option<quire_core::core::types::PageId>,
     page_context_menu: Option<(quire_core::core::types::PageId, f32, f32)>,
+    page_context_focus: FocusHandle,
+    page_context_focus_return: Option<FocusHandle>,
+    page_context_selection: usize,
     fixed_context_menu: Option<(u8, f32, f32)>,
     organizer_context_menu: Option<(u8, u64, f32, f32)>,
     hovered_note: Option<quire_core::core::organizer::NoteId>,
@@ -2802,6 +2805,7 @@ impl Workspace {
         ));
         let sync_cmd_tx = crate::sync_client::start(sync_job_tx);
         let task_list_menu_focus = cx.focus_handle();
+        let page_context_focus = cx.focus_handle();
         let mut this = Self {
             session,
             version_name_input,
@@ -2874,6 +2878,9 @@ impl Workspace {
             block_clipboard: None,
             hovered_page: None,
             page_context_menu: None,
+            page_context_focus,
+            page_context_focus_return: None,
+            page_context_selection: 0,
             fixed_context_menu: None,
             organizer_context_menu: None,
             hovered_note: None,
@@ -4175,8 +4182,17 @@ impl Workspace {
                     drop(menu_frame);
                     this.run_organizer_context_action(1, menu_task.0, 2, window, cx);
                     assert!(this.session.organizer.task(menu_task).unwrap().done);
+                    let page_menu_return_focus = window.focused(cx);
+                    let smoke_page = this.session.page.id;
+                    this.open_page_context_menu_at(smoke_page, 80., 80., window, cx);
+                    assert!(this.page_context_focus.is_focused(window));
+                    let page_menu_frame = this.render(window, cx);
+                    drop(page_menu_frame);
+                    this.escape_page_context_menu(window);
+                    assert_eq!(window.focused(cx), page_menu_return_focus);
                     this.schedule_save(true, window, cx);
                     eprintln!("SMOKE: organizer note/task context menus and their actions passed");
+                    eprintln!("SMOKE: page context menu captures and restores keyboard focus");
                     assert!(this.command_palette_open);
                     assert_eq!(this.command_palette_query, "设置");
                     assert_eq!(this.palette_items().len(), 1);
@@ -11179,18 +11195,76 @@ impl Workspace {
         &mut self,
         id: quire_core::core::types::PageId,
         event: &MouseDownEvent,
-        window: &Window,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_page_context_menu_at(
+            id,
+            f32::from(event.position.x),
+            f32::from(event.position.y),
+            window,
+            cx,
+        );
+    }
+    fn open_page_context_menu_at(
+        &mut self,
+        id: quire_core::core::types::PageId,
+        x: f32,
+        y: f32,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         let scale = quire_gpui::ui_scale::get();
         let bounds = window.bounds().size;
         let width = 228.;
         let height = 318.;
-        let x = (f32::from(event.position.x) / scale)
-            .clamp(0., (f32::from(bounds.width) / scale - width).max(0.));
-        let y = (f32::from(event.position.y) / scale)
-            .clamp(0., (f32::from(bounds.height) / scale - height).max(0.));
+        let x = (x / scale).clamp(0., (f32::from(bounds.width) / scale - width).max(0.));
+        let y = (y / scale).clamp(0., (f32::from(bounds.height) / scale - height).max(0.));
+        if self.page_context_menu.is_none() {
+            self.page_context_focus_return = window.focused(cx);
+        }
         self.page_context_menu = Some((id, x, y));
+        self.page_context_selection = 0;
+        window.focus(&self.page_context_focus);
+        cx.stop_propagation();
+        cx.notify();
+    }
+    fn restore_page_context_focus(&mut self, window: &mut Window) {
+        if let Some(focus) = self.page_context_focus_return.take() {
+            window.focus(&focus);
+        }
+    }
+    fn escape_page_context_menu(&mut self, window: &mut Window) {
+        self.page_context_menu = None;
+        self.restore_page_context_focus(window);
+    }
+    fn page_context_menu_key_down(
+        &mut self,
+        event: &KeyDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some((page_id, _, _)) = self.page_context_menu else {
+            return;
+        };
+        if event.keystroke.modifiers.modified() {
+            return;
+        }
+        match event.keystroke.key.as_str() {
+            "escape" => self.escape_page_context_menu(window),
+            "up" | "down" => {
+                self.page_context_selection = next_menu_selection(
+                    self.page_context_selection,
+                    10,
+                    event.keystroke.key.as_str(),
+                )
+                .expect("page context menu has ten actions");
+            }
+            "enter" | "space" => {
+                self.run_page_context_action(page_id, self.page_context_selection, window, cx);
+            }
+            _ => return,
+        }
         cx.stop_propagation();
         cx.notify();
     }
@@ -11377,6 +11451,7 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         self.page_context_menu = None;
+        self.restore_page_context_focus(window);
         match action {
             0 => self.activate_page(id, window, cx),
             1 => self.add_child_page(id, window, cx),
@@ -19351,27 +19426,34 @@ impl Render for Workspace {
                         .on_mouse_down_out(cx.listener(|_, _, window, cx| {
                             cx.defer_in(window, |this, _window, cx| {
                                 this.page_context_menu = None;
+                                this.page_context_focus_return = None;
                                 cx.notify();
                             });
                         }))
-                        .children(actions.into_iter().map(|(label, action, danger)| {
-                            div()
-                                .id(SharedString::from(format!("page-context-action-{action}")))
-                                .h(px(29.))
-                                .px(px(9.))
-                                .flex()
-                                .items_center()
-                                .rounded(px(4.))
-                                .cursor_pointer()
-                                .text_size(px(12.))
-                                .text_color(if danger { rgb(0xe06c75).into() } else { text })
-                                .when(locked && action == 2, |row| row.opacity(0.48))
-                                .hover(|row| row.bg(Palette::color(&p.bg).opacity(0.38)))
-                                .on_click(cx.listener(move |this, _, window, cx| {
-                                    this.run_page_context_action(page_id, action, window, cx)
-                                }))
-                                .child(label)
-                        }))
+                        .track_focus(&self.page_context_focus)
+                        .children(actions.into_iter().enumerate().map(
+                            |(index, (label, action, danger))| {
+                                div()
+                                    .id(SharedString::from(format!("page-context-action-{action}")))
+                                    .h(px(29.))
+                                    .px(px(9.))
+                                    .flex()
+                                    .items_center()
+                                    .rounded(px(4.))
+                                    .cursor_pointer()
+                                    .text_size(px(12.))
+                                    .text_color(if danger { rgb(0xe06c75).into() } else { text })
+                                    .when(locked && action == 2, |row| row.opacity(0.48))
+                                    .hover(|row| row.bg(Palette::color(&p.bg).opacity(0.38)))
+                                    .when(self.page_context_selection == index, |row| {
+                                        row.bg(Palette::color(&p.bg).opacity(0.38))
+                                    })
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        this.run_page_context_action(page_id, action, window, cx)
+                                    }))
+                                    .child(label)
+                            },
+                        ))
                 })
         });
         let fixed_context_overlay = self.fixed_context_menu.map(|(target, x, y)| {
@@ -22705,6 +22787,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::zoom_in))
             .on_action(cx.listener(Self::zoom_out))
             .on_action(cx.listener(Self::zoom_reset))
+            .capture_key_down(cx.listener(Self::page_context_menu_key_down))
             .capture_key_down(cx.listener(Self::task_list_menu_key_down))
             .capture_key_down(cx.listener(Self::editor_rich_paste_key_down))
             .when_some(self.transition_palette.clone(), |root, old_palette| {

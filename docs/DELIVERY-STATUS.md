@@ -1783,3 +1783,9 @@
 - 任务清单“⋯”菜单现在在打开时取得 GPUI 焦点并记住原焦点；主菜单及颜色子页支持上下键循环高亮、Enter/Space 执行，Escape 从颜色子页返回主菜单，再按一次关闭并恢复打开前焦点。鼠标点外关闭仍保留目标控件的焦点，不把焦点抢回已关闭菜单。键盘选择器的边界/环绕规则有单测。
 - `cargo test --locked --lib -j 8 -- --nocapture`（59 项）、`cargo test --locked --bin quire-gpui -j 8 -- --quiet`（55 项）与 `cargo check --all-targets --locked -j 8` 通过。当前源码 `cargo build --release --locked -j 8` 通过；Release GUI smoke 使用全新 `%TEMP%` 库和 1000 块，焦点/菜单日志及此前全流程场景均通过，正常退出。
 - 此修复针对任务清单这一类菜单，不代表其他锚定弹层已统一键盘/焦点行为。未访问真实用户库或修改 Slint/core；没有做性能评测。
+
+## 第二百八十八轮：页面树上下文菜单键盘操作（2026-10-16）
+
+- 页面树右键菜单打开时记录原焦点并将焦点交给菜单；上下键在十项操作间循环高亮，Enter/Space 执行当前页操作，Escape 关闭并恢复焦点。页面行为继续路由到已有 Workspace/core 操作；点击菜单外时不强行抢回目标控件焦点。
+- `cargo test --locked --bin quire-gpui -j 8 -- --quiet`（55 项）与 `cargo check --all-targets --locked -j 8` 通过。Release build 与 `--smoke-test --smoke-blocks 1000` 在新建 `%TEMP%` SQLite 上通过；日志明确包含页面 context menu 焦点接管与 Escape 恢复，完整 1000 块流程正常退出。选择环绕边界由 `next_menu_selection` 单测覆盖。
+- 自动窗口路径没有合成物理右键或键盘按键，因此真实右键命中和按键体验仍需候选真人桌面验收。未访问真实用户库或修改 Slint/core；本轮未做性能评测。
