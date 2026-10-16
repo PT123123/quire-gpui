@@ -42,6 +42,17 @@ const SYNC_MIRROR: &str = "同步反向关联";
 const SYNC_ROLLUP: &str = "同步汇总";
 const SYNC_CREATED: &str = "同步创建时间";
 const SYNC_LAST_EDITED: &str = "同步最后编辑时间";
+const SYNC_TEXT: &str = "同步文本";
+const SYNC_DATE: &str = "同步日期";
+const SYNC_CHECKBOX: &str = "同步勾选";
+const SYNC_URL: &str = "同步网址";
+const SYNC_EMAIL: &str = "同步邮箱";
+const SYNC_PHONE: &str = "同步电话";
+const SYNC_TAGS: &str = "同步多选";
+const SYNC_STATUS: &str = "同步状态";
+const SYNC_FILES: &str = "同步文件";
+const SYNC_TAG_VALUE: &str = "跨版本标签";
+const SYNC_STATUS_VALUE: &str = "同步进行中";
 
 fn main() -> Result<()> {
     let args: Vec<String> = env::args().collect();
@@ -365,8 +376,37 @@ fn sync_seed_export(path: &Path, snapshot_path: &Path) -> Result<()> {
             PropertyKind::LastEditedTime,
         )
         .context("create sync last-edited-time property")?;
+    let text = session
+        .add_database_property(database_block, SYNC_TEXT.into(), PropertyKind::Text)
+        .context("create sync text property")?;
+    let date = session
+        .add_database_property(database_block, SYNC_DATE.into(), PropertyKind::Date)
+        .context("create sync date property")?;
+    let checkbox = session
+        .add_database_property(database_block, SYNC_CHECKBOX.into(), PropertyKind::Checkbox)
+        .context("create sync checkbox property")?;
+    let url = session
+        .add_database_property(database_block, SYNC_URL.into(), PropertyKind::Url)
+        .context("create sync URL property")?;
+    let email = session
+        .add_database_property(database_block, SYNC_EMAIL.into(), PropertyKind::Email)
+        .context("create sync email property")?;
+    let phone = session
+        .add_database_property(database_block, SYNC_PHONE.into(), PropertyKind::Phone)
+        .context("create sync phone property")?;
+    let tags = session
+        .add_database_property(database_block, SYNC_TAGS.into(), PropertyKind::MultiSelect)
+        .context("create sync multi-select property")?;
+    let status = session
+        .add_database_property(database_block, SYNC_STATUS.into(), PropertyKind::Status)
+        .context("create sync status property")?;
+    session
+        .add_database_property(database_block, SYNC_FILES.into(), PropertyKind::Files)
+        .context("create sync files property")?;
     assert!(session.set_database_formula(database_block, formula, "1 + [同步分数]")?);
     assert!(session.add_database_property_option(database_block, select, SYNC_SELECT_VALUE)?);
+    assert!(session.add_database_property_option(database_block, tags, SYNC_TAG_VALUE)?);
+    assert!(session.add_database_property_option(database_block, status, SYNC_STATUS_VALUE)?);
     assert!(session.set_database_relation_target(database_block, relation, Some(database))?);
     assert!(session.set_database_relation_target(database_block, mirror, Some(database))?);
     assert!(session.set_database_relation_mirror(database_block, relation, mirror)?);
@@ -395,6 +435,12 @@ fn sync_seed_export(path: &Path, snapshot_path: &Path) -> Result<()> {
         "Slint 跨版本数据库行"
     )?);
     assert!(session.set_database_cell(database_block, record, score, "42")?);
+    assert!(session.set_database_cell(database_block, record, text, "跨版本文本保留")?);
+    assert!(session.set_database_cell(database_block, record, date, "2026-10-16")?);
+    assert!(session.set_database_cell(database_block, record, checkbox, "true")?);
+    assert!(session.set_database_cell(database_block, record, url, "https://example.com/sync")?);
+    assert!(session.set_database_cell(database_block, record, email, "sync@example.com")?);
+    assert!(session.set_database_cell(database_block, record, phone, "+1 555 0199")?);
     assert!(session.set_database_cell(
         database_block,
         target_record,
@@ -409,6 +455,13 @@ fn sync_seed_export(path: &Path, snapshot_path: &Path) -> Result<()> {
         &[target_record]
     )?);
     assert!(session.set_database_cell(database_block, record, select, SYNC_SELECT_VALUE)?);
+    assert!(session.set_database_cell(database_block, record, status, SYNC_STATUS_VALUE)?);
+    assert!(session.set_database_cell_many(
+        database_block,
+        record,
+        tags,
+        &[SYNC_TAG_VALUE.into()]
+    )?);
     let device = session.sync_self_info();
     session.persistence.force_flush()?;
     let snapshot = session.sync_export()?;
@@ -587,6 +640,51 @@ fn assert_sync_database(database: &quire_core::services::sync::model::SDatabase)
         .iter()
         .find(|property| property.name == SYNC_LAST_EDITED)
         .context("legacy sync response omitted last-edited-time property")?;
+    let text = database
+        .properties
+        .iter()
+        .find(|property| property.name == SYNC_TEXT)
+        .context("legacy sync response omitted text property")?;
+    let date = database
+        .properties
+        .iter()
+        .find(|property| property.name == SYNC_DATE)
+        .context("legacy sync response omitted date property")?;
+    let checkbox = database
+        .properties
+        .iter()
+        .find(|property| property.name == SYNC_CHECKBOX)
+        .context("legacy sync response omitted checkbox property")?;
+    let url = database
+        .properties
+        .iter()
+        .find(|property| property.name == SYNC_URL)
+        .context("legacy sync response omitted URL property")?;
+    let email = database
+        .properties
+        .iter()
+        .find(|property| property.name == SYNC_EMAIL)
+        .context("legacy sync response omitted email property")?;
+    let phone = database
+        .properties
+        .iter()
+        .find(|property| property.name == SYNC_PHONE)
+        .context("legacy sync response omitted phone property")?;
+    let tags = database
+        .properties
+        .iter()
+        .find(|property| property.name == SYNC_TAGS)
+        .context("legacy sync response omitted multi-select property")?;
+    let status = database
+        .properties
+        .iter()
+        .find(|property| property.name == SYNC_STATUS)
+        .context("legacy sync response omitted status property")?;
+    let files = database
+        .properties
+        .iter()
+        .find(|property| property.name == SYNC_FILES)
+        .context("legacy sync response omitted files property")?;
     assert_eq!(score.kind, "number");
     assert_eq!(formula.kind, "formula");
     assert_eq!(
@@ -599,6 +697,15 @@ fn assert_sync_database(database: &quire_core::services::sync::model::SDatabase)
     assert_eq!(rollup.kind, "rollup");
     assert_eq!(created.kind, "created_time");
     assert_eq!(last_edited.kind, "last_edited_time");
+    assert_eq!(text.kind, "text");
+    assert_eq!(date.kind, "date");
+    assert_eq!(checkbox.kind, "checkbox");
+    assert_eq!(url.kind, "url");
+    assert_eq!(email.kind, "email");
+    assert_eq!(phone.kind, "phone");
+    assert_eq!(tags.kind, "multi_select");
+    assert_eq!(status.kind, "status");
+    assert_eq!(files.kind, "files");
     let relation_config = quire_core::core::database_relation::config_relation(&relation.config);
     let mirror_config = quire_core::core::database_relation::config_relation(&mirror.config);
     assert_eq!(
@@ -649,6 +756,55 @@ fn assert_sync_database(database: &quire_core::services::sync::model::SDatabase)
     assert!(database.values.iter().any(|value| {
         value.record == record.id && value.property == score.id && value.num == Some(42.0)
     }));
+    for (property, expected) in [
+        (text, "跨版本文本保留"),
+        (date, "2026-10-16"),
+        (url, "https://example.com/sync"),
+        (email, "sync@example.com"),
+        (phone, "+1 555 0199"),
+    ] {
+        assert!(
+            database.values.iter().any(|value| {
+                value.record == record.id
+                    && value.property == property.id
+                    && value.text.as_deref() == Some(expected)
+            }),
+            "legacy sync response lost {} cell",
+            property.name
+        );
+    }
+    assert!(
+        database.values.iter().any(|value| {
+            value.record == record.id && value.property == checkbox.id && value.flag == Some(true)
+        }),
+        "legacy sync response lost checkbox value"
+    );
+    let tag_options = PropertyOptions::from_config(&tags.config);
+    let tag_option = tag_options
+        .iter()
+        .find(|option| option.name == SYNC_TAG_VALUE)
+        .context("legacy sync response omitted multi-select option")?;
+    assert!(
+        database.values.iter().any(|value| {
+            value.record == record.id
+                && value.property == tags.id
+                && value.items.as_deref() == Some(&[tag_option.id.0.to_string()][..])
+        }),
+        "legacy sync response lost multi-select value"
+    );
+    let status_options = PropertyOptions::from_config(&status.config);
+    let status_option = status_options
+        .iter()
+        .find(|option| option.name == SYNC_STATUS_VALUE)
+        .context("legacy sync response omitted status option")?;
+    assert!(
+        database.values.iter().any(|value| {
+            value.record == record.id
+                && value.property == status.id
+                && value.text.as_deref() == Some(&status_option.id.0.to_string())
+        }),
+        "legacy sync response lost status value"
+    );
     assert!(database.values.iter().any(|value| {
         value.record == record.id
             && value.property == select.id

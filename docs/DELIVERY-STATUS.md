@@ -1740,3 +1740,8 @@
 
 - 扩展真实 Slint Release loopback v4 snapshot 夹具，GPUI 发送 CreatedTime / LastEditedTime 两列，旧版服务合并后回传；GPUI 断言两种属性仍在数据库 schema 中且类型字符串一致。附件拉取/推送二进制逐字节断言同步通过，结果 `LEGACY_SYNC_WIRE=PASS`。
 - `cargo fmt --all -- --check`、全量 `cargo test --locked -j 8`（114 项）、`cargo check --all-targets --locked -j 8`、`git diff --check` 通过。数据库和附件均位于 `%TEMP%`；未访问真实用户库，未修改 Slint 文件内容。
+
+## 第二百八十轮：扩展同步快照的属性和值覆盖（2026-10-16）
+
+- 扩展 `examples/legacy_schema_probe.rs` 的隔离 v4 快照夹具，增加 Text、Date、Checkbox、URL、Email、Phone、MultiSelect、Status、Files 属性及可写值；GPUI 导出后由真实 Slint Release 同步服务合并并回传，GPUI 现在逐项检查新增属性类型、文本/布尔/选项值与原有 Number、Select、Relation/Mirror、Formula、Rollup 和创建/编辑时间属性。两份二进制附件仍经双向同步逐字节核验，结果 `LEGACY_SYNC_WIRE=PASS`（回传 v4 快照 171 行）。
+- `cargo fmt --all`、`cargo check --locked --examples -j 8`、全量 `cargo test --locked -j 8 -- --quiet`（114 项）与 `tools/test-sync-legacy-wire.ps1` 均通过。所有数据库和附件仅位于 `%TEMP%` 隔离夹具；未访问真实用户库，未修改 Slint/core 文件，也未执行性能评测。性能结果保留在本文件第二百七十七轮，后续只有功能代码出现会影响测量对象的变化时才重测。
