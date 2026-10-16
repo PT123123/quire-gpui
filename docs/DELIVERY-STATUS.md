@@ -1819,3 +1819,9 @@
 - 数据库筛选的属性、比较方式和选项列表现在接管焦点；方向键循环高亮，Enter/Space 选择，Escape 从子面板返回，再次 Escape 关闭并恢复原焦点。筛选点外关闭不会抢回焦点；修改仍经原有视图定义保存路径。
 - `cargo fmt --all -- --check`、全量 `cargo test --locked -j 8 -- --quiet`（116 项）、`cargo check --all-targets --locked -j 8`、Release 构建和 `git diff --check` 通过。新建 `%TEMP%` SQLite 的 1000 块 Release GUI smoke 打开并渲染筛选面板，验证焦点接管及 Escape 恢复，完整流程正常退出。
 - 自动 smoke 未合成方向键/鼠标输入；未访问真实用户库或修改 Slint/core，本轮不运行性能评测。
+
+## 第二百九十四轮：数据库分组选择器键盘操作（2026-10-16）
+
+- 数据库分组属性选择器现在接管焦点；上下键循环选择“无分组”或支持的属性，Enter/Space 应用，Escape 关闭并恢复焦点。分组、筛选和列管理弹层之间切换时避免把焦点留在已关闭的弹层。
+- `cargo fmt --all`、全量 `cargo test --locked -j 8 -- --quiet`（116 项）、`cargo check --all-targets --locked -j 8`、Release 构建与隔离 `%TEMP%` 1000 块 GUI smoke 均通过。Smoke 验证筛选/分组选择器聚焦、渲染和 Escape 恢复，完整流程退出码为 0。
+- 自动 smoke 未模拟真实按键；未访问真实用户库或修改 Slint/core，本轮未做性能评测。
