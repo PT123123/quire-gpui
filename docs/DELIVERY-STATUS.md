@@ -1681,3 +1681,9 @@
 - 把 Home/End 从显式换行段扩展到 GPUI 实际排版生成的自动换行可视行。GPUI 在换行边界的字节索引默认归属上一行；现在根据 `WrappedLine` 的 wrap boundary 计算当前行号，再查询该行首尾，确保 Home 后接 Shift+End 能选中整条自动换行行。
 - GPUI 输入分发测试在窄视口中实际触发自动折行，验证 Home 与 Shift+End 的位置/选区，并覆盖已有词级移动、选择、删除和显式换行路径。格式检查、全量 `cargo test --locked -j 8`（113 项）、`cargo check --all-targets --locked -j 8` 与 `git diff --check` 通过。
 - Release 构建通过；全新 `%TEMP%` SQLite 上的 1000 块 GUI smoke 通过，覆盖编辑、数据库视图、速记/托盘、MCP、最大化/还原与虚拟滚动。便携包和安装器已从该 Release 刷新，staging EXE SHA-256 与 Release 一致（`70E238194791C9118B5FECAC2A770BA65DB0D901B5BD9F49AA0BC63D9EE38751`）；ZIP SHA-256 `AD53DF1D4AD2420341064EEC555FA80F27AD7681DDE613872DF84A50779544C0`，安装器 SHA-256 `5156DCB8F5AB6D4DCC3BF0EE430EFDDA2A4544081EF885DB4341E7C80306B4F0`。未访问真实用户库，未运行性能评测。
+
+## 第二百七十二轮：保持编辑器垂直导航目标列（2026-10-16）
+
+- 修正连续上/下键经过短行时目标横坐标漂移的问题。垂直导航现在在连续移动期间保留初始 caret 的排版 x 坐标，跨行长短差异时落点稳定；水平移动、Home/End、文本编辑、重置与鼠标定位会重新计算目标列。
+- GPUI `TestAppContext` 按键分发回归以真实 TextInput 和 300px 布局测试“长行 → 单字符行 → 长行”，连续按两次 Down 后断言第三行 caret 仍落在原目标列附近。格式检查、全量 `cargo test --locked -j 8`（113 项）、`cargo check --all-targets --locked -j 8` 与 `git diff --check` 通过。
+- Release 构建通过；新 `%TEMP%` SQLite 的 1000 块 GUI smoke 通过，涵盖 MCP、速记/托盘、窗口最大化还原、数据库视图和虚拟滚动。便携包/安装器已刷新，staging EXE SHA-256 与 Release 一致：`8731EA369075E4A5ACF6BE4F6E3EAB2F2D8B6FFF51F156CA53CEF01544B41323`；ZIP SHA-256 `C1A65867A27FD6A9153182ED701692F77B4FC4B83AC32883DF721624E8872CA2`，安装器 SHA-256 `9F3AB83731E7886623D7EC6DCFAAF2F4C8DF70B6CDDD0B5DA7AF98350099324A`。未访问真实用户库，未运行性能评测。

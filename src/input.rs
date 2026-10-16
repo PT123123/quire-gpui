@@ -82,6 +82,7 @@ pub struct TextInput {
     layout: Option<TextLayout>,
     bounds: Option<Bounds<Pixels>>,
     selecting: bool,
+    vertical_goal_x: Option<Pixels>,
     pub font_size: f32,
     pub font_weight: FontWeight,
     pub text_color: Option<Hsla>,
@@ -120,6 +121,7 @@ impl TextInput {
             layout: None,
             bounds: None,
             selecting: false,
+            vertical_goal_x: None,
             font_size,
             font_weight: FontWeight::NORMAL,
             text_color: None,
@@ -138,6 +140,7 @@ impl TextInput {
         self.marks = marks;
         self.buffer.move_to(caret);
         self.layout = None;
+        self.vertical_goal_x = None;
         cx.notify();
     }
     pub fn insert_newline(&mut self, cx: &mut Context<Self>) {
@@ -148,6 +151,7 @@ impl TextInput {
         self.changed(true, cx);
     }
     fn changed(&mut self, boundary: bool, cx: &mut Context<Self>) {
+        self.vertical_goal_x = None;
         if !self.buffer.composing() {
             cx.emit(InputEvent::Edited {
                 text: self.buffer.text.clone(),
@@ -210,6 +214,7 @@ impl TextInput {
             return;
         }
         if self.buffer.selection.is_empty() && self.buffer.caret() == 0 {
+            self.vertical_goal_x = None;
             cx.emit(InputEvent::NavigateHorizontal(-1));
             return;
         }
@@ -218,6 +223,7 @@ impl TextInput {
         } else {
             self.buffer.selection.start
         };
+        self.vertical_goal_x = None;
         self.buffer.move_to(p);
         cx.notify();
     }
@@ -226,6 +232,7 @@ impl TextInput {
             return;
         }
         if self.buffer.selection.is_empty() && self.buffer.caret() == self.buffer.text.len() {
+            self.vertical_goal_x = None;
             cx.emit(InputEvent::NavigateHorizontal(1));
             return;
         }
@@ -234,6 +241,7 @@ impl TextInput {
         } else {
             self.buffer.selection.end
         };
+        self.vertical_goal_x = None;
         self.buffer.move_to(p);
         cx.notify();
     }
@@ -246,6 +254,7 @@ impl TextInput {
         } else {
             self.buffer.previous_word()
         };
+        self.vertical_goal_x = None;
         if select {
             self.buffer.select_to(target);
         } else {
@@ -267,12 +276,14 @@ impl TextInput {
     }
     fn select_left(&mut self, _: &SelectLeft, _: &mut Window, cx: &mut Context<Self>) {
         if !self.buffer.composing() {
+            self.vertical_goal_x = None;
             self.buffer.select_to(self.buffer.previous());
             cx.notify();
         }
     }
     fn select_right(&mut self, _: &SelectRight, _: &mut Window, cx: &mut Context<Self>) {
         if !self.buffer.composing() {
+            self.vertical_goal_x = None;
             self.buffer.select_to(self.buffer.next());
             cx.notify();
         }
@@ -283,8 +294,10 @@ impl TextInput {
         }
         if let Some(layout) = &self.layout {
             let pos = layout.position(self.buffer.caret());
-            let target = point(pos.x, pos.y + layout.line_height * direction as f32);
+            let goal_x = *self.vertical_goal_x.get_or_insert(pos.x);
+            let target = point(goal_x, pos.y + layout.line_height * direction as f32);
             if !select && (target.y < px(0.) || target.y >= layout.height()) {
+                self.vertical_goal_x = None;
                 cx.emit(InputEvent::Navigate(direction));
                 return;
             }
@@ -318,6 +331,7 @@ impl TextInput {
     }
     fn home(&mut self, _: &Home, _: &mut Window, cx: &mut Context<Self>) {
         if !self.buffer.composing() {
+            self.vertical_goal_x = None;
             if let Some(layout) = &self.layout {
                 self.buffer
                     .move_to(layout.line_boundary(self.buffer.caret(), false));
@@ -329,6 +343,7 @@ impl TextInput {
     }
     fn end(&mut self, _: &End, _: &mut Window, cx: &mut Context<Self>) {
         if !self.buffer.composing() {
+            self.vertical_goal_x = None;
             if let Some(layout) = &self.layout {
                 self.buffer
                     .move_to(layout.line_boundary(self.buffer.caret(), true));
@@ -340,6 +355,7 @@ impl TextInput {
     }
     fn select_home(&mut self, _: &SelectHome, _: &mut Window, cx: &mut Context<Self>) {
         if !self.buffer.composing() {
+            self.vertical_goal_x = None;
             if let Some(layout) = &self.layout {
                 self.buffer
                     .select_to(layout.line_boundary(self.buffer.caret(), false));
@@ -351,6 +367,7 @@ impl TextInput {
     }
     fn select_end(&mut self, _: &SelectEnd, _: &mut Window, cx: &mut Context<Self>) {
         if !self.buffer.composing() {
+            self.vertical_goal_x = None;
             if let Some(layout) = &self.layout {
                 self.buffer
                     .select_to(layout.line_boundary(self.buffer.caret(), true));
@@ -466,6 +483,7 @@ impl TextInput {
     }
     fn mouse_down(&mut self, event: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         self.buffer.cancel();
+        self.vertical_goal_x = None;
         window.focus(&self.focus);
         if let (Some(layout), Some(bounds)) = (&self.layout, self.bounds) {
             let byte = layout
@@ -1199,5 +1217,20 @@ mod input_tests {
         cx.simulate_keystrokes("shift-end");
         let selection = cx.update(|_, app| input.read(app).buffer.selection.clone());
         assert_eq!(selection, expected_home..wrapped.len());
+
+        let vertical = "abcdefghij\nx\nabcdefghij";
+        cx.update(|_, app| {
+            root.update(app, |root, _| root.width = px(300.));
+            input.update(app, |input, cx| {
+                input.reset(vertical.into(), Vec::new(), "abcdefgh".len(), cx)
+            });
+        });
+        cx.run_until_parked();
+        cx.simulate_keystrokes("down down");
+        let caret = cx.update(|_, app| input.read(app).buffer.caret());
+        assert!(
+            caret >= "abcdefghij\nx\n".len() + 7,
+            "vertical navigation should retain its original horizontal goal after a short line; caret={caret}"
+        );
     }
 }
