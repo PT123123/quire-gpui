@@ -1511,5 +1511,5 @@
 ## 第二百三十九轮：GPUI vendored float 类型兼容修正（2026-10-16）
 
 - 为 vendored GPUI `taffy.rs` 的两个 `0.0` / `1.0` 显式标注 `f32`，去除 Rust future-incompatible float fallback 警告，数值及布局计算不变。`cargo check --all-targets --locked -j 8` 通过；仅剩依赖 `proc-macro-error2` 的未来兼容提示。全量测试在本轮收尾中。
-- `cargo fmt --all -- --check`、`cargo check --all-targets --locked -j 8` 与全量 `cargo test --locked -j 8`（106 项：54 库 + 50 二进制 + 2 集成）通过。只剩依赖 `proc-macro-error2` 的未来兼容提示。
+- `cargo fmt --all -- --check`、`cargo check --all-targets --locked -j 8` 与全量 `cargo test --locked -j 8`（106 项：54 库 + 50 二进制 + 2 集成）通过。`cargo build --release --locked -j 8 --target-dir target-release` 用时 1m23s；1000 块隔离 Release GUI smoke 覆盖数据库布局/表单/图表、MCP 16 工具、速记提交、托盘隐藏/唤回、最大化/还原和虚拟滚动，全部通过。`tools/test-legacy-roundtrip.ps1` 再次通过，覆盖常见 typed cell、双向关联、文件列两份附件字节顺序，以及 Slint MCP 笔记/任务回收站与恢复后 GPUI 重开读取。GPUI 浮点兼容警告已清除；只剩依赖 `proc-macro-error2` 的未来兼容提示。
 - 未运行性能评测；Slint/GPUI 最终对比仍等功能收尾后进行。
