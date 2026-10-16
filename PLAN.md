@@ -91,7 +91,7 @@
 - [ ] 全主题、尺寸、DPI 和交互状态视觉对照。
 - [ ] IME、人机交互、编辑正确性、数据库兼容全部通过。
 - [~] 已有一轮 GPUI/Slint 性能基线（warm no-op / 单文件 Release 重编时间与聚合编译内存，空白/10k 文档下窗口 handle-up、CPU、Working Set/Private Bytes），方法、当时 commit、限制与原始结果见 `docs/DELIVERY-STATUS.md` 第二百三十五轮。该 commit 后仍有源码改动；按用户要求，功能收尾后用同脚本重测并作为最终对比，性能项目目前不关闭。
-- [ ] 测试库完成全量旧版→新版→旧版往返，附件和协议兼容。已抽验基本页面/常见块、附件字节、文本属性数据库记录、笔记/任务/子任务的同库往返；双向关联配置及两侧关联单元格、多选选项和值、公式表达式配置、汇总关联/目标列/聚合方式经 GPUI 写入、Slint Release 打开并保存，再由 GPUI 逐字段校验通过；GPUI stdio 桥与旧版 MCP HTTP 的工具读取/写入及旧版 MCP 写入后 GPUI 读回也通过。可用 `tools/test-legacy-roundtrip.ps1` 重跑隔离验证。公式/汇总计算呈现、其他数据库 schema 和同步 snapshot 跨版本互通仍未覆盖，详见 `docs/DELIVERY-STATUS.md` 第二百三十六轮。
+- [ ] 测试库完成全量旧版→新版→旧版往返，附件和协议兼容。已抽验基本页面/常见块、附件字节、笔记/任务/子任务，以及文本/数字/日期/勾选/网址/邮箱/电话/单选/多选/状态属性、双向关联、公式/汇总配置的隔离同库往返；GPUI 写入后由 Slint Release 打开并保存，再由 GPUI 重读断言。GPUI stdio 桥与旧版 MCP HTTP 的工具读取/写入及旧版 MCP 写入后 GPUI 读回也通过。可用 `tools/test-legacy-roundtrip.ps1` 重跑隔离验证。公式/汇总计算呈现、其他复杂 schema、附件集合与删除/恢复语义、同步 snapshot 跨版本互通仍未覆盖，详见 `docs/DELIVERY-STATUS.md` 第二百三十六轮。
 - [ ] 数据备份/切换/回退流程，候选安装包与验收报告。
 
 ## 每次交接必填

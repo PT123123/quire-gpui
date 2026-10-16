@@ -13,6 +13,14 @@ const TAGS: &str = "多选标签";
 const SCORE: &str = "评分";
 const FORMULA: &str = "计算分";
 const ROLLUP: &str = "关联总分";
+const TEXT: &str = "说明";
+const DATE: &str = "日期";
+const CHECKBOX: &str = "已确认";
+const URL: &str = "网址";
+const EMAIL: &str = "邮箱";
+const PHONE: &str = "电话";
+const SELECT: &str = "单选";
+const STATUS: &str = "状态";
 
 fn main() -> Result<()> {
     let args: Vec<String> = env::args().collect();
@@ -64,6 +72,30 @@ fn write(path: &Path) -> Result<()> {
     let rollup = s
         .add_database_property(block, ROLLUP.into(), PropertyKind::Rollup)
         .context("rollup")?;
+    let text = s
+        .add_database_property(block, TEXT.into(), PropertyKind::Text)
+        .context("text")?;
+    let date = s
+        .add_database_property(block, DATE.into(), PropertyKind::Date)
+        .context("date")?;
+    let checkbox = s
+        .add_database_property(block, CHECKBOX.into(), PropertyKind::Checkbox)
+        .context("checkbox")?;
+    let url = s
+        .add_database_property(block, URL.into(), PropertyKind::Url)
+        .context("url")?;
+    let email = s
+        .add_database_property(block, EMAIL.into(), PropertyKind::Email)
+        .context("email")?;
+    let phone = s
+        .add_database_property(block, PHONE.into(), PropertyKind::Phone)
+        .context("phone")?;
+    let select = s
+        .add_database_property(block, SELECT.into(), PropertyKind::Select)
+        .context("select")?;
+    let status = s
+        .add_database_property(block, STATUS.into(), PropertyKind::Status)
+        .context("status")?;
     assert!(s.set_database_relation_target(block, relation, Some(db))?);
     assert!(s.set_database_relation_target(block, mirror, Some(db))?);
     assert!(s.set_database_relation_mirror(block, relation, mirror)?);
@@ -77,6 +109,8 @@ fn write(path: &Path) -> Result<()> {
     )?);
     assert!(s.add_database_property_option(block, tags, "Alpha")?);
     assert!(s.add_database_property_option(block, tags, "Beta")?);
+    assert!(s.add_database_property_option(block, select, "重点")?);
+    assert!(s.add_database_property_option(block, status, "进行中")?);
     let left = s.add_database_record(block).context("left record")?;
     let right = s.add_database_record(block).context("right record")?;
     s.set_database_cell(
@@ -86,6 +120,14 @@ fn write(path: &Path) -> Result<()> {
         LEFT,
     )?;
     s.set_database_cell(block, left, score, "12")?;
+    s.set_database_cell(block, left, text, "保留的普通文本")?;
+    s.set_database_cell(block, left, date, "2026-10-16")?;
+    s.set_database_cell(block, left, checkbox, "true")?;
+    s.set_database_cell(block, left, url, "https://example.com/quire")?;
+    s.set_database_cell(block, left, email, "quire@example.com")?;
+    s.set_database_cell(block, left, phone, "+1 555 0100")?;
+    s.set_database_cell(block, left, select, "重点")?;
+    s.set_database_cell(block, left, status, "进行中")?;
     s.set_database_cell(block, right, score, "7")?;
     s.set_database_cell(
         block,
@@ -122,6 +164,14 @@ fn verify(path: &Path) -> Result<()> {
     let formula = find(FORMULA)?;
     let score = find(SCORE)?;
     let rollup = find(ROLLUP)?;
+    let text = find(TEXT)?;
+    let date = find(DATE)?;
+    let checkbox = find(CHECKBOX)?;
+    let url = find(URL)?;
+    let email = find(EMAIL)?;
+    let phone = find(PHONE)?;
+    let select = find(SELECT)?;
+    let status = find(STATUS)?;
     let relation_config = quire_core::core::database_relation::config_relation(&relation.config);
     let mirror_config = quire_core::core::database_relation::config_relation(&mirror.config);
     assert_eq!(relation_config.target, Some(db.id));
@@ -164,6 +214,36 @@ fn verify(path: &Path) -> Result<()> {
         s.repo.cell(right.id, mirror.id)?,
         CellValue::Items(vec![left.id.0.to_string()])
     );
+    for (property, expected) in [
+        (text.id, CellValue::Text("保留的普通文本".into())),
+        (date.id, CellValue::Text("2026-10-16".into())),
+        (checkbox.id, CellValue::Flag(true)),
+        (url.id, CellValue::Text("https://example.com/quire".into())),
+        (email.id, CellValue::Text("quire@example.com".into())),
+        (phone.id, CellValue::Text("+1 555 0100".into())),
+    ] {
+        assert_eq!(
+            s.repo.cell(left.id, property)?,
+            expected,
+            "property {property}"
+        );
+    }
+    for (property, expected_name) in [(select, "重点"), (status, "进行中")] {
+        let options = PropertyOptions::from_config(&property.config);
+        let value = s.repo.cell(left.id, property.id)?;
+        let CellValue::Text(option_id) = value else {
+            panic!("option value was not stored as text: {value:?}");
+        };
+        let option_id = option_id.parse::<u64>().context("invalid option id")?;
+        assert_eq!(
+            options
+                .get(OptionId(option_id))
+                .map(|option| option.name.as_str()),
+            Some(expected_name),
+            "option value changed for {}",
+            property.name
+        );
+    }
     let options = PropertyOptions::from_config(&tags.config);
     let expected_tags = BTreeSet::from(["Alpha".to_owned(), "Beta".to_owned()]);
     assert_eq!(
@@ -200,7 +280,7 @@ fn verify(path: &Path) -> Result<()> {
         "legacy MCP note did not survive GPUI reopen"
     );
     println!(
-        "verified database={} paired relation, formula and rollup config, multi-select values, and old-version MCP note",
+        "verified database={} paired relation, formula and rollup config, multi-select and common typed cells, and old-version MCP note",
         db.id
     );
     Ok(())
