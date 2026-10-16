@@ -1570,3 +1570,8 @@
 
 - 扩展 `tests/sync_loopback.rs` 双 Session 隔离测试：除正文附件外，再经 HTTP 同步数据库 Files 列中的二进制附件并重开核对字节。之后在节点 B 移除文件列引用，导出新 snapshot，在节点 A 应用并确认值变空、附件不再属于共享快照；节点 B 重新关联相同附件后，再同步回节点 A 并确认引用和文件字节都恢复。
 - `cargo test --locked --test sync_loopback -j 8` 通过。该测试验证引用级删除和恢复；不会据此声称附件实体文件已回收，也未覆盖完整真实共享库上的冲突删除/撤销语义。未访问真实用户库；性能评测继续留到功能完成后。
+
+## 第二百五十一轮：修复 Release GUI smoke 的搜索目标选择（2026-10-16）
+
+- Release smoke 曾从 Session 全部 block 中按索引取搜索目标；真实测试库包含数据库容器等非文本块，可能导致“搜索结果恰好为一条”的断言触发进程崩溃。现在目标从当前可见、可编辑且正文非空的文档块中选择，保持覆盖虚拟列表中的搜索跳转。
+- `cargo build --release --locked -j 8` 通过（本轮单次构建 39.94 秒）；用全新 `%TEMP%` 数据库运行 `target/release/quire-gpui.exe --db <temp>\\quire.db --smoke-test`，完整输出 `RELEASE_GUI_SMOKE=PASS`。覆盖设置、MCP、整理区、常用块编辑、数据库视图、速记/托盘、虚拟列表搜索和窗口最大化/还原。`cargo fmt --all -- --check`、`git diff --check` 及全量 `cargo test --locked -j 8` 通过（108 项：56 库 + 50 二进制 + 2 集成）。本轮没有测量编译峰值内存，39.94 秒只作一次构建记录，不作为性能对比；Slint 对比按要求留到功能收尾后。全部 smoke 数据位于 `%TEMP%`，未访问真实用户库。

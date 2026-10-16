@@ -4524,8 +4524,23 @@ impl Workspace {
                     {
                         panic!("UI input/core smoke mismatch: {texts:?}");
                     }
-                    let blocks = this.session.blocks();
-                    let find_target = blocks[blocks.len() / 2].clone();
+                    let find_candidates = this
+                        .visible_document_blocks()
+                        .into_iter()
+                        .filter_map(|(_, id)| {
+                            this.session
+                                .document
+                                .block(id)
+                                .filter(|block| {
+                                    this.session.editable(id) && !block.text.trim().is_empty()
+                                })
+                                .cloned()
+                        })
+                        .collect::<Vec<_>>();
+                    let find_target = find_candidates
+                        .get(find_candidates.len() / 2)
+                        .cloned()
+                        .expect("find smoke needs a visible, editable text block");
                     this.open_find(&Find, window, cx);
                     this.find_query = find_target.text.clone();
                     this.find_input.update(cx, |input, cx| {
