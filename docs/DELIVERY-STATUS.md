@@ -1757,3 +1757,8 @@
 - 将侧栏当前线性动画的插值宽度用于下一次切换的起点；收起中重新展开不再从逻辑状态的 0 宽度跳变，展开中再次收起同样接续当前可见宽度。动画持续时间统一为 220ms，结束状态仍由上一轮的 240ms 序号保护清理。
 - 新增确定性插值边界测试；Release GUI smoke 在真实 GPUI 窗口中触发快速反向，按当时旧动画状态对比新动画起点，并验证旧 timer 不清新状态、最终状态清理。格式检查、全量 `cargo test --locked -j 8 -- --quiet`（115 项）、`cargo check --all-targets --locked -j 8`、Release 构建（46.06 秒）与全新 `%TEMP%` 数据库 1000 块 Release GUI smoke 通过。测试库位于 `%TEMP%`；未访问真实用户库，未修改 Slint/core。未采集本次构建峰值内存、未重跑性能对比。
 - `PLAN.md` 和 `docs/DIFFERENCES.md` 已更新。仍需对照 `sidebar-toggle` 中间帧和真实鼠标命中；动画逻辑与快速反向连续性已通过自动证据。
+
+## 第二百八十三轮：刷新并验收动画修复候选包（2026-10-16）
+
+- 以 `e23dc23` 的 Release 运行代码刷新便携 ZIP 与 Inno Setup 6.7.3 per-user 安装器；打包前后 Win32 manifest 检查均为 `PerMonitorV2 PASS`。Release/staging EXE SHA-256 一致：`1C7FD541680714C04B22C714DF10960144A8AD344884C9894971C23906EDD520`；ZIP SHA-256：`AD92C1A4CE115C09CE1FAD6B018D8F67D9542AC479E64CEC07D18D1C26E4FD9C`；安装器 SHA-256：`F82F4AE72CEF1B6B785F9CDC2A5CFBB3DEC43C3A35E5A8C8915965210CE2986B`。
+- 使用唯一随机 `%TEMP%` 路径完成新版安装器静默安装，确认安装程序与 EXE 存在且安装 EXE 哈希等于 Release，再执行卸载并确认临时安装目录消失：`CANDIDATE_PACKAGE=PASS`。未启动安装后的窗口，未触碰真实用户数据库；工作树代码没有变化。真实用户升级、数据保留和回退仍属于用户实际切换时的验收。
