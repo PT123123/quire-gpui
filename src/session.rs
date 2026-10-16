@@ -3789,7 +3789,7 @@ impl Session {
         &mut self,
     ) -> anyhow::Result<quire_core::services::sync::model::SyncSnapshot> {
         use quire_core::{
-            core::database::{DatabaseId, PropertyId},
+            core::database::{CellValue, DatabaseId, PropertyId, PropertyKind},
             services::sync::model::{
                 self, SAttachment, SBlock, SNote, SPage, SRecord, STask, STaskList, SValue,
                 SyncSnapshot,
@@ -3815,7 +3815,7 @@ impl Session {
             .all_blocks()
             .filter(|block| shared_page_ids.contains(&block.page))
             .collect::<Vec<_>>();
-        let shared_attachments = shared_blocks
+        let mut shared_attachments = shared_blocks
             .iter()
             .filter_map(|block| block.attachment)
             .chain(
@@ -3826,12 +3826,6 @@ impl Session {
             )
             .collect::<HashSet<_>>();
         snapshot.blocks = shared_blocks.into_iter().map(SBlock::from).collect();
-        snapshot.attachments = self
-            .attachments
-            .values()
-            .filter(|attachment| shared_attachments.contains(&attachment.id))
-            .map(SAttachment::from)
-            .collect();
         snapshot.databases = model::catalog_schema(&self.databases);
         for database in &mut snapshot.databases {
             let records = self.repo.records_of(DatabaseId(database.id))?;
@@ -3855,6 +3849,15 @@ impl Session {
                 }
                 let values = self.repo.values_of(&record_ids, PropertyId(property.id))?;
                 for (record, value) in values {
+                    if kind == Some(PropertyKind::Files)
+                        && let CellValue::Items(ids) = &value
+                    {
+                        shared_attachments.extend(ids.iter().filter_map(|id| {
+                            id.parse::<u64>()
+                                .ok()
+                                .map(quire_core::core::types::AttachmentId)
+                        }));
+                    }
                     database.values.push(SValue::from_core(
                         quire_core::core::database::RecordId(record),
                         PropertyId(property.id),
@@ -3863,6 +3866,12 @@ impl Session {
                 }
             }
         }
+        snapshot.attachments = self
+            .attachments
+            .values()
+            .filter(|attachment| shared_attachments.contains(&attachment.id))
+            .map(SAttachment::from)
+            .collect();
         snapshot.notes = self.organizer.notes.iter().map(SNote::from).collect();
         snapshot.tasks = self.organizer.tasks.iter().map(STask::from).collect();
         snapshot.lists = self.organizer.lists.iter().map(STaskList::from).collect();
@@ -6719,6 +6728,8 @@ mod tests {
 
     #[test]
     fn sync_export_carries_pages_blocks_database_rows_and_organizer() -> Result<()> {
+        use quire_core::core::database::{CellValue, PropertyKind};
+
         let scratch = quire_core::testing::ScratchDir::new("gpui-sync-export");
         let mut session = Session::open(&scratch.path().join("sync.db"))?;
         let note = session.create_note();
@@ -6728,7 +6739,13 @@ mod tests {
         let database = session
             .make_database(block, "Sync database".into())
             .unwrap();
+        let files = session
+            .add_database_property(block, "Files".into(), PropertyKind::Files)
+            .unwrap();
         let record = session.add_database_record(block).unwrap();
+        let attachment_path = scratch.path().join("sync-attachment.bin");
+        std::fs::write(&attachment_path, b"database file attachment")?;
+        assert!(session.import_database_files(block, record, files, &[attachment_path])?);
         let snapshot = session.sync_export()?;
         assert!(!snapshot.device_id.is_empty());
         assert_eq!(
@@ -6748,6 +6765,16 @@ mod tests {
         assert!(database.records.iter().any(|row| row.id == record.0));
         assert!(snapshot.notes.iter().any(|row| row.id == note.0));
         assert!(snapshot.tasks.iter().any(|row| row.id == task.0));
+        let attachment_id = match session.repo.cell(record, files)? {
+            CellValue::Items(ids) if ids.len() == 1 => ids[0].parse::<u64>().unwrap(),
+            value => panic!("unexpected files cell: {value:?}"),
+        };
+        assert!(
+            snapshot
+                .attachments
+                .iter()
+                .any(|row| row.id == attachment_id)
+        );
         Ok(())
     }
 

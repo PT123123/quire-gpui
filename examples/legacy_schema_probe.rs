@@ -43,7 +43,7 @@ fn main() -> Result<()> {
     let args: Vec<String> = env::args().collect();
     let mode = args
         .get(1)
-        .context("write|configure|verify|sync-seed-export|sync-verify|sync-pull <db> [path]")?;
+        .context("write|configure|verify|verify-attachments|sync-seed-export|sync-verify|sync-pull <db> [path]")?;
     let path = Path::new(args.get(2).context("database path")?);
     match mode.as_str() {
         "write" => write(path),
@@ -53,6 +53,7 @@ fn main() -> Result<()> {
             args.get(4).context("token")?,
         ),
         "verify" => verify(path),
+        "verify-attachments" => verify_attachments(path),
         "sync-seed-export" => sync_seed_export(
             path,
             Path::new(args.get(3).context("snapshot output path")?),
@@ -62,8 +63,130 @@ fn main() -> Result<()> {
             Path::new(args.get(3).context("snapshot response path")?),
         ),
         "sync-pull" => sync_pull(path, args.get(3).context("legacy sync base URL")?),
-        _ => bail!("expected write, configure, verify, sync-seed-export, sync-verify or sync-pull"),
+        "sync-serve-push" => sync_serve_push(
+            path,
+            Path::new(args.get(3).context("legacy receiver database path")?),
+            args.get(4).context("sync port")?.parse()?,
+            Path::new(args.get(5).context("stop-file path")?),
+        ),
+        _ => bail!(
+            "expected write, configure, verify, verify-attachments, sync-seed-export, sync-verify, sync-pull or sync-serve-push"
+        ),
     }
+}
+
+fn sync_serve_push(
+    source_path: &Path,
+    legacy_path: &Path,
+    port: u16,
+    stop_file: &Path,
+) -> Result<()> {
+    use quire_core::services::sync::{engine::Job, server::SyncServer};
+
+    let mut source = Session::open(source_path)?;
+    let mut source_info = source.sync_self_info();
+    source_info.port = port;
+    let mut legacy = Session::open(legacy_path)?;
+    let legacy_info = legacy.sync_self_info();
+    legacy.sync_note_device(
+        &source_info.id,
+        &source_info.name,
+        &source_info.kind,
+        "127.0.0.1",
+        port,
+    );
+    legacy.sync_set_auto(true);
+    legacy.sync_set_interval(10);
+    legacy.persistence.force_flush()?;
+    println!(
+        "SYNC_PUSH_FIXTURE source_attachments={:?} receiver_attachments={:?}",
+        source.attachments.keys().collect::<Vec<_>>(),
+        legacy.attachments.keys().collect::<Vec<_>>()
+    );
+    let _ = std::io::stdout().flush();
+    // The old app opens the same fixture as the receiver. Release GPUI's
+    // single-instance lock before launching it; the sync server only needs the
+    // receiver's identity and persisted peer settings from this point on.
+    drop(legacy);
+    source.sync_note_device(
+        &legacy_info.id,
+        &legacy_info.name,
+        &legacy_info.kind,
+        "127.0.0.1",
+        quire_core::services::sync::SYNC_PORT,
+    );
+    source.persistence.force_flush()?;
+
+    let listener = std::net::TcpListener::bind(("127.0.0.1", port))?;
+    let (jobs_tx, jobs_rx) = std::sync::mpsc::channel();
+    let server = SyncServer {
+        self_info: source_info.clone(),
+        tx: jobs_tx,
+    };
+    std::thread::spawn(move || server.serve(listener));
+    println!("SYNC_PUSH_SERVER=READY port={port} id={}", source_info.id);
+
+    while !stop_file.exists() {
+        let Ok(job) = jobs_rx.recv_timeout(Duration::from_millis(100)) else {
+            continue;
+        };
+        match job {
+            Job::ExportSnapshot { reply } => {
+                println!("SYNC_PUSH_JOB=ExportSnapshot");
+                if let Ok(snapshot) = source.sync_export() {
+                    let _ = reply.send(snapshot);
+                }
+            }
+            Job::ListLocalAttachments { reply } => {
+                println!(
+                    "SYNC_PUSH_JOB=ListLocalAttachments ids={:?}",
+                    source.attachments.keys().collect::<Vec<_>>()
+                );
+                let _ = reply.send(source.attachments.keys().map(|id| *id as u64).collect());
+            }
+            Job::AttachmentBytes { id, reply } => {
+                println!("SYNC_PUSH_JOB=AttachmentBytes id={id}");
+                let bytes = source
+                    .attachment_path(quire_core::core::types::AttachmentId(id))
+                    .and_then(|path| std::fs::read(path).ok());
+                if let Some(bytes) = bytes {
+                    let _ = reply.send(bytes);
+                }
+            }
+            Job::ApplyRemote {
+                peer,
+                snapshot,
+                bytes,
+                reply,
+            } => {
+                println!("SYNC_PUSH_JOB=ApplyRemote");
+                let result = source
+                    .sync_apply_remote(&snapshot, &bytes, &peer)
+                    .map_err(|error| error.to_string());
+                let _ = reply.send(result);
+            }
+            Job::InboundPair { device, ip, reply } => {
+                source.sync_note_device(&device.id, &device.name, &device.kind, &ip, device.port);
+                let _ = reply.send(true);
+            }
+            Job::Discovered { device, ip } | Job::Paired { device, ip } => {
+                source.sync_note_device(&device.id, &device.name, &device.kind, &ip, device.port);
+            }
+            Job::SyncDone {
+                peer_id,
+                ok,
+                message,
+            } => {
+                println!("SYNC_PUSH_JOB=SyncDone ok={ok} message={message}");
+                let _ = std::io::stdout().flush();
+                source.sync_mark_done(&peer_id, ok, &message);
+                let _ = source.persistence.force_flush();
+            }
+            Job::AutoTick => {}
+        }
+    }
+    source.persistence.force_flush()?;
+    Ok(())
 }
 
 fn sync_pull(path: &Path, base_url: &str) -> Result<()> {
@@ -812,5 +935,48 @@ fn verify(path: &Path) -> Result<()> {
         "verified database={} paired relation, formula and rollup config, multi-select and common typed cells, ordered attachment set bytes, and old-version MCP note/task restore",
         db.id
     );
+    Ok(())
+}
+
+fn verify_attachments(path: &Path) -> Result<()> {
+    let session = Session::open(path)?;
+    let database = session
+        .databases
+        .databases
+        .iter()
+        .find(|database| database.name == DB_NAME)
+        .context("database lost")?;
+    let files = session
+        .databases
+        .properties
+        .iter()
+        .find(|property| property.db == database.id && property.name == FILES)
+        .context("file property lost")?;
+    let row = session
+        .repo
+        .records_of(database.id)?
+        .into_iter()
+        .find(|record| {
+            session
+                .repo
+                .record_title(record.id)
+                .ok()
+                .flatten()
+                .as_deref()
+                == Some(LEFT)
+        })
+        .context("file-bearing row lost")?;
+    let ids = match session.repo.cell(row.id, files.id)? {
+        CellValue::Items(ids) if ids.len() == 2 => ids,
+        value => bail!("unexpected file cell after legacy pull: {value:?}"),
+    };
+    for (id, expected) in ids.iter().zip([ATTACHMENT_BYTES, SECOND_ATTACHMENT_BYTES]) {
+        let id = id.parse::<u64>().context("invalid attachment id")?;
+        let file = session
+            .attachment_path(quire_core::core::types::AttachmentId(id))
+            .context("pulled attachment bytes are missing")?;
+        assert_eq!(std::fs::read(file)?, expected, "attachment payload changed");
+    }
+    println!("verified legacy-pulled database file attachments: count=2 exact_bytes=true");
     Ok(())
 }

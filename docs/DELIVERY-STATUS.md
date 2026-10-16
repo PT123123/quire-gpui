@@ -1559,3 +1559,9 @@
 
 - 在相同隔离 v4 wire probe 中增加 Relation / 双向 Mirror / Rollup：真实 Slint 服务 merge 并回传 snapshot 后，逐项检查两侧目标数据库 ID 与镜像 Property ID、Rollup 关联列/数值列/Sum 聚合配置，以及两个记录间的双向 relation cell IDs。GPUI 应用返回 snapshot 后再 export、flush、重开验证同一组配置和值。
 - 本机完整运行 `tools/test-sync-legacy-wire.ps1` 通过，附件拉取仍报 `SYNC_LEGACY_ATTACHMENTS=PASS version=4 files=2 bytes=32/32`；复杂 schema 来回仍报 `LEGACY_SYNC_WIRE=PASS` 和 `SYNC_LEGACY_RESPONSE=PASS version=4 rows=171`。全程 `%TEMP%` 临时库；未访问真实用户库，未运行性能比较。计算列呈现、GPUI→Slint 附件推送和附件删除/恢复语义仍未覆盖。
+
+## 第二百四十九轮：补齐 GPUI→Slint 数据库附件同步（2026-10-16）
+
+- 端到端探针发现 GPUI `sync_export()` 导出文件列的 `CellValue::Items`，但原先只从文档块和页面封面收集附件 ID，导致快照留下文件 ID、却省略附件元数据；Slint 因而不会请求文件字节。现将数据库 Files 属性值中的附件 ID 纳入共享附件集合，并在完整数据库 snapshot 组装后统一输出附件元数据。
+- 扩展隔离 `tools/test-sync-legacy-wire.ps1`：Slint 先创建自己的临时接收库，随后 GPUI 测试服务写入 peer 配置，旧版按原生自动同步周期访问动态 loopback 端口。探针观察到附件 1/2 的 GET 和合并 snapshot POST；Slint 退出后 GPUI 重开其临时库，逐字节核对两份含 NUL 与非 UTF-8 字节的附件，结果 `SYNC_LEGACY_PUSH_ATTACHMENTS=PASS files=2 binary_payloads=preserved`。旧版→GPUI 附件拉取仍为 `SYNC_LEGACY_ATTACHMENTS=PASS version=4 files=2 bytes=32/32`，复杂 schema 往返仍为 `LEGACY_SYNC_WIRE=PASS` / `SYNC_LEGACY_RESPONSE=PASS version=4 rows=171`。
+- 增加 `sync_export_carries_pages_blocks_database_rows_and_organizer` 的 Files 列附件导出断言。定向单测、全量 `cargo test --locked -j 8`（108 项）及真实 Slint loopback 同步通过；`cargo fmt --all -- --check` 与 `git diff --check` 通过。全部只使用 `%TEMP%` 隔离库，未访问真实用户库或修改 Slint/core。性能评测仍按用户要求留到功能收尾后；附件删除/恢复语义、计算列呈现及完整共享基线变更尚未覆盖。
