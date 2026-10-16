@@ -3702,6 +3702,7 @@ impl Workspace {
                 let _ = mcp_result_tx.send(smoke_mcp_create_note(mcp_port, &mcp_token));
             });
             cx.spawn_in(window, async move |weak, cx| {
+                let mut search_selection_expected = None;
                 cx.background_executor()
                     .timer(Duration::from_millis(400))
                     .await;
@@ -4395,6 +4396,13 @@ impl Workspace {
                             && block.text.to_lowercase().contains(search_hit_query))
                         .expect("search fixture must contain an editable matching block")
                         .id;
+                    let search_hit_len = this
+                        .session
+                        .document
+                        .block(search_hit_block)
+                        .expect("search hit block should exist")
+                        .text
+                        .len();
                     this.activate_page(original_page, window, cx);
                     this.open_search(&SearchPages, window, cx);
                     this.search_query = search_hit_query.into();
@@ -4403,11 +4411,28 @@ impl Workspace {
                         .iter()
                         .position(|id| *id == search_hit_page)
                         .expect("body search should find the fixture page");
-                    this.open_selected_search_result(window, cx);
-                    assert_eq!(this.session.page.id, search_hit_page);
-                    assert_eq!(this.active, Some(search_hit_block), "Enter should navigate to and focus the matching body block");
-                    this.activate_page(original_page, window, cx);
-                    eprintln!("SMOKE: keyboard search result navigates to and focuses its matching body block");
+                    this.search_input.update(cx, |_, cx| cx.emit(InputEvent::Split(0)));
+                    search_selection_expected = Some((search_hit_page, original_page, search_hit_block, search_hit_len));
+                    eprintln!("SMOKE: Enter event dispatched through the page search input subscription");
+                });
+                cx.background_executor()
+                    .timer(Duration::from_millis(150))
+                    .await;
+                let _ = weak.update_in(cx, |this, window, cx| {
+                    if let Some((hit_page, return_page, hit_block, hit_len)) =
+                        search_selection_expected.take()
+                    {
+                        assert_eq!(this.session.page.id, hit_page);
+                        assert_eq!(this.active, Some(hit_block));
+                        let input = this
+                            .inputs
+                            .get(&hit_block.0)
+                            .expect("virtualized search hit editor should mount after navigation");
+                        assert_eq!(input.read(cx).buffer.selection, 0..hit_len);
+                        assert!(input.read(cx).focus.is_focused(window));
+                        this.activate_page(return_page, window, cx);
+                        eprintln!("SMOKE: virtualized search hit selects the full body text and retains editor focus");
+                    }
                     let palette_return_focus = window.focused(cx);
                     this.open_command_palette(window, cx);
                     assert!(this.search_input.read(cx).focus.is_focused(window));
