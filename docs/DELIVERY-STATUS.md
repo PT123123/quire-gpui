@@ -1813,3 +1813,9 @@
 - 块文字/背景十色选择器打开后现在取得键盘焦点并高亮当前色块；方向键循环选择，Enter/Space 应用，Escape 关闭并恢复原焦点。点外关闭继续保留目标控件焦点。
 - `cargo fmt --all`、`cargo check --all-targets --locked -j 8`、二进制测试（55 项）和 Release 构建通过。全新 `%TEMP%` SQLite 上的 1000 块 Release GUI smoke 通过色板焦点接管、渲染和 Escape 恢复，以及此前全流程场景。
 - 自动 smoke 未合成物理按键；未访问真实用户库或修改 Slint/core，本轮未运行性能评测。
+
+## 第二百九十三轮：数据库筛选子面板键盘操作（2026-10-16）
+
+- 数据库筛选的属性、比较方式和选项列表现在接管焦点；方向键循环高亮，Enter/Space 选择，Escape 从子面板返回，再次 Escape 关闭并恢复原焦点。筛选点外关闭不会抢回焦点；修改仍经原有视图定义保存路径。
+- `cargo fmt --all -- --check`、全量 `cargo test --locked -j 8 -- --quiet`（116 项）、`cargo check --all-targets --locked -j 8`、Release 构建和 `git diff --check` 通过。新建 `%TEMP%` SQLite 的 1000 块 Release GUI smoke 打开并渲染筛选面板，验证焦点接管及 Escape 恢复，完整流程正常退出。
+- 自动 smoke 未合成方向键/鼠标输入；未访问真实用户库或修改 Slint/core，本轮不运行性能评测。
