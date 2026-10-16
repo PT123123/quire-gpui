@@ -15103,28 +15103,25 @@ impl Workspace {
                                                                     .zip(row.cells.iter())
                                                                     .take(3)
                                                                     .map(|(property, value)| {
-                                                                        let computed = match property.kind {
+                                                                        let value = match property.kind {
                                                                             quire_core::core::database::PropertyKind::Formula => evaluate_database_formula(
                                                                                 property.id,
                                                                                 &gallery_formula_properties,
                                                                                 &gallery_repo,
                                                                                 quire_core::core::database::RecordId(row.record),
                                                                                 0,
-                                                                            ),
+                                                                            )
+                                                                            .map(|value| quire_core::core::database_formula::display(&value))
+                                                                            .unwrap_or_else(|_| quire_core::core::database_formula::FORMULA_ERROR_PAINT.into()),
                                                                             quire_core::core::database::PropertyKind::Rollup => evaluate_database_rollup(
                                                                                 property.id,
                                                                                 &gallery_all_properties,
                                                                                 &gallery_repo,
                                                                                 quire_core::core::database::RecordId(row.record),
-                                                                            ),
-                                                                            _ => Err(quire_core::core::database_formula::FormulaError::Eval(String::new())),
-                                                                        };
-                                                                        let value = if property.kind.is_computed() {
-                                                                            computed
-                                                                                .map(|value| quire_core::core::database_formula::display(&value))
-                                                                                .unwrap_or_else(|_| quire_core::core::database_formula::FORMULA_ERROR_PAINT.into())
-                                                                        } else {
-                                                                            value.clone()
+                                                                            )
+                                                                            .map(|value| quire_core::core::database_formula::display(&value))
+                                                                            .unwrap_or_else(|_| quire_core::core::database_formula::FORMULA_ERROR_PAINT.into()),
+                                                                            _ => value.clone(),
                                                                         };
                                                                         let value = if value.trim().is_empty() { "—".to_owned() } else { value.chars().take(48).collect::<String>() };
                                                                         div()
