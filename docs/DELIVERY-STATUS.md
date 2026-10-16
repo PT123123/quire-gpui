@@ -1938,3 +1938,9 @@
 - 审核完整 1000 块 Release smoke 日志与相应断言后，将 `command-invoked`、`block-plus`、`page-create-requested`、`toggle-fold` 标为已验证：命令面板筛选并执行设置 action；块插入菜单筛选 Heading2 并两步撤销；创建空白页/模板页并验证安全树重挂、根级移动和循环拒绝；Toggle 折叠后代并撤销/重做。验证边界保留在 sidecar：不代表真实快捷键、鼠标命中/拖放或控件视觉验收。
 - 本次只调整矩阵/计划记录，没有新增代码；已有 Release GUI smoke 日志退出码为 0。PARITY 当前为 37 项已验证、209 项未验证，另有 2 项不适用。
 - Slint/GPUI 性能评测继续留到功能完成后；既有兼容脚本结果见上一轮记录。
+
+## 第三百一十四轮：补记整理区与图标交互 smoke 验收（2026-10-16）
+
+- 依据当前 Release smoke 源码断言与 `%TEMP%` 完整运行日志，将 `org-subtask-title-set`、`org-task-moved`、`org-bin-restored`、`org-card-dropped`、`org-reply-submitted`、`icon-picked` 更新为已验证。覆盖子任务标题取消/提交、多任务移清单并撤销重做、两条笔记批量恢复、选中任务组拖放数据路径、笔记回复及线程关系/撤销重做、页面图标状态往返。拖放 payload 测试不等于真实鼠标拖动，图标状态测试不等于真实网格点选；矩阵差异列均保留这些限制。
+- 没有新增代码；引用的是已重跑且退出码为 0 的隔离 Release GUI smoke。PARITY 当前为 43 项已验证、203 项未验证，另有 2 项不适用。
+- 性能评测留待功能完成后；未访问真实用户库或控制桌面。

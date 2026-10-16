@@ -55,7 +55,7 @@ org-tag-picked,已实现,已验证,标签侧栏按路径逐级显示直接子标
 org-task-done-toggled,已实现,未验证,单项完成切换和多选批量完成均可用；批量操作作为一个可撤销历史项,批量调用 core command::exec_all，Ctrl+Z 一次撤销整批
 org-subtask-added,已实现,未验证,任务详情可新增子任务，输入后按 Enter 或点添加提交,子任务嵌入 Task 行，新增走单条 UpdateTask，ID 由任务内最大子任务 ID 递增
 org-subtask-edit,已实现,未验证,点击已有子任务标题切换为该行的共享输入框并聚焦,每个任务详情只挂载一个子任务编辑器；当前值加载为草稿，Escape 取消、Enter 或失焦提交
-org-subtask-title-set,已实现,未验证,点击已有子任务标题进入行内编辑；Enter 或失焦提交，Escape 放弃编辑,通过共享子任务输入框与 core set_subtask_title 写入单条 UpdateTask；Session 覆盖撤销/重做、持久化与重开，Release UI smoke 覆盖 Workspace 编辑提交路径
+org-subtask-title-set,已实现,已验证,点击已有子任务标题进入行内编辑；Enter 或失焦提交，Escape 放弃编辑,隔离 Release GUI smoke 通过 Workspace inline edit 路径覆盖启动编辑、取消不写入及提交新标题；Session 另覆盖持久化和撤销重做。未测真实行标题鼠标命中
 org-subtask-done-toggled,已实现,未验证,任务详情可独立勾选/取消子任务完成状态,更新整个 Task 的 subtasks 并作为单条 core 历史记录
 org-subtask-deleted,已实现,未验证,任务详情可删除子任务,从 Task 子任务数组移除；core UpdateTask 支持撤销恢复
 db-row-added,已实现,未验证,可创建并编辑记录、删除选中记录（页面关联记录须从侧栏删除）；Table、Board、Gallery、Calendar、Timeline、Form 和 Chart 视图可用,新增/删除与单元格修改走 core 页面历史；记录与 typed cells 由虚拟查询按需读取；ScratchDir 覆盖写入、删除、撤销/重做和重启读回
@@ -145,11 +145,11 @@ version-restore,已实现,已验证,将当前页面内容恢复到所选快照�
 version-delete,已实现,已验证,删除选中版本的快照文件及其 metadata；删除页面会同时清理其后代版本,隔离库验证删除后索引、快照和重开状态；版本列表提供逐项删除
 version-back,已实现,已验证,从差异查看返回版本列表而不关闭面板,GPUI 清除当前选择/差异行并保留版本目录列表
 versions-close,已实现,已验证,关闭版本历史面板并恢复编辑焦点,完成按钮和 Escape 关闭面板；打开时聚焦版本名称输入框
-org-task-moved,已实现,未验证,任务详情支持移至其他清单且任务多选可批量移动或拖到目标清单侧栏,批量按钮和拖放均通过 set_tasks_list 写入单条 core organizer batch 并保持当前可见顺序；ScratchDir 覆盖撤销重做和重开，隔离 Release GUI smoke 覆盖多选拖放 endpoint；真人拖动仍待桌面验收
-org-bin-restored,已实现,未验证,整理区回收站支持笔记与任务多选并批量恢复当前可见所选项,通过 Session set_notes_trashed/set_tasks_trashed 执行单条 organizer batch；隔离 Release GUI smoke 覆盖双项恢复及单步 undo/redo，真实鼠标操作仍待桌面验收
-org-card-dropped,已实现,未验证,拖动任务单项或已选任务组到清单侧栏或看板列以移动清单,列表行与看板卡片均可拖到收集箱或目标清单；拒绝同清单与回收站目标，所选组按可见顺序使用单条撤销批次；隔离 Release smoke 覆盖移动 endpoint，真实鼠标拖放待桌面验收
+org-task-moved,已实现,已验证,任务详情支持移至其他清单且任务多选可批量移动或拖到目标清单侧栏,隔离 Release GUI smoke 对两项任务执行批量移动并检查目标清单、撤销、重做；真人拖动仍待验收
+org-bin-restored,已实现,已验证,整理区回收站支持笔记与任务多选并批量恢复当前可见所选项,隔离 Release GUI smoke 通过批量恢复入口恢复两条回收笔记，并检查恢复状态和单步撤销/重做；真实鼠标选择仍待验收
+org-card-dropped,已实现,已验证,拖动任务单项或已选任务组到清单侧栏或看板列以移动清单,隔离 Release GUI smoke 构造已选任务组拖放 payload，校验目标接受规则、批量移动及撤销/重做；真实鼠标拖放命中和动画仍待验收
 org-mode-picked,已实现,未验证,在列表与按清单分列的任务看板间切换,看板显示收集箱和所有清单中的开放任务并保留搜索/标签筛选；卡片支持完成、打开详情、拖至其他列及在本列新建；真实鼠标布局待桌面验收
-org-reply-submitted,已实现,未验证,在笔记详情创建一条指向当前笔记的评论并按时间显示,在线父笔记下创建 title 为空且 ref_note 指向父项的 note；评论独立入 organizer history、支持 undo/redo 与 SQLite 重开；被引用评论从顶层列表过滤并由 MCP list_notes 暴露 ref_note；隔离 smoke 构造完整详情视图树，真人提交/布局待验收
+org-reply-submitted,已实现,已验证,在笔记详情创建一条指向当前笔记的评论并按时间显示,隔离 Release GUI smoke 通过 Workspace submit handler 创建父笔记回复，断言 ref_note、正文、顶层过滤、渲染以及单步撤销/重做；真实鼠标提交与布局仍待验收
 column-item-move,已实现,未验证,多栏布局内 Tab / Shift+Tab 按列从左至右及列内树序切换内容块焦点；边界停留不触发列表缩进，表格单元格仍优先执行表格导航,跳过 Column 容器，折叠块不遍历隐藏后代，嵌套 Column 不重复计入
 lock-nudge,已实现,未验证,锁定页上的文本编辑、拆分合并、缩进、格式化、删除或复制输入会恢复原文并在状态栏说明如何解锁,core 继续拒绝所有修改；GPUI 阻止输入框暂态文本与持久内容分离
 empty-page-started,已实现,未验证,空白文档区点击或标题输入框按 Enter 会创建首个空段落并将焦点置于起点,锁定空页显示解锁提示；创建后进入普通编辑与持久化流程
@@ -184,7 +184,7 @@ nav-forward-requested,已实现,未验证,前进重走此前回退经过的文�
 db-columns-closed,已实现,未验证,数据库列选择器可按 Escape 关闭，焦点移到其他内容块时也关闭,共享 DismissSlash 输入事件与焦点转移清理列选择器状态
 db-filter-closed,已实现,未验证,数据库筛选器可按 Escape 关闭，切换焦点或打开其他数据库工具时关闭,共享 DismissSlash 输入事件与工具互斥清理筛选器状态
 db-group-closed,已实现,未验证,数据库分组菜单可按 Escape 关闭，切换焦点或打开其他数据库工具时关闭,共享 DismissSlash 输入事件与工具互斥清理分组状态
-icon-picked,已实现,未验证,页面选项中的图标网格支持选择图标或清除图标,选择后通过 PageIconSet 持久化；release GUI smoke 通过 Workspace 选择并恢复隔离页图标
+icon-picked,已实现,已验证,页面选项中的图标网格支持选择图标或清除图标,隔离 Release GUI smoke 通过 Workspace 选择并恢复页面图标，检查 PageIconSet 状态往返；真实图标网格鼠标命中仍待验收
 db-rollup-closed,已实现,未验证,GPUI 将汇总配置作为属性下方常驻内联编辑区，因此没有单独的关闭事件,关联/目标列/聚合选择即时写入可撤销数据库变更；旧版关闭回调在该布局中已由直接选择提交取代
 org-close-requested,已实现,未验证,点击侧栏当前已选中的文档页即可从整理区返回该文档,作为统一导航停靠点记录并清理整理区状态；Release GUI smoke 覆盖该切换
 db-filter-opened,已实现,未验证,数据库工具栏筛选按钮打开当前视图的筛选规则面板,同一时刻仅有一个数据库筛选弹层；切换视图或打开其他工具时收起
