@@ -1931,3 +1931,4 @@
 - Release GUI smoke 在临时文档追加独立段落，为其选中 UTF-8 字节范围后直接调用 Workspace `ToggleMark` 输入事件处理路径；断言粗体标记的起止范围，随后验证单步撤销移除标记、重做恢复标记，并清理该测试块。`toggle-mark` 标为已验证。此项证明事件处理与 core 历史路径，不代表系统快捷键/工具栏物理点击或复杂混排视觉验收。
 - 新建 `%TEMP%` SQLite 的完整 1000 块 Release GUI smoke 通过，退出码为 0；其中普通表格键盘导航及最小行列结构回归仍通过。PARITY 当前为 33 项已验证、213 项未验证，另有 2 项不适用。
 - 本轮性能评测仍按用户要求留到功能收尾之后；测试没有访问真实用户库或修改 Slint/core。
+- 追加复跑 `tools/test-legacy-roundtrip.ps1` 与 `tools/test-sync-legacy-wire.ps1` 均通过：前者覆盖旧版读取 GPUI 的复杂数据库 schema/类型值/有序附件字节和 MCP 笔记/任务恢复；后者覆盖 v4 snapshot 的 171 行合并往返及 Slint→GPUI、GPUI→Slint 两向各 2 个附件逐字节传输。fixture 均在新建 `%TEMP%` 目录。
