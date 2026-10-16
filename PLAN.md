@@ -1,6 +1,6 @@
 ﻿# GPUI 复刻实施计划
 
-状态：基础编辑器与核心页面管理已有代码并通过开发构建；真人输入法反馈无问题。已有同机 GPUI/Slint 性能基线（`c742cfa`），功能冻结后的最终复测尚待进行，见 `docs/DELIVERY-STATUS.md` 第二百三十五轮。全功能、视觉复刻与自动回归已继续推进；真人 DPI/IME、真实网络和逐项窗口点选场景仍待后续反馈。以下阶段不是工时承诺；按阶段推进。
+状态：GPUI 主要功能、同步/MCP 和隔离兼容回归已接通，最终 Release 包已刷新。最终同机性能对比已于 2026-10-16 在 GPUI `b745d36` 与 Slint `9112467` 上完成，结果见 `docs/DELIVERY-STATUS.md` 第二百七十七轮。全量真人窗口验收、DPI/IME、真实设备网络和逐项视觉场景仍未关闭；以下阶段不是工时承诺，按阶段推进。
 
 2026-10-14 第二轮记录（历史）：当时完成了 P0 的资料核验，并将需要真跑 GPUI 的条目标为未开始。后续窗口、功能与验证已持续推进；当前状态以各阶段条目和下方最新执行记录为准。
 
@@ -92,9 +92,9 @@
 - [~] Release GUI smoke 已覆盖当前可自动化的主流程，最近复跑通过；其中窗口最大化/还原、托盘隐藏/唤回与虚拟列表搜索均有隔离回归。真实鼠标、IME、多屏/DPI、全主题视觉对照与未验证 parity 项仍待候选验收。
 - [ ] 全主题、尺寸、DPI 和交互状态视觉对照。
 - [ ] IME、人机交互、编辑正确性、数据库兼容全部通过。
-- [~] 已有一轮 GPUI/Slint 性能基线（warm no-op / 单文件 Release 重编时间与聚合编译内存，空白/10k 文档下窗口 handle-up、CPU、Working Set/Private Bytes），方法、当时 commit、限制与原始结果见 `docs/DELIVERY-STATUS.md` 第二百三十五轮。该 commit 后仍有源码改动；按用户要求，功能收尾后用同脚本重测并作为最终对比，性能项目目前不关闭。
+- [x] 功能收尾后的最终 GPUI/Slint 对比已完成：warm no-op、单文件 Release 重编与构建进程 Working Set/Private Bytes，以及空白和 10k 块场景下窗口出现时间、空闲 CPU、运行进程内存均按同机同脚本测量。结果、原始 JSON 路径和限制见 `docs/DELIVERY-STATUS.md` 第二百七十七轮。
 - [ ] 测试库完成全量旧版→新版→旧版往返，附件和协议兼容。已抽验基本页面/常见块、文件列中两份附件的顺序与字节、笔记/任务/子任务，以及文本/数字/日期/勾选/网址/邮箱/电话/单选/多选/状态属性、双向关联、公式/汇总配置的隔离同库往返；GPUI 写入后由 Slint Release 打开并保存，再由 GPUI 重读断言。旧版 MCP 读写与笔记/任务分别移入回收站并恢复后的重读均通过。可用 `tools/test-legacy-roundtrip.ps1` 重跑隔离验证。页面/organizer 及复杂数据库 v4 snapshot 已由 `tools/test-sync-legacy-wire.ps1` 验证 GPUI Session → Slint Release 应用服务 → GPUI Session 的 loopback 往返；覆盖 Number 值、Formula 配置、Select 选项和值、双向 Relation/Mirror 配置与值、Rollup 配置，并在 GPUI 应用后 flush、重开重读。旧版→GPUI 附件拉取和 GPUI→Slint 附件推送均已用两份任意二进制文件完成真实 Slint 服务/自动同步、隔离库重开与逐字节核验。双节点 loopback 还验证了数据库文件列的附件二进制传输、远端移除引用及重新关联恢复。Formula/Rollup 配置及表格/列表计算呈现已有查询测试，画廊/看板卡片现也计算显示；其他复杂 schema、附件实体回收/用户撤销恢复语义及完整共享基线上的双向变更仍未覆盖，详见 `docs/DELIVERY-STATUS.md` 第二百三十六至二百五十轮。
-- [~] 候选版隔离安装、切换前备份、双版本不可并发写和回退步骤已记录在 `docs/RELEASE-AND-ROLLBACK.md`；本轮候选便携 ZIP 已从临时解压路径完成 GUI smoke，安装器需 Inno Setup 6。仍需功能冻结后的最终包与验收报告、最终 Slint 性能比较、剩余兼容门，以及真实用户安装升级/迁移回退验收；不得把临时库验收写成真实迁移完成。
+- [~] 候选版隔离安装、切换前备份、双版本不可并发写和回退步骤已记录在 `docs/RELEASE-AND-ROLLBACK.md`；最终便携 ZIP 与 Inno Setup 6 安装器已构建，staging EXE 哈希与 Release 一致，并通过新 `%TEMP%` 库 GUI smoke。最终性能报告已完成；仍需真人桌面验收、剩余兼容门及真实用户安装升级/迁移回退验收，不得把临时库验收写成真实迁移完成。
 
 ## 每次交接必填
 

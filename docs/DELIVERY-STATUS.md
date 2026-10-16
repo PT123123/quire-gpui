@@ -1709,3 +1709,24 @@
 
 - 扩展 `examples/legacy_schema_probe.rs` 的隔离同库兼容夹具，增加 `Title`、`CreatedTime`、`LastEditedTime` schema 断言。旧版 Slint MCP 往返后，GPUI 重新打开确认三种属性仍保留正确类型；此前已覆盖的可写属性与附件断言继续通过，`LEGACY_ROUNDTRIP=PASS`。
 - `cargo fmt --all -- --check`、`cargo check --all-targets --locked -j 8`、`git diff --check` 通过。此次未运行性能评测；性能对比仍留到功能验收收尾后。
+
+## 第二百七十七轮：功能收尾后的最终 GPUI / Slint 性能对比（2026-10-16）
+
+- 构建版本：GPUI `b745d3676306eed4a64054d9c886b603f9993b35`，Slint `911246743cf79c43c96b38dfd39dffac3fb4d53c`；同一 Windows 11 机器、Rust/Cargo 1.98.0。Release EXE 分别为 26,021,888 B 与 38,415,872 B（GPUI 小 32.3%）。构建脚本以已有缓存测 warm no-op，再只更新时间戳触发 `src/view.rs` / `src/app/state.rs` 单文件重编；250ms 汇总 cargo/rustc/link/lld-link 的 Working Set 与 Private Bytes。
+
+| Release 构建 | GPUI | Slint |
+|---|---:|---:|
+| warm no-op | 6.56s；峰值 Working Set / Private 123.7 / 107.0 MiB | 5.99s；117.3 / 100.6 MiB |
+| 单文件重编 | 39.19s；峰值 Working Set / Private 1121.7 / 1700.4 MiB | 462.51s；5593.8 / 5591.8 MiB |
+
+- 单文件重编 GPUI 约快 11.8 倍，峰值 Working Set 低约 79.9%，峰值 Private Bytes 低约 69.6%；warm no-op GPUI 慢 0.57s。重编仅触碰文件时间戳，代表当前 Cargo 缓存下的增量重编，不是清空 target 的冷构建。
+- 运行进程每次启动后预热 2s，再以 250ms 间隔空闲采样 8s；窗口外框设为 1600×900，每场景每端 n=2，表中为两次算术平均。CPU 是单核百分比。
+
+| 场景 | GPUI 窗口出现 | Slint 窗口出现 | GPUI 空闲 CPU | Slint 空闲 CPU | GPUI Working Set 末值 / 峰值 | Slint Working Set 末值 / 峰值 | GPUI Private 末值 / 峰值 | Slint Private 末值 / 峰值 |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| 空白工作区 | 1191.9ms | 1038.8ms | 2.29% | 0.39% | 122.0 / 149.5 MiB | 111.0 / 116.9 MiB | 90.0 / 117.6 MiB | 79.4 / 85.4 MiB |
+| 10,000 块 | 1006.3ms | 896.5ms | 3.26% | 0.19% | 159.6 / 202.5 MiB | 126.4 / 131.6 MiB | 130.1 / 173.1 MiB | 95.3 / 100.6 MiB |
+
+- 当前 GPUI 在该机的运行峰值较高：10k 场景 Working Set 多约 70.9 MiB、Private Bytes 多约 72.6 MiB；空闲 CPU 样本也更高。GPUI 窗口出现时间空白场景慢约 153ms、10k 场景慢约 110ms。启动样本只有两次且波动明显，不能据此认定稳定差距；报告也不覆盖键入延迟、连续滚动帧率或 GPU 专用内存。
+- 数据路径并非完全等价：GPUI 从隔离 SQLite 读取恰好 10,000 个块（smoke 预置 9,996 并由验证操作新增 4 块），Slint 用 `--blocks 10000` 在内存生成合成块。所有运行库均为新建 `%TEMP%` fixture，未访问真实用户库。一次 Slint 10k 运行因 PowerShell 参数误绑导致外框为 10,000×900，已明确丢弃；表中只使用重新测量且记录为 1600×900 的两次结果。
+- 原始 JSON 与 stdout/stderr 构建日志位于 `%TEMP%\quire-final-perf-2026-10-16-complete`。最终便携包和安装器已刷新，staging EXE 与 Release EXE SHA-256 相同（`F1749ACA21D6601303647352E98217B903F83347C30302072B20F4685FB0FF4A`）；ZIP SHA-256 `6764E44F746B990CFCD3878C44B1A593437C3C513A570F7D482B4C7812F9DE3D`；安装器 SHA-256 `31EE69F87F664F68CE6FCB4F1B9D8C6C95593A9F3E6E6C561A7B7F81C1E2DA45`。staging 包的 DPI manifest 检查和 1000 块隔离 Release GUI smoke 均通过。`quire-desktop` 工作树保持干净；本轮无 Slint 源码内容变更。
