@@ -2314,8 +2314,10 @@ pub struct Workspace {
     find_index: Option<usize>,
     find_open: bool,
     search_open: bool,
+    search_focus_return: Option<FocusHandle>,
     search_selected: usize,
     command_palette_open: bool,
+    command_palette_focus_return: Option<FocusHandle>,
     command_palette_query: String,
     command_palette_selected: usize,
     backlinks_open: bool,
@@ -2752,8 +2754,10 @@ impl Workspace {
             find_index: None,
             find_open: false,
             search_open: false,
+            search_focus_return: None,
             search_selected: 0,
             command_palette_open: false,
+            command_palette_focus_return: None,
             command_palette_query: String::new(),
             command_palette_selected: 0,
             backlinks_open: false,
@@ -3954,6 +3958,18 @@ impl Workspace {
                         assert!(focus.is_focused(window), "closing settings restores its previous focus");
                     }
                     eprintln!("SMOKE: Ctrl+K command palette filtering and settings action passed");
+                    let search_return_focus = window.focused(cx);
+                    this.open_search(&SearchPages, window, cx);
+                    assert!(this.search_input.read(cx).focus.is_focused(window));
+                    this.close_search(window, cx);
+                    assert_eq!(window.focused(cx), search_return_focus);
+                    eprintln!("SMOKE: search overlay restores its opening focus");
+                    let palette_return_focus = window.focused(cx);
+                    this.open_command_palette(window, cx);
+                    assert!(this.search_input.read(cx).focus.is_focused(window));
+                    this.close_command_palette(window, cx);
+                    assert_eq!(window.focused(cx), palette_return_focus);
+                    eprintln!("SMOKE: command palette restores its opening focus");
                     this.open_command_palette(window, cx);
                     this.search_input.update(cx, |input, cx| {
                         input.replace_text_in_range(
@@ -10416,6 +10432,7 @@ impl Workspace {
             .collect()
     }
     fn open_command_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.command_palette_focus_return = window.focused(cx);
         if self.search_open {
             self.search_open = false;
         }
@@ -10449,7 +10466,11 @@ impl Workspace {
             input.placeholder = Some(placeholder.into());
             input.reset(String::new(), Vec::new(), 0, cx);
         });
-        self.restore_focus(window, cx);
+        if let Some(focus) = self.command_palette_focus_return.take() {
+            window.focus(&focus);
+        } else {
+            self.restore_focus(window, cx);
+        }
         cx.notify();
     }
     fn invoke_palette_command(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -10643,6 +10664,7 @@ impl Workspace {
         }
     }
     fn open_search(&mut self, _: &SearchPages, window: &mut Window, cx: &mut Context<Self>) {
+        self.search_focus_return = window.focused(cx);
         self.search_open = true;
         self.search_query.clear();
         self.search_selected = 0;
@@ -10704,7 +10726,9 @@ impl Workspace {
             input.placeholder = Some(placeholder.into());
             input.reset(String::new(), Vec::new(), 0, cx);
         });
-        if let Some(id) = self.active
+        if let Some(focus) = self.search_focus_return.take() {
+            window.focus(&focus);
+        } else if let Some(id) = self.active
             && let Some(input) = self.inputs.get(&id.0)
         {
             window.focus(&input.read(cx).focus);
@@ -10714,7 +10738,11 @@ impl Workspace {
     fn open_selected_search_result(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let result = self.search_result_ids().get(self.search_selected).copied();
         if let Some(page_id) = result {
+            let old_page = self.session.page.id;
             self.activate_page(page_id, window, cx);
+            if self.session.page.id != old_page {
+                self.search_focus_return = None;
+            }
         }
         self.close_search(window, cx);
     }
