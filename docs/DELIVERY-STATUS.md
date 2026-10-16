@@ -1565,3 +1565,8 @@
 - 端到端探针发现 GPUI `sync_export()` 导出文件列的 `CellValue::Items`，但原先只从文档块和页面封面收集附件 ID，导致快照留下文件 ID、却省略附件元数据；Slint 因而不会请求文件字节。现将数据库 Files 属性值中的附件 ID 纳入共享附件集合，并在完整数据库 snapshot 组装后统一输出附件元数据。
 - 扩展隔离 `tools/test-sync-legacy-wire.ps1`：Slint 先创建自己的临时接收库，随后 GPUI 测试服务写入 peer 配置，旧版按原生自动同步周期访问动态 loopback 端口。探针观察到附件 1/2 的 GET 和合并 snapshot POST；Slint 退出后 GPUI 重开其临时库，逐字节核对两份含 NUL 与非 UTF-8 字节的附件，结果 `SYNC_LEGACY_PUSH_ATTACHMENTS=PASS files=2 binary_payloads=preserved`。旧版→GPUI 附件拉取仍为 `SYNC_LEGACY_ATTACHMENTS=PASS version=4 files=2 bytes=32/32`，复杂 schema 往返仍为 `LEGACY_SYNC_WIRE=PASS` / `SYNC_LEGACY_RESPONSE=PASS version=4 rows=171`。
 - 增加 `sync_export_carries_pages_blocks_database_rows_and_organizer` 的 Files 列附件导出断言。定向单测、全量 `cargo test --locked -j 8`（108 项）及真实 Slint loopback 同步通过；`cargo fmt --all -- --check` 与 `git diff --check` 通过。全部只使用 `%TEMP%` 隔离库，未访问真实用户库或修改 Slint/core。性能评测仍按用户要求留到功能收尾后；附件删除/恢复语义、计算列呈现及完整共享基线变更尚未覆盖。
+
+## 第二百五十轮：验证文件列附件的远端移除与恢复（2026-10-16）
+
+- 扩展 `tests/sync_loopback.rs` 双 Session 隔离测试：除正文附件外，再经 HTTP 同步数据库 Files 列中的二进制附件并重开核对字节。之后在节点 B 移除文件列引用，导出新 snapshot，在节点 A 应用并确认值变空、附件不再属于共享快照；节点 B 重新关联相同附件后，再同步回节点 A 并确认引用和文件字节都恢复。
+- `cargo test --locked --test sync_loopback -j 8` 通过。该测试验证引用级删除和恢复；不会据此声称附件实体文件已回收，也未覆盖完整真实共享库上的冲突删除/撤销语义。未访问真实用户库；性能评测继续留到功能完成后。

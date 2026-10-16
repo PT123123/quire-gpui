@@ -121,7 +121,31 @@ fn two_isolated_sessions_exchange_changes_over_sync_http_and_reopen() -> anyhow:
             quire_core::core::database::PropertyKind::Text,
         )
         .unwrap();
+    let files_property_b = b
+        .add_database_property(
+            database_block_b,
+            "附件".into(),
+            quire_core::core::database::PropertyKind::Files,
+        )
+        .unwrap();
     b.set_database_cell(database_block_b, record_b, property_b, "数据库单元同步")?;
+    let database_attachment_fixture = scratch_b.path().join("database-attachment.bin");
+    std::fs::write(
+        &database_attachment_fixture,
+        b"database loopback file\0\xff",
+    )?;
+    assert!(b.import_database_files(
+        database_block_b,
+        record_b,
+        files_property_b,
+        std::slice::from_ref(&database_attachment_fixture)
+    )?);
+    let database_attachment_id = match b.repo.cell(record_b, files_property_b)? {
+        quire_core::core::database::CellValue::Items(ids) if ids.len() == 1 => {
+            ids[0].parse::<u64>().expect("database attachment id")
+        }
+        value => panic!("unexpected database files cell: {value:?}"),
+    };
     b.execute(Command::AppendBlock {
         kind: quire_core::core::types::BlockKind::Paragraph,
         text: "来自节点 B 的正文".into(),
@@ -231,6 +255,17 @@ fn two_isolated_sessions_exchange_changes_over_sync_http_and_reopen() -> anyhow:
         std::fs::read(a.attachment_path(attachment_b).unwrap())?,
         b"loopback attachment bytes"
     );
+    assert_eq!(
+        a.repo.cell(record_b, files_property_b)?,
+        quire_core::core::database::CellValue::Items(vec![database_attachment_id.to_string()])
+    );
+    assert_eq!(
+        std::fs::read(
+            a.attachment_path(AttachmentId(database_attachment_id))
+                .unwrap()
+        )?,
+        b"database loopback file\0\xff"
+    );
     assert!(
         a.document
             .page_blocks(page_b)
@@ -269,6 +304,62 @@ fn two_isolated_sessions_exchange_changes_over_sync_http_and_reopen() -> anyhow:
     assert_eq!(
         b.repo.cell(record_b, property_b)?,
         quire_core::core::database::CellValue::Text("数据库单元同步".into())
+    );
+    assert_eq!(
+        b.repo.cell(record_b, files_property_b)?,
+        quire_core::core::database::CellValue::Items(vec![database_attachment_id.to_string()])
+    );
+
+    // Database file removals travel as normal value tombstones. The attachment
+    // bytes stay available for recovery; re-adding the reference after the
+    // delete must make it visible in a later snapshot again.
+    assert!(b.set_database_cell_many(database_block_b, record_b, files_property_b, &[])?);
+    let deleted_snapshot = b.sync_export()?;
+    assert!(
+        deleted_snapshot
+            .attachments
+            .iter()
+            .any(|attachment| attachment.id == attachment_b.0)
+    );
+    assert!(
+        !deleted_snapshot
+            .attachments
+            .iter()
+            .any(|attachment| attachment.id == database_attachment_id)
+    );
+    let deleted_on_a = a.sync_apply_remote(&deleted_snapshot, &[], &peer_b)?;
+    assert_eq!(
+        a.repo.cell(record_b, files_property_b)?,
+        quire_core::core::database::CellValue::Empty
+    );
+    let peer_a = PeerRecord {
+        id: info_a.id.clone(),
+        name: info_a.name.clone(),
+        kind: info_a.kind.clone(),
+        ip: "127.0.0.1".into(),
+        port: port_a,
+        paired: true,
+        last_seen: 0,
+        last_sync: String::new(),
+    };
+    b.sync_apply_remote(&deleted_on_a, &[], &peer_a)?;
+    assert!(b.set_database_cell_many(
+        database_block_b,
+        record_b,
+        files_property_b,
+        &[database_attachment_id.to_string()]
+    )?);
+    let restored_snapshot = b.sync_export()?;
+    assert!(
+        restored_snapshot
+            .attachments
+            .iter()
+            .any(|attachment| attachment.id == database_attachment_id)
+    );
+    a.sync_apply_remote(&restored_snapshot, &[], &peer_b)?;
+    assert_eq!(
+        a.repo.cell(record_b, files_property_b)?,
+        quire_core::core::database::CellValue::Items(vec![database_attachment_id.to_string()])
     );
 
     // The first server is also a real protocol endpoint; GET its info after
@@ -317,6 +408,18 @@ fn two_isolated_sessions_exchange_changes_over_sync_http_and_reopen() -> anyhow:
         std::fs::read(reopened_a.attachment_path(attachment_b).unwrap())?,
         b"loopback attachment bytes"
     );
+    assert_eq!(
+        reopened_a.repo.cell(record_b, files_property_b)?,
+        quire_core::core::database::CellValue::Items(vec![database_attachment_id.to_string()])
+    );
+    assert_eq!(
+        std::fs::read(
+            reopened_a
+                .attachment_path(AttachmentId(database_attachment_id))
+                .unwrap()
+        )?,
+        b"database loopback file\0\xff"
+    );
     assert!(
         reopened_b
             .databases
@@ -327,6 +430,18 @@ fn two_isolated_sessions_exchange_changes_over_sync_http_and_reopen() -> anyhow:
     assert_eq!(
         reopened_b.repo.cell(record_b, property_b)?,
         quire_core::core::database::CellValue::Text("数据库单元同步".into())
+    );
+    assert_eq!(
+        reopened_b.repo.cell(record_b, files_property_b)?,
+        quire_core::core::database::CellValue::Items(vec![database_attachment_id.to_string()])
+    );
+    assert_eq!(
+        std::fs::read(
+            reopened_b
+                .attachment_path(AttachmentId(database_attachment_id))
+                .unwrap()
+        )?,
+        b"database loopback file\0\xff"
     );
     assert_eq!(
         std::fs::read(reopened_b.attachment_path(attachment_b).unwrap())?,
