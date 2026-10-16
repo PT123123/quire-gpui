@@ -23,6 +23,8 @@ actions!(
         SelectRight,
         SelectUp,
         SelectDown,
+        SelectHome,
+        SelectEnd,
         SelectAll,
         Home,
         End,
@@ -255,13 +257,45 @@ impl TextInput {
     }
     fn home(&mut self, _: &Home, _: &mut Window, cx: &mut Context<Self>) {
         if !self.buffer.composing() {
-            self.buffer.move_to(0);
+            if let Some(layout) = &self.layout {
+                self.buffer
+                    .move_to(layout.line_boundary(self.buffer.caret(), false));
+            } else {
+                self.buffer.move_to(0);
+            }
             cx.notify();
         }
     }
     fn end(&mut self, _: &End, _: &mut Window, cx: &mut Context<Self>) {
         if !self.buffer.composing() {
-            self.buffer.move_to(self.buffer.text.len());
+            if let Some(layout) = &self.layout {
+                self.buffer
+                    .move_to(layout.line_boundary(self.buffer.caret(), true));
+            } else {
+                self.buffer.move_to(self.buffer.text.len());
+            }
+            cx.notify();
+        }
+    }
+    fn select_home(&mut self, _: &SelectHome, _: &mut Window, cx: &mut Context<Self>) {
+        if !self.buffer.composing() {
+            if let Some(layout) = &self.layout {
+                self.buffer
+                    .select_to(layout.line_boundary(self.buffer.caret(), false));
+            } else {
+                self.buffer.select_to(0);
+            }
+            cx.notify();
+        }
+    }
+    fn select_end(&mut self, _: &SelectEnd, _: &mut Window, cx: &mut Context<Self>) {
+        if !self.buffer.composing() {
+            if let Some(layout) = &self.layout {
+                self.buffer
+                    .select_to(layout.line_boundary(self.buffer.caret(), true));
+            } else {
+                self.buffer.select_to(self.buffer.text.len());
+            }
             cx.notify();
         }
     }
@@ -510,6 +544,16 @@ struct TextLayout {
     width: Pixels,
 }
 impl TextLayout {
+    fn line_boundary(&self, byte: usize, to_end: bool) -> usize {
+        text_line_boundary(
+            self.lines
+                .iter()
+                .map(|(start, _, line)| (*start, line.len())),
+            byte,
+            to_end,
+        )
+    }
+
     fn shape(
         text: SharedString,
         marks: &[Mark],
@@ -701,6 +745,39 @@ impl TextLayout {
             }
         }
         self.lines.last().map_or(0, |(s, _, l)| s + l.len())
+    }
+}
+
+fn text_line_boundary(
+    lines: impl IntoIterator<Item = (usize, usize)>,
+    byte: usize,
+    to_end: bool,
+) -> usize {
+    let mut last_end = 0;
+    for (start, len) in lines {
+        let end = start.saturating_add(len);
+        if byte <= end {
+            return if to_end { end } else { start };
+        }
+        last_end = end;
+    }
+    last_end
+}
+
+#[cfg(test)]
+mod navigation_tests {
+    use super::text_line_boundary;
+
+    #[test]
+    fn home_and_end_use_the_current_wrapped_line_and_utf8_offsets() {
+        let lines = [(0, 6), (7, 9), (17, 3)];
+        assert_eq!(text_line_boundary(lines, 4, false), 0);
+        assert_eq!(text_line_boundary(lines, 4, true), 6);
+        assert_eq!(text_line_boundary(lines, 11, false), 7);
+        assert_eq!(text_line_boundary(lines, 11, true), 16);
+        assert_eq!(text_line_boundary(lines, 18, false), 17);
+        assert_eq!(text_line_boundary(lines, 18, true), 20);
+        assert_eq!(text_line_boundary(lines, usize::MAX, true), 20);
     }
 }
 
@@ -896,6 +973,8 @@ impl Render for TextInput {
             .on_action(cx.listener(Self::select_right))
             .on_action(cx.listener(Self::select_up))
             .on_action(cx.listener(Self::select_down))
+            .on_action(cx.listener(Self::select_home))
+            .on_action(cx.listener(Self::select_end))
             .on_action(cx.listener(Self::select_all))
             .on_action(cx.listener(Self::home))
             .on_action(cx.listener(Self::end))
@@ -937,6 +1016,8 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("shift-right", SelectRight, context),
         KeyBinding::new("shift-up", SelectUp, context),
         KeyBinding::new("shift-down", SelectDown, context),
+        KeyBinding::new("shift-home", SelectHome, context),
+        KeyBinding::new("shift-end", SelectEnd, context),
         KeyBinding::new("ctrl-a", SelectAll, context),
         KeyBinding::new("ctrl-v", Paste, context),
         KeyBinding::new("ctrl-c", Copy, context),

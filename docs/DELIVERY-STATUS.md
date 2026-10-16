@@ -1644,3 +1644,8 @@
 
 - 本机 Inno Setup 6.7.3 已可用；`install/build-release.ps1 -SkipBuild -BuildInstaller` 成功刷新便携 ZIP 并构建 `dist/Quire-GPUI-0.1.0-windows-x64-setup.exe`。Release EXE 与安装后 EXE SHA-256 一致：`8B046D895EED4C4A7BC4715A9F4978536107FC11E1F168485760D1A6597F6029`；安装器 SHA-256：`B2E03FC8FEC99AD033279AF277E1B13E549377DA1921BE4DD93F53E6166C5D04`。
 - 使用 `%TEMP%` 随机目录完成静默安装，确认 EXE 与卸载程序存在，再静默卸载并确认安装目录已移除：`TEMP_INSTALL_UNINSTALL=PASS`。未启动安装后的 GUI，未触碰用户数据库。真实用户安装升级、数据保留及回滚仍需最终候选验收；网络提示需用户自行决定。未运行性能评测。
+
+## 第二百六十五轮：编辑器 Home/End 行导航（2026-10-16）
+
+- 修正自绘编辑器的 Home/End 语义：普通按键现在跳到当前 GPUI 排版行的首/尾，Shift+Home/End 扩展选区到当前显示行；Ctrl+Home/End 保留为文档首尾导航。对多行及自动换行文本不再把 Home/End 误当整块首尾操作，composition 期间仍不干预输入。
+- 新增 UTF-8 字节偏移和多行/折行边界的纯函数回归；`cargo fmt --all -- --check`、全量 `cargo test --locked -j 8`（110 项）、`cargo check --all-targets --locked -j 8`、Release 构建（40.65 秒）通过。新 `%TEMP%` 数据库上的 1000 块 Release GUI smoke 完整通过，含数据库视图、虚拟滚动、速记和托盘；未访问真实用户库。未执行性能评测。
