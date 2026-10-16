@@ -106,7 +106,7 @@ attachment-saved,已实现,未验证,通过原生另存对话框将附件原始�
 page-drag-hover,已实现,未验证,页面树拖动悬停时校验能否把页面移动到目标页面下或工作区根层,目标过滤模板、同父级无操作、缺失页面、自身和后代循环；仅合法落点接受 GPUI 拖放
 page-dropped,已实现,未验证,将拖动页面及其整棵子树移到目标页面的子级或工作区根层,通过 Session 重排 PageMoved 持久化变更并防抖保存；目标父页面自动展开，侧栏与当前页面元数据同步
 open-data-folder,已实现,未验证,设置的存储区域打开当前 SQLite 数据库所在目录,使用系统文件管理器打开库文件父目录；内存库隐藏入口，打开失败显示状态错误
-backup-now,已实现,未验证,设置存储区域立即创建当前数据库快照,先提交当前编辑并 flush 排队更改，再由 core SQLite repository 写入最新 .bak1；隔离 Release GUI smoke 检查备份文件存在
+backup-now,已实现,已验证,设置存储区域立即创建当前数据库快照,先提交当前编辑并 flush 排队更改，再由 core SQLite repository 写入最新 .bak1；隔离 Release GUI smoke 检查备份文件存在
 reclaim-attachments,已实现,未验证,清理未被任何有效引用的附件文件,先 flush 写队列；保留所有页面块、封面、撤销/重做历史、命名版本元数据及内部复制块引用；先删附件记录再删原图和缩略图，失败报告留在状态栏
 window-resized,已实现,未验证,窗口可原生拖动边缘缩放；最大化/还原使用系统窗口状态；退出时保存普通窗口位置与尺寸,通过 GPUI Windows hit-test 提供无标题栏客户区的四边四角缩放；最大化安全 inset 保持原生逻辑；普通几何写入 GPUI session settings 并启动时做屏幕可见性校验
 sync-now,已实现,未验证,设备行的同步操作通过 core Engine 执行一次 pull-merge-push；设备在途期间拒绝重复排队,两个独立 Session 的隔离 loopback HTTP 测试覆盖 pairing、双向 snapshot/附件/数据库/organizer 合并与重开；尚无两台实体设备 UDP/防火墙验收

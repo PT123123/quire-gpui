@@ -1883,3 +1883,9 @@
 - Release GUI smoke 通过 `search_input` 发出 `InputEvent::Split`，由实际搜索输入订阅触发 Enter 结果导航；等待虚拟正文行挂载后，断言跳到正确页面和块、整段命中文本被选中且编辑器仍持有焦点。Smoke 使用全新 `%TEMP%` SQLite 和 1000 块场景。
 - `cargo test --locked --bin quire-gpui -j 8 -- --quiet`（56 项）和 Release 构建通过；完整隔离 GUI smoke 退出码为 0。F171 现标为已验证；鼠标点击回调 F172 仍未验证。Parity 当前为 21 项已验证、223 项未验证，另有 2 项不适用。
 - 未访问真实用户库或修改 Slint/core；没有运行性能评测。
+
+## 第三百零五轮：核实并关闭立即备份矩阵项（2026-10-16）
+
+- 复核隔离 Release GUI smoke 的“立即备份”路径：运行实际 Workspace 备份操作后，断言新建 `%TEMP%` SQLite 的 `.bak1` 快照文件存在。F137 `backup-now` 从“未验证”更新为“已验证”。
+- 此证据验证当前数据库的手动快照操作，不延伸到用户目录权限、快照损坏恢复或真实数据迁移。PARITY 当前为 22 项已验证、222 项未验证，另有 2 项不适用。
+- 未访问真实用户库或修改 Slint/core；没有运行性能评测。
