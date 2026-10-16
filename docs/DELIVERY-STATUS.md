@@ -1633,3 +1633,9 @@
 - 将 760px / 1120px 文档列统一放入满宽居中容器，确保虚拟列表中的页头、空页头和正文行都按视口居中；新增 GPUI layout test，在 1024px 视口上断言 760px 内容起点 x=132。该测试通过。
 - `cargo fmt --all -- --check`、`git diff --check` 与全量 `cargo test --locked -j 8` 通过（109 项：56 library、51 binary、2 integration）；Release 构建已通过（本轮沿用已构建产物）。1000 块隔离 Release smoke 通过，覆盖空页/模板/数据库视图、窗口最大化还原、虚拟滚动、速记输入与托盘隐藏唤回，数据库只写在新建 `%TEMP%` 目录。
 - `install/build-release.ps1 -SkipBuild` 通过并刷新便携 ZIP；staging EXE 与 Release EXE SHA-256 一致（`8B046D895EED4C4A7BC4715A9F4978536107FC11E1F168485760D1A6597F6029`），ZIP SHA-256 `3BFF99F2561C8FD8B14876A1AA61F1296F36164D08B30B795FAAE271BC499486`。性能比较仍按用户要求留待功能完成后；真实屏幕 DPI/IME 与完整视觉矩阵尚未完成。
+
+## 第二百六十三轮：复核筛选编辑边界与 Windows 首启网络提示（2026-10-16）
+
+- 追查数据库筛选“嵌套规则不可编辑”缺口后，核对锁定 quire-core 的 `FilterNode` / `FlatFilter` 约束与 Slint `DatabaseFilterPopup.slint`：旧版面板同样只接受单层 and/or 及逐条 not，遇到嵌套组只保留 SQL 筛选结果并拒绝重写。GPUI 当前行为是兼容保护，不应将用户筛选树扁平化，因此暂不扩展编辑器。
+- 用全新 `%TEMP%` 数据库启动 Release 窗口检查界面时，Windows 首次为 `Quire GPUI - local notes and organizer` 显示网络访问询问；主窗口已创建，启动图像被系统授权弹窗遮挡。未选择允许/取消，也未访问真实用户库。发布候选需在用户桌面确认网络授权选择与托盘同步体验；本项是系统级人工验收，不作为自动化测试替代。
+- 未运行性能评测；功能收尾后再按用户要求完成 GPUI/Slint 比较。
