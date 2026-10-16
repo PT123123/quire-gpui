@@ -23,7 +23,7 @@ indent-list,已实现,未验证,Tab 只缩进 core 允许的列表项，目前�
 outdent-list,已实现,未验证,Shift+Tab 只对 core 允许的嵌套列表项生效,将列表项提升到父列表之后；提升后保持可编辑
 todo-toggled,已实现,未验证,待办标记由行首复选框点击；视觉仍待与旧版对照,调用 core ToggleTodoChecked 切换当前块完成状态并保存
 page-create-requested,已实现,未验证,"支持侧栏根/子页面创建；页面可跨层级拖放重排并防循环；命令面板可从模板创建页面；Release smoke 覆盖操作路径，真人鼠标落点仍待验收",新建页面写入 core PageCreated 并创建首段落；树拖放重排可撤销持久化；模板建页复制模板内容并生成普通页面
-set-theme,已实现,未验证,外观页包含系统跟随与 12 套渐变主题，按 4 列卡片排列；选择后立即切换并写入独立 GPUI 设置。系统模式读取 Windows AppsUseLightTheme，其他平台回退到 midnight。,主题选择状态与实际 palette 分离保存；“跟随系统”启动/选择时按系统浅色设置选择 light 或 midnight。系统主题变化后需重启应用才会刷新。
+set-theme,已实现,未验证,外观页包含系统跟随与 12 套渐变主题，按 4 列卡片排列；选择后立即切换并写入独立 GPUI 设置。跟随系统时按当前窗口 appearance 选择 light 或 midnight，并监听运行时外观变化即时切换；其他平台由 GPUI 窗口 appearance 提供系统状态。,主题选择状态与实际 palette 分离保存；“跟随系统”启动/选择时按窗口 appearance 选择 light 或 midnight，系统明暗外观改变时即时更新 palette；显式主题选择不受系统外观变化影响。
 toggle-theme,已实现,未验证,Ctrl+Shift+L 在 light 与 midnight 之间切换；命令面板也提供同一操作,遵循旧版语义：从 light 切到 midnight，其他 palette（含 system）切到 light；切换写入 GPUI 主题设置
 window-maximized-changed,已实现,已验证,GPUI 使用原生最大化/还原窗口控制；最大化期间持续保留最近的窗口化尺寸/位置，关闭时只保存正常窗口几何,隔离 Release GUI smoke 已最大化并恢复窗口；窗口几何观察器跳过最大化/全屏 bounds，避免把屏幕尺寸当作窗口化尺寸
 table-row-added,已实现,未验证,普通表格工具区支持追加行；用户操作尚未逐项回归,调用 core TableAddRow，新增单元格并同步输入控件后保存
