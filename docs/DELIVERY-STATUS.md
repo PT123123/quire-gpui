@@ -1607,3 +1607,8 @@
 
 - 复核 F025 时发现实现已监听 GPUI 窗口 appearance，并在系统明暗变化时即时切换 palette；人工语义 sidecar 和生成矩阵仍写成“重启后刷新”，已按当前实现更正。显式选择主题时不受系统 appearance 变化影响；没有改变运行代码。
 - `node tools/extract-parity.mjs` 生成 246 callback / 261 property / 188 scene 矩阵成功，手工回填语义保留；`git diff --check` 通过。Inno Setup 编译器 `ISCC.exe` 当前不在 PATH，候选安装器构建仍待工具链可用后验收。性能评测按用户要求继续留到功能完成后。
+
+## 第二百五十八轮：核实重复任务完成语义（2026-10-16）
+
+- 复核 organizer 行为后确认旧版 Slint 与 GPUI 都只保存任务 Repeat 枚举；两边完成任务都只更新 `done` / `completed_at`，不会自动生成下一条。此前 sidecar 把“自动滚动生成尚未实现”写成 GPUI 缺口，现改为准确的跨版本语义。
+- 依据旧版 `src/app/state.rs` 的 `org_task_repeat` 与 `org_task_done` 实现核对；没有改变产品行为。矩阵生成与差异检查待本次收尾命令确认；性能评测继续留到功能收尾后。
