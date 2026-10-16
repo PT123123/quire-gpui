@@ -1670,3 +1670,8 @@
 
 - 新增 GPUI `TestAppContext` 输入控件集成测试：真实聚焦输入实体并模拟 Ctrl+Right、Ctrl+Shift+Left、Ctrl+Delete、Ctrl+Backspace，断言焦点内 caret、选区和文本变化；验证快捷键注册、key context 与 action handler 的整条链路，而不只测 Buffer 词边界。
 - `cargo fmt --all -- --check`、全量 `cargo test --locked -j 8`（113 项）、`cargo check --all-targets --locked -j 8` 与 `git diff --check` 通过。本轮只新增 `#[cfg(test)]` 代码，Release 运行代码、已通过的 Release smoke 与候选包均未变化；未访问真实用户库，未运行性能评测。
+
+## 第二百七十轮：覆盖真实排版行的 Home/End 按键链路（2026-10-16）
+
+- 扩展 GPUI 输入控件按键分发测试：在实际 TextInput 中装载带换行的“两行”文本，发送 Home、End、Shift+Home，检查第二行的 caret 与选区边界；同一测试也验证 Ctrl+左右、Ctrl+Shift+Left、Ctrl+Delete 与 Ctrl+Backspace 的事件处理。此轮只改 `#[cfg(test)]`，不改变 Release 运行代码。
+- 全量 `cargo test --locked -j 8`（113 项）、`cargo check --all-targets --locked -j 8`、格式检查和差异检查通过。候选 Release/安装包来自上一轮已验证的相同运行代码；未访问真实用户库，未执行性能评测。

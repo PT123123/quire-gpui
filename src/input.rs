@@ -1164,5 +1164,20 @@ mod input_tests {
         cx.simulate_keystrokes("ctrl-backspace");
         let text = cx.update(|_, app| input.read(app).buffer.text.clone());
         assert_eq!(text, "one ");
+
+        cx.update(|_, app| {
+            input.update(app, |input, cx| {
+                input.reset("one\ntwo".into(), Vec::new(), "one\ntwo".len(), cx)
+            })
+        });
+        cx.simulate_keystrokes("home");
+        let caret = cx.update(|_, app| input.read(app).buffer.caret());
+        assert_eq!(caret, "one\n".len());
+        cx.simulate_keystrokes("end");
+        let caret = cx.update(|_, app| input.read(app).buffer.caret());
+        assert_eq!(caret, "one\ntwo".len());
+        cx.simulate_keystrokes("shift-home");
+        let selection = cx.update(|_, app| input.read(app).buffer.selection.clone());
+        assert_eq!(selection, "one\n".len().."one\ntwo".len());
     }
 }
