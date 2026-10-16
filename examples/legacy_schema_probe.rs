@@ -40,6 +40,8 @@ const SYNC_SELECT_VALUE: &str = "跨版本可选";
 const SYNC_RELATION: &str = "同步关联";
 const SYNC_MIRROR: &str = "同步反向关联";
 const SYNC_ROLLUP: &str = "同步汇总";
+const SYNC_CREATED: &str = "同步创建时间";
+const SYNC_LAST_EDITED: &str = "同步最后编辑时间";
 
 fn main() -> Result<()> {
     let args: Vec<String> = env::args().collect();
@@ -349,6 +351,20 @@ fn sync_seed_export(path: &Path, snapshot_path: &Path) -> Result<()> {
     let rollup = session
         .add_database_property(database_block, SYNC_ROLLUP.into(), PropertyKind::Rollup)
         .context("create sync rollup property")?;
+    session
+        .add_database_property(
+            database_block,
+            SYNC_CREATED.into(),
+            PropertyKind::CreatedTime,
+        )
+        .context("create sync created-time property")?;
+    session
+        .add_database_property(
+            database_block,
+            SYNC_LAST_EDITED.into(),
+            PropertyKind::LastEditedTime,
+        )
+        .context("create sync last-edited-time property")?;
     assert!(session.set_database_formula(database_block, formula, "1 + [同步分数]")?);
     assert!(session.add_database_property_option(database_block, select, SYNC_SELECT_VALUE)?);
     assert!(session.set_database_relation_target(database_block, relation, Some(database))?);
@@ -561,6 +577,16 @@ fn assert_sync_database(database: &quire_core::services::sync::model::SDatabase)
         .iter()
         .find(|property| property.name == SYNC_ROLLUP)
         .context("legacy sync response omitted rollup property")?;
+    let created = database
+        .properties
+        .iter()
+        .find(|property| property.name == SYNC_CREATED)
+        .context("legacy sync response omitted created-time property")?;
+    let last_edited = database
+        .properties
+        .iter()
+        .find(|property| property.name == SYNC_LAST_EDITED)
+        .context("legacy sync response omitted last-edited-time property")?;
     assert_eq!(score.kind, "number");
     assert_eq!(formula.kind, "formula");
     assert_eq!(
@@ -571,6 +597,8 @@ fn assert_sync_database(database: &quire_core::services::sync::model::SDatabase)
     assert_eq!(relation.kind, "relation");
     assert_eq!(mirror.kind, "relation");
     assert_eq!(rollup.kind, "rollup");
+    assert_eq!(created.kind, "created_time");
+    assert_eq!(last_edited.kind, "last_edited_time");
     let relation_config = quire_core::core::database_relation::config_relation(&relation.config);
     let mirror_config = quire_core::core::database_relation::config_relation(&mirror.config);
     assert_eq!(

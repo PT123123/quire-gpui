@@ -1735,3 +1735,8 @@
 
 - 扩展旧版同库往返探针：GPUI fixture 定义 CreatedTime / LastEditedTime 后，经 Slint Release 打开、执行 MCP 写入并退出，再由 GPUI 查询指定记录的两列投影；两项都必须返回非空派生值，`LEGACY_ROUNDTRIP=PASS`。
 - `cargo fmt --all -- --check`、`cargo check --all-targets --locked -j 8` 与 `git diff --check` 通过。测试仅使用新 `%TEMP%` SQLite；未访问真实用户库，未修改 Slint 文件内容。
+
+## 第二百七十九轮：同步快照往返覆盖派生时间属性（2026-10-16）
+
+- 扩展真实 Slint Release loopback v4 snapshot 夹具，GPUI 发送 CreatedTime / LastEditedTime 两列，旧版服务合并后回传；GPUI 断言两种属性仍在数据库 schema 中且类型字符串一致。附件拉取/推送二进制逐字节断言同步通过，结果 `LEGACY_SYNC_WIRE=PASS`。
+- `cargo fmt --all -- --check`、全量 `cargo test --locked -j 8`（114 项）、`cargo check --all-targets --locked -j 8`、`git diff --check` 通过。数据库和附件均位于 `%TEMP%`；未访问真实用户库，未修改 Slint 文件内容。
