@@ -1539,3 +1539,8 @@
 
 - 对照 Slint 的 EditorBlock 行为后发现，Embed 卡片地址存于块正文且应可点击编辑；GPUI 只显示派生卡片与打开按钮，Session::editable 也排除了 Embed。现将 Embed 地址纳入普通文本输入/撤销/保存路径，卡片点击聚焦当前地址，编辑时保留卡片布局；空地址显示提示，安全打开按钮继续只允许 core 认可的外链。
 - 新增隔离 Session 回归覆盖 Embed 地址更新、撤销/重做、flush 与 SQLite 重开；Release GUI smoke 确认地址 TextInput 可挂载并在聚焦状态下渲染。全量 cargo test --locked -j 8 通过（107 项：55 库 + 50 二进制 + 2 集成），cargo fmt --all -- --check、git diff --check、Release build（39.37s）及 1000 块隔离 GUI smoke 通过。PARITY-SEMANTICS.csv/生成的 PARITY.csv 已记入此行为，并修正了 empty-page-started 语义行误并入 column-added 的文本。真实鼠标命中和地址输入仍待桌面验收；没有访问真实用户库。性能比较未运行，按用户要求留到功能冻结后。
+
+## 第二百四十五轮：恢复数学块 LaTeX 源文编辑（2026-10-16）
+
+- 对照阅读/编辑状态后发现 GPUI 数学块只有 Unicode 预览，`Session::editable` 未允许数学块编辑。现可点击公式卡片聚焦 LaTeX 正文输入；编辑状态显示输入框，失焦后继续显示 core 支持子集的 Unicode 预览。编辑复用正常撤销、重做和持久化路径。
+- 新增隔离 Session 回归覆盖公式源文修改、撤销/重做、flush 和 SQLite 重开；Release GUI smoke 确认预览与聚焦编辑框可渲染且输入实体已挂载。全量 `cargo test --locked -j 8` 通过（108 项：56 库 + 50 二进制 + 2 集成），`cargo fmt --all -- --check`、`git diff --check`、Release 构建及全新临时库 1000 块 GUI smoke 通过。此次 Release 构建命令运行时间 53.68 秒，作为单次构建记录，不作为 Slint 对比结论；未采集编译峰值内存。性能评测及内存/CPU 对比按用户要求留到功能冻结后。数学卡片真人鼠标命中和 IME 输入仍待桌面回归，未访问真实用户库。

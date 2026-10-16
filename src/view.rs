@@ -3556,6 +3556,29 @@ impl Workspace {
                     this.sync_inputs(window, cx);
                     eprintln!("SMOKE: embed card opens an editable address field");
 
+                    let (math_id, math_original_text) = this
+                        .session
+                        .blocks()
+                        .into_iter()
+                        .find(|block| block.kind == BlockKind::Paragraph && this.session.editable(block.id))
+                        .map(|block| (block.id, block.text.clone()))
+                        .expect("smoke document should contain an editable paragraph for math");
+                    this.session.execute(Command::SetBlockType { id: math_id, kind: BlockKind::Math });
+                    this.session.replace(math_id, r"\int_0^1 x dx".into(), true);
+                    this.sync_inputs(window, cx);
+                    let math_preview_frame = this.render(window, cx);
+                    drop(math_preview_frame);
+                    this.focus(math_id, r"\int_0^1 x dx".len(), window, cx);
+                    let math_edit_frame = this.render(window, cx);
+                    drop(math_edit_frame);
+                    let math_input = this.inputs.get(&math_id.0).expect("focused math should mount a source editor").clone();
+                    assert!(math_input.read(cx).focus.is_focused(window));
+                    assert_eq!(math_input.read(cx).buffer.committed(), r"\int_0^1 x dx");
+                    this.session.execute(Command::SetBlockType { id: math_id, kind: BlockKind::Paragraph });
+                    this.session.replace(math_id, math_original_text, true);
+                    this.sync_inputs(window, cx);
+                    eprintln!("SMOKE: math preview switches to an editable LaTeX source field");
+
                     let smoke_list = this.session.create_task_list("smoke 清单".into());
                     this.toggle_task_list_menu(smoke_list, cx);
                     assert_eq!(this.task_list_menu_open, Some(smoke_list));
@@ -12551,6 +12574,12 @@ impl Workspace {
                 .is_some_and(|input| input.read(cx).focus.is_focused(window));
         let embed_input = input.clone();
         let embed_caret = block.text.len();
+        let math_editing = kind == BlockKind::Math
+            && input
+                .as_ref()
+                .is_some_and(|input| input.read(cx).focus.is_focused(window));
+        let math_input = input.clone();
+        let math_caret = block.text.len();
         let database_table = if kind == BlockKind::Database {
             block.db_ref.and_then(|db_id| {
                 self.session.databases.database(db_id)?;
@@ -16715,17 +16744,38 @@ impl Workspace {
                                 }
                             })
                             .when(kind == BlockKind::Math, |view| {
-                                view.rounded(px(5.))
+                                view.child(
+                                    div()
+                                    .id(SharedString::from(format!("math-card-{block_id:?}")))
+                                    .w_full()
+                                    .rounded(px(5.))
                                     .px(px(10.))
                                     .py(px(8.))
                                     .bg(Palette::color(&p.elevated))
-                                    .child(
-                                        div()
-                                            .font_family("Cambria Math")
-                                            .text_size(px(20.))
-                                            .text_color(self.palette.block_text(block.color.slot()))
-                                            .child(quire_core::core::math::to_unicode(&block.text)),
+                                    .on_mouse_down(
+                                        MouseButton::Left,
+                                        cx.listener(move |this, _, window, cx| {
+                                            let editing = this.inputs.get(&block_id.0).is_some_and(|input| {
+                                                input.read(cx).focus.is_focused(window)
+                                            });
+                                            if !this.session.page.locked && !editing {
+                                                this.focus(block_id, math_caret, window, cx);
+                                            }
+                                        }),
                                     )
+                                    .when(!math_editing, |card| {
+                                        card.child(
+                                            div()
+                                                .font_family("Cambria Math")
+                                                .text_size(px(20.))
+                                                .text_color(self.palette.block_text(block.color.slot()))
+                                                .child(quire_core::core::math::to_unicode(&block.text)),
+                                        )
+                                    })
+                                    .when(math_editing, |card| {
+                                        card.when_some(math_input.clone(), |card, input| card.child(input))
+                                    }),
+                                )
                             })
                             .when(kind == BlockKind::Synced, |view| {
                                 if let Some(source) = block
@@ -17062,6 +17112,7 @@ impl Workspace {
                                     && kind != BlockKind::Page
                                     && kind != BlockKind::Link
                                     && kind != BlockKind::Embed
+                                    && kind != BlockKind::Math
                                     && kind != BlockKind::Image
                                     && kind != BlockKind::File,
                                 |view| {

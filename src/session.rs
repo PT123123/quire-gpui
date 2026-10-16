@@ -6072,6 +6072,7 @@ impl Session {
                         | BlockKind::Callout
                         | BlockKind::Toggle
                         | BlockKind::Embed
+                        | BlockKind::Math
                 );
                 let valid_child = b.parent.is_some_and(|parent| {
                     self.document.block(parent).is_some_and(|parent| {
@@ -9170,6 +9171,41 @@ mod tests {
         let block = reopened.document.block(id).unwrap();
         assert_eq!(block.kind, BlockKind::Embed);
         assert_eq!(block.text, "https://new.example/watch?v=1");
+        Ok(())
+    }
+
+    #[test]
+    fn math_source_is_editable_undoable_and_persists() -> Result<()> {
+        let scratch = quire_core::testing::ScratchDir::new("gpui-math-source");
+        let path = scratch.path().join("test.db");
+        let id;
+        {
+            let mut session = Session::open(&path)?;
+            id = session.blocks()[0].id;
+            session.execute(Command::SetBlockType {
+                id,
+                kind: BlockKind::Math,
+            });
+            assert!(session.editable(id));
+            session.replace(id, r"\frac{a}{b}".into(), true);
+            session.replace(id, r"\sum_{n=1}^{10} n".into(), true);
+            assert_eq!(
+                session.document.block(id).unwrap().text,
+                r"\sum_{n=1}^{10} n"
+            );
+            session.undo();
+            assert_eq!(session.document.block(id).unwrap().text, r"\frac{a}{b}");
+            session.redo();
+            assert_eq!(
+                session.document.block(id).unwrap().text,
+                r"\sum_{n=1}^{10} n"
+            );
+            session.persistence.force_flush()?;
+        }
+        let reopened = Session::open(&path)?;
+        let block = reopened.document.block(id).unwrap();
+        assert_eq!(block.kind, BlockKind::Math);
+        assert_eq!(block.text, r"\sum_{n=1}^{10} n");
         Ok(())
     }
 
