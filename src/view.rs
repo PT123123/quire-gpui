@@ -2365,6 +2365,7 @@ pub struct Workspace {
     theme_choice: String,
     ui_zoom: f32,
     theme_picker_open: bool,
+    settings_focus_return: Option<FocusHandle>,
     settings_tab: usize,
     icon_picker_open: bool,
     format_bar_open: bool,
@@ -2379,7 +2380,9 @@ pub struct Workspace {
     mention_selection: usize,
     organizer_open: bool,
     organizer_capture_open: bool,
+    organizer_capture_focus_return: Option<FocusHandle>,
     organizer_commands_open: bool,
+    organizer_commands_focus_return: Option<FocusHandle>,
     organizer_command_tasks: bool,
     organizer_capture_draft: String,
     organizer_capture_suggestions: Vec<String>,
@@ -2804,6 +2807,7 @@ impl Workspace {
             theme_choice,
             ui_zoom,
             theme_picker_open: false,
+            settings_focus_return: None,
             settings_tab: 0,
             icon_picker_open: false,
             format_bar_open: false,
@@ -2818,7 +2822,9 @@ impl Workspace {
             mention_selection: 0,
             organizer_open: startup_organizer,
             organizer_capture_open: false,
+            organizer_capture_focus_return: None,
             organizer_commands_open: false,
+            organizer_commands_focus_return: None,
             organizer_command_tasks: false,
             organizer_capture_draft: String::new(),
             organizer_capture_suggestions: Vec::new(),
@@ -3678,8 +3684,10 @@ impl Workspace {
                         .live_notes()
                         .filter(|note| note.ref_note.is_none())
                         .count();
+                    let capture_return_focus = window.focused(cx);
                     this.open_organizer_capture(window, cx);
                     assert!(this.organizer_capture_open);
+                    assert!(this.organizer_capture_input.read(cx).focus.is_focused(window));
                     assert_eq!(
                         this.session
                             .organizer
@@ -3690,6 +3698,7 @@ impl Workspace {
                         "opening the capture dialog must not create a blank note"
                     );
                     this.close_organizer_capture(window, cx);
+                    assert_eq!(window.focused(cx), capture_return_focus);
                     assert_eq!(
                         this.session
                             .organizer
@@ -3898,6 +3907,8 @@ impl Workspace {
                     eprintln!("SMOKE: organizer note created, updated and content sorts rendered");
                     this.open_organizer_commands(false, window, cx);
                     assert!(this.organizer_commands_open);
+                    assert!(this.organizer_command_input.read(cx).focus.is_focused(window));
+                    let command_return_focus = this.organizer_commands_focus_return.clone();
                     let command_frame = this.render(window, cx);
                     drop(command_frame);
                     let command_json = r#"{"operations":[{"action":"create","title":"GPUI command smoke","content":"created by batch command","tags":["smoke"]}]}"#;
@@ -3912,6 +3923,9 @@ impl Workspace {
                     });
                     this.run_organizer_commands(window, cx);
                     assert!(!this.organizer_commands_open);
+                    if let Some(focus) = command_return_focus {
+                        assert!(focus.is_focused(window), "closing the command dialog restores its previous focus");
+                    }
                     assert!(this.session.organizer.live_notes().any(|note| note.title == "GPUI command smoke"));
                     eprintln!("SMOKE: organizer JSON command overlay and note batch execution passed");
                     let menu_note = this.session.create_note_with_content("GPUI menu smoke".into(), "copyable menu note".into(), Vec::new());
@@ -3934,7 +3948,11 @@ impl Workspace {
                     assert_eq!(this.palette_items().len(), 1);
                     this.invoke_palette_command(window, cx);
                     assert!(this.theme_picker_open);
+                    let settings_return_focus = this.settings_focus_return.clone();
                     this.close_settings(window, cx);
+                    if let Some(focus) = settings_return_focus {
+                        assert!(focus.is_focused(window), "closing settings restores its previous focus");
+                    }
                     eprintln!("SMOKE: Ctrl+K command palette filtering and settings action passed");
                     this.open_command_palette(window, cx);
                     this.search_input.update(cx, |input, cx| {
@@ -8552,6 +8570,7 @@ impl Workspace {
         if self.organizer_tasks || self.organizer_trash {
             return;
         }
+        self.organizer_capture_focus_return = window.focused(cx);
         let preset = self
             .organizer_tag
             .as_ref()
@@ -8576,6 +8595,7 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.organizer_commands_focus_return = window.focused(cx);
         self.commit_note_draft(window, cx);
         self.organizer_command_tasks = tasks;
         self.organizer_commands_open = true;
@@ -8590,7 +8610,11 @@ impl Workspace {
         self.organizer_command_input.update(cx, |input, cx| {
             input.reset(String::new(), Vec::new(), 0, cx);
         });
-        self.restore_focus(window, cx);
+        if let Some(focus) = self.organizer_commands_focus_return.take() {
+            window.focus(&focus);
+        } else {
+            self.restore_focus(window, cx);
+        }
         cx.notify();
     }
     fn copy_organizer_command_example(&mut self, cx: &mut Context<Self>) {
@@ -8639,7 +8663,11 @@ impl Workspace {
         self.organizer_capture_input.update(cx, |input, cx| {
             input.reset(String::new(), Vec::new(), 0, cx);
         });
-        self.restore_focus(window, cx);
+        if let Some(focus) = self.organizer_capture_focus_return.take() {
+            window.focus(&focus);
+        } else {
+            self.restore_focus(window, cx);
+        }
         cx.notify();
     }
     fn submit_organizer_capture(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -8654,6 +8682,7 @@ impl Workspace {
             .create_note_with_content(String::new(), body, tags);
         self.organizer_capture_open = false;
         self.organizer_capture_draft.clear();
+        self.organizer_capture_focus_return = None;
         self.organizer_capture_suggestions.clear();
         self.organizer_capture_input.update(cx, |input, cx| {
             input.reset(String::new(), Vec::new(), 0, cx);
@@ -9738,6 +9767,7 @@ impl Workspace {
             self.close_settings(window, cx);
             return;
         }
+        self.settings_focus_return = window.focused(cx);
         self.theme_picker_open = true;
         self.settings_tab = 0;
         self.search_query.clear();
@@ -9767,7 +9797,11 @@ impl Workspace {
             input.placeholder = Some(placeholder.into());
             input.reset(String::new(), Vec::new(), 0, cx);
         });
-        self.restore_focus(window, cx);
+        if let Some(focus) = self.settings_focus_return.take() {
+            window.focus(&focus);
+        } else {
+            self.restore_focus(window, cx);
+        }
         cx.notify();
     }
     fn mark_current_area(
