@@ -1494,7 +1494,7 @@
 - 结果：基本页面/常见块、一个文本属性数据库记录、笔记/任务/子任务和附件字节完成旧版 → GPUI 写入 → 旧版启动/保存 → GPUI 读回的同库往返。随后在新隔离库增加双向关联配置/双侧记录值、多选选项/单元格值、公式表达式配置及汇总关联/目标列/聚合方式，并扩展到普通文本、日期、勾选、网址、邮箱、电话、单选和状态单元格，经 Slint Release 打开保存后由 GPUI 逐字段和逐关联目标重读，均保持一致。MCP 方面，GPUI Release `--stdio --db <隔离库>` 连接旧版 Release 的 loopback HTTP 服务，按共同支持的 MCP `2025-06-18` 协议读取旧工具目录及 GPUI 笔记/任务，并通过旧 `create_note` 回写；另将旧版 MCP 指向专用隔离端口，由旧 `create_note` 创建笔记，随后 GPUI 重开同库核验正文与标签。可重跑流程为 `tools/test-legacy-roundtrip.ps1`，脚本自动建 `%TEMP%` fixture、启动隐藏的 Slint Release 实例并在结束后由 GPUI 断言。公式/汇总计算呈现、其他复杂 schema、附件集合及删除/恢复语义，以及完整同步 snapshot 的跨版本互通仍未覆盖，所以 P7 完整兼容门仍未关闭。
 - 证据日志、临时夹具和附件留在上述 `%TEMP%` 目录。旧版只使用该目录旁的测试库与 MCP 指针；最终结论仅使用退出码为 0 的旧版启动、GPUI 显式对象/字节断言和 MCP 桥接调用结果。Slint 源码工作树保持干净。
 - 后续扩展同一隔离脚本并重跑：除前述属性和 MCP 断言外，新增文件列中的两份不同二进制附件，在 Slint Release 打开保存后由 GPUI 按顺序重读并逐字节比较，结果通过。夹具仍位于 `%TEMP%`，不触及用户库。附件删除/恢复语义仍未测。
-- 旧版 MCP 回写笔记的同一脚本现在还依次调用 `trash_note` / `restore_note`；两步均返回成功，旧版正常退出后 GPUI 重开仍读到完整笔记。任务回收站及附件删除/恢复仍未覆盖。
+- 旧版 MCP 回写笔记与任务的同一脚本现在分别调用 `trash_note` / `restore_note`、`trash_task` / `restore_task`；四步均返回成功，旧版正常退出后 GPUI 重开仍读到完整且未删除的笔记和任务。附件删除/恢复仍未覆盖。
 - GPUI 侧临时 Session 探针的 `cargo run --locked --example legacy_roundtrip_probe -- write/verify <isolated-db>` 两种模式均通过；探针文件随后删除，未修改生产 Rust 代码。全量 `cargo fmt --all -- --check` 与 `cargo test --locked -j 8` 通过（106 项：54 库、50 二进制、MCP stdio 与 sync loopback 集成）。已有 vendor float 类型未来兼容和 MCP dead-code 警告未影响结果。
 
 ## 第二百三十七轮：便携发布包构建入口复核（2026-10-16）

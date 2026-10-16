@@ -95,6 +95,40 @@ try {
         Write-Output "Slint MCP $($operation.Name) for isolated note ${noteId}: PASS"
     }
 
+    $createTask = @{
+        jsonrpc = '2.0'; id = 5; method = 'tools/call'
+        params = @{
+            name = 'create_task'
+            arguments = @{
+                title = '旧版 MCP 任务恢复验收'
+                notes = 'Slint → GPUI 隔离任务回收站往返通过'
+                tags = '互通验收'
+            }
+        }
+    } | ConvertTo-Json -Compress -Depth 8
+    $createdTask = Invoke-RestMethod -Uri "http://127.0.0.1:$port/mcp" -Method Post `
+        -Headers $headers -ContentType 'application/json' -Body $createTask
+    if ($createdTask.result.isError) {
+        throw "Slint MCP rejected create_task: $($createdTask.result.content[0].text)"
+    }
+    $taskId = [int64](($createdTask.result.content[0].text | ConvertFrom-Json).id)
+
+    foreach ($operation in @(
+        @{ Id = 6; Name = 'trash_task' },
+        @{ Id = 7; Name = 'restore_task' }
+    )) {
+        $transition = @{
+            jsonrpc = '2.0'; id = $operation.Id; method = 'tools/call'
+            params = @{ name = $operation.Name; arguments = @{ task_id = $taskId } }
+        } | ConvertTo-Json -Compress -Depth 8
+        $transitionResult = Invoke-RestMethod -Uri "http://127.0.0.1:$port/mcp" -Method Post `
+            -Headers $headers -ContentType 'application/json' -Body $transition
+        if ($transitionResult.result.isError) {
+            throw "Slint MCP $($operation.Name) failed: $($transitionResult.result.content[0].text)"
+        }
+        Write-Output "Slint MCP $($operation.Name) for isolated task ${taskId}: PASS"
+    }
+
     Wait-Process -Id $legacyProcess.Id -Timeout 15
     $legacyProcess.Refresh()
     if (-not $legacyProcess.HasExited) { throw 'Slint fixture did not close cleanly' }

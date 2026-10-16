@@ -310,8 +310,18 @@ fn verify(path: &Path) -> Result<()> {
                 && note.tags == ["互通验收"]),
         "legacy MCP note did not survive GPUI reopen"
     );
+    assert!(
+        s.organizer.tasks.iter().any(|task| {
+            task.title == "旧版 MCP 任务恢复验收"
+                && task.notes == "Slint → GPUI 隔离任务回收站往返通过"
+                && task.tags == ["互通验收"]
+                && !task.done
+                && task.deleted_at.is_none()
+        }),
+        "legacy MCP task did not survive GPUI reopen and restore"
+    );
     println!(
-        "verified database={} paired relation, formula and rollup config, multi-select and common typed cells, ordered attachment set bytes, and old-version MCP note",
+        "verified database={} paired relation, formula and rollup config, multi-select and common typed cells, ordered attachment set bytes, and old-version MCP note/task restore",
         db.id
     );
     Ok(())
