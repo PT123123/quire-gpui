@@ -69,6 +69,26 @@ fn sync_seed_export(path: &Path, snapshot_path: &Path) -> Result<()> {
         None,
         vec!["同步验收".into()]
     ));
+    session.create_page(None);
+    session.set_page_title("GPUI 同步数据库页".into());
+    let database_block = session.blocks()[0].id;
+    let database = session
+        .make_database(database_block, "GPUI 同步数据库".into())
+        .context("create sync database")?;
+    let record = session
+        .add_database_record(database_block)
+        .context("create sync database record")?;
+    let title_property = session
+        .databases
+        .title_property(database)
+        .context("find sync database title property")?
+        .id;
+    assert!(session.set_database_cell(
+        database_block,
+        record,
+        title_property,
+        "Slint 跨版本数据库行"
+    )?);
     let device = session.sync_self_info();
     session.persistence.force_flush()?;
     let snapshot = session.sync_export()?;
@@ -114,6 +134,16 @@ fn sync_verify(path: &Path, snapshot_path: &Path) -> Result<()> {
             && task.notes == "旧版同步服务应完整接收任务备注"
             && task.tags == ["同步验收"]
     }));
+    let remote_database = remote
+        .databases
+        .iter()
+        .find(|database| database.name == "GPUI 同步数据库")
+        .context("legacy response omitted the GPUI database")?;
+    assert!(remote_database.records.iter().any(|record| {
+        remote_database.values.iter().any(|value| {
+            value.record == record.id && value.text.as_deref() == Some("Slint 跨版本数据库行")
+        })
+    }));
 
     let mut session = Session::open(path)?;
     let peer = PeerRecord {
@@ -153,10 +183,12 @@ fn sync_verify(path: &Path, snapshot_path: &Path) -> Result<()> {
             .iter()
             .any(|task| task.title == "GPUI 同步任务")
     );
+    let applied = session.sync_export()?;
+    assert_database_row(&applied, "GPUI 同步数据库", "Slint 跨版本数据库行")?;
     session.persistence.force_flush()?;
     drop(session);
 
-    let reopened = Session::open(path)?;
+    let mut reopened = Session::open(path)?;
     assert!(
         reopened
             .organizer
@@ -171,11 +203,36 @@ fn sync_verify(path: &Path, snapshot_path: &Path) -> Result<()> {
             .iter()
             .any(|task| task.title == "GPUI 同步任务")
     );
+    let reopened_snapshot = reopened.sync_export()?;
+    assert_database_row(
+        &reopened_snapshot,
+        "GPUI 同步数据库",
+        "Slint 跨版本数据库行",
+    )?;
     println!(
         "SYNC_LEGACY_RESPONSE=PASS version={} rows={}",
         merged.version,
         merged.row_count()
     );
+    Ok(())
+}
+
+fn assert_database_row(
+    snapshot: &quire_core::services::sync::model::SyncSnapshot,
+    database_name: &str,
+    row_text: &str,
+) -> Result<()> {
+    let database = snapshot
+        .databases
+        .iter()
+        .find(|database| database.name == database_name)
+        .with_context(|| format!("snapshot omitted database {database_name}"))?;
+    assert!(database.records.iter().any(|record| {
+        database
+            .values
+            .iter()
+            .any(|value| value.record == record.id && value.text.as_deref() == Some(row_text))
+    }));
     Ok(())
 }
 

@@ -1505,5 +1505,5 @@
 
 ## 第二百三十八轮：Slint 与 GPUI 同步应用进程往返（2026-10-16）
 
-- 新增 `tools/test-sync-legacy-wire.ps1` 与 `legacy_schema_probe` 的 `sync-seed-export` / `sync-verify` 模式。脚本只建立 `%TEMP%` 隔离库和测试数据，检查 5878 端口空闲后启动隐藏的 Slint Release 服务；先完成 `/sync/info` 与 `/sync/pair`，再由 GPUI Session 推送 v4 snapshot。Slint 应用服务在线程中合并并返回快照，GPUI 应用响应后 flush、关闭并重开隔离库，断言页面、笔记和任务内容均保留。整条 loopback 跨版本测试通过，证明页面/organizer 的实际应用进程 wire 往返；它未覆盖两机 UDP 发现、真实网络、数据库/附件 snapshot 或 GPUI GUI 内的定时出站 worker。
+- 新增 `tools/test-sync-legacy-wire.ps1` 与 `legacy_schema_probe` 的 `sync-seed-export` / `sync-verify` 模式。脚本只建立 `%TEMP%` 隔离库和测试数据，检查 5878 端口空闲后启动隐藏的 Slint Release 服务；先完成 `/sync/info` 与 `/sync/pair`，再由 GPUI Session 推送 v4 snapshot。Slint 应用服务在线程中合并并返回快照，GPUI 应用响应后 flush、关闭并重开隔离库，断言页面、笔记、任务，以及一张数据库的一行标题值均保留。整条 loopback 跨版本测试通过，证明这些数据类型的实际应用进程 wire 往返；它未覆盖两机 UDP 发现、真实网络、复杂数据库 schema、附件 snapshot 或 GPUI GUI 内的定时出站 worker。
 - 修正 P6/P7 中“应用间同步完全未测”的过期描述，保留以上尚未覆盖项。同步 core revision 与 v4 检查仍可由 `tools/verify-sync-core-compat.ps1` 单独重跑。功能仍在继续，按用户要求此轮没有重测性能；Slint/GPUI 最终性能对比安排在功能收尾之后。
