@@ -9,9 +9,13 @@ $fixture = Join-Path $env:TEMP ('quire-sync-legacy-' + [guid]::NewGuid().ToStrin
 New-Item -ItemType Directory -Path $fixture | Out-Null
 $gpuiDb = Join-Path $fixture 'gpui\quire.db'
 $legacyDb = Join-Path $fixture 'slint\quire.db'
+$gpuiAttachmentDb = Join-Path $fixture 'gpui-attachment\quire.db'
+$legacyAttachmentDb = Join-Path $fixture 'slint-attachment\quire.db'
 $gpuiDir = Split-Path -Parent $gpuiDb
 $legacyDir = Split-Path -Parent $legacyDb
-New-Item -ItemType Directory -Path $gpuiDir, $legacyDir | Out-Null
+$gpuiAttachmentDir = Split-Path -Parent $gpuiAttachmentDb
+$legacyAttachmentDir = Split-Path -Parent $legacyAttachmentDb
+New-Item -ItemType Directory -Path $gpuiDir, $legacyDir, $gpuiAttachmentDir, $legacyAttachmentDir | Out-Null
 $snapshotPath = Join-Path $fixture 'gpui-snapshot.json'
 $replyPath = Join-Path $fixture 'legacy-reply.json'
 $legacyProcess = $null
@@ -31,6 +35,35 @@ try {
     } finally {
         $occupied.Stop()
     }
+
+    # First verify attachment transfer in the pull direction. The isolated
+    # sender library is seeded with two arbitrary binary files, then Slint's
+    # real sync service exposes its snapshot and attachment endpoints.
+    Invoke-GpuiProbe @('write', $legacyAttachmentDb)
+    $legacyProcess = Start-Process -FilePath $legacyPath -ArgumentList @(
+        '--db', $legacyAttachmentDb, '--auto-exit', '20'
+    ) -PassThru -WindowStyle Hidden
+    $ready = $false
+    for ($i = 0; $i -lt 150; $i++) {
+        try {
+            $info = Invoke-RestMethod -Uri "http://127.0.0.1:$port/sync/info" -TimeoutSec 1
+            if ($info.id) { $ready = $true; break }
+        } catch {
+            $legacyProcess.Refresh()
+            if ($legacyProcess.HasExited) {
+                throw "Slint attachment source exited before sync HTTP became ready ($($legacyProcess.ExitCode))"
+            }
+            Start-Sleep -Milliseconds 100
+        }
+    }
+    if (-not $ready) { throw "Slint attachment source did not listen on loopback port $port" }
+    Invoke-GpuiProbe @('sync-pull', $gpuiAttachmentDb, "http://127.0.0.1:$port")
+    Wait-Process -Id $legacyProcess.Id -Timeout 25
+    $legacyProcess.Refresh()
+    if (-not $legacyProcess.HasExited -or $legacyProcess.ExitCode -ne 0) {
+        throw 'Slint attachment source did not shut down cleanly'
+    }
+    $legacyProcess = $null
 
     Invoke-GpuiProbe @('sync-seed-export', $gpuiDb, $snapshotPath)
     $source = Get-Content -LiteralPath $snapshotPath -Raw | ConvertFrom-Json

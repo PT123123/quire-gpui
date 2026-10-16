@@ -2,7 +2,14 @@ use anyhow::{Context, Result, bail};
 use quire_core::core::database::{CellValue, PropertyKind};
 use quire_core::core::database_property::{OptionId, PropertyOptions};
 use quire_gpui::session::Session;
-use std::{collections::BTreeSet, env, path::Path};
+use std::{
+    collections::BTreeSet,
+    env,
+    io::{Read, Write},
+    net::TcpStream,
+    path::Path,
+    time::Duration,
+};
 
 const DB_NAME: &str = "GPUI 旧版互通 schema";
 const LEFT: &str = "源记录";
@@ -33,7 +40,7 @@ fn main() -> Result<()> {
     let args: Vec<String> = env::args().collect();
     let mode = args
         .get(1)
-        .context("write|configure|verify|sync-seed-export|sync-verify <db> [path]")?;
+        .context("write|configure|verify|sync-seed-export|sync-verify|sync-pull <db> [path]")?;
     let path = Path::new(args.get(2).context("database path")?);
     match mode.as_str() {
         "write" => write(path),
@@ -51,8 +58,125 @@ fn main() -> Result<()> {
             path,
             Path::new(args.get(3).context("snapshot response path")?),
         ),
-        _ => bail!("expected write, configure, verify, sync-seed-export or sync-verify"),
+        "sync-pull" => sync_pull(path, args.get(3).context("legacy sync base URL")?),
+        _ => bail!("expected write, configure, verify, sync-seed-export, sync-verify or sync-pull"),
     }
+}
+
+fn sync_pull(path: &Path, base_url: &str) -> Result<()> {
+    use quire_core::services::sync::{
+        engine::{DeviceInfo, PeerRecord},
+        model::{SNAPSHOT_VERSION, SyncSnapshot},
+    };
+
+    let base = base_url
+        .strip_prefix("http://")
+        .unwrap_or(base_url)
+        .trim_end_matches('/');
+    let (host, port) = base
+        .rsplit_once(':')
+        .context("sync URL must be http://host:port")?;
+    let port: u16 = port.parse().context("invalid sync server port")?;
+    let info: DeviceInfo = serde_json::from_slice(&http_get(host, port, "/sync/info")?)?;
+    let snapshot_text = String::from_utf8(http_get(host, port, "/sync/snapshot")?)?;
+    let mut remote = SyncSnapshot::from_json(&snapshot_text).map_err(anyhow::Error::msg)?;
+    assert_eq!(remote.version, SNAPSHOT_VERSION);
+    assert_eq!(
+        remote.device_id, info.id,
+        "snapshot and /sync/info sender differ"
+    );
+    let remote_attachments = remote.attachments.clone();
+    // This fixture intentionally tests the binary attachment lane only. The
+    // independently created default pages have colliding numeric ids, so
+    // omit unrelated rows instead of pretending the pair shares a sync base.
+    remote.pages.clear();
+    remote.blocks.clear();
+    remote.databases.clear();
+    remote.notes.clear();
+    remote.tasks.clear();
+    remote.lists.clear();
+
+    let mut bytes = Vec::with_capacity(remote_attachments.len());
+    for attachment in &remote_attachments {
+        let data = http_get(host, port, &format!("/sync/attachment/{}", attachment.id))?;
+        bytes.push((attachment.id, data));
+    }
+    let peer = PeerRecord {
+        id: info.id,
+        name: info.name,
+        kind: info.kind,
+        ip: host.to_owned(),
+        port: info.port,
+        paired: true,
+        last_seen: 0,
+        last_sync: String::new(),
+    };
+    let mut session = Session::open(path)?;
+    session.sync_apply_remote(&remote, &bytes, &peer)?;
+    for attachment in &remote_attachments {
+        let expected = match attachment.name.as_str() {
+            "compat-attachment.bin" => Some(ATTACHMENT_BYTES),
+            "compat-attachment-2.bin" => Some(SECOND_ATTACHMENT_BYTES),
+            _ => None,
+        };
+        if let Some(expected) = expected {
+            let file = session
+                .attachment_path(quire_core::core::types::AttachmentId(attachment.id))
+                .with_context(|| format!("attachment {} was not stored", attachment.id))?;
+            assert_eq!(std::fs::read(file)?, expected, "attachment bytes changed");
+        }
+    }
+    session.persistence.force_flush()?;
+    drop(session);
+
+    let reopened = Session::open(path)?;
+    for (name, expected) in [
+        ("compat-attachment.bin", ATTACHMENT_BYTES),
+        ("compat-attachment-2.bin", SECOND_ATTACHMENT_BYTES),
+    ] {
+        let attachment = remote_attachments
+            .iter()
+            .find(|attachment| attachment.name == name)
+            .with_context(|| format!("legacy snapshot omitted {name}"))?;
+        let file = reopened
+            .attachment_path(quire_core::core::types::AttachmentId(attachment.id))
+            .with_context(|| format!("attachment {name} was not persisted"))?;
+        assert_eq!(std::fs::read(file)?, expected, "reopened attachment {name}");
+    }
+    println!(
+        "SYNC_LEGACY_ATTACHMENTS=PASS version={} files=2 bytes={}/{}",
+        remote.version,
+        ATTACHMENT_BYTES.len(),
+        SECOND_ATTACHMENT_BYTES.len()
+    );
+    Ok(())
+}
+
+fn http_get(host: &str, port: u16, path: &str) -> Result<Vec<u8>> {
+    let mut stream = TcpStream::connect((host, port))?;
+    stream.set_read_timeout(Some(Duration::from_secs(10)))?;
+    stream.set_write_timeout(Some(Duration::from_secs(10)))?;
+    write!(
+        stream,
+        "GET {path} HTTP/1.1\r\nHost: {host}:{port}\r\nConnection: close\r\n\r\n"
+    )?;
+    let mut response = Vec::new();
+    stream.read_to_end(&mut response)?;
+    let split = response
+        .windows(4)
+        .position(|window| window == b"\r\n\r\n")
+        .context("sync server returned malformed HTTP")?;
+    let headers = std::str::from_utf8(&response[..split])?;
+    let status: u16 = headers
+        .lines()
+        .next()
+        .and_then(|line| line.split_whitespace().nth(1))
+        .context("sync server omitted HTTP status")?
+        .parse()?;
+    if status != 200 {
+        bail!("GET {path} returned HTTP {status}");
+    }
+    Ok(response[split + 4..].to_vec())
 }
 
 fn sync_seed_export(path: &Path, snapshot_path: &Path) -> Result<()> {

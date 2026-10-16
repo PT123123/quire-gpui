@@ -1549,3 +1549,8 @@
 
 - `tools/test-sync-legacy-wire.ps1` 先前只用一条标题值验证 v4 数据库 snapshot。扩展 `examples/legacy_schema_probe.rs` 的隔离 seed/verify：额外发送 Number 属性及 42.0 值、引用该列的 Formula 配置、Select 选项定义及记录选中值；收到 Slint Release `/sync/snapshot` 响应后逐项验证属性类型、公式表达式、选项名和 cell 值，并在 GPUI `sync_apply_remote` 后 flush、关闭、重开和再次 export 验证仍一致。
 - 用本机旧版 Release 实跑脚本通过：`LEGACY_SYNC_WIRE=PASS`、`SYNC_LEGACY_RESPONSE=PASS version=4 rows=171`。fixture 留在 `%TEMP%\quire-sync-legacy-d22c5efd8ee042509b6393d0db738db9`，没有访问真实用户库。附件二进制同步传输以及更完整的复杂 schema 仍待单独验收；本轮只运行 `cargo check --locked --example legacy_schema_probe -j 8` 和真实 loopback 往返，未运行性能评测。
+
+## 第二百四十七轮：覆盖旧版到 GPUI 的同步附件传输（2026-10-16）
+
+- 扩展 `examples/legacy_schema_probe.rs sync-pull`：从旧版 `/sync/info`、`/sync/snapshot` 读取设备和 v4 snapshot，逐项 GET 所有附件字节，再经 GPUI `sync_apply_remote` 导入、flush、关闭并重开，按附件名逐字节比较。附件 fixture 与接收库均在独立临时目录；为避免两个独立库默认页面的数值 ID 冲突，此探针仅合并附件元数据和 payload，不伪装成整库同步。
+- `tools/test-sync-legacy-wire.ps1` 先在临时 Slint 库种入两份任意二进制附件并启动旧版真实服务，GPUI 从 `127.0.0.1:5878` 拉取验证成功：`SYNC_LEGACY_ATTACHMENTS=PASS version=4 files=2 bytes=32/32`。随后原有 GPUI→Slint 复杂 schema snapshot 仍通过：`LEGACY_SYNC_WIRE=PASS`、`SYNC_LEGACY_RESPONSE=PASS version=4 rows=171`。两项都使用 `%TEMP%` fixture，未访问真实用户库。GPUI→Slint 方向附件推送、附件删除/恢复和完整共享基线上的双向附件变更仍未验证；性能评测未运行。
