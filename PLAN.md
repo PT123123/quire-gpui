@@ -91,7 +91,7 @@
 - [ ] 全主题、尺寸、DPI 和交互状态视觉对照。
 - [ ] IME、人机交互、编辑正确性、数据库兼容全部通过。
 - [~] 已有一轮 GPUI/Slint 性能基线（warm no-op / 单文件 Release 重编时间与聚合编译内存，空白/10k 文档下窗口 handle-up、CPU、Working Set/Private Bytes），方法、当时 commit、限制与原始结果见 `docs/DELIVERY-STATUS.md` 第二百三十五轮。该 commit 后仍有源码改动；按用户要求，功能收尾后用同脚本重测并作为最终对比，性能项目目前不关闭。
-- [ ] 测试库完成全量旧版→新版→旧版往返，附件和协议兼容。已抽验基本页面/常见块、文件列中两份附件的顺序与字节、笔记/任务/子任务，以及文本/数字/日期/勾选/网址/邮箱/电话/单选/多选/状态属性、双向关联、公式/汇总配置的隔离同库往返；GPUI 写入后由 Slint Release 打开并保存，再由 GPUI 重读断言。旧版 MCP 读写与笔记/任务分别移入回收站并恢复后的重读均通过。可用 `tools/test-legacy-roundtrip.ps1` 重跑隔离验证。页面/organizer 和一个简单数据库/标题值的 v4 同步 snapshot 已由 `tools/test-sync-legacy-wire.ps1` 验证 GPUI Session → Slint Release 应用服务 → GPUI Session 的 loopback 往返；数据库复杂 schema、附件同步 snapshot、公式/汇总计算呈现、其他复杂 schema、附件删除/恢复语义仍未覆盖，详见 `docs/DELIVERY-STATUS.md` 第二百三十六至二百三十八轮。
+- [ ] 测试库完成全量旧版→新版→旧版往返，附件和协议兼容。已抽验基本页面/常见块、文件列中两份附件的顺序与字节、笔记/任务/子任务，以及文本/数字/日期/勾选/网址/邮箱/电话/单选/多选/状态属性、双向关联、公式/汇总配置的隔离同库往返；GPUI 写入后由 Slint Release 打开并保存，再由 GPUI 重读断言。旧版 MCP 读写与笔记/任务分别移入回收站并恢复后的重读均通过。可用 `tools/test-legacy-roundtrip.ps1` 重跑隔离验证。页面/organizer 及简单与复杂数据库 v4 snapshot 已由 `tools/test-sync-legacy-wire.ps1` 验证 GPUI Session → Slint Release 应用服务 → GPUI Session 的 loopback 往返；复杂同步 schema 已覆盖 Number 值、Formula 配置、Select 选项配置和值，并在 GPUI 应用后 flush、重开重读。附件二进制的同步 snapshot 往返、Formula/Rollup 计算呈现、其他复杂 schema、附件删除/恢复语义仍未覆盖，详见 `docs/DELIVERY-STATUS.md` 第二百三十六、二百三十八及二百四十六轮。
 - [ ] 数据备份/切换/回退流程，候选安装包与验收报告。
 
 ## 每次交接必填

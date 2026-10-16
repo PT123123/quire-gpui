@@ -1544,3 +1544,8 @@
 
 - 对照阅读/编辑状态后发现 GPUI 数学块只有 Unicode 预览，`Session::editable` 未允许数学块编辑。现可点击公式卡片聚焦 LaTeX 正文输入；编辑状态显示输入框，失焦后继续显示 core 支持子集的 Unicode 预览。编辑复用正常撤销、重做和持久化路径。
 - 新增隔离 Session 回归覆盖公式源文修改、撤销/重做、flush 和 SQLite 重开；Release GUI smoke 确认预览与聚焦编辑框可渲染且输入实体已挂载。全量 `cargo test --locked -j 8` 通过（108 项：56 库 + 50 二进制 + 2 集成），`cargo fmt --all -- --check`、`git diff --check`、Release 构建及全新临时库 1000 块 GUI smoke 通过。此次 Release 构建命令运行时间 53.68 秒，作为单次构建记录，不作为 Slint 对比结论；未采集编译峰值内存。性能评测及内存/CPU 对比按用户要求留到功能冻结后。数学卡片真人鼠标命中和 IME 输入仍待桌面回归，未访问真实用户库。
+
+## 第二百四十六轮：扩展 GPUI / Slint 数据库同步协议往返（2026-10-16）
+
+- `tools/test-sync-legacy-wire.ps1` 先前只用一条标题值验证 v4 数据库 snapshot。扩展 `examples/legacy_schema_probe.rs` 的隔离 seed/verify：额外发送 Number 属性及 42.0 值、引用该列的 Formula 配置、Select 选项定义及记录选中值；收到 Slint Release `/sync/snapshot` 响应后逐项验证属性类型、公式表达式、选项名和 cell 值，并在 GPUI `sync_apply_remote` 后 flush、关闭、重开和再次 export 验证仍一致。
+- 用本机旧版 Release 实跑脚本通过：`LEGACY_SYNC_WIRE=PASS`、`SYNC_LEGACY_RESPONSE=PASS version=4 rows=171`。fixture 留在 `%TEMP%\quire-sync-legacy-d22c5efd8ee042509b6393d0db738db9`，没有访问真实用户库。附件二进制同步传输以及更完整的复杂 schema 仍待单独验收；本轮只运行 `cargo check --locked --example legacy_schema_probe -j 8` 和真实 loopback 往返，未运行性能评测。

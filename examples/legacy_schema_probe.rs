@@ -24,6 +24,10 @@ const STATUS: &str = "状态";
 const FILES: &str = "文件";
 const ATTACHMENT_BYTES: &[u8] = b"legacy schema attachment bytes\0\xff";
 const SECOND_ATTACHMENT_BYTES: &[u8] = b"second legacy attachment bytes\x00\x01";
+const SYNC_SCORE: &str = "同步分数";
+const SYNC_FORMULA: &str = "同步公式";
+const SYNC_SELECT: &str = "同步选项";
+const SYNC_SELECT_VALUE: &str = "跨版本可选";
 
 fn main() -> Result<()> {
     let args: Vec<String> = env::args().collect();
@@ -75,6 +79,17 @@ fn sync_seed_export(path: &Path, snapshot_path: &Path) -> Result<()> {
     let database = session
         .make_database(database_block, "GPUI 同步数据库".into())
         .context("create sync database")?;
+    let score = session
+        .add_database_property(database_block, SYNC_SCORE.into(), PropertyKind::Number)
+        .context("create sync number property")?;
+    let formula = session
+        .add_database_property(database_block, SYNC_FORMULA.into(), PropertyKind::Formula)
+        .context("create sync formula property")?;
+    let select = session
+        .add_database_property(database_block, SYNC_SELECT.into(), PropertyKind::Select)
+        .context("create sync select property")?;
+    assert!(session.set_database_formula(database_block, formula, "1 + [同步分数]")?);
+    assert!(session.add_database_property_option(database_block, select, SYNC_SELECT_VALUE)?);
     let record = session
         .add_database_record(database_block)
         .context("create sync database record")?;
@@ -89,6 +104,8 @@ fn sync_seed_export(path: &Path, snapshot_path: &Path) -> Result<()> {
         title_property,
         "Slint 跨版本数据库行"
     )?);
+    assert!(session.set_database_cell(database_block, record, score, "42")?);
+    assert!(session.set_database_cell(database_block, record, select, SYNC_SELECT_VALUE)?);
     let device = session.sync_self_info();
     session.persistence.force_flush()?;
     let snapshot = session.sync_export()?;
@@ -139,11 +156,7 @@ fn sync_verify(path: &Path, snapshot_path: &Path) -> Result<()> {
         .iter()
         .find(|database| database.name == "GPUI 同步数据库")
         .context("legacy response omitted the GPUI database")?;
-    assert!(remote_database.records.iter().any(|record| {
-        remote_database.values.iter().any(|value| {
-            value.record == record.id && value.text.as_deref() == Some("Slint 跨版本数据库行")
-        })
-    }));
+    assert_sync_database(remote_database)?;
 
     let mut session = Session::open(path)?;
     let peer = PeerRecord {
@@ -184,7 +197,13 @@ fn sync_verify(path: &Path, snapshot_path: &Path) -> Result<()> {
             .any(|task| task.title == "GPUI 同步任务")
     );
     let applied = session.sync_export()?;
-    assert_database_row(&applied, "GPUI 同步数据库", "Slint 跨版本数据库行")?;
+    assert_sync_database(
+        applied
+            .databases
+            .iter()
+            .find(|database| database.name == "GPUI 同步数据库")
+            .context("applied snapshot omitted sync database")?,
+    )?;
     session.persistence.force_flush()?;
     drop(session);
 
@@ -204,10 +223,12 @@ fn sync_verify(path: &Path, snapshot_path: &Path) -> Result<()> {
             .any(|task| task.title == "GPUI 同步任务")
     );
     let reopened_snapshot = reopened.sync_export()?;
-    assert_database_row(
-        &reopened_snapshot,
-        "GPUI 同步数据库",
-        "Slint 跨版本数据库行",
+    assert_sync_database(
+        reopened_snapshot
+            .databases
+            .iter()
+            .find(|database| database.name == "GPUI 同步数据库")
+            .context("reopened snapshot omitted sync database")?,
     )?;
     println!(
         "SYNC_LEGACY_RESPONSE=PASS version={} rows={}",
@@ -217,21 +238,57 @@ fn sync_verify(path: &Path, snapshot_path: &Path) -> Result<()> {
     Ok(())
 }
 
-fn assert_database_row(
-    snapshot: &quire_core::services::sync::model::SyncSnapshot,
-    database_name: &str,
-    row_text: &str,
-) -> Result<()> {
-    let database = snapshot
-        .databases
+fn assert_sync_database(database: &quire_core::services::sync::model::SDatabase) -> Result<()> {
+    let title = database
+        .properties
         .iter()
-        .find(|database| database.name == database_name)
-        .with_context(|| format!("snapshot omitted database {database_name}"))?;
-    assert!(database.records.iter().any(|record| {
-        database
-            .values
-            .iter()
-            .any(|value| value.record == record.id && value.text.as_deref() == Some(row_text))
+        .find(|property| property.kind == "title")
+        .context("sync database lost its title property")?;
+    let score = database
+        .properties
+        .iter()
+        .find(|property| property.name == SYNC_SCORE)
+        .context("legacy sync response omitted number property")?;
+    let formula = database
+        .properties
+        .iter()
+        .find(|property| property.name == SYNC_FORMULA)
+        .context("legacy sync response omitted formula property")?;
+    let select = database
+        .properties
+        .iter()
+        .find(|property| property.name == SYNC_SELECT)
+        .context("legacy sync response omitted select property")?;
+    assert_eq!(score.kind, "number");
+    assert_eq!(formula.kind, "formula");
+    assert_eq!(
+        quire_core::core::database_formula::config_formula(&formula.config).as_deref(),
+        Some("1 + [同步分数]")
+    );
+    assert_eq!(select.kind, "select");
+    let options = PropertyOptions::from_config(&select.config);
+    let option = options
+        .iter()
+        .find(|option| option.name == SYNC_SELECT_VALUE)
+        .context("legacy sync response omitted select option")?;
+    let record = database
+        .records
+        .iter()
+        .find(|record| {
+            database.values.iter().any(|value| {
+                value.record == record.id
+                    && value.property == title.id
+                    && value.text.as_deref() == Some("Slint 跨版本数据库行")
+            })
+        })
+        .context("legacy sync response omitted the database row")?;
+    assert!(database.values.iter().any(|value| {
+        value.record == record.id && value.property == score.id && value.num == Some(42.0)
+    }));
+    assert!(database.values.iter().any(|value| {
+        value.record == record.id
+            && value.property == select.id
+            && value.text.as_deref() == Some(&option.id.0.to_string())
     }));
     Ok(())
 }
