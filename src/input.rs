@@ -109,6 +109,7 @@ impl TextInput {
             // Abandon uncommitted composition on blur; never save a pinyin preview.
             this.buffer.cancel();
             this.selecting = false;
+            this.vertical_goal_x = None;
             cx.emit(InputEvent::Blurred);
             cx.notify();
         })
@@ -324,6 +325,7 @@ impl TextInput {
     }
     fn select_all(&mut self, _: &SelectAll, _: &mut Window, cx: &mut Context<Self>) {
         if !self.buffer.composing() {
+            self.vertical_goal_x = None;
             self.buffer.move_to(0);
             self.buffer.select_to(self.buffer.text.len());
             cx.notify();
@@ -473,11 +475,13 @@ impl TextInput {
     }
     fn document_start(&mut self, _: &DocumentStart, _: &mut Window, cx: &mut Context<Self>) {
         if !self.buffer.composing() {
+            self.vertical_goal_x = None;
             cx.emit(InputEvent::NavigateDocument(false));
         }
     }
     fn document_end(&mut self, _: &DocumentEnd, _: &mut Window, cx: &mut Context<Self>) {
         if !self.buffer.composing() {
+            self.vertical_goal_x = None;
             cx.emit(InputEvent::NavigateDocument(true));
         }
     }

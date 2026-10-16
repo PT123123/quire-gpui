@@ -1687,3 +1687,8 @@
 - 修正连续上/下键经过短行时目标横坐标漂移的问题。垂直导航现在在连续移动期间保留初始 caret 的排版 x 坐标，跨行长短差异时落点稳定；水平移动、Home/End、文本编辑、重置与鼠标定位会重新计算目标列。
 - GPUI `TestAppContext` 按键分发回归以真实 TextInput 和 300px 布局测试“长行 → 单字符行 → 长行”，分别连续按两次 Down 与 Shift+Down，断言第三行 caret/选区终点仍落在原目标列附近。格式检查、全量 `cargo test --locked -j 8`（113 项）、`cargo check --all-targets --locked -j 8` 与 `git diff --check` 通过。
 - Release 构建通过；新 `%TEMP%` SQLite 的 1000 块 GUI smoke 通过，涵盖 MCP、速记/托盘、窗口最大化还原、数据库视图和虚拟滚动。便携包/安装器已刷新，staging EXE SHA-256 与 Release 一致：`8731EA369075E4A5ACF6BE4F6E3EAB2F2D8B6FFF51F156CA53CEF01544B41323`；ZIP SHA-256 `C1A65867A27FD6A9153182ED701692F77B4FC4B83AC32883DF721624E8872CA2`，安装器 SHA-256 `9F3AB83731E7886623D7EC6DCFAAF2F4C8DF70B6CDDD0B5DA7AF98350099324A`。未访问真实用户库，未运行性能评测。
+
+## 第二百七十三轮：重置键盘导航目标列状态（2026-10-16）
+
+- 补齐垂直目标列状态的生命周期：全选、文档首尾跳转及输入框失焦会清除旧目标列，避免输入框重新聚焦或跳至其他块后继承过期 x 坐标。
+- 格式检查、全量 `cargo test --locked -j 8`（113 项）、`cargo check --all-targets --locked -j 8`、`git diff --check` 和 1000 块隔离 Release GUI smoke 通过。Release 构建用时 46.70 秒；这是单次构建记录，未测编译峰值内存或做 Slint 性能对比。便携包/安装器从此候选刷新，staging 与 Release EXE SHA-256 一致：`2B9BEAD248C67C04012B26CC71C176763FF2B69550098B7DD80E036010E20F1F`；ZIP SHA-256 `6EA3507215A575D0159B2B7CE84DB562C4CBAD3D73E469D6C3760A414E5AF222`，安装器 SHA-256 `F1632C8C3917E800ABD686E75B5F0DBAD17AD1191825DC72AD015848B944A081`。测试库仅在 `%TEMP%`，未访问真实用户库。
