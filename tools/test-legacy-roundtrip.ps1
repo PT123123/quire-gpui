@@ -27,7 +27,7 @@ try {
     # Only this isolated Slint process runs hidden; it closes itself after the
     # MCP write so the final GPUI reader can prove the change survived shutdown.
     $legacyProcess = Start-Process -FilePath $legacyPath -ArgumentList @(
-        '--db', $db, '--mcp', '--auto-exit', '30'
+        '--db', $db, '--mcp', '--auto-exit', '8'
     ) -PassThru -WindowStyle Hidden
 
     $ready = $false
@@ -78,9 +78,10 @@ try {
     if ($created.result.isError) { throw "Slint MCP rejected create_note: $($created.result.content[0].text)" }
     Write-Output "Slint MCP create_note result: $($created.result.content[0].text)"
 
-    Wait-Process -Id $legacyProcess.Id -Timeout 40
+    Wait-Process -Id $legacyProcess.Id -Timeout 15
     $legacyProcess.Refresh()
     if (-not $legacyProcess.HasExited) { throw 'Slint fixture did not close cleanly' }
+    if ($legacyProcess.ExitCode -ne 0) { throw "Slint fixture exited with code $($legacyProcess.ExitCode)" }
 
     Invoke-GpuiProbe @('verify', $db)
     Write-Output "LEGACY_ROUNDTRIP=PASS"

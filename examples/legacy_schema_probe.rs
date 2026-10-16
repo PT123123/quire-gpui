@@ -10,6 +10,9 @@ const RIGHT: &str = "目标记录";
 const RELATION: &str = "相关目标";
 const MIRROR: &str = "关联来源";
 const TAGS: &str = "多选标签";
+const SCORE: &str = "评分";
+const FORMULA: &str = "计算分";
+const ROLLUP: &str = "关联总分";
 
 fn main() -> Result<()> {
     let args: Vec<String> = env::args().collect();
@@ -23,7 +26,7 @@ fn main() -> Result<()> {
             args.get(4).context("token")?,
         ),
         "verify" => verify(path),
-        _ => bail!("expected write or verify"),
+        _ => bail!("expected write, configure or verify"),
     }
 }
 
@@ -52,9 +55,26 @@ fn write(path: &Path) -> Result<()> {
     let tags = s
         .add_database_property(block, TAGS.into(), PropertyKind::MultiSelect)
         .context("tags")?;
+    let score = s
+        .add_database_property(block, SCORE.into(), PropertyKind::Number)
+        .context("score")?;
+    let formula = s
+        .add_database_property(block, FORMULA.into(), PropertyKind::Formula)
+        .context("formula")?;
+    let rollup = s
+        .add_database_property(block, ROLLUP.into(), PropertyKind::Rollup)
+        .context("rollup")?;
     assert!(s.set_database_relation_target(block, relation, Some(db))?);
     assert!(s.set_database_relation_target(block, mirror, Some(db))?);
     assert!(s.set_database_relation_mirror(block, relation, mirror)?);
+    assert!(s.set_database_formula(block, formula, "1 + [评分]")?);
+    assert!(s.set_database_rollup(
+        block,
+        rollup,
+        Some(relation),
+        Some(score),
+        quire_core::core::database_rollup::Aggregate::Sum,
+    )?);
     assert!(s.add_database_property_option(block, tags, "Alpha")?);
     assert!(s.add_database_property_option(block, tags, "Beta")?);
     let left = s.add_database_record(block).context("left record")?;
@@ -65,6 +85,8 @@ fn write(path: &Path) -> Result<()> {
         s.databases.title_property(db).context("title")?.id,
         LEFT,
     )?;
+    s.set_database_cell(block, left, score, "12")?;
+    s.set_database_cell(block, right, score, "7")?;
     s.set_database_cell(
         block,
         right,
@@ -97,12 +119,26 @@ fn verify(path: &Path) -> Result<()> {
     let relation = find(RELATION)?;
     let mirror = find(MIRROR)?;
     let tags = find(TAGS)?;
+    let formula = find(FORMULA)?;
+    let score = find(SCORE)?;
+    let rollup = find(ROLLUP)?;
     let relation_config = quire_core::core::database_relation::config_relation(&relation.config);
     let mirror_config = quire_core::core::database_relation::config_relation(&mirror.config);
     assert_eq!(relation_config.target, Some(db.id));
     assert_eq!(relation_config.mirror, Some(mirror.id));
     assert_eq!(mirror_config.target, Some(db.id));
     assert_eq!(mirror_config.mirror, Some(relation.id));
+    assert_eq!(
+        quire_core::core::database_formula::config_formula(&formula.config).as_deref(),
+        Some("1 + [评分]")
+    );
+    let rollup_config = quire_core::core::database_rollup::config_rollup(&rollup.config);
+    assert_eq!(rollup_config.relation, Some(relation.id));
+    assert_eq!(rollup_config.column, Some(score.id));
+    assert_eq!(
+        rollup_config.aggregate,
+        quire_core::core::database_rollup::Aggregate::Sum
+    );
     let rows = s.repo.records_of(db.id)?;
     let left = rows
         .iter()
@@ -112,6 +148,14 @@ fn verify(path: &Path) -> Result<()> {
         .iter()
         .find(|r| s.repo.record_title(r.id).ok().flatten().as_deref() == Some(RIGHT))
         .context("right row lost")?;
+    assert!(
+        matches!(s.repo.cell(left.id, score.id)?, CellValue::Number(value) if value == 12.0),
+        "left numeric source value changed"
+    );
+    assert!(
+        matches!(s.repo.cell(right.id, score.id)?, CellValue::Number(value) if value == 7.0),
+        "right numeric source value changed"
+    );
     assert_eq!(
         s.repo.cell(left.id, relation.id)?,
         CellValue::Items(vec![right.id.0.to_string()])
@@ -156,7 +200,7 @@ fn verify(path: &Path) -> Result<()> {
         "legacy MCP note did not survive GPUI reopen"
     );
     println!(
-        "verified database={} paired relation config/cells, multi-select options/cell values, and old-version MCP note",
+        "verified database={} paired relation, formula and rollup config, multi-select values, and old-version MCP note",
         db.id
     );
     Ok(())
