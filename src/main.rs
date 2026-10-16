@@ -524,32 +524,28 @@ mod window_geometry_tests {
     }
 
     #[test]
-    fn lan_pull_imports_pages_from_a_loopback_share() {
-        let scratch = quire_core::testing::ScratchDir::new("gpui-lan-pull");
-        let path = scratch.path().join("destination.sqlite3");
-        let mut session = quire_gpui::session::Session::open(&path).unwrap();
-        let selected_before = session.page.id;
-        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    fn lan_pull_imports_from_the_read_only_core_share_server() {
+        let source_scratch = quire_core::testing::ScratchDir::new("gpui-lan-share-source");
+        let source_path = source_scratch.path().join("source.sqlite3");
+        let mut source = quire_gpui::session::Session::open(&source_path).unwrap();
+        source.import_markdown(
+            "Shared sample".into(),
+            "# Shared sample\n\nImported from the real LAN share server.",
+        );
+        source.persistence.force_flush().unwrap();
+        let server = quire_core::services::lan_server::LanServer::new(source.repo.clone(), 0);
+        let listener = server.bind().unwrap();
         let port = listener.local_addr().unwrap().port();
-        let server = std::thread::spawn(move || {
-            use std::io::{Read, Write};
-            let (mut stream, _) = listener.accept().unwrap();
-            let mut request = [0u8; 2048];
-            let _ = stream.read(&mut request).unwrap();
-            let body = "<<<QUIRE PAGE: Shared sample>>>\n# Shared sample\n\nImported from LAN.\n";
-            write!(
-                stream,
-                "HTTP/1.0 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-                body.len(),
-                body
-            )
-            .unwrap();
-        });
+        std::thread::spawn(move || server.serve(listener));
+
+        let destination_scratch = quire_core::testing::ScratchDir::new("gpui-lan-pull-destination");
+        let destination_path = destination_scratch.path().join("destination.sqlite3");
+        let mut session = quire_gpui::session::Session::open(&destination_path).unwrap();
+        let selected_before = session.page.id;
 
         let count = pull_lan_pages(&mut session, &format!("http://127.0.0.1:{port}"))
-            .expect("loopback LAN pull succeeds");
-        server.join().unwrap();
-        assert_eq!(count, 1);
+            .expect("pull should import through the actual read-only LAN server");
+        assert!(count >= 1);
         assert_eq!(session.page.id, selected_before);
         assert!(
             session
@@ -567,7 +563,21 @@ mod window_geometry_tests {
                 .document
                 .page_blocks(imported.id)
                 .iter()
-                .any(|block| block.text.contains("Imported from LAN."))
+                .any(|block| block
+                    .text
+                    .contains("Imported from the real LAN share server."))
+        );
+
+        use std::io::{Read, Write};
+        let mut stream = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+        stream
+            .write_all(b"POST /api/export HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+            .unwrap();
+        let mut response = String::new();
+        stream.read_to_string(&mut response).unwrap();
+        assert!(
+            response.starts_with("HTTP/1.0 405"),
+            "share endpoint must reject writes: {response}"
         );
     }
 }

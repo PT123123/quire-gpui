@@ -1849,3 +1849,9 @@
 - 从当前 Release 源码 `01c134e` 生成 Windows x64 便携 ZIP 与 Inno Setup 6 安装器；Release EXE 与 staging EXE SHA-256 一致，PerMonitorV2 manifest 检查均通过。ZIP 内容包含 EXE、README、第三方声明和独立数据目录说明。
 - 当前 EXE SHA-256：`A7F9B1B7BA1DCF3E9DD72E6E8BE1F581C5F6C32AD4362124B17856F674832B1D`；便携 ZIP：`6E36F9677CF51E83B57571215FD97ECE11A724F267B6844B9D4A947243871E92`；安装器：`4958A303133839C55EB73BD746ABC6F8F4560B26D09436E8D5753602BF027E87`。本次 Release 编译 49.62 秒；未采集构建峰值内存，该单次耗时不作为性能比较。
 - ZIP 结构与资源 manifest 已自动核验；本轮没有覆盖安装到真实用户目录或用户迁移回退。未访问真实用户库或修改 Slint/core；最终 GPUI/Slint 性能对比仍留到功能冻结后。
+
+## 第二百九十九轮：真实 core 局域网只读分享往返（2026-10-16）
+
+- 替换了手写 HTTP 假服务器测试：测试从隔离 SQLite 建立源笔记，启动 `quire_core::LanServer`，再通过 GPUI 客户端拉取到另一份隔离 SQLite，并核对标题、正文及当前选中页。另向分享端发出 `POST /api/export`，确认只读服务返回 405。
+- 针对性 LAN 测试和全量 `cargo test --locked -j 8 -- --quiet` 通过（116 项）。本轮变更只加强真实 core 分享服务的集成证据；不能代表真实设备网络及复杂网络环境验收。
+- 未访问真实用户库或修改 Slint/core；最终 GPUI/Slint 性能比较按用户要求留到功能完成后。
