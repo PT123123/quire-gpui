@@ -1831,3 +1831,9 @@
 - 数据库列管理器现在接管键盘焦点；上下键循环浏览属性，Enter/Space 切换列，Right 打开属性类型子面板，Left/Escape 返回或关闭并恢复打开前焦点。公式、选项和关联编辑器打开时，按键继续交给相应输入控件。与筛选/分组面板切换时关闭旧面板并恢复其焦点状态。
 - `cargo fmt --all`、全量 `cargo test --locked -j 8 -- --quiet`（116 项）、`cargo check --all-targets --locked -j 8`、Release 构建和新建 `%TEMP%` SQLite 的 1000 块 GUI smoke 通过；smoke 验证列管理器焦点接管、渲染及 Escape 恢复，并完成既有全流程。
 - 自动 smoke 未合成方向键和鼠标输入，因此实际键盘选择仍待真人桌面验收；未访问真实用户库或修改 Slint/core。本轮没有重跑性能评测。
+
+## 第二百九十六轮：页面选项浮层焦点与 Escape（2026-10-16）
+
+- 页面选项浮层打开时现在接管 GPUI 焦点；Escape 先收起图标选择子面板，再次 Escape 关闭页面选项并恢复原焦点。点外关闭清理焦点备份，不抢回用户刚点击目标的焦点。
+- `cargo fmt --all -- --check`、`git diff --check`、`cargo check --all-targets --locked -j 8` 与全量 `cargo test --locked -j 8 -- --quiet`（116 项）通过；Release 构建通过。全新随机 `%TEMP%` SQLite、1000 块 GUI smoke 覆盖页面选项浮层挂载/渲染、Escape 子面板分层关闭/焦点恢复及全部既有流程，正常退出。首次误把库放在 `%TEMP%` 根目录被 MCP 指针保护拒绝，改用唯一子目录后通过。该次日志提示 UDP 同步监听 5878 已被其他进程占用，应用继续运行；同步 wire 的跨版本和 loopback 验证独立通过，不把本次 smoke 记作真实设备同步验收。
+- 本轮 UI smoke 不模拟真实 Escape 或图标键盘选择；未访问真实用户库或修改 Slint/core。最终 GPUI/Slint 性能对比按计划留待功能冻结后更新。

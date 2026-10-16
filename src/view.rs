@@ -2497,6 +2497,8 @@ pub struct Workspace {
     icon_picker_open: bool,
     format_bar_open: bool,
     page_options_open: bool,
+    page_options_focus: FocusHandle,
+    page_options_focus_return: Option<FocusHandle>,
     link_editor_open: bool,
     color_picker: Option<(BlockId, bool)>,
     block_color_focus: FocusHandle,
@@ -2835,6 +2837,7 @@ impl Workspace {
         let database_filter_focus = cx.focus_handle();
         let database_group_focus = cx.focus_handle();
         let database_columns_focus = cx.focus_handle();
+        let page_options_focus = cx.focus_handle();
         let mut this = Self {
             session,
             version_name_input,
@@ -2980,6 +2983,8 @@ impl Workspace {
             icon_picker_open: false,
             format_bar_open: false,
             page_options_open: false,
+            page_options_focus,
+            page_options_focus_return: None,
             link_editor_open: false,
             color_picker: None,
             block_color_focus,
@@ -4247,6 +4252,23 @@ impl Workspace {
                     drop(page_menu_frame);
                     this.escape_page_context_menu(window);
                     assert_eq!(window.focused(cx), page_menu_return_focus);
+                    let page_options_return_focus = window.focused(cx);
+                    this.toggle_page_options(window, cx);
+                    assert!(this.page_options_focus.is_focused(window));
+                    let page_options_frame = this.render(window, cx);
+                    drop(page_options_frame);
+                    this.icon_picker_open = true;
+                    let escape = KeyDownEvent {
+                        keystroke: Keystroke::parse("escape").expect("valid Escape keystroke"),
+                        is_held: false,
+                    };
+                    this.page_options_key_down(&escape, window, cx);
+                    assert!(this.page_options_open, "Escape first closes the icon submenu");
+                    assert!(!this.icon_picker_open);
+                    this.page_options_key_down(&escape, window, cx);
+                    assert!(!this.page_options_open, "second Escape closes page options");
+                    assert_eq!(window.focused(cx), page_options_return_focus);
+                    eprintln!("SMOKE: page options Escape layering and focus restoration passed");
                     let fixed_menu_return_focus = window.focused(cx);
                     this.open_fixed_context_menu_at(3, 80., 80., window, cx);
                     assert!(this.fixed_context_focus.is_focused(window));
@@ -11187,6 +11209,42 @@ impl Workspace {
         self.session.end_typing();
         self.sync_inputs(window, cx);
         self.schedule_save(true, window, cx);
+    }
+    fn toggle_page_options(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.page_options_open {
+            self.close_page_options(window);
+        } else {
+            self.page_options_focus_return = window.focused(cx);
+            self.page_options_open = true;
+            window.focus(&self.page_options_focus);
+        }
+        cx.notify();
+    }
+    fn close_page_options(&mut self, window: &mut Window) {
+        self.page_options_open = false;
+        self.icon_picker_open = false;
+        if let Some(focus) = self.page_options_focus_return.take() {
+            window.focus(&focus);
+        }
+    }
+    fn page_options_key_down(
+        &mut self,
+        event: &KeyDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.page_options_open || event.keystroke.modifiers.modified() {
+            return;
+        }
+        match event.keystroke.key.as_str() {
+            "escape" if self.icon_picker_open => {
+                self.icon_picker_open = false;
+            }
+            "escape" => self.close_page_options(window),
+            _ => return,
+        }
+        cx.stop_propagation();
+        cx.notify();
     }
     fn open_page_versions(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.title_edit_original = None;
@@ -19596,9 +19654,8 @@ impl Render for Workspace {
                                 muted
                             })
                             .hover(|button| button.text_color(accent))
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.page_options_open = !this.page_options_open;
-                                cx.notify();
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.toggle_page_options(window, cx);
                             }))
                             .child("···"),
                     )
@@ -23699,6 +23756,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::zoom_out))
             .on_action(cx.listener(Self::zoom_reset))
             .capture_key_down(cx.listener(Self::page_context_menu_key_down))
+            .capture_key_down(cx.listener(Self::page_options_key_down))
             .capture_key_down(cx.listener(Self::fixed_context_menu_key_down))
             .capture_key_down(cx.listener(Self::organizer_context_menu_key_down))
             .capture_key_down(cx.listener(Self::block_context_menu_key_down))
@@ -23913,10 +23971,12 @@ impl Render for Workspace {
                                         if this.page_options_open {
                                             this.page_options_open = false;
                                             this.icon_picker_open = false;
+                                            this.page_options_focus_return = None;
                                             cx.notify();
                                         }
                                     });
                                 }))
+                                .track_focus(&self.page_options_focus)
                                 .absolute()
                                 .top(px(40.))
                                 .right(px(142.))
