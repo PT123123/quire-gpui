@@ -806,15 +806,15 @@ fn verify(path: &Path) -> Result<()> {
     let select = find(SELECT)?;
     let status = find(STATUS)?;
     let files = find(FILES)?;
-    assert_eq!(
-        s.databases
-            .title_property(db.id)
-            .context("title property")?
-            .kind,
-        PropertyKind::Title
-    );
-    assert_eq!(find(CREATED)?.kind, PropertyKind::CreatedTime);
-    assert_eq!(find(LAST_EDITED)?.kind, PropertyKind::LastEditedTime);
+    let title_property = s
+        .databases
+        .title_property(db.id)
+        .context("title property")?;
+    let created = find(CREATED)?;
+    let last_edited = find(LAST_EDITED)?;
+    assert_eq!(title_property.kind, PropertyKind::Title);
+    assert_eq!(created.kind, PropertyKind::CreatedTime);
+    assert_eq!(last_edited.kind, PropertyKind::LastEditedTime);
     let relation_config = quire_core::core::database_relation::config_relation(&relation.config);
     let mirror_config = quire_core::core::database_relation::config_relation(&mirror.config);
     assert_eq!(relation_config.target, Some(db.id));
@@ -841,6 +841,24 @@ fn verify(path: &Path) -> Result<()> {
         .iter()
         .find(|r| s.repo.record_title(r.id).ok().flatten().as_deref() == Some(RIGHT))
         .context("right row lost")?;
+    let derived_columns = [created.clone(), last_edited.clone()];
+    let derived_rows = s.repo.window_rows(
+        &quire_core::core::database::RowRequest::new(db.id, title_property.id, &derived_columns),
+        quire_core::core::database::RowWindow { start: 0, end: 10 },
+    )?;
+    let derived = derived_rows
+        .iter()
+        .find(|row| row.record == left.id.0)
+        .context("left record missing from derived-property query")?;
+    assert_eq!(derived.cells.len(), 2);
+    assert!(
+        !derived.cells[0].is_empty(),
+        "created-time projection was empty"
+    );
+    assert!(
+        !derived.cells[1].is_empty(),
+        "last-edited-time projection was empty"
+    );
     assert!(
         matches!(s.repo.cell(left.id, score.id)?, CellValue::Number(value) if value == 12.0),
         "left numeric source value changed"

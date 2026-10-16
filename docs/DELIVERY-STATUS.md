@@ -1730,3 +1730,8 @@
 - 当前 GPUI 在该机的运行峰值较高：10k 场景 Working Set 多约 70.9 MiB、Private Bytes 多约 72.6 MiB；空闲 CPU 样本也更高。GPUI 窗口出现时间空白场景慢约 153ms、10k 场景慢约 110ms。启动样本只有两次且波动明显，不能据此认定稳定差距；报告也不覆盖键入延迟、连续滚动帧率或 GPU 专用内存。
 - 数据路径并非完全等价：GPUI 从隔离 SQLite 读取恰好 10,000 个块（smoke 预置 9,996 并由验证操作新增 4 块），Slint 用 `--blocks 10000` 在内存生成合成块。所有运行库均为新建 `%TEMP%` fixture，未访问真实用户库。一次 Slint 10k 运行因 PowerShell 参数误绑导致外框为 10,000×900，已明确丢弃；表中只使用重新测量且记录为 1600×900 的两次结果。
 - 原始 JSON 与 stdout/stderr 构建日志位于 `%TEMP%\quire-final-perf-2026-10-16-complete`。最终便携包和安装器已刷新，staging EXE 与 Release EXE SHA-256 相同（`F1749ACA21D6601303647352E98217B903F83347C30302072B20F4685FB0FF4A`）；ZIP SHA-256 `6764E44F746B990CFCD3878C44B1A593437C3C513A570F7D482B4C7812F9DE3D`；安装器 SHA-256 `31EE69F87F664F68CE6FCB4F1B9D8C6C95593A9F3E6E6C561A7B7F81C1E2DA45`。staging 包的 DPI manifest 检查和 1000 块隔离 Release GUI smoke 均通过。`quire-desktop` 工作树保持干净；本轮无 Slint 源码内容变更。
+
+## 第二百七十八轮：跨版本核验创建/编辑时间派生值（2026-10-16）
+
+- 扩展旧版同库往返探针：GPUI fixture 定义 CreatedTime / LastEditedTime 后，经 Slint Release 打开、执行 MCP 写入并退出，再由 GPUI 查询指定记录的两列投影；两项都必须返回非空派生值，`LEGACY_ROUNDTRIP=PASS`。
+- `cargo fmt --all -- --check`、`cargo check --all-targets --locked -j 8` 与 `git diff --check` 通过。测试仅使用新 `%TEMP%` SQLite；未访问真实用户库，未修改 Slint 文件内容。
