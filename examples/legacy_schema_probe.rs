@@ -21,6 +21,8 @@ const EMAIL: &str = "邮箱";
 const PHONE: &str = "电话";
 const SELECT: &str = "单选";
 const STATUS: &str = "状态";
+const FILES: &str = "文件";
+const ATTACHMENT_BYTES: &[u8] = b"legacy schema attachment bytes\0\xff";
 
 fn main() -> Result<()> {
     let args: Vec<String> = env::args().collect();
@@ -49,6 +51,8 @@ fn configure(path: &Path, port: &str, token: &str) -> Result<()> {
 }
 
 fn write(path: &Path) -> Result<()> {
+    let attachment_source = path.with_file_name("compat-attachment.bin");
+    std::fs::write(&attachment_source, ATTACHMENT_BYTES)?;
     let mut s = Session::open(path)?;
     let block = s.blocks()[0].id;
     let db = s
@@ -96,6 +100,9 @@ fn write(path: &Path) -> Result<()> {
     let status = s
         .add_database_property(block, STATUS.into(), PropertyKind::Status)
         .context("status")?;
+    let files = s
+        .add_database_property(block, FILES.into(), PropertyKind::Files)
+        .context("files")?;
     assert!(s.set_database_relation_target(block, relation, Some(db))?);
     assert!(s.set_database_relation_target(block, mirror, Some(db))?);
     assert!(s.set_database_relation_mirror(block, relation, mirror)?);
@@ -128,6 +135,7 @@ fn write(path: &Path) -> Result<()> {
     s.set_database_cell(block, left, phone, "+1 555 0100")?;
     s.set_database_cell(block, left, select, "重点")?;
     s.set_database_cell(block, left, status, "进行中")?;
+    assert!(s.import_database_files(block, left, files, &[attachment_source])?);
     s.set_database_cell(block, right, score, "7")?;
     s.set_database_cell(
         block,
@@ -172,6 +180,7 @@ fn verify(path: &Path) -> Result<()> {
     let phone = find(PHONE)?;
     let select = find(SELECT)?;
     let status = find(STATUS)?;
+    let files = find(FILES)?;
     let relation_config = quire_core::core::database_relation::config_relation(&relation.config);
     let mirror_config = quire_core::core::database_relation::config_relation(&mirror.config);
     assert_eq!(relation_config.target, Some(db.id));
@@ -244,6 +253,17 @@ fn verify(path: &Path) -> Result<()> {
             property.name
         );
     }
+    let file_ids = match s.repo.cell(left.id, files.id)? {
+        CellValue::Items(ids) if ids.len() == 1 => ids,
+        value => bail!("unexpected file cell value: {value:?}"),
+    };
+    let attachment_id = file_ids[0]
+        .parse::<u64>()
+        .context("invalid attachment id")?;
+    let stored_path = s
+        .attachment_path(quire_core::core::types::AttachmentId(attachment_id))
+        .context("attachment path missing")?;
+    assert_eq!(std::fs::read(stored_path)?, ATTACHMENT_BYTES);
     let options = PropertyOptions::from_config(&tags.config);
     let expected_tags = BTreeSet::from(["Alpha".to_owned(), "Beta".to_owned()]);
     assert_eq!(
@@ -280,7 +300,7 @@ fn verify(path: &Path) -> Result<()> {
         "legacy MCP note did not survive GPUI reopen"
     );
     println!(
-        "verified database={} paired relation, formula and rollup config, multi-select and common typed cells, and old-version MCP note",
+        "verified database={} paired relation, formula and rollup config, multi-select and common typed cells, attachment bytes, and old-version MCP note",
         db.id
     );
     Ok(())
