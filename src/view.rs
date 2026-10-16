@@ -4599,9 +4599,67 @@ impl Workspace {
                     this.session.redo();
                     this.sync_inputs(window, cx);
                     assert_eq!(count_table_cells(this), cells_before_row + table_columns);
+                    let rows_after_add = (cells_before_row + table_columns).div_ceil(table_columns);
+                    this.delete_table_row(table_id, rows_after_add - 1, window, cx);
+                    assert_eq!(count_table_cells(this), cells_before_row);
+                    this.session.undo();
+                    this.sync_inputs(window, cx);
+                    assert_eq!(count_table_cells(this), cells_before_row + table_columns);
+                    this.session.redo();
+                    this.sync_inputs(window, cx);
+                    assert_eq!(count_table_cells(this), cells_before_row);
+                    loop {
+                        let rows = count_table_cells(this).div_ceil(table_columns);
+                        if rows <= 1 {
+                            break;
+                        }
+                        let before = count_table_cells(this);
+                        this.delete_table_row(table_id, rows - 1, window, cx);
+                        assert_eq!(count_table_cells(this), before - table_columns);
+                    }
+                    let cells_at_minimum_rows = count_table_cells(this);
+                    this.delete_table_row(table_id, 0, window, cx);
+                    assert_eq!(count_table_cells(this), cells_at_minimum_rows);
+
+                    let table_rows = count_table_cells(this).div_ceil(table_columns);
+                    this.add_table_column(table_id, table_columns, window, cx);
+                    assert_eq!(count_table_cells(this), cells_at_minimum_rows + table_rows);
+                    this.session.undo();
+                    this.sync_inputs(window, cx);
+                    assert_eq!(count_table_cells(this), cells_at_minimum_rows);
+                    this.session.redo();
+                    this.sync_inputs(window, cx);
+                    assert_eq!(count_table_cells(this), cells_at_minimum_rows + table_rows);
+                    this.delete_table_column(table_id, table_columns, window, cx);
+                    assert_eq!(count_table_cells(this), cells_at_minimum_rows);
+                    this.session.undo();
+                    this.sync_inputs(window, cx);
+                    assert_eq!(count_table_cells(this), cells_at_minimum_rows + table_rows);
+                    this.session.redo();
+                    this.sync_inputs(window, cx);
+                    assert_eq!(count_table_cells(this), cells_at_minimum_rows);
+                    loop {
+                        let columns = usize::from(
+                            this.session
+                                .document
+                                .block(table_id)
+                                .expect("table should remain after column edits")
+                                .columns
+                                .max(1),
+                        );
+                        if columns <= 1 {
+                            break;
+                        }
+                        let before = count_table_cells(this);
+                        this.delete_table_column(table_id, columns - 1, window, cx);
+                        assert_eq!(count_table_cells(this), before - table_rows);
+                    }
+                    let cells_at_minimum_columns = count_table_cells(this);
+                    this.delete_table_column(table_id, 0, window, cx);
+                    assert_eq!(count_table_cells(this), cells_at_minimum_columns);
                     this.schedule_save(true, window, cx);
                     this.activate_page(table_return_page, window, cx);
-                    eprintln!("SMOKE: ordinary table row action adds one row and supports undo/redo");
+                    eprintln!("SMOKE: ordinary table row/column actions enforce minimums and undo/redo");
                     let (source_db, source_name) = this
                         .session
                         .blocks()
@@ -6431,6 +6489,25 @@ impl Workspace {
         if self.session.page.locked {
             return;
         }
+        let Some(table) = self
+            .session
+            .document
+            .block(id)
+            .filter(|block| block.kind == BlockKind::Table)
+        else {
+            return;
+        };
+        let columns = usize::from(table.columns.max(1));
+        let rows = self
+            .session
+            .blocks()
+            .iter()
+            .filter(|block| block.parent == Some(id) && block.kind == BlockKind::TableCell)
+            .count()
+            .div_ceil(columns);
+        if rows <= 1 || row >= rows {
+            return;
+        }
         self.session.execute(Command::TableDeleteRow { id, row });
         self.sync_inputs(window, cx);
         self.schedule_save(false, window, cx);
@@ -6443,6 +6520,18 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         if self.session.page.locked {
+            return;
+        }
+        let Some(table) = self
+            .session
+            .document
+            .block(id)
+            .filter(|block| block.kind == BlockKind::Table)
+        else {
+            return;
+        };
+        let columns = usize::from(table.columns.max(1));
+        if columns <= 1 || col >= columns {
             return;
         }
         self.session.execute(Command::TableDeleteColumn { id, col });
