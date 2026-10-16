@@ -3964,6 +3964,28 @@ impl Workspace {
                     this.close_search(window, cx);
                     assert_eq!(window.focused(cx), search_return_focus);
                     eprintln!("SMOKE: search overlay restores its opening focus");
+                    let original_page = this.session.page.id;
+                    this.add_page(window, cx);
+                    let search_title = this
+                        .session
+                        .pages
+                        .iter()
+                        .find(|page| page.id == original_page)
+                        .expect("original smoke page should still exist")
+                        .title
+                        .clone();
+                    this.open_search(&SearchPages, window, cx);
+                    this.search_query = search_title.to_lowercase();
+                    this.search_selected = this
+                        .search_result_ids()
+                        .iter()
+                        .position(|id| *id == original_page)
+                        .expect("search should find its target page");
+                    this.open_selected_search_result(window, cx);
+                    assert_eq!(this.session.page.id, original_page);
+                    assert!(this.active.is_some(), "navigating from search should focus the destination page");
+                    this.activate_page(original_page, window, cx);
+                    eprintln!("SMOKE: search result navigation transfers focus to its destination page");
                     let palette_return_focus = window.focused(cx);
                     this.open_command_palette(window, cx);
                     assert!(this.search_input.read(cx).focus.is_focused(window));
