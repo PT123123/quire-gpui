@@ -135,6 +135,12 @@ fn run() -> Result<()> {
         );
         return Ok(());
     }
+    // Single instance per database: an already-running workspace is asked to
+    // show its main window and this process exits quietly.
+    if platform::activate_running_instance(&path) {
+        eprintln!("Quire GPUI already runs for this database; asked it to show its window");
+        return Ok(());
+    }
     let mut session = match Session::open(&path) {
         Ok(session) => session,
         Err(error) => {
@@ -320,6 +326,13 @@ fn run() -> Result<()> {
     platform::set_theme(&theme);
     platform::set_application_id();
     let (shell_tx, shell_rx) = std::sync::mpsc::channel();
+    {
+        let handoff_tx = shell_tx.clone();
+        let handoff_path = path.clone();
+        platform::listen_for_secondary_launches(&handoff_path, move || {
+            let _ = handoff_tx.send(platform::ShellEvent::ShowMain);
+        });
+    }
     let platform_services = platform::install(shell_tx);
     let tray_available = platform_services.tray_available;
     Application::new().run(move |cx: &mut App| {
@@ -483,6 +496,47 @@ fn parse_window_bounds(x: &str, y: &str, width: &str, height: &str) -> Option<Bo
 #[cfg(test)]
 mod window_geometry_tests {
     use super::{parse_window_bounds, pull_lan_pages, sync_listener_preflight};
+
+    #[test]
+    fn handoff_pipe_names_are_stable_and_per_database() {
+        use crate::platform::handoff_pipe_name;
+        let first = std::path::Path::new("C:\\workspaces\\a\\quire.db");
+        let second = std::path::Path::new("C:\\workspaces\\b\\quire.db");
+        assert_eq!(handoff_pipe_name(first), handoff_pipe_name(first));
+        assert_ne!(handoff_pipe_name(first), handoff_pipe_name(second));
+        assert!(handoff_pipe_name(first).starts_with("\\\\.\\pipe\\quire-gpui-show-"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn secondary_launch_hands_off_through_the_named_pipe() {
+        use crate::platform::{activate_running_instance, listen_for_secondary_launches};
+        use std::time::Duration;
+
+        let scratch = quire_core::testing::ScratchDir::new("gpui-single-instance");
+        let path = scratch.path().join("quire.db");
+        let (tx, rx) = std::sync::mpsc::channel();
+        listen_for_secondary_launches(&path, move || tx.send(()).expect("receiver alive"));
+        // The server pipe appears asynchronously; retry until the handoff lands.
+        let mut delivered = false;
+        for _ in 0..50 {
+            if activate_running_instance(&path) {
+                delivered = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(
+            delivered,
+            "the second launch must reach the running instance"
+        );
+        assert!(
+            rx.recv_timeout(Duration::from_secs(2)).is_ok(),
+            "the listener must signal ShowMain"
+        );
+        // A database nobody listens for is not a running instance.
+        assert!(!activate_running_instance(&scratch.path().join("other.db")));
+    }
 
     #[test]
     fn saved_window_bounds_accept_valid_position_and_size() {

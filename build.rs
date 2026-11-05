@@ -50,11 +50,11 @@ fn main() {
          END\n",
         icon = quote(&icon.display().to_string()),
         company = text("Quire"),
-        description = text(&format!("quire-{version}(gpui)")),
+        description = text(&format!("quire-gpui-{version}")),
         file_version = text(&format!("{version}.0")),
         internal = text("quire-gpui"),
         original = text("quire-gpui.exe"),
-        product = text(&format!("quire-{version}(gpui)")),
+        product = text(&format!("quire-gpui-{version}")),
         product_version = text(&version),
     );
 

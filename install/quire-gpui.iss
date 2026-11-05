@@ -8,7 +8,7 @@
 AppId={{E8318F69-823B-4F7F-A386-01559641E134}
 AppName=Quire GPUI
 AppVersion={#AppVersion}
-AppVerName=Quire GPUI {#AppVersion}
+AppVerName=quire-gpui-{#AppVersion}
 AppPublisher=Quire
 DefaultDirName={localappdata}\Programs\Quire GPUI
 DisableProgramGroupPage=yes

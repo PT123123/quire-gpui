@@ -111,6 +111,49 @@ impl Buffer {
             .find_map(|(start, _)| (start > caret).then_some(start))
             .unwrap_or(self.text.len())
     }
+    /// The Unicode word containing `byte`, for double-click selection. A click
+    /// inside a word takes the word; a click inside a multi-byte grapheme that
+    /// is no word (an emoji) takes the grapheme; a click on a boundary prefers
+    /// the word it closes, then the word it opens, then the grapheme itself.
+    pub fn word_range_at(&self, byte: usize) -> Range<usize> {
+        let byte = byte.min(self.text.len());
+        let words: Vec<(usize, &str)> =
+            UnicodeSegmentation::unicode_word_indices(self.text.as_str()).collect();
+        if let Some(&(start, word)) = words
+            .iter()
+            .find(|(start, word)| *start < byte && byte < *start + word.len())
+        {
+            return start..start + word.len();
+        }
+        let word_ending_at = |end: usize| {
+            words
+                .iter()
+                .rev()
+                .find(|(start, word)| *start < end && start + word.len() == end)
+                .map(|&(start, word)| start..start + word.len())
+        };
+        let word_starting_at = |start: usize| {
+            words
+                .iter()
+                .find(|(at, _)| *at == start)
+                .map(|&(start, word)| start..start + word.len())
+        };
+        let Some(grapheme) = self
+            .text
+            .grapheme_indices(true)
+            .find(|(i, g)| *i <= byte && byte < i + g.len())
+            .map(|(i, g)| i..i + g.len())
+        else {
+            // past the last grapheme: the text end closes the final word
+            return word_ending_at(byte).unwrap_or(byte..byte);
+        };
+        if grapheme.start < byte {
+            return grapheme;
+        }
+        word_ending_at(byte)
+            .or_else(|| word_starting_at(byte))
+            .unwrap_or(grapheme)
+    }
     pub fn utf8_range(&self, range: &Range<usize>) -> Range<usize> {
         let start = from_utf16(&self.text, range.start);
         start..from_utf16(&self.text, range.end).max(start)
@@ -211,6 +254,41 @@ mod tests {
         b.selection = previous..b.text.len();
         b.replace(None, "");
         assert_eq!(b.text, "中👩‍💻");
+    }
+
+    #[test]
+    fn double_click_word_ranges_cover_words_punct_and_graphemes() {
+        let text = "hello, 中文🦀尾";
+        let b = Buffer::new(text.to_owned());
+        // a click inside "hello" and on either edge of it selects the word
+        assert_eq!(b.word_range_at(0), 0.."hello".len());
+        assert_eq!(b.word_range_at("hell".len()), 0.."hello".len());
+        assert_eq!(b.word_range_at("hello".len()), 0.."hello".len());
+        // a byte no word reaches stays a single grapheme (the space here)
+        assert_eq!(
+            b.word_range_at("hello, ".len() - 1),
+            "hello, ".len() - 1.."hello, ".len()
+        );
+        // UAX#29 keeps each Han character as its own word; the emoji is not a
+        // word, so a click inside it takes the single grapheme
+        assert_eq!(
+            b.word_range_at("hello, ".len()),
+            "hello, ".len().."hello, 中".len()
+        );
+        let emoji_start = "hello, 中文".len();
+        assert_eq!(
+            b.word_range_at(emoji_start + "🦀".len() / 2),
+            emoji_start..emoji_start + "🦀".len()
+        );
+        // end of text snaps to the closing word
+        assert_eq!(
+            b.word_range_at(text.len()),
+            text.len() - "尾".len()..text.len()
+        );
+
+        // isolated punctuation away from word boundaries selects itself
+        let loose = Buffer::new("a , b".into());
+        assert_eq!(loose.word_range_at(2), "a ".len().."a ,".len());
     }
 
     #[test]

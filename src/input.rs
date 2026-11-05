@@ -50,7 +50,9 @@ actions!(
         MoveBlockUp,
         MoveBlockDown,
         DocumentStart,
-        DocumentEnd
+        DocumentEnd,
+        ToggleMath,
+        OpenLink
     ]
 );
 
@@ -66,6 +68,7 @@ pub enum InputEvent {
     Indent,
     Outdent,
     ToggleMark(MarkKind),
+    OpenLink,
     RemoveBlock,
     DuplicateBlock,
     MoveBlock(i32),
@@ -88,6 +91,9 @@ pub struct TextInput {
     pub text_color: Option<Hsla>,
     pub code_lang: Lang,
     pub code_colors: [Hsla; 5],
+    /// Multi-line editing (code blocks): Enter inserts a newline and Tab
+    /// indents instead of splitting the block.
+    pub multiline: bool,
 }
 impl EventEmitter<InputEvent> for TextInput {}
 impl Focusable for TextInput {
@@ -134,6 +140,7 @@ impl TextInput {
                 rgb(0xe28d50).into(),
                 rgb(0x5b9bc4).into(),
             ],
+            multiline: false,
         }
     }
     pub fn reset(&mut self, text: String, marks: Vec<Mark>, caret: usize, cx: &mut Context<Self>) {
@@ -426,14 +433,45 @@ impl TextInput {
         cx.notify();
     }
     fn indent_list(&mut self, _: &IndentList, _: &mut Window, cx: &mut Context<Self>) {
-        if !self.buffer.composing() {
-            cx.emit(InputEvent::Indent);
+        if self.buffer.composing() {
+            return;
         }
+        if self.multiline {
+            // A code block has no list to indent: Tab writes the two spaces a
+            // nested line needs, through the ordinary typing path.
+            self.buffer.replace(None, "  ");
+            self.changed(true, cx);
+            return;
+        }
+        cx.emit(InputEvent::Indent);
     }
     fn outdent_list(&mut self, _: &OutdentList, _: &mut Window, cx: &mut Context<Self>) {
-        if !self.buffer.composing() {
-            cx.emit(InputEvent::Outdent);
+        if self.buffer.composing() {
+            return;
         }
+        if self.multiline && self.buffer.selection.is_empty() {
+            // Remove up to two spaces immediately before the caret, never
+            // reaching past the start of the current line.
+            let caret = self.buffer.caret();
+            let line_start = self.buffer.text[..caret].rfind('\n').map_or(0, |i| i + 1);
+            let mut start = caret;
+            let mut removed = 0;
+            while start > line_start
+                && removed < 2
+                && self.buffer.text.as_bytes()[start - 1] == b' '
+            {
+                start -= 1;
+                removed += 1;
+            }
+            if removed > 0 {
+                self.buffer.selection = start..caret;
+                self.buffer.reversed = false;
+                self.buffer.replace(None, "");
+                self.changed(true, cx);
+            }
+            return;
+        }
+        cx.emit(InputEvent::Outdent);
     }
     fn toggle_mark(&mut self, kind: MarkKind, cx: &mut Context<Self>) {
         if self.buffer.composing() || self.buffer.selection.is_empty() {
@@ -452,6 +490,14 @@ impl TextInput {
     }
     fn toggle_inline_code(&mut self, _: &ToggleInlineCode, _: &mut Window, cx: &mut Context<Self>) {
         self.toggle_mark(MarkKind::Code, cx);
+    }
+    fn toggle_math(&mut self, _: &ToggleMath, _: &mut Window, cx: &mut Context<Self>) {
+        self.toggle_mark(MarkKind::Math, cx);
+    }
+    fn open_link(&mut self, _: &OpenLink, _: &mut Window, cx: &mut Context<Self>) {
+        if !self.buffer.composing() {
+            cx.emit(InputEvent::OpenLink);
+        }
     }
     fn remove_block(&mut self, _: &RemoveBlock, _: &mut Window, cx: &mut Context<Self>) {
         if !self.buffer.composing() {
@@ -505,7 +551,16 @@ impl TextInput {
                 return;
             }
             self.selecting = true;
-            if event.modifiers.shift {
+            if event.click_count >= 3 {
+                // A triple click takes the whole block, the same way a double
+                // click takes the word it lands on.
+                self.buffer.selection = 0..self.buffer.text.len();
+                self.buffer.reversed = false;
+            } else if event.click_count == 2 {
+                let range = self.buffer.word_range_at(byte);
+                self.buffer.selection = range;
+                self.buffer.reversed = false;
+            } else if event.modifiers.shift {
                 self.buffer.select_to(byte);
             } else {
                 self.buffer.move_to(byte);
@@ -1062,6 +1117,8 @@ impl Render for TextInput {
             .on_action(cx.listener(Self::toggle_italic))
             .on_action(cx.listener(Self::toggle_strike))
             .on_action(cx.listener(Self::toggle_inline_code))
+            .on_action(cx.listener(Self::toggle_math))
+            .on_action(cx.listener(Self::open_link))
             .on_action(cx.listener(Self::remove_block))
             .on_action(cx.listener(Self::duplicate_block))
             .on_action(cx.listener(Self::move_block_up))
@@ -1111,6 +1168,8 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("ctrl-i", ToggleItalic, context),
         KeyBinding::new("ctrl-shift-x", ToggleStrike, context),
         KeyBinding::new("ctrl-e", ToggleInlineCode, context),
+        KeyBinding::new("ctrl-m", ToggleMath, context),
+        KeyBinding::new("ctrl-l", OpenLink, context),
         KeyBinding::new("ctrl-d", DuplicateBlock, context),
         KeyBinding::new("ctrl-shift-backspace", RemoveBlock, context),
         KeyBinding::new("ctrl-shift-up", MoveBlockUp, context),
@@ -1122,12 +1181,13 @@ pub fn bind_keys(cx: &mut App) {
 
 #[cfg(test)]
 mod input_tests {
-    use super::{TextInput, bind_keys};
+    use super::{InputEvent, TextInput, bind_keys};
     use gpui::{
-        AppContext, Context, Entity, IntoElement, ParentElement, Pixels, Render, Styled,
-        TestAppContext, Window, div, px,
+        AppContext, Context, Entity, IntoElement, Modifiers, MouseButton, MouseDownEvent,
+        ParentElement, Pixels, Render, Styled, TestAppContext, Window, div, point, px,
     };
     use quire_core::core::types::Mark;
+    use std::{cell::RefCell, rc::Rc};
 
     struct InputHarness {
         input: Entity<TextInput>,
@@ -1138,6 +1198,170 @@ mod input_tests {
         fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
             div().w(self.width).child(self.input.clone())
         }
+    }
+
+    #[gpui::test]
+    fn mark_link_math_shortcuts_dispatch_from_the_quire_input_context(cx: &mut TestAppContext) {
+        cx.update(bind_keys);
+        let events = Rc::new(RefCell::new(Vec::<InputEvent>::new()));
+        let (root, cx) = cx.add_window_view(|window, cx| {
+            let input =
+                cx.new(|cx| TextInput::new("sel".into(), Vec::<Mark>::new(), 14., window, cx));
+            let recorded = events.clone();
+            cx.subscribe_in(&input, window, move |_, _, event, _, _| {
+                recorded.borrow_mut().push(event.clone());
+            })
+            .detach();
+            InputHarness {
+                input,
+                width: px(120.),
+            }
+        });
+        let input = cx.update(|_, app| root.read(app).input.clone());
+        let focus = cx.update(|_, app| input.read(app).focus.clone());
+        cx.update(|window, _| window.focus(&focus));
+        cx.update(|_, app| {
+            input.update(app, |input, _| {
+                input.buffer.move_to(0);
+                input.buffer.select_to("sel".len());
+            })
+        });
+
+        cx.simulate_keystrokes("ctrl-m");
+        cx.simulate_keystrokes("ctrl-l");
+        let labels = cx.update(|_, _| {
+            let events = events.borrow();
+            events
+                .iter()
+                .filter_map(|event| match event {
+                    InputEvent::ToggleMark(kind) => Some(format!("{kind:?}")),
+                    InputEvent::OpenLink => Some("OpenLink".to_string()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        });
+        assert_eq!(
+            labels,
+            vec!["Math", "OpenLink"],
+            "ctrl-m and ctrl-l should reach the input as mark toggle and link request"
+        );
+    }
+
+    #[gpui::test]
+    fn multi_line_inputs_indent_with_tab_and_keep_single_line_events(cx: &mut TestAppContext) {
+        cx.update(bind_keys);
+        let events = Rc::new(RefCell::new(Vec::<InputEvent>::new()));
+        let (root, cx) = cx.add_window_view(|window, cx| {
+            let input =
+                cx.new(|cx| TextInput::new("ab".into(), Vec::<Mark>::new(), 14., window, cx));
+            let recorded = events.clone();
+            cx.subscribe_in(&input, window, move |_, _, event, _, _| {
+                recorded.borrow_mut().push(event.clone());
+            })
+            .detach();
+            InputHarness {
+                input,
+                width: px(120.),
+            }
+        });
+        let input = cx.update(|_, app| root.read(app).input.clone());
+        let focus = cx.update(|_, app| input.read(app).focus.clone());
+        cx.update(|window, _| window.focus(&focus));
+
+        // A single-line input still hands Tab to the workspace list indent.
+        cx.simulate_keystrokes("tab");
+        let (text, indent_events) = cx.update(|_, app| {
+            let events = events.borrow();
+            (
+                input.read(app).buffer.text.clone(),
+                events
+                    .iter()
+                    .filter(|event| matches!(event, InputEvent::Indent | InputEvent::Outdent))
+                    .count(),
+            )
+        });
+        assert_eq!(text, "ab");
+        assert_eq!(indent_events, 1, "single-line Tab must stay a list indent");
+
+        // A multi-line (code) input writes and unwrites its own two spaces.
+        cx.update(|_, app| {
+            input.update(app, |input, cx| {
+                input.multiline = true;
+                input.reset("ab".into(), Vec::new(), "ab".len(), cx);
+            })
+        });
+        cx.simulate_keystrokes("tab");
+        let (text, caret) = cx.update(|_, app| {
+            let input = input.read(app);
+            (input.buffer.text.clone(), input.buffer.caret())
+        });
+        assert_eq!(text, "ab  ");
+        assert_eq!(caret, "ab  ".len());
+
+        cx.simulate_keystrokes("shift-tab");
+        let (text, caret) = cx.update(|_, app| {
+            let input = input.read(app);
+            (input.buffer.text.clone(), input.buffer.caret())
+        });
+        assert_eq!(text, "ab");
+        assert_eq!(caret, "ab".len());
+
+        // Shift+Tab with nothing to remove keeps the text and stays local.
+        cx.simulate_keystrokes("shift-tab");
+        let (text, outdents) = cx.update(|_, app| {
+            let events = events.borrow();
+            (
+                input.read(app).buffer.text.clone(),
+                events
+                    .iter()
+                    .filter(|event| matches!(event, InputEvent::Outdent))
+                    .count(),
+            )
+        });
+        assert_eq!(text, "ab");
+        assert_eq!(outdents, 0, "code outdent without spaces must not escape");
+    }
+
+    #[gpui::test]
+    fn double_and_triple_clicks_select_word_and_block(cx: &mut TestAppContext) {
+        cx.update(bind_keys);
+        let (root, cx) = cx.add_window_view(|window, cx| InputHarness {
+            input: cx
+                .new(|cx| TextInput::new("one two".into(), Vec::<Mark>::new(), 14., window, cx)),
+            width: px(300.),
+        });
+        let input = cx.update(|_, app| root.read(app).input.clone());
+        cx.run_until_parked();
+
+        let origin = cx.update(|_, app| {
+            input
+                .read(app)
+                .bounds
+                .expect("painted input carries bounds")
+                .origin
+        });
+        let click = |count: usize| MouseDownEvent {
+            button: MouseButton::Left,
+            position: origin + point(px(2.), px(2.)),
+            modifiers: Modifiers::default(),
+            click_count: count,
+            first_mouse: false,
+        };
+        cx.update(|window, app| {
+            input.update(app, |input, cx| input.mouse_down(&click(2), window, cx));
+        });
+        let selection = cx.update(|_, app| input.read(app).buffer.selection.clone());
+        assert_eq!(selection, 0.."one".len(), "double click takes the word");
+
+        cx.update(|window, app| {
+            input.update(app, |input, cx| input.mouse_down(&click(3), window, cx));
+        });
+        let selection = cx.update(|_, app| input.read(app).buffer.selection.clone());
+        assert_eq!(
+            selection,
+            0.."one two".len(),
+            "triple click takes the block"
+        );
     }
 
     #[gpui::test]

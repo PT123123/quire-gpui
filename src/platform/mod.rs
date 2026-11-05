@@ -294,45 +294,168 @@ pub fn open_with_default(path: &Path) -> Result<(), String> {
     }
 }
 
-/// Keep the independent quick-note window above ordinary desktop windows.
-/// GPUI's popup window kind already uses the corresponding elevated level on
-/// macOS; its Windows backend creates a tool window but does not make it
-/// topmost, so we apply the native z-order there.
-pub fn set_window_always_on_top(window: &gpui::Window) {
+/// One handoff channel per database: the pipe name hashes the canonical
+/// database path, so isolated `--db` instances (smoke tests, parallel
+/// workspaces) never hand off to each other.
+pub fn handoff_pipe_name(path: &Path) -> String {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325; // FNV-1a 64
+    for byte in path.as_os_str().as_encoded_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    format!("\\\\.\\pipe\\quire-gpui-show-{hash:016x}")
+}
+
+/// A second launch asks the running instance to show its main window and
+/// exits, instead of failing on the database lock. Returns true when the
+/// handoff was delivered.
+pub fn activate_running_instance(path: &Path) -> bool {
     #[cfg(windows)]
     {
-        use raw_window_handle::{HasWindowHandle, RawWindowHandle};
-        if let Ok(handle) = HasWindowHandle::window_handle(window)
-            && let RawWindowHandle::Win32(handle) = handle.as_raw()
-        {
-            const HWND_TOPMOST: isize = -1;
-            const SWP_NOSIZE: u32 = 0x0001;
-            const SWP_NOMOVE: u32 = 0x0002;
-            const SWP_NOACTIVATE: u32 = 0x0010;
-            unsafe extern "system" {
-                fn SetWindowPos(
-                    hwnd: isize,
-                    insert_after: isize,
-                    x: i32,
-                    y: i32,
-                    width: i32,
-                    height: i32,
-                    flags: u32,
-                ) -> i32;
-            }
-            unsafe {
-                SetWindowPos(
-                    handle.hwnd.get(),
-                    HWND_TOPMOST,
-                    0,
-                    0,
-                    0,
-                    0,
-                    SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
-                );
-            }
+        const GENERIC_WRITE: u32 = 0x4000_0000;
+        const OPEN_EXISTING: u32 = 3;
+        const INVALID_HANDLE_VALUE: isize = -1;
+        unsafe extern "system" {
+            fn CreateFileW(
+                name: *const u16,
+                access: u32,
+                share: u32,
+                security: *const core::ffi::c_void,
+                disposition: u32,
+                flags: u32,
+                template: *const core::ffi::c_void,
+            ) -> isize;
+            fn WriteFile(
+                handle: isize,
+                buffer: *const u8,
+                count: u32,
+                written: *mut u32,
+                overlapped: *const core::ffi::c_void,
+            ) -> i32;
+            fn CloseHandle(handle: isize) -> i32;
+        }
+        let name = handoff_pipe_name(path)
+            .encode_utf16()
+            .chain(Some(0))
+            .collect::<Vec<_>>();
+        let handle = unsafe {
+            CreateFileW(
+                name.as_ptr(),
+                GENERIC_WRITE,
+                0,
+                std::ptr::null(),
+                OPEN_EXISTING,
+                0,
+                std::ptr::null(),
+            )
+        };
+        if handle == INVALID_HANDLE_VALUE {
+            return false;
+        }
+        let mut written = 0u32;
+        let delivered =
+            unsafe { WriteFile(handle, b"show".as_ptr(), 4, &mut written, std::ptr::null()) } != 0
+                && written == 4;
+        unsafe { CloseHandle(handle) };
+        delivered
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = path;
+        false
+    }
+}
+
+/// The first launch listens for later ones on the same database and shows the
+/// main window when a handoff arrives. A listener that cannot start is not
+/// fatal: a later launch then falls back to the database lock error.
+pub fn listen_for_secondary_launches(path: &Path, show: impl Fn() + Send + 'static) {
+    #[cfg(windows)]
+    {
+        const PIPE_ACCESS_INBOUND: u32 = 0x0000_0001;
+        const PIPE_TYPE_BYTE: u32 = 0x0000_0000;
+        const PIPE_WAIT: u32 = 0x0000_0000;
+        const PIPE_UNLIMITED_INSTANCES: u32 = 255;
+        const INVALID_HANDLE_VALUE: isize = -1;
+        const ERROR_PIPE_CONNECTED: i32 = 535;
+        unsafe extern "system" {
+            fn CreateNamedPipeW(
+                name: *const u16,
+                open_mode: u32,
+                pipe_mode: u32,
+                instances: u32,
+                out_buffer: u32,
+                in_buffer: u32,
+                default_timeout: u32,
+                security: *const core::ffi::c_void,
+            ) -> isize;
+            fn ConnectNamedPipe(handle: isize, overlapped: *const core::ffi::c_void) -> i32;
+            fn ReadFile(
+                handle: isize,
+                buffer: *mut u8,
+                count: u32,
+                read: *mut u32,
+                overlapped: *const core::ffi::c_void,
+            ) -> i32;
+            fn DisconnectNamedPipe(handle: isize) -> i32;
+            fn CloseHandle(handle: isize) -> i32;
+            fn GetLastError() -> i32;
+        }
+        let name = handoff_pipe_name(path)
+            .encode_utf16()
+            .chain(Some(0))
+            .collect::<Vec<_>>();
+        let listener = std::thread::Builder::new()
+            .name("quire-single-instance".into())
+            .spawn(move || {
+                loop {
+                    let handle = unsafe {
+                        CreateNamedPipeW(
+                            name.as_ptr(),
+                            PIPE_ACCESS_INBOUND,
+                            PIPE_TYPE_BYTE | PIPE_WAIT,
+                            PIPE_UNLIMITED_INSTANCES,
+                            32,
+                            32,
+                            0,
+                            std::ptr::null(),
+                        )
+                    };
+                    if handle == INVALID_HANDLE_VALUE {
+                        return;
+                    }
+                    let connected = unsafe {
+                        ConnectNamedPipe(handle, std::ptr::null()) != 0
+                            || GetLastError() == ERROR_PIPE_CONNECTED
+                    };
+                    if connected {
+                        let mut buffer = [0u8; 8];
+                        let mut read = 0u32;
+                        let received = unsafe {
+                            ReadFile(
+                                handle,
+                                buffer.as_mut_ptr(),
+                                buffer.len() as u32,
+                                &mut read,
+                                std::ptr::null(),
+                            )
+                        } != 0;
+                        if received && buffer[..read as usize].starts_with(b"show") {
+                            show();
+                        }
+                    }
+                    unsafe {
+                        DisconnectNamedPipe(handle);
+                        CloseHandle(handle);
+                    }
+                }
+            });
+        if let Err(error) = listener {
+            eprintln!("Quire GPUI single-instance listener failed: {error}");
         }
     }
     #[cfg(not(windows))]
-    let _ = window;
+    {
+        let _ = (path, show);
+    }
 }

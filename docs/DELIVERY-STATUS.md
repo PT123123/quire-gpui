@@ -1958,3 +1958,48 @@
 - 隐私检查采用 PowerShell/正则及人工核对；Gitleaks 下载发现接口遇到 GitHub API 限流，未运行该工具。这是提交内容检查，不代表完整安全审计或所有图像内容的逐张审核。
 - 验证：`git diff --check` 通过；`cargo test --locked --lib --tests -j 8` 通过，共 118 项（59 库测试、57 二进制测试、2 集成测试），无失败。构建仅报告 MSVC 链接器消息及既有 `proc-macro-error2 2.0.1` 未来兼容性警告。此次未重新进行人工 IME/视觉验收。
 - 用户已要求提交、push 后永久删除本地 `quire-gpui` 目录；执行顺序为先推送，再核对远端分支哈希，最后从父目录直接删除本地目录（不移入回收站）。
+
+## 2026-11-05：笔记界面布局更新
+
+- 笔记列表改为按时间排列的横向内容行，右侧增加近 7 天笔记数、标签总数和标签筛选/排除区；笔记列表状态隐藏整理区内部导航。
+- 应用显示名统一为 `quire-gpui-0.1.0`，替换 `quire-0.1.0(gpui)`。
+- `cargo test --locked -j 8` 全部通过；Release 构建、隔离 1000 块窗口 smoke、`cargo check --locked -j 8` 与 `git diff --check` 均通过。Release EXE 文件属性和运行窗口标题均读回 `quire-gpui-0.1.0`。
+- 当前 Release 预览用新建 `%TEMP%` 数据库运行且进程保持存活；未复现崩溃。系统里另一个 Quire 实例仍占用全局热键和同步端口，隔离 smoke 因此记录了这两条启动告警。
+
+## 2026-11-05：笔记浮层与发送 toast
+
+- 笔记页“＋”改为打开新建笔记浮层；重做标题层级、输入面积、标签提示、按钮和圆角/边框。笔记和速记成功保存后共享短暂的“已发送”toast。
+- Cargo patch 版本升至 `0.1.1`，锁文件同步更新；应用标识格式为 `quire-gpui-0.1.1`。
+- `cargo fmt --all -- --check`、`cargo check --locked -j 8`、`cargo build --release --locked -j 8` 通过；Release 文件属性为 `quire-gpui-0.1.1` / `0.1.1.0`。本轮未运行自动化测试，未做真人桌面截图验收。
+
+## 2026-11-05：笔记详情、toast 对比度与任务入口
+
+- 笔记首击仅选中，二次点击进入详情；详情在主工作区全宽显示，返回列表时保留选中态。新建后不自动选中。
+- “已发送”toast 使用深绿实底、白色主文案和浅绿说明，显示 4 秒；任务列表增加右下角浮动加号，标题栏控制按钮左侧的搜索入口已移除。
+- Cargo patch 版本升至 `0.1.2`；Release 窗口标题为 `quire-gpui-0.1.2`。
+- `cargo fmt --all`、`cargo check --locked -j 8`、`cargo test --locked -j 8`（118 项：59 库、57 二进制、2 集成）及隔离 Release 构建通过。已在 `%TEMP%\quire-gpui-uiqa-012` 独立数据库真人启动窗口，逐步验证新建提交、toast、单击选中、再次点击详情和任务加号。
+
+## 2026-11-05：页面树悬停按钮
+
+- 移除页面树条目悬停时显示的格式、更多、新建子页、复制、排序、层级、收藏和删除按钮；保留页面右键菜单作为页面操作入口。
+- Cargo patch 版本升至 `0.1.3`，应用标识格式为 `quire-gpui-0.1.3`。
+
+## 回车输入与启动提示修正（2026-11-05）
+
+- Enter 拆分段落后，立即为新段建立输入事件订阅再转移焦点，避免新段刚创建、虚拟列表尚未测量时后续输入被丢弃。
+- 全局热键注册失败按可选能力静默降级；同步设置页不再显示监听端口冲突警告，避免多实例测试产生干扰提示。
+- Cargo patch 版本升至 `0.1.4`，应用标识格式为 `quire-gpui-0.1.4`。
+- 验收：`cargo fmt`、输入键盘事件单测、`cargo check --offline -j 8`、`git diff --check` 通过；真人窗口复测因 Computer Use 收到物理 Escape 停止信号，本轮未继续操作桌面。
+
+## 2026-11-06：文档编辑输入补全（0.1.5）
+
+- 对照旧版 EditorBlock.slint 键位表补齐四处编辑能力：代码块 Enter 插入换行（旧版 `single-line: kind != 8` 的等价行为，斜杠/提及/表格 Enter 解析顺序保持不变，Up/Down 仍可越块）；Ctrl+L 打开链接编辑器、Ctrl+M 切换行内数学标记（均走既有 `InputEvent::OpenLink`/`ToggleMark(Math)` 与 core 撤销路径，锁定页拦截）；双击按 UAX#29 选词（`Buffer::word_range_at`：词内/边界/多字节字素/非词字符四种情形），三击选中整块；代码块 Tab/Shift+Tab 写入/移除两个空格（不越过行首）。
+- 版本升至 `0.1.5`，应用标识 `quire-gpui-0.1.5`；Cargo.lock 同步刷新（此前停在 0.1.0）。
+- 验证：`cargo fmt --all -- --check`、`cargo check --all-targets --locked -j 8`、全量 `cargo test --locked -j 8`（60 库 + 61 二进制 + 2 集成 = 123 项）全部通过；新增单测见 DIFFERENCES 同日条目。真实鼠标双击、IME 场景与 Release 构建待后续桌面回归；未访问真实用户库、未启动窗口。
+
+## 2026-11-06：单实例交接与速记窗口修正（0.1.6）
+
+- 单实例：`platform::activate_running_instance` / `listen_for_secondary_launches` 以数据库路径 FNV-1a 哈希派生命名管道，第二次启动同一库时写 `show` 后退出，运行实例经既有 `ShellEvent::ShowMain` 恢复主窗口；main.rs 在 Session::open 前检查管道、成功开库后启动监听线程。不同 `--db`（smoke/多工作区）不受影响。
+- 速记窗口：删除 `set_window_always_on_top`（不再 TOPMOST）；Esc/×/Alt+F4 关闭时经 `QuickNoteWindow::cache_draft_for_reopen` 把草稿与 pending note id 缓存进 Workspace，`open_quick_note` 重开时优先恢复；笔记页"新建笔记"浮层同规则（`organizer_capture_saved`），提交成功清空。
+- 版本升至 `0.1.6`，应用标识 `quire-gpui-0.1.6`。
+- 验证：`cargo fmt --all -- --check`、`cargo check --all-targets --locked -j 8`、全量 `cargo test --locked -j 8`（60 库 + 64 二进制 + 3 集成共 127 项）通过，含真实命名管道 loopback 单测；`git diff --check` 通过。桌面真人双开/托盘/Alt+F4 验收待做；未访问真实用户库、未启动窗口。

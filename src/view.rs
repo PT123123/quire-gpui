@@ -90,6 +90,11 @@ struct OrganizerTaskDrag {
     title: String,
 }
 
+#[derive(Clone)]
+struct OrganizerNoteDrag {
+    note: quire_core::core::organizer::NoteId,
+}
+
 struct OrganizerTaskDragPreview {
     title: String,
     count: usize,
@@ -1149,6 +1154,19 @@ fn sync_peer_is_recent(last_seen: u64, now: u64) -> bool {
     now.saturating_sub(last_seen) <= 60
 }
 
+/// Enter splits a block into two, except in the one block kind that is
+/// multi-line: the old editor set `single-line: block.kind != 8`, so code
+/// keeps its newline instead of growing a sibling.
+fn enter_splits_block(kind: BlockKind) -> bool {
+    kind != BlockKind::Code
+}
+
+/// Unsent capture text worth carrying across a close: anything with visible
+/// content, verbatim. Whitespace-only drafts are dropped.
+fn keep_unsent_draft(text: String) -> Option<String> {
+    (!text.trim().is_empty()).then_some(text)
+}
+
 fn slash_query(text: &str, insert_mode: bool) -> String {
     let query = if insert_mode {
         text
@@ -1255,16 +1273,16 @@ mod view_tests {
         NavigationHistory, NavigationStop, OrganizerTaskDrag, Session, SlashAction,
         capture_tag_replacement, capture_tags, centered_document_column, columns_layout_item_ids,
         database_filter_value_from_text, database_group_identity, database_group_label,
-        database_property_kind_choices, evaluate_database_formula, evaluate_database_rollup,
-        find_matches_in, gallery_columns_for_width, interpolated_sidebar_width,
-        link_ranges_for_removal, link_target_range, mention_date_matches, next_menu_selection,
-        next_palette_selection, next_search_selection, notes_auto_input_enabled,
-        order_database_groups, organizer_notes_copy_payload, organizer_tag_matches_path,
-        organizer_tag_tree_rows, organizer_tags_exclude, organizer_task_drop_accepted,
-        palette_matches, parse_mcp_port, parse_organizer_tags, periodic_snapshot_failure_notice,
-        push_history, settings_matches, settings_section_visible, slash_items, slash_query,
-        sort_organizer_notes, sort_organizer_tasks, sync_peer_is_recent, sync_targets,
-        system_palette_id_for_appearance, toc_headings,
+        database_property_kind_choices, enter_splits_block, evaluate_database_formula,
+        evaluate_database_rollup, find_matches_in, gallery_columns_for_width,
+        interpolated_sidebar_width, keep_unsent_draft, link_ranges_for_removal, link_target_range,
+        mention_date_matches, next_menu_selection, next_palette_selection, next_search_selection,
+        notes_auto_input_enabled, order_database_groups, organizer_notes_copy_payload,
+        organizer_tag_matches_path, organizer_tag_tree_rows, organizer_tags_exclude,
+        organizer_task_drop_accepted, palette_matches, parse_mcp_port, parse_organizer_tags,
+        periodic_snapshot_failure_notice, push_history, settings_matches, settings_section_visible,
+        slash_items, slash_query, sort_organizer_notes, sort_organizer_tasks, sync_peer_is_recent,
+        sync_targets, system_palette_id_for_appearance, toc_headings,
     };
     use gpui::{
         AppContext, Context, InteractiveElement, IntoElement, Render, Styled, TestAppContext,
@@ -1681,6 +1699,25 @@ mod view_tests {
         assert!(mention_date_matches("tod", today));
         assert!(mention_date_matches("2026-10", today));
         assert!(!mention_date_matches("project", today));
+    }
+
+    #[test]
+    fn enter_splits_every_block_except_multi_line_code() {
+        assert!(!enter_splits_block(BlockKind::Code));
+        assert!(enter_splits_block(BlockKind::Paragraph));
+        assert!(enter_splits_block(BlockKind::Heading1));
+        assert!(enter_splits_block(BlockKind::Quote));
+        assert!(enter_splits_block(BlockKind::Math));
+    }
+
+    #[test]
+    fn unsent_drafts_are_kept_verbatim_but_whitespace_only_ones_dropped() {
+        assert_eq!(
+            keep_unsent_draft("想法 #标签 ".to_owned()).as_deref(),
+            Some("想法 #标签 ")
+        );
+        assert_eq!(keep_unsent_draft("   \n ".to_owned()), None);
+        assert_eq!(keep_unsent_draft(String::new()), None);
     }
 
     #[test]
@@ -2475,7 +2512,6 @@ pub struct Workspace {
     block_menu_focus_return: Option<FocusHandle>,
     block_menu_selection: usize,
     block_clipboard: Option<Vec<Block>>,
-    hovered_page: Option<quire_core::core::types::PageId>,
     page_context_menu: Option<(quire_core::core::types::PageId, f32, f32)>,
     page_context_focus: FocusHandle,
     page_context_focus_return: Option<FocusHandle>,
@@ -2488,7 +2524,6 @@ pub struct Workspace {
     organizer_context_focus: FocusHandle,
     organizer_context_focus_return: Option<FocusHandle>,
     organizer_context_selection: usize,
-    hovered_note: Option<quire_core::core::organizer::NoteId>,
     hovered_task: Option<quire_core::core::organizer::TaskId>,
     inputs: BTreeMap<u64, Entity<TextInput>>,
     input_subscriptions: HashMap<u64, Subscription>,
@@ -2563,6 +2598,9 @@ pub struct Workspace {
     organizer_commands_focus_return: Option<FocusHandle>,
     organizer_command_tasks: bool,
     organizer_capture_draft: String,
+    /// Unsent capture text kept across overlay closes, so an accidental
+    /// Esc/× does not lose what was typed. Cleared by a successful submit.
+    organizer_capture_saved: Option<String>,
     organizer_capture_suggestions: Vec<String>,
     organizer_capture_selected: usize,
     organizer_capture_suggestions_hidden: bool,
@@ -2592,11 +2630,13 @@ pub struct Workspace {
     show_task_done: bool,
     task_sort: i32,
     note_sort_mode: u8,
+    note_manual_order: Vec<u64>,
     note_multi_select: bool,
     selected_note_ids: HashSet<quire_core::core::organizer::NoteId>,
     task_multi_select: bool,
     task_bulk_move_open: bool,
     selected_note: Option<quire_core::core::organizer::NoteId>,
+    note_detail_open: bool,
     selected_task: Option<quire_core::core::organizer::TaskId>,
     selected_task_ids: HashSet<quire_core::core::organizer::TaskId>,
     editing_subtask: Option<(quire_core::core::organizer::TaskId, u64)>,
@@ -2615,6 +2655,8 @@ pub struct Workspace {
     task_due_error: bool,
     status: String,
     error: bool,
+    toast_message: Option<String>,
+    toast_generation: u64,
     smoke_mode: bool,
     smoke_board_rendered: bool,
     smoke_board_cards_rendered: bool,
@@ -2645,6 +2687,9 @@ pub struct Workspace {
     lan_share_active: bool,
     lan_share_notice: Option<String>,
     quick_note_window: Option<WindowHandle<QuickNoteWindow>>,
+    /// Unsent quick-note text plus its pending note id, restored when the
+    /// window is reopened after Esc/×/Alt+F4.
+    quick_note_draft: Option<(String, Option<NoteId>)>,
     sync_cmd_tx: std::sync::mpsc::Sender<crate::sync_client::Cmd>,
     sync_status: String,
     sync_listener_warning: Option<String>,
@@ -2693,6 +2738,12 @@ impl Workspace {
             .filter(|value| value.is_finite())
             .unwrap_or(260.)
             .clamp(200., 480.);
+        let note_manual_order = session
+            .setting("gpui.organizer-note-order")
+            .unwrap_or_default()
+            .split(',')
+            .filter_map(|id| id.parse::<u64>().ok())
+            .collect::<Vec<_>>();
         quire_gpui::ui_scale::set(ui_zoom);
         let title_input =
             cx.new(|cx| TextInput::new(session.page.title.clone(), Vec::new(), 38., window, cx));
@@ -2827,26 +2878,15 @@ impl Workspace {
         let set_hotkey = platform_services.set_hotkey.clone();
         let hotkey_alt_n = session.setting("gpui.hotkey.alt-n").unwrap_or("true") == "true";
         let hotkey_alt_m = session.setting("gpui.hotkey.alt-m").unwrap_or("false") == "true";
-        let mut hotkey_startup_warnings = Vec::new();
         for (id, enabled) in [
             (crate::platform::HOTKEY_ALT_N, hotkey_alt_n),
             (crate::platform::HOTKEY_ALT_M, hotkey_alt_m),
         ] {
-            if let Err(error) = set_hotkey(id, enabled) {
-                eprintln!("Quire GPUI: persisted global hotkey {id} could not be applied: {error}");
-                let label = if id == crate::platform::HOTKEY_ALT_N {
-                    "Alt+N"
-                } else {
-                    "Alt+M"
-                };
-                hotkey_startup_warnings.push(format!("{label} 未能注册：{error}"));
-            }
+            // Global hotkeys are optional (and may be owned by another app).
+            // Keep startup quiet; users can change the shortcut in Settings.
+            let _ = set_hotkey(id, enabled);
         }
-        let hotkey_startup_notice = if hotkey_startup_warnings.is_empty() {
-            "Alt+N 默认开启；Alt+M 默认关闭".to_owned()
-        } else {
-            hotkey_startup_warnings.join("；")
-        };
+        let hotkey_startup_notice = "Alt+N 默认开启；Alt+M 默认关闭".to_owned();
         let mcp_port = session
             .setting("gpui.mcp.port")
             .and_then(|value| value.parse::<u16>().ok())
@@ -2964,7 +3004,6 @@ impl Workspace {
             block_menu_focus_return: None,
             block_menu_selection: 0,
             block_clipboard: None,
-            hovered_page: None,
             page_context_menu: None,
             page_context_focus,
             page_context_focus_return: None,
@@ -2977,7 +3016,6 @@ impl Workspace {
             organizer_context_focus,
             organizer_context_focus_return: None,
             organizer_context_selection: 0,
-            hovered_note: None,
             hovered_task: None,
             inputs: BTreeMap::new(),
             input_subscriptions: HashMap::new(),
@@ -3056,6 +3094,7 @@ impl Workspace {
             organizer_commands_focus_return: None,
             organizer_command_tasks: false,
             organizer_capture_draft: String::new(),
+            organizer_capture_saved: None,
             organizer_capture_suggestions: Vec::new(),
             organizer_capture_selected: 0,
             organizer_capture_suggestions_hidden: false,
@@ -3085,11 +3124,13 @@ impl Workspace {
             show_task_done: false,
             task_sort: 0,
             note_sort_mode: 0,
+            note_manual_order,
             note_multi_select: false,
             selected_note_ids: HashSet::new(),
             task_multi_select: false,
             task_bulk_move_open: false,
             selected_note: None,
+            note_detail_open: false,
             selected_task: None,
             selected_task_ids: HashSet::new(),
             editing_subtask: None,
@@ -3108,6 +3149,8 @@ impl Workspace {
             task_due_error: false,
             status: "已保存".into(),
             error: false,
+            toast_message: None,
+            toast_generation: 0,
             smoke_mode: smoke,
             smoke_board_rendered: false,
             smoke_board_cards_rendered: false,
@@ -3143,6 +3186,7 @@ impl Workspace {
             lan_share_active,
             lan_share_notice,
             quick_note_window: None,
+            quick_note_draft: None,
             sync_cmd_tx,
             sync_status: sync_listener_warning
                 .as_deref()
@@ -5615,22 +5659,33 @@ impl Workspace {
             .cloned()
             .collect::<Vec<_>>();
         keep.extend(visible_table_cells.iter().map(|cell| cell.id.0));
+        // Keep an input for every block that still exists and is editable, plus
+        // any block with an in-progress IME composition. Dropping inputs for
+        // off-screen blocks would force them to be recreated during the next
+        // render pass, and subscriptions created inside a render method never
+        // fire (so typed text and Enter would silently stop reaching the
+        // workspace). See the document-input fix.
         self.inputs.retain(|id, input| {
-            keep.contains(id)
+            self.session
+                .document
+                .block(BlockId(*id))
+                .is_some_and(|block| self.session.editable(block.id))
                 || input.read(cx).buffer.composing()
-                    && self
-                        .session
-                        .blocks()
-                        .iter()
-                        .any(|block| block.id.0 == *id && self.session.editable(block.id))
         });
         self.input_subscriptions
             .retain(|id, _| self.inputs.contains_key(id));
         for (_, id) in visible_blocks {
-            if let Some(block) = self.session.document.block(id).cloned()
-                && self.inputs.contains_key(&id.0)
-            {
-                self.ensure_block_input(&block, window, cx);
+            if let Some(block) = self.session.document.block(id).cloned() {
+                if let Some(input) = self.ensure_block_input(&block, window, cx)
+                    && !self.input_subscriptions.contains_key(&id.0)
+                {
+                    let id = block.id;
+                    let subscription =
+                        cx.subscribe_in(&input, window, move |this, _, event, window, cx| {
+                            this.input_event(id, event, window, cx)
+                        });
+                    self.input_subscriptions.insert(id.0, subscription);
+                }
             }
         }
         for cell in visible_table_cells {
@@ -5743,12 +5798,6 @@ impl Workspace {
                 input
             });
             self.inputs.insert(block.id.0, input.clone());
-            let id = block.id;
-            let subscription =
-                cx.subscribe_in(&input, window, move |this, _, event, window, cx| {
-                    this.input_event(id, event, window, cx)
-                });
-            self.input_subscriptions.insert(block.id.0, subscription);
             input
         };
         let block_text_color = (block.color != ColorKind::Default)
@@ -5773,6 +5822,9 @@ impl Workspace {
                 Lang::Plain
             };
             input.code_colors = code_colors;
+            // The old editor's `single-line: block.kind != 8`: code is the one
+            // block whose Enter stays inside the block.
+            input.multiline = block.kind == BlockKind::Code;
             if input.buffer.committed() != block.text {
                 input.reset(
                     block.text.clone(),
@@ -5815,6 +5867,7 @@ impl Workspace {
                     | InputEvent::Indent
                     | InputEvent::Outdent
                     | InputEvent::ToggleMark(_)
+                    | InputEvent::OpenLink
                     | InputEvent::RemoveBlock
                     | InputEvent::DuplicateBlock
                     | InputEvent::MoveBlock(_)
@@ -5943,6 +5996,21 @@ impl Workspace {
                         return;
                     }
                 }
+                if self
+                    .session
+                    .document
+                    .block(id)
+                    .is_some_and(|block| !enter_splits_block(block.kind))
+                {
+                    // Code blocks are the one multi-line block (the old
+                    // editor's `single-line: kind != 8`): Enter writes a
+                    // newline through the ordinary typing path instead of
+                    // splitting the block in two.
+                    if let Some(input) = self.inputs.get(&id.0).cloned() {
+                        input.update(cx, |input, cx| input.insert_newline(cx));
+                    }
+                    return;
+                }
                 let index = self
                     .session
                     .document
@@ -5954,6 +6022,23 @@ impl Workspace {
                 let target = self.session.blocks().get(index + 1).map(|b| b.id);
                 self.sync_inputs(window, cx);
                 if let Some(target) = target {
+                    // The split target may be outside the virtual list's last
+                    // measured range. Ensure it has an event subscription before
+                    // focusing it, so the next keystroke is never dropped.
+                    if let Some(block) = self.session.document.block(target).cloned() {
+                        if let Some(input) = self.ensure_block_input(&block, window, cx)
+                            && !self.input_subscriptions.contains_key(&target.0)
+                        {
+                            let subscription = cx.subscribe_in(
+                                &input,
+                                window,
+                                move |this, _, event, window, cx| {
+                                    this.input_event(target, event, window, cx)
+                                },
+                            );
+                            self.input_subscriptions.insert(target.0, subscription);
+                        }
+                    }
                     self.focus(target, 0, window, cx);
                 }
                 self.schedule_save(false, window, cx);
@@ -6172,6 +6257,7 @@ impl Workspace {
                 self.restore_focus(window, cx);
                 self.schedule_save(false, window, cx);
             }
+            InputEvent::OpenLink => self.toggle_link_editor(window, cx),
             InputEvent::RemoveBlock => self.delete_block(id, window, cx),
             InputEvent::DuplicateBlock => self.duplicate_block(id, window, cx),
             InputEvent::MoveBlock(delta) => self.move_block(id, *delta, window, cx),
@@ -9819,6 +9905,7 @@ impl Workspace {
     fn reload_selected_note(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(id) = self.selected_note {
             self.selected_note = None;
+            self.note_detail_open = false;
             if self.session.organizer.note(id).is_some() {
                 self.select_note(id, window, cx);
                 return;
@@ -9850,20 +9937,11 @@ impl Workspace {
         cx.notify();
     }
     fn close_selected_note(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.selected_note.is_none() {
+        if !self.note_detail_open {
             return;
         }
         self.commit_note_draft(window, cx);
-        self.selected_note = None;
-        self.note_title_draft.clear();
-        self.note_body_draft.clear();
-        self.organizer_tags_draft.clear();
-        self.note_title_input.update(cx, |input, cx| {
-            input.reset(String::new(), Vec::new(), 0, cx);
-        });
-        self.note_body_input.update(cx, |input, cx| {
-            input.reset(String::new(), Vec::new(), 0, cx);
-        });
+        self.note_detail_open = false;
         self.note_reply_input.update(cx, |input, cx| {
             input.reset(String::new(), Vec::new(), 0, cx);
         });
@@ -9917,6 +9995,7 @@ impl Workspace {
             cx,
         );
         self.selected_note = None;
+        self.note_detail_open = false;
         self.selected_task = Some(task_id);
         self.organizer_tasks = true;
         self.note_title_draft.clear();
@@ -9952,6 +10031,8 @@ impl Workspace {
             return;
         }
         if self.selected_note == Some(id) && self.selected_task.is_none() {
+            self.note_detail_open = true;
+            cx.notify();
             return;
         }
         self.commit_note_draft(window, cx);
@@ -9960,6 +10041,7 @@ impl Workspace {
         };
         self.selected_task = None;
         self.selected_note = Some(id);
+        self.note_detail_open = false;
         self.note_reply_input.update(cx, |input, cx| {
             input.reset(String::new(), Vec::new(), 0, cx);
         });
@@ -9992,6 +10074,7 @@ impl Workspace {
         self.selected_note_ids.clear();
         if self.note_multi_select {
             self.selected_note = None;
+            self.note_detail_open = false;
             self.reset_organizer_item_inputs(cx);
         }
         cx.notify();
@@ -10016,6 +10099,67 @@ impl Workspace {
         } else {
             self.selected_note_ids = visible.iter().copied().collect();
         }
+        cx.notify();
+    }
+    fn move_note_to_index(
+        &mut self,
+        id: quire_core::core::organizer::NoteId,
+        target: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.organizer_trash || self.organizer_tag.is_some() || self.note_multi_select {
+            return;
+        }
+        let visible = self
+            .session
+            .organizer
+            .live_notes()
+            .filter(|note| note.ref_note.is_none() && !self.session.note_delete_is_pending(note.id))
+            .map(|note| note.id.0)
+            .collect::<Vec<_>>();
+        let mut order = if self.note_manual_order.is_empty() {
+            let mut notes = self
+                .session
+                .organizer
+                .live_notes()
+                .filter(|note| {
+                    note.ref_note.is_none() && !self.session.note_delete_is_pending(note.id)
+                })
+                .cloned()
+                .collect::<Vec<_>>();
+            sort_organizer_notes(&mut notes, self.note_sort_mode.min(2));
+            notes.into_iter().map(|note| note.id.0).collect::<Vec<_>>()
+        } else {
+            self.note_manual_order.clone()
+        };
+        order.retain(|note| visible.contains(note));
+        for note in visible {
+            if !order.contains(&note) {
+                order.push(note);
+            }
+        }
+        let Some(from) = order.iter().position(|note| *note == id.0) else {
+            return;
+        };
+        let moved = order.remove(from);
+        let target = if from < target {
+            target.saturating_sub(1)
+        } else {
+            target
+        };
+        order.insert(target.min(order.len()), moved);
+        self.note_manual_order = order;
+        self.note_sort_mode = 3;
+        self.session.set_setting(
+            "gpui.organizer-note-order",
+            self.note_manual_order
+                .iter()
+                .map(u64::to_string)
+                .collect::<Vec<_>>()
+                .join(","),
+        );
+        self.schedule_save(true, window, cx);
         cx.notify();
     }
     fn bulk_copy_notes(
@@ -10138,6 +10282,7 @@ impl Workspace {
             return;
         };
         self.selected_note = None;
+        self.note_detail_open = false;
         self.selected_task = Some(id);
         self.subtask_title_draft.clear();
         self.subtask_title_input.update(cx, |input, cx| {
@@ -10176,20 +10321,47 @@ impl Workspace {
         self.organizer_tasks = false;
         self.mark_current_area("organizer", window, cx);
         self.selected_note = None;
+        self.note_detail_open = false;
         self.select_note(id, window, cx);
         self.schedule_save(true, window, cx);
+    }
+    fn show_toast(&mut self, message: impl Into<String>, cx: &mut Context<Self>) {
+        self.toast_generation = self.toast_generation.wrapping_add(1);
+        let generation = self.toast_generation;
+        self.toast_message = Some(message.into());
+        let weak = cx.entity().downgrade();
+        cx.spawn(async move |_, cx| {
+            cx.background_executor()
+                .timer(Duration::from_millis(4000))
+                .await;
+            let _ = weak.update(cx, |this, cx| {
+                if this.toast_generation == generation {
+                    this.toast_message = None;
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+        cx.notify();
     }
     fn open_organizer_capture(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.organizer_tasks || self.organizer_trash {
             return;
         }
         self.organizer_capture_focus_return = window.focused(cx);
-        let preset = self
-            .organizer_tag
-            .as_ref()
-            .map(|tag| format!("#{tag} "))
-            .unwrap_or_default();
-        let caret = preset.len();
+        // A draft kept from an earlier Esc/× wins over the tag prefill.
+        let (preset, caret) = if let Some(saved) = self.organizer_capture_saved.take() {
+            let caret = saved.len();
+            (saved, caret)
+        } else {
+            let preset = self
+                .organizer_tag
+                .as_ref()
+                .map(|tag| format!("#{tag} "))
+                .unwrap_or_default();
+            let caret = preset.len();
+            (preset, caret)
+        };
         self.organizer_capture_draft = preset.clone();
         self.organizer_capture_suggestions.clear();
         self.organizer_capture_selected = 0;
@@ -10270,6 +10442,9 @@ impl Workspace {
     }
     fn close_organizer_capture(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.organizer_capture_open = false;
+        // Keep the unsent text for the next opening instead of throwing the
+        // typing away; a successful submit clears the cache instead.
+        self.organizer_capture_saved = keep_unsent_draft(self.organizer_capture_draft.clone());
         self.organizer_capture_draft.clear();
         self.organizer_capture_suggestions.clear();
         self.organizer_capture_suggestions_hidden = false;
@@ -10290,18 +10465,21 @@ impl Workspace {
         }
         self.commit_note_draft(window, cx);
         let tags = capture_tags(&body);
-        let id = self
-            .session
+        self.session
             .create_note_with_content(String::new(), body, tags);
         self.organizer_capture_open = false;
         self.organizer_capture_draft.clear();
+        self.organizer_capture_saved = None;
         self.organizer_capture_focus_return = None;
         self.organizer_capture_suggestions.clear();
         self.organizer_capture_input.update(cx, |input, cx| {
             input.reset(String::new(), Vec::new(), 0, cx);
         });
-        self.select_note(id, window, cx);
+        self.selected_note = None;
+        self.note_detail_open = false;
+        self.reset_organizer_item_inputs(cx);
         self.schedule_save(true, window, cx);
+        self.show_toast("已发送", cx);
         cx.notify();
     }
     fn organizer_capture_current_suggestion(&self) -> Option<String> {
@@ -10492,6 +10670,7 @@ impl Workspace {
         self.organizer_tasks = true;
         self.mark_current_area("organizer", window, cx);
         self.selected_note = None;
+        self.note_detail_open = false;
         self.selected_task = None;
         self.select_task(id, window, cx);
         self.schedule_save(true, window, cx);
@@ -10550,6 +10729,7 @@ impl Workspace {
         self.task_multi_select = false;
         self.selected_task_ids.clear();
         self.selected_note = None;
+        self.note_detail_open = false;
         self.selected_task = None;
         self.reset_organizer_item_inputs(cx);
         cx.notify();
@@ -11196,6 +11376,7 @@ impl Workspace {
             .is_some_and(|selected| ids.contains(&selected.0))
         {
             self.selected_note = None;
+            self.note_detail_open = false;
             self.note_title_draft.clear();
             self.note_body_draft.clear();
             self.organizer_tags_draft.clear();
@@ -11233,6 +11414,7 @@ impl Workspace {
         self.task_multi_select = false;
         self.selected_task_ids.clear();
         self.selected_note = None;
+        self.note_detail_open = false;
         self.selected_task = None;
         self.reset_organizer_item_inputs(cx);
     }
@@ -11253,6 +11435,7 @@ impl Workspace {
         self.selected_note_ids.clear();
         self.selected_task_ids.clear();
         self.selected_note = None;
+        self.note_detail_open = false;
         self.selected_task = None;
         self.reset_organizer_item_inputs(cx);
     }
@@ -11270,6 +11453,7 @@ impl Workspace {
         }
         self.selected_task_ids.clear();
         self.selected_note = None;
+        self.note_detail_open = false;
         self.selected_task = None;
         self.reset_organizer_item_inputs(cx);
     }
@@ -11279,6 +11463,7 @@ impl Workspace {
         self.organizer_excluded_tags.clear();
         self.selected_task_ids.clear();
         self.selected_note = None;
+        self.note_detail_open = false;
         self.selected_task = None;
         self.reset_organizer_item_inputs(cx);
     }
@@ -11322,6 +11507,7 @@ impl Workspace {
         if self.session.purge_organizer_note(id) {
             if self.selected_note == Some(id) {
                 self.selected_note = None;
+                self.note_detail_open = false;
                 self.reset_organizer_item_inputs(cx);
             }
             self.status = format!("已彻底删除「{title}」— Ctrl+Z 可撤销");
@@ -11354,6 +11540,7 @@ impl Workspace {
         self.commit_note_draft(window, cx);
         let count = self.session.empty_organizer_bin(self.organizer_tasks);
         self.selected_note = None;
+        self.note_detail_open = false;
         self.selected_task = None;
         self.selected_task_ids.clear();
         self.reset_organizer_item_inputs(cx);
@@ -12614,13 +12801,13 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.organizer_trash || self.note_multi_select || self.task_multi_select {
+        if self.organizer_trash || self.task_multi_select {
             return;
         }
         let scale = quire_gpui::ui_scale::get();
         let bounds = window.bounds().size;
         let width = 196.;
-        let height = if kind == 0 { 170. } else { 142. };
+        let height = if kind == 0 { 222. } else { 142. };
         if self.organizer_context_menu.is_none() {
             self.organizer_context_focus_return = window.focused(cx);
         }
@@ -12643,6 +12830,11 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if kind == 0 && self.note_multi_select {
+            self.toggle_note_multi_select_item(quire_core::core::organizer::NoteId(id), cx);
+            cx.stop_propagation();
+            return;
+        }
         self.open_organizer_context_menu(
             kind,
             id,
@@ -12692,8 +12884,10 @@ impl Workspace {
         }
         let actions: &[u8] = if self.organizer_trash {
             &[5, 6]
+        } else if self.note_multi_select && kind == 0 {
+            &[7]
         } else if kind == 0 {
-            &[0, 1, 2, 3, 4]
+            &[0, 1, 2, 3, 4, 7]
         } else {
             &[0, 1, 2, 4]
         };
@@ -12730,6 +12924,12 @@ impl Workspace {
         self.restore_organizer_context_focus(window);
         if kind == 0 {
             let id = quire_core::core::organizer::NoteId(id);
+            if self.note_multi_select {
+                if action == 7 {
+                    self.toggle_note_multi_select_item(id, cx);
+                }
+                return;
+            }
             match action {
                 0 => self.select_note(id, window, cx),
                 1 => {
@@ -12757,6 +12957,15 @@ impl Workspace {
                 4 => self.trash_note(id, window, cx),
                 5 => self.restore_note(id, window, cx),
                 6 => self.purge_note(id, window, cx),
+                7 => {
+                    self.note_multi_select = true;
+                    self.selected_note = None;
+                    self.note_detail_open = false;
+                    self.selected_note_ids.clear();
+                    self.selected_note_ids.insert(id);
+                    self.reset_organizer_item_inputs(cx);
+                    cx.notify();
+                }
                 _ => {}
             }
         } else {
@@ -13289,11 +13498,16 @@ impl Workspace {
         }
         let owner = cx.entity();
         let theme = self.palette.clone();
-        let draft = self
-            .organizer_tag
-            .as_ref()
-            .map(|tag| format!("#{tag} "))
-            .unwrap_or_default();
+        // A draft kept from an earlier Esc/×/Alt+F4 wins over the tag prefill:
+        // the cache exists precisely so the user does not retype it.
+        let (draft, pending_note) = self.quick_note_draft.take().unwrap_or_else(|| {
+            let draft = self
+                .organizer_tag
+                .as_ref()
+                .map(|tag| format!("#{tag} "))
+                .unwrap_or_default();
+            (draft, None)
+        });
         let suggestions = self.session.organizer_tag_suggestions(&draft);
         let options = WindowOptions {
             window_bounds: Some(WindowBounds::centered(size(px(560.), px(340.)), cx)),
@@ -13304,10 +13518,23 @@ impl Workspace {
         };
         let opened = cx.open_window(options, move |window, cx| {
             window.set_window_title(&format!("{} · 速记", quire_gpui::APP_LABEL));
-            cx.new(|cx| QuickNoteWindow::new(owner, theme, draft, suggestions, window, cx))
+            cx.new(|cx| {
+                QuickNoteWindow::new(owner, theme, draft, pending_note, suggestions, window, cx)
+            })
         });
         match opened {
-            Ok(handle) => self.quick_note_window = Some(handle),
+            Ok(handle) => {
+                let _ = handle.update(cx, |_, window, cx| {
+                    let note = cx.entity();
+                    // A native close (Alt+F4) keeps the draft exactly like the
+                    // in-app Esc and × paths.
+                    window.on_window_should_close(cx, move |_, cx| {
+                        note.update(cx, QuickNoteWindow::cache_draft_for_reopen);
+                        true
+                    });
+                });
+                self.quick_note_window = Some(handle);
+            }
             Err(error) => {
                 self.status = format!("无法打开速记窗口：{error}");
                 self.error = true;
@@ -13829,6 +14056,7 @@ impl Workspace {
             self.status = "速记已保存".into();
             self.error = false;
             *pending_note = None;
+            self.show_toast("已发送", cx);
         }
         cx.notify();
         true
@@ -19099,7 +19327,6 @@ impl Render for Workspace {
             })
             .count();
         let sync_status = self.sync_status.clone();
-        let sync_listener_warning = self.sync_listener_warning.clone();
         let sync_device_name = self
             .session
             .setting("sync.device-name")
@@ -19509,9 +19736,6 @@ impl Render for Workspace {
                                         .on_click(cx.listener(|this, _, window, cx| this.sync_now_all(window, cx)))
                                         .child("立即同步")))
                                 .child(div().w_full().min_w_0().text_size(px(10.)).text_color(muted).child(sync_status.clone()))
-                                .when_some(sync_listener_warning, |panel, warning| panel.child(
-                                    div().w_full().min_w_0().text_size(px(10.)).text_color(rgb(0xd9a441)).child(warning),
-                                ))
                                 .child(div().flex().items_center().gap(px(6.))
                                     .child(div().h(px(27.)).flex_1().min_w_0().px(px(7.)).rounded(px(4.))
                                         .border_1().border_color(Palette::color(&p.border))
@@ -19899,140 +20123,6 @@ impl Render for Workspace {
                 } else {
                     " "
                 };
-                let page_actions = div()
-                    .flex()
-                    .items_center()
-                    .gap(px(2.))
-                    .child(
-                        div()
-                            .id(SharedString::from(format!(
-                                "page-actions-format-{}",
-                                page_id.0
-                            )))
-                            .px(px(3.))
-                            .cursor_pointer()
-                            .text_color(muted)
-                            .hover(|button| button.text_color(accent))
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.format_bar_open = !this.format_bar_open;
-                                cx.notify();
-                            }))
-                            .child("Aa"),
-                    )
-                    .child(
-                        div()
-                            .id(SharedString::from(format!(
-                                "page-options-toggle-{}",
-                                page_id.0
-                            )))
-                            .px(px(3.))
-                            .cursor_pointer()
-                            .text_color(if self.page_options_open {
-                                accent
-                            } else {
-                                muted
-                            })
-                            .hover(|button| button.text_color(accent))
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.toggle_page_options(window, cx);
-                            }))
-                            .child("···"),
-                    )
-                    .child(
-                        div()
-                            .id(SharedString::from(format!("add-child-page-{}", page_id.0)))
-                            .px(px(3.))
-                            .cursor_pointer()
-                            .text_color(muted)
-                            .hover(|button| button.text_color(accent))
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                this.add_child_page(page_id, window, cx)
-                            }))
-                            .child("＋"),
-                    )
-                    .child(
-                        div()
-                            .id(SharedString::from(format!("duplicate-page-{}", page_id.0)))
-                            .px(px(3.))
-                            .cursor_pointer()
-                            .text_color(muted)
-                            .hover(|button| button.text_color(accent))
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                this.duplicate_page(page_id, window, cx)
-                            }))
-                            .child("⧉"),
-                    )
-                    .child(
-                        div()
-                            .id(SharedString::from(format!("move-page-up-{}", page_id.0)))
-                            .px(px(2.))
-                            .cursor_pointer()
-                            .text_color(muted)
-                            .hover(|button| button.text_color(accent))
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                this.move_page(page_id, -1, window, cx)
-                            }))
-                            .child("↑"),
-                    )
-                    .child(
-                        div()
-                            .id(SharedString::from(format!("move-page-down-{}", page_id.0)))
-                            .px(px(2.))
-                            .cursor_pointer()
-                            .text_color(muted)
-                            .hover(|button| button.text_color(accent))
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                this.move_page(page_id, 1, window, cx)
-                            }))
-                            .child("↓"),
-                    )
-                    .child(
-                        div()
-                            .id(SharedString::from(format!("indent-page-{}", page_id.0)))
-                            .px(px(2.))
-                            .cursor_pointer()
-                            .text_color(muted)
-                            .hover(|button| button.text_color(accent))
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                this.indent_page(page_id, window, cx)
-                            }))
-                            .child("↳"),
-                    )
-                    .child(
-                        div()
-                            .id(SharedString::from(format!("outdent-page-{}", page_id.0)))
-                            .px(px(2.))
-                            .cursor_pointer()
-                            .text_color(muted)
-                            .hover(|button| button.text_color(accent))
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                this.outdent_page(page_id, window, cx)
-                            }))
-                            .child("↰"),
-                    )
-                    .child(
-                        div()
-                            .id(SharedString::from(format!("favorite-page-{}", page_id.0)))
-                            .px(px(3.))
-                            .cursor_pointer()
-                            .text_color(if page.favorite { accent } else { muted })
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                this.toggle_favorite(page_id, window, cx)
-                            }))
-                            .child(if page.favorite { "★" } else { "☆" }),
-                    )
-                    .child(
-                        div()
-                            .id(SharedString::from(format!("delete-page-{}", page_id.0)))
-                            .px(px(3.))
-                            .cursor_pointer()
-                            .text_color(muted)
-                            .hover(|button| button.text_color(rgb(0xe06c75)))
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.request_delete_page(page_id, cx)
-                            }))
-                            .child("×"),
-                    );
                 div()
                     .id(SharedString::from(format!("page-{}", page.id.0)))
                     .h(px(30.))
@@ -20062,17 +20152,6 @@ impl Render for Workspace {
                     })
                     .on_drop(cx.listener(move |this, drag: &PageTreeDrag, window, cx| {
                         this.drop_page_under(drag.page, Some(page_id), window, cx)
-                    }))
-                    .on_hover(cx.listener(move |this, hovered, _, cx| {
-                        if *hovered {
-                            if this.hovered_page != Some(page_id) {
-                                this.hovered_page = Some(page_id);
-                                cx.notify();
-                            }
-                        } else if this.hovered_page == Some(page_id) {
-                            this.hovered_page = None;
-                            cx.notify();
-                        }
                     }))
                     .child(
                         div()
@@ -20107,9 +20186,6 @@ impl Render for Workspace {
                                 page.title
                             )),
                     )
-                    .when(self.hovered_page == Some(page_id), |row| {
-                        row.child(page_actions)
-                    })
             })
             .collect::<Vec<_>>();
         let favorite_rows = self
@@ -20809,6 +20885,8 @@ impl Render for Workspace {
         let organizer_context_overlay = self.organizer_context_menu.map(|(kind, id, x, y)| {
             let actions: Vec<(&str, u8)> = if self.organizer_trash {
                 vec![("恢复", 5), ("彻底删除", 6)]
+            } else if self.note_multi_select && kind == 0 {
+                vec![("取消选中", 7)]
             } else if kind == 0 {
                 let pinned = self
                     .session
@@ -20821,6 +20899,7 @@ impl Render for Workspace {
                     (if pinned { "取消置顶" } else { "置顶" }, 2),
                     ("转为任务", 3),
                     ("移入回收站", 4),
+                    ("进入多选模式", 7),
                 ]
             } else {
                 let done = self
@@ -21133,7 +21212,37 @@ impl Render for Workspace {
         .collect::<Vec<_>>();
         let note_count = notes.len();
         sort_organizer_notes(&mut notes, self.note_sort_mode);
+        if self.note_sort_mode == 3 && !self.note_manual_order.is_empty() {
+            notes.sort_by_key(|note| {
+                self.note_manual_order
+                    .iter()
+                    .position(|id| *id == note.id.0)
+                    .unwrap_or(usize::MAX)
+            });
+        }
         let visible_note_ids = notes.iter().map(|note| note.id).collect::<Vec<_>>();
+        let note_now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+        let note_recent_count = self
+            .session
+            .organizer
+            .live_notes()
+            .filter(|note| note.ref_note.is_none() && !self.session.note_delete_is_pending(note.id))
+            .filter(|note| note_now.saturating_sub(note.edited).max(0) <= 7 * 86400)
+            .count();
+        let mut note_tag_counts = BTreeMap::<String, usize>::new();
+        for note in
+            self.session.organizer.live_notes().filter(|note| {
+                note.ref_note.is_none() && !self.session.note_delete_is_pending(note.id)
+            })
+        {
+            for tag in &note.tags {
+                *note_tag_counts.entry(tag.clone()).or_default() += 1;
+            }
+        }
+        let note_tag_total = note_tag_counts.len();
         // Compute in design pixels so zoom and window resizing share one layout.
         let organizer_width = f32::from(window.viewport_size().width) / self.ui_zoom
             - if self.sidebar_open {
@@ -21145,10 +21254,12 @@ impl Render for Workspace {
         let organizer_detail_open = if self.organizer_tasks {
             self.selected_task.is_some()
         } else {
-            self.selected_note.is_some()
+            self.note_detail_open
         };
-        let organizer_single_pane = organizer_width < 720. && organizer_detail_open;
-        let organizer_navigation_visible = !organizer_detail_open || organizer_width >= 920.;
+        let organizer_single_pane =
+            self.note_detail_open || organizer_width < 720. && organizer_detail_open;
+        let organizer_navigation_visible =
+            self.organizer_tasks && (!organizer_detail_open || organizer_width >= 920.);
         let note_detail_width = (organizer_width * 0.54).clamp(340., 620.);
         let task_list_width = if organizer_detail_open { 300. } else { 400. };
         let note_card_width = if organizer_detail_open && !organizer_single_pane {
@@ -21158,17 +21269,14 @@ impl Render for Workspace {
         };
         let note_rows = notes
             .into_iter()
-            .map(|note| {
+            .enumerate()
+            .map(|(index, note)| {
                 let id = note.id;
                 let selected = self.selected_note == Some(id);
                 let picked = self.selected_note_ids.contains(&id);
                 let pinned = note.pinned;
-                let age = (std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_secs() as i64)
-                    .saturating_sub(note.edited)
-                    .max(0);
+                let note_drop_enabled = !self.organizer_trash && !self.note_multi_select;
+                let age = note_now.saturating_sub(note.edited).max(0);
                 let when = if age < 60 {
                     "刚刚".to_owned()
                 } else if age < 3600 {
@@ -21178,46 +21286,47 @@ impl Render for Workspace {
                 } else {
                     format!("{} 天前", age / 86400)
                 };
-                let preview = note.body.chars().take(900).collect::<String>();
+                let title = if note.title.trim().is_empty() {
+                    note.body
+                        .lines()
+                        .find(|line| !line.trim().is_empty())
+                        .unwrap_or("空白笔记")
+                        .trim()
+                        .to_owned()
+                } else {
+                    note.title.clone()
+                };
+                let preview = if note.title.trim().is_empty() {
+                    note.body.lines().skip(1).collect::<Vec<_>>().join("\n")
+                } else {
+                    note.body.clone()
+                };
                 let tags = note.tags.clone();
-                let replies = self
-                    .session
-                    .organizer
-                    .live_notes()
-                    .filter(|reply| reply.ref_note == Some(id))
-                    .count();
-                let menu_visible = self.hovered_note == Some(id) || selected;
                 div()
                     .id(SharedString::from(format!("organizer-note-{id:?}")))
                     .w_full()
                     .min_w_0()
-                    .mb(px(12.))
-                    .when(!self.organizer_note_board_mode, |card| {
-                        card.max_w(px(780.)).mx_auto()
-                    })
                     .when(self.organizer_note_board_mode, |card| {
                         card.flex_none()
                             .w(px(note_card_width))
                             .h(px(270.))
                             .overflow_hidden()
                     })
-                    .px(px(18.))
-                    .py(px(14.))
-                    .rounded(px(10.))
-                    .border_1()
+                    .px(px(24.))
+                    .py(px(15.))
+                    .border_b_1()
                     .border_color(if selected || picked {
-                        accent.opacity(0.65)
+                        accent.opacity(0.7)
                     } else {
-                        Palette::color(&p.border)
+                        Palette::color(&p.border).opacity(0.55)
                     })
                     .bg(if selected || picked {
-                        accent.opacity(0.07)
+                        accent.opacity(0.08)
                     } else {
-                        Palette::color(&p.elevated)
+                        Hsla::transparent_black()
                     })
-                    .text_color(text)
                     .cursor_pointer()
-                    .hover(|card| card.border_color(accent.opacity(0.45)))
+                    .hover(|row| row.bg(Palette::color(&p.elevated).opacity(0.42)))
                     .on_click(
                         cx.listener(move |this, _, window, cx| this.select_note(id, window, cx)),
                     )
@@ -21227,193 +21336,122 @@ impl Render for Workspace {
                             this.open_organizer_context_from_mouse(0, id.0, event, window, cx)
                         }),
                     )
-                    .on_hover(cx.listener(move |this, hovered, _, cx| {
-                        if *hovered {
-                            this.hovered_note = Some(id);
-                        } else if this.hovered_note == Some(id) {
-                            this.hovered_note = None;
-                        }
-                        cx.notify();
-                    }))
+                    .can_drop(move |value, _, _| {
+                        note_drop_enabled && value.downcast_ref::<OrganizerNoteDrag>().is_some()
+                    })
+                    .on_drop(
+                        cx.listener(move |this, drag: &OrganizerNoteDrag, window, cx| {
+                            this.move_note_to_index(drag.note, index, window, cx);
+                        }),
+                    )
+                    .when(note_drop_enabled, |row| {
+                        let drag = OrganizerNoteDrag { note: id };
+                        let drag_title = title.clone();
+                        row.on_drag(drag, move |_, _, _, cx| {
+                            let title = drag_title.clone();
+                            cx.new(|_| OrganizerTaskDragPreview { title, count: 1 })
+                        })
+                    })
                     .flex()
-                    .flex_col()
-                    .gap(px(9.))
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap(px(8.))
-                            .h(px(24.))
-                            .flex_shrink_0()
-                            .when(self.note_multi_select, |row| {
-                                row.child(
-                                    div()
-                                        .w(px(16.))
-                                        .h(px(16.))
-                                        .rounded(px(4.))
-                                        .border_1()
-                                        .border_color(if picked { accent } else { muted })
-                                        .text_color(accent)
-                                        .text_size(px(11.))
-                                        .child(if picked { "✓" } else { "" }),
-                                )
-                            })
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .text_size(px(11.))
-                                    .text_color(muted)
-                                    .child(when),
-                            )
-                            .when(pinned && !self.organizer_trash, |row| {
-                                row.child(
-                                    div().text_size(px(11.)).text_color(accent).child("★ 置顶"),
-                                )
-                            })
-                            .when(self.organizer_trash, |row| {
-                                row.child(
-                                    div()
-                                        .id(SharedString::from(format!(
-                                            "organizer-note-restore-{id:?}"
-                                        )))
-                                        .px(px(7.))
-                                        .py(px(3.))
-                                        .text_size(px(11.))
-                                        .text_color(accent)
-                                        .cursor_pointer()
-                                        .on_click(cx.listener(move |this, _, window, cx| {
-                                            cx.stop_propagation();
-                                            this.restore_note(id, window, cx)
-                                        }))
-                                        .child("恢复"),
-                                )
-                                .child(
-                                    div()
-                                        .id(SharedString::from(format!(
-                                            "organizer-note-purge-{id:?}"
-                                        )))
-                                        .px(px(7.))
-                                        .py(px(3.))
-                                        .text_size(px(11.))
-                                        .text_color(rgb(0xe5534b))
-                                        .cursor_pointer()
-                                        .on_click(cx.listener(move |this, _, window, cx| {
-                                            cx.stop_propagation();
-                                            this.purge_note(id, window, cx)
-                                        }))
-                                        .child("彻底删除"),
-                                )
-                            })
-                            .when(!self.organizer_trash && !self.note_multi_select, |row| {
-                                row.child(
-                                    div()
-                                        .id(SharedString::from(format!(
-                                            "organizer-note-menu-{id:?}"
-                                        )))
-                                        .w(px(26.))
-                                        .h(px(24.))
-                                        .flex_shrink_0()
-                                        .flex()
-                                        .items_center()
-                                        .justify_center()
-                                        .opacity(if menu_visible { 1. } else { 0. })
-                                        .rounded(px(5.))
-                                        .text_color(muted)
-                                        .hover(|button| {
-                                            button.bg(Palette::color(&p.bg).opacity(0.25))
-                                        })
-                                        .on_click(cx.listener(
-                                            move |this, event: &ClickEvent, window, cx| {
-                                                cx.stop_propagation();
-                                                this.open_organizer_context_from_click(
-                                                    0, id.0, event, window, cx,
-                                                )
-                                            },
-                                        ))
-                                        .child("⋯"),
-                                )
-                            }),
-                    )
-                    .when(!note.title.trim().is_empty(), |card| {
-                        card.child(
+                    .items_start()
+                    .gap(px(16.))
+                    .when(self.note_multi_select, |row| {
+                        row.child(
                             div()
-                                .w_full()
-                                .min_w_0()
-                                .line_clamp(1)
-                                .text_size(px(15.))
-                                .font_weight(FontWeight::SEMIBOLD)
-                                .child(note.title.clone()),
-                        )
-                    })
-                    .when(!preview.trim().is_empty(), |card| {
-                        card.child(
-                            div()
-                                .w_full()
-                                .text_size(px(14.))
-                                .line_height(px(22.))
-                                .line_clamp(if self.organizer_note_board_mode { 3 } else { 6 })
-                                .overflow_hidden()
-                                .child(preview),
-                        )
-                    })
-                    .when(
-                        note.title.trim().is_empty() && note.body.trim().is_empty(),
-                        |card| {
-                            card.child(div().text_size(px(14.)).text_color(muted).child("空白笔记"))
-                        },
-                    )
-                    .when(!tags.is_empty(), |card| {
-                        card.child(div().flex().flex_wrap().gap(px(8.)).children(
-                            tags.into_iter().map(|tag| {
-                                let path = tag.clone();
-                                div()
-                                    .id(SharedString::from(format!("note-tag-{}-{tag}", id.0)))
-                                    .text_size(px(12.))
-                                    .text_color(accent)
-                                    .cursor_pointer()
-                                    .on_click(cx.listener(move |this, _, window, cx| {
-                                        cx.stop_propagation();
-                                        this.toggle_organizer_tag(path.clone(), window, cx)
-                                    }))
-                                    .child(format!("#{tag}"))
-                            }),
-                        ))
-                    })
-                    .when(!self.organizer_trash && !self.note_multi_select, |card| {
-                        card.child(
-                            div()
-                                .mt(px(2.))
-                                .pt(px(8.))
-                                .border_t_1()
-                                .border_color(Palette::color(&p.border).opacity(0.55))
+                                .w(px(18.))
+                                .h(px(18.))
+                                .mt(px(3.))
+                                .rounded(px(4.))
+                                .border_1()
+                                .border_color(if picked { accent } else { muted })
                                 .flex()
                                 .items_center()
-                                .justify_between()
-                                .text_size(px(11.))
-                                .text_color(muted)
-                                .child(div().child(if replies == 0 {
-                                    "评论".to_owned()
-                                } else {
-                                    format!("评论 {replies}")
-                                }))
-                                .child(
-                                    div()
-                                        .id(SharedString::from(format!(
-                                            "note-copy-with-id-{}",
-                                            id.0
-                                        )))
-                                        .cursor_pointer()
-                                        .hover(|button| button.text_color(accent))
-                                        .on_click(cx.listener(move |this, _, window, cx| {
-                                            cx.stop_propagation();
-                                            this.run_organizer_context_action(
-                                                0, id.0, 1, window, cx,
-                                            )
-                                        }))
-                                        .child("复制内容和 ID"),
-                                ),
+                                .justify_center()
+                                .text_color(accent)
+                                .child(if picked { "✓" } else { "" }),
                         )
                     })
+                    .child(
+                        div()
+                            .w(px(74.))
+                            .flex_shrink_0()
+                            .pt(px(3.))
+                            .text_size(px(11.))
+                            .text_color(muted)
+                            .child(when),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .flex()
+                            .flex_col()
+                            .gap(px(7.))
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(8.))
+                                    .child(
+                                        div()
+                                            .flex_1()
+                                            .min_w_0()
+                                            .truncate()
+                                            .text_size(px(14.))
+                                            .font_weight(FontWeight::SEMIBOLD)
+                                            .text_color(text)
+                                            .child(title),
+                                    )
+                                    .when(pinned && !self.organizer_trash, |row| {
+                                        row.child(
+                                            div().text_size(px(11.)).text_color(accent).child("★"),
+                                        )
+                                    }),
+                            )
+                            .when(!preview.trim().is_empty(), |body| {
+                                body.child(
+                                    div()
+                                        .w_full()
+                                        .text_size(px(13.))
+                                        .line_height(px(20.))
+                                        .line_clamp(3)
+                                        .overflow_hidden()
+                                        .text_color(muted)
+                                        .child(preview),
+                                )
+                            })
+                            .when(
+                                note.title.trim().is_empty() && note.body.trim().is_empty(),
+                                |body| {
+                                    body.child(
+                                        div()
+                                            .text_size(px(12.))
+                                            .text_color(muted)
+                                            .child("空白笔记"),
+                                    )
+                                },
+                            )
+                            .when(!tags.is_empty(), |body| {
+                                body.child(div().flex().flex_wrap().gap(px(8.)).children(
+                                    tags.into_iter().map(|tag| {
+                                        let path = tag.clone();
+                                        div()
+                                            .id(SharedString::from(format!(
+                                                "note-tag-{}-{tag}",
+                                                id.0
+                                            )))
+                                            .text_size(px(11.))
+                                            .text_color(accent)
+                                            .cursor_pointer()
+                                            .on_click(cx.listener(move |this, _, window, cx| {
+                                                cx.stop_propagation();
+                                                this.toggle_organizer_tag(path.clone(), window, cx)
+                                            }))
+                                            .child(format!("#{tag}"))
+                                    }),
+                                ))
+                            }),
+                    )
             })
             .collect::<Vec<_>>();
         let mut note_replies = self
@@ -22652,6 +22690,174 @@ impl Render for Workspace {
             })
             .collect::<Vec<_>>();
         let task_detail_view = self.render_task_detail(organizer_single_pane, cx);
+        let note_overview = div()
+            .id("organizer-note-overview")
+            .w(px(250.))
+            .flex_shrink_0()
+            .h_full()
+            .border_l_1()
+            .border_color(Palette::color(&p.border))
+            .px(px(17.))
+            .py(px(18.))
+            .flex()
+            .flex_col()
+            .gap(px(15.))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .text_size(px(13.))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(muted)
+                    .child("概览")
+                    .child(
+                        div()
+                            .text_size(px(11.))
+                            .font_weight(FontWeight::NORMAL)
+                            .child(format!("{note_count} 篇")),
+                    ),
+            )
+            .child(
+                div()
+                    .flex()
+                    .gap(px(8.))
+                    .child(
+                        div()
+                            .id("organizer-note-overview-recent")
+                            .flex_1()
+                            .h(px(72.))
+                            .px(px(12.))
+                            .py(px(9.))
+                            .rounded(px(7.))
+                            .border_1()
+                            .border_color(Palette::color(&p.border))
+                            .bg(Palette::color(&p.elevated))
+                            .flex()
+                            .flex_col()
+                            .justify_between()
+                            .child(
+                                div()
+                                    .text_size(px(22.))
+                                    .font_weight(FontWeight::BOLD)
+                                    .text_color(text)
+                                    .child(note_recent_count.to_string()),
+                            )
+                            .child(div().text_size(px(11.)).text_color(muted).child("近 7 天")),
+                    )
+                    .child(
+                        div()
+                            .id("organizer-note-overview-tag-total")
+                            .flex_1()
+                            .h(px(72.))
+                            .px(px(12.))
+                            .py(px(9.))
+                            .rounded(px(7.))
+                            .border_1()
+                            .border_color(Palette::color(&p.border))
+                            .bg(Palette::color(&p.elevated))
+                            .flex()
+                            .flex_col()
+                            .justify_between()
+                            .child(
+                                div()
+                                    .text_size(px(22.))
+                                    .font_weight(FontWeight::BOLD)
+                                    .text_color(text)
+                                    .child(note_tag_total.to_string()),
+                            )
+                            .child(div().text_size(px(11.)).text_color(muted).child("标签")),
+                    ),
+            )
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .mt(px(5.))
+                    .text_size(px(12.))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(muted)
+                    .child("标签")
+                    .child(
+                        div()
+                            .text_size(px(11.))
+                            .font_weight(FontWeight::NORMAL)
+                            .child(note_tag_total.to_string()),
+                    ),
+            )
+            .children(
+                note_tag_counts
+                    .into_iter()
+                    .enumerate()
+                    .map(|(index, (tag, count))| {
+                        let picked_tag = tag.clone();
+                        let excluded_tag = tag.clone();
+                        div()
+                            .id(SharedString::from(format!("note-overview-tag-{tag}")))
+                            .w_full()
+                            .h(px(38.))
+                            .flex()
+                            .items_center()
+                            .gap(px(9.))
+                            .child(
+                                div()
+                                    .w(px(9.))
+                                    .h(px(9.))
+                                    .rounded(px(5.))
+                                    .bg(p.block_text((index % 10) as i32)),
+                            )
+                            .child(
+                                div()
+                                    .id(SharedString::from(format!("note-overview-tag-pick-{tag}")))
+                                    .flex_1()
+                                    .min_w_0()
+                                    .truncate()
+                                    .cursor_pointer()
+                                    .text_color(text)
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        this.toggle_organizer_tag(picked_tag.clone(), window, cx)
+                                    }))
+                                    .child(tag),
+                            )
+                            .child(
+                                div()
+                                    .px(px(6.))
+                                    .py(px(2.))
+                                    .rounded(px(9.))
+                                    .border_1()
+                                    .border_color(Palette::color(&p.border))
+                                    .text_size(px(10.))
+                                    .text_color(muted)
+                                    .child(count.to_string()),
+                            )
+                            .child(
+                                div()
+                                    .id(SharedString::from(format!(
+                                        "note-overview-tag-exclude-{index}"
+                                    )))
+                                    .w(px(23.))
+                                    .h(px(23.))
+                                    .rounded(px(12.))
+                                    .border_1()
+                                    .border_color(Palette::color(&p.border))
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .cursor_pointer()
+                                    .text_color(muted)
+                                    .hover(|button| button.border_color(accent).text_color(accent))
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        this.toggle_organizer_tag_exclusion(
+                                            excluded_tag.clone(),
+                                            window,
+                                            cx,
+                                        )
+                                    }))
+                                    .child("−"),
+                            )
+                    }),
+            );
         let organizer_view = div()
             .id("organizer-main")
             .flex()
@@ -22782,6 +22988,9 @@ impl Render for Workspace {
                     .id("organizer-note-list")
                     .flex_1()
                     .min_w_0()
+                    .when(!self.organizer_tasks && self.note_detail_open, |column| {
+                        column.flex_none().w(px(0.)).px(px(0.)).overflow_hidden()
+                    })
                     .when(self.organizer_tasks, |column| {
                         // Reset flex-1's zero basis so the task list retains its
                         // intended 400px reference width inside the three-column card.
@@ -22796,7 +23005,7 @@ impl Render for Workspace {
                     .when(!self.organizer_tasks && self.organizer_note_board_mode, |column| {
                         column.flex_1().w(px(0.))
                     })
-                    .when(!self.organizer_tasks && organizer_detail_open && !organizer_single_pane, |column| {
+                    .when(!self.organizer_tasks && organizer_detail_open && !organizer_single_pane && !self.note_detail_open, |column| {
                         column.flex_initial().w(px(organizer_width - note_detail_width)).flex_shrink_0()
                     })
                     .when(organizer_single_pane, |column| {
@@ -22804,9 +23013,12 @@ impl Render for Workspace {
                     })
                     .h_full()
                     .px(px(if organizer_single_pane { 0. } else { 18. }))
-                    .py(px(16.))
+                    .py(px(if organizer_single_pane { 0. } else { 16. }))
                     .flex()
                     .flex_col()
+                    .when(!self.organizer_tasks && self.note_detail_open, |pane| {
+                        pane.overflow_hidden()
+                    })
                     .gap(px(12.))
                     .child(
                         div()
@@ -22965,13 +23177,14 @@ impl Render for Workspace {
                                         .text_color(muted)
                                         .hover(|row| row.bg(Palette::color(&p.bg).opacity(0.25)))
                                         .on_click(cx.listener(|this, _, _, cx| {
-                                            this.note_sort_mode = (this.note_sort_mode + 1) % 3;
+                                            this.note_sort_mode = (this.note_sort_mode + 1) % 4;
                                             cx.notify();
                                         }))
                                         .child(match self.note_sort_mode {
                                             0 => "最新创建  ⌄",
                                             1 => "最新更新  ⌄",
-                                            _ => "按内容  ⌄",
+                                            2 => "按内容  ⌄",
+                                            _ => "手动排序  ⌄",
                                         }),
                                 )
                                 .child(
@@ -23358,7 +23571,7 @@ impl Render for Workspace {
                                         .shadow_lg()
                                         .cursor_pointer()
                                         .on_click(cx.listener(|this, _, window, cx| {
-                                            this.create_note(window, cx);
+                                            this.open_organizer_capture(window, cx);
                                         }))
                                         .child("＋"),
                                 )
@@ -23395,6 +23608,30 @@ impl Render for Workspace {
                                             }),
                                     )
                                 })
+                            .when(self.organizer_tasks && !self.organizer_trash, |list| {
+                                list.child(
+                                    div()
+                                        .id("organizer-floating-create-task")
+                                        .absolute()
+                                        .right(px(24.))
+                                        .bottom(px(24.))
+                                        .w(px(50.))
+                                        .h(px(50.))
+                                        .rounded(px(25.))
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .bg(accent)
+                                        .text_color(Palette::color(&p.bg))
+                                        .text_size(px(26.))
+                                        .shadow_lg()
+                                        .cursor_pointer()
+                                        .on_click(cx.listener(|this, _, window, cx| {
+                                            this.create_task(window, cx);
+                                        }))
+                                        .child("＋"),
+                                )
+                            })
                                 .child(format!(
                                     "已完成 {completed_task_count} / {}",
                                     self.session
@@ -23436,16 +23673,17 @@ impl Render for Workspace {
                         },
                     ),
                     )
-                    .when(self.selected_note.is_some() && !self.organizer_tasks, |card| {
+                    .when(self.note_detail_open && self.selected_note.is_some() && !self.organizer_tasks, |card| {
                         card.child(
                             div()
                                 .id("organizer-note-detail-overlay")
-                                .w(px(if organizer_single_pane { organizer_width } else { note_detail_width }))
+                                .flex_1()
+                                .w(px(organizer_width))
                                 .h_full()
                                 .min_w_0()
                                 .flex_shrink_0()
                                 .overflow_y_scroll()
-                                .border_l_1()
+                                .border_l_0()
                                 .border_color(Palette::color(&p.border))
                                 .bg(Palette::color(&p.elevated))
                                 .px(px(22.))
@@ -23455,6 +23693,9 @@ impl Render for Workspace {
                                 .gap(px(14.))
                                 .child(
                                     div()
+                                        .pt(px(12.))
+                                        .border_t_1()
+                                        .border_color(Palette::color(&p.border))
                                         .flex()
                                         .items_center()
                                         .justify_between()
@@ -23478,14 +23719,6 @@ impl Render for Workspace {
                                                 .gap(px(4.))
                                                 .flex_wrap()
                                                 .whitespace_nowrap()
-                                                .children(self.selected_note.map(|id| {
-                                                    let pinned = self.session.organizer.note(id).is_some_and(|note| note.pinned);
-                                                    vec![
-                                                        div().id("organizer-note-detail-pin").px(px(8.)).py(px(6.)).rounded(px(6.)).cursor_pointer().text_size(px(11.)).text_color(if pinned { accent } else { muted }).hover(|button| button.bg(Palette::color(&p.elevated2))).on_click(cx.listener(move |this, _, window, cx| this.toggle_note_pin(id, window, cx))).child(if pinned { "★ 已置顶" } else { "☆ 置顶" }),
-                                                        div().id("organizer-note-detail-to-task").px(px(8.)).py(px(6.)).rounded(px(6.)).cursor_pointer().text_size(px(11.)).text_color(muted).hover(|button| button.text_color(accent).bg(Palette::color(&p.elevated2))).on_click(cx.listener(move |this, _, window, cx| this.convert_note_to_task(id, window, cx))).child("✓ 转为待办"),
-                                                        div().id("organizer-note-detail-trash").px(px(8.)).py(px(6.)).rounded(px(6.)).cursor_pointer().text_size(px(11.)).text_color(muted).hover(|button| button.text_color(rgb(0xe5534b)).bg(Palette::color(&p.elevated2))).on_click(cx.listener(move |this, _, window, cx| this.trash_note(id, window, cx))).child("删除"),
-                                                    ]
-                                                }).unwrap_or_default())
                                                 .child(
                                                     div()
                                                         .id("organizer-note-detail-close")
@@ -23534,15 +23767,6 @@ impl Render for Workspace {
                                         ),
                                 )
                                 .child(div().id("organizer-note-body-scroll").flex_1().min_h(px(180.)).overflow_y_scroll().px(px(2.)).py(px(8.)).child(self.note_body_input.clone()))
-                                .when_some(self.selected_note, |detail, id| {
-                                    detail.child(
-                                        div().id("organizer-note-detail-copy").flex_shrink_0()
-                                            .text_size(px(11.)).text_color(muted).cursor_pointer()
-                                            .hover(|button| button.text_color(accent))
-                                            .on_click(cx.listener(move|this,_,window,cx|this.run_organizer_context_action(0,id.0,1,window,cx)))
-                                            .child("复制内容和 ID")
-                                    )
-                                })
                                 .when_some(self.selected_note, |detail, id| {
                                     detail.child(
                                         div()
@@ -23622,7 +23846,14 @@ impl Render for Workspace {
                                     )
                                 }),
                         )
-                    }),
+                    })
+                    .when(
+                        !self.organizer_tasks
+                            && !self.organizer_trash
+                            && !self.note_detail_open
+                            && organizer_width >= 980.,
+                        |card| card.child(note_overview),
+                    )
                 );
         let document_blocks = rows;
         let document_ids = document_blocks
@@ -23636,12 +23867,16 @@ impl Render for Workspace {
             let visible_range = event.visible_range.clone();
             let _ = scroll_weak.update(app, |this, cx| {
                 this.document_visible_range = visible_range;
-                let mut keep = this.document_visible_block_ids();
-                if let Some(active) = this.active {
-                    keep.insert(active.0);
-                }
-                this.inputs
-                    .retain(|id, input| keep.contains(id) || input.read(cx).buffer.composing());
+                // Keep inputs for every existing, editable block so scrolling
+                // back never recreates them during a render pass (subscriptions
+                // created inside a render method do not fire).
+                this.inputs.retain(|id, input| {
+                    this.session
+                        .document
+                        .block(BlockId(*id))
+                        .is_some_and(|block| this.session.editable(block.id))
+                        || input.read(cx).buffer.composing()
+                });
                 this.input_subscriptions
                     .retain(|id, _| this.inputs.contains_key(id));
             });
@@ -23943,21 +24178,6 @@ impl Render for Workspace {
                             .flex()
                             .items_center()
                             .gap(px(6.))
-                            .child(
-                                div()
-                                    .id("sidebar-search-toggle")
-                                    .px(px(7.))
-                                    .py(px(4.))
-                                    .rounded(px(5.))
-                                    .cursor_pointer()
-                                    .text_color(muted)
-                                    .hover(|button| button.bg(Palette::color(&p.elevated)))
-                                    .on_click(cx.listener(|this, _, window, cx| {
-                                        this.open_search(&SearchPages, window, cx);
-                                    }))
-                                    .child("⌕"),
-                            )
-                            .child(div().w(px(1.)).h(px(18.)).bg(Palette::color(&p.border)))
                             .child(
                                 div()
                                     .id("window-minimize")
@@ -24754,6 +24974,46 @@ impl Render for Workspace {
                         }),
                 )
             })
+            .when_some(self.toast_message.clone(), |root, message| {
+                root.child(
+                    div()
+                        .id("organizer-sent-toast")
+                        .absolute()
+                        .bottom(px(28.))
+                        .right(px(28.))
+                        .flex()
+                        .items_center()
+                        .gap(px(12.))
+                        .px(px(16.))
+                        .py(px(13.))
+                        .rounded(px(13.))
+                        .border_1()
+                        .border_color(rgb(0x287a57))
+                        .bg(rgb(0x153d2d))
+                        .shadow_lg()
+                        .child(
+                            div()
+                                .w(px(30.))
+                                .h(px(30.))
+                                .rounded(px(15.))
+                                .bg(accent)
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .font_weight(FontWeight::BOLD)
+                                .text_color(rgb(0xffffff))
+                                .child("✓"),
+                        )
+                        .child(
+                            div()
+                                .flex()
+                                .flex_col()
+                                .gap(px(2.))
+                                .child(div().text_size(px(13.)).font_weight(FontWeight::SEMIBOLD).text_color(rgb(0xffffff)).child(message))
+                                .child(div().text_size(px(11.)).text_color(rgb(0xc8e8d7)).child("笔记已保存到列表")),
+                        ),
+                )
+            })
             .when(self.search_open, |root| root.child(search_overlay))
             .when(self.command_palette_open, |root| {
                 root.child(command_overlay)
@@ -24781,7 +25041,7 @@ impl Render for Workspace {
                         .flex()
                         .items_center()
                         .justify_center()
-                        .bg(hsla(0., 0., 0., 0.46))
+                        .bg(hsla(0., 0., 0., 0.58))
                         .capture_key_down(cx.listener(|this, event, window, cx| {
                             this.organizer_capture_key_down(event, window, cx)
                         }))
@@ -24794,17 +25054,17 @@ impl Render for Workspace {
                         .child(
                             div()
                                 .id("organizer-capture-card")
-                                .w(px(560.))
-                                .h(px(340.))
+                                .w(px(620.))
+                                .h(px(410.))
                                 .max_w(px(760.))
                                 .max_h(px(520.))
                                 .flex()
                                 .flex_col()
-                                .gap(px(9.))
-                                .p(px(16.))
-                                .rounded(px(10.))
+                                .gap(px(14.))
+                                .p(px(22.))
+                                .rounded(px(15.))
                                 .border_1()
-                                .border_color(Palette::color(&p.border))
+                                .border_color(accent.opacity(0.35))
                                 .bg(linear_gradient(
                                     180.,
                                     linear_color_stop(Palette::color(&p.bg), 0.),
@@ -24817,30 +25077,44 @@ impl Render for Workspace {
                                 }))
                                 .child(
                                     div()
-                                        .h(px(24.))
+                                        .h(px(42.))
                                         .flex()
                                         .items_center()
-                                        .gap(px(8.))
-                                        .child(div().w(px(4.)).h(px(14.)).rounded(px(2.)).bg(accent))
+                                        .gap(px(12.))
+                                        .child(
+                                            div()
+                                                .w(px(38.))
+                                                .h(px(38.))
+                                                .rounded(px(12.))
+                                                .bg(accent.opacity(0.16))
+                                                .flex()
+                                                .items_center()
+                                                .justify_center()
+                                                .text_size(px(20.))
+                                                .text_color(accent)
+                                                .child("✎"),
+                                        )
                                         .child(
                                             div()
                                                 .flex_1()
-                                                .text_size(px(14.))
-                                                .font_weight(FontWeight::SEMIBOLD)
-                                                .child("新建笔记"),
+                                                .flex()
+                                                .flex_col()
+                                                .gap(px(2.))
+                                                .child(div().text_size(px(17.)).font_weight(FontWeight::BOLD).text_color(text).child("新建笔记"))
+                                                .child(div().text_size(px(11.)).text_color(muted).child("把刚想到的事记下来")),
                                         )
                                         .child(
                                             div()
                                                 .id("organizer-capture-close")
-                                                .w(px(24.))
-                                                .h(px(24.))
+                                                .w(px(32.))
+                                                .h(px(32.))
+                                                .rounded(px(16.))
                                                 .flex()
                                                 .items_center()
                                                 .justify_center()
-                                                .rounded(px(5.))
                                                 .cursor_pointer()
                                                 .text_color(muted)
-                                                .hover(|button| button.bg(Palette::color(&p.elevated)))
+                                                .hover(|button| button.bg(Palette::color(&p.elevated)).text_color(text))
                                                 .on_click(cx.listener(|this, _, window, cx| {
                                                     this.close_organizer_capture(window, cx)
                                                 }))
@@ -24849,20 +25123,27 @@ impl Render for Workspace {
                                 )
                                 .child(
                                     div()
+                                        .flex()
+                                        .items_center()
+                                        .gap(px(7.))
                                         .text_size(px(11.))
                                         .text_color(muted)
-                                        .child("提示：# 输入标签，Ctrl+Enter 或 Alt+S 提交，Esc 取消"),
+                                        .child("输入 # 可添加标签")
+                                        .child(div().w(px(1.)).h(px(12.)).bg(Palette::color(&p.border)))
+                                        .child("Ctrl + Enter 发送")
+                                        .child(div().w(px(1.)).h(px(12.)).bg(Palette::color(&p.border)))
+                                        .child("Esc 取消"),
                                 )
                                 .child(
                                     div()
                                         .id("organizer-capture-input")
                                         .flex_1()
-                                        .min_h(px(80.))
-                                        .p(px(10.))
-                                        .rounded(px(8.))
+                                        .min_h(px(150.))
+                                        .p(px(14.))
+                                        .rounded(px(10.))
                                         .border_1()
-                                        .border_color(Palette::color(&p.border))
-                                        .bg(Palette::color(&p.elevated))
+                                        .border_color(Palette::color(&p.border).opacity(0.9))
+                                        .bg(Palette::color(&p.bg).opacity(0.55))
                                         .child(self.organizer_capture_input.clone()),
                                 )
                                 .when(suggestions_visible, |card| {
@@ -24875,7 +25156,7 @@ impl Render for Workspace {
                                             .max_h(px(96.))
                                             .overflow_y_scroll()
                                             .p(px(4.))
-                                            .rounded(px(7.))
+                                            .rounded(px(9.))
                                             .border_1()
                                             .border_color(Palette::color(&p.border))
                                             .bg(Palette::color(&p.bg))
@@ -24923,9 +25204,9 @@ impl Render for Workspace {
                                                 .text_size(px(11.))
                                                 .text_color(muted)
                                                 .child(if draft_empty {
-                                                    "空草稿".to_owned()
+                                                    "写下内容后即可发送".to_owned()
                                                 } else {
-                                                    format!("{} 字", self.organizer_capture_draft.chars().count())
+                                                    format!("{} 字 · 自动识别 #标签", self.organizer_capture_draft.chars().count())
                                                 }),
                                         )
                                         .child(
@@ -24936,10 +25217,13 @@ impl Render for Workspace {
                                                     div()
                                                         .id("organizer-capture-cancel")
                                                         .px(px(12.))
-                                                        .py(px(7.))
-                                                        .rounded(px(6.))
+                                                        .py(px(8.))
+                                                        .rounded(px(8.))
+                                                        .border_1()
+                                                        .border_color(Palette::color(&p.border))
                                                         .text_color(muted)
                                                         .cursor_pointer()
+                                                        .hover(|button| button.bg(Palette::color(&p.elevated)))
                                                         .on_click(cx.listener(|this, _, window, cx| {
                                                             this.close_organizer_capture(window, cx)
                                                         }))
@@ -24948,17 +25232,19 @@ impl Render for Workspace {
                                                 .child(
                                                     div()
                                                         .id("organizer-capture-submit")
-                                                        .px(px(14.))
-                                                        .py(px(7.))
-                                                        .rounded(px(6.))
+                                                        .px(px(17.))
+                                                        .py(px(9.))
+                                                        .rounded(px(8.))
                                                         .bg(accent)
                                                         .text_color(Palette::color(&p.bg))
+                                                        .font_weight(FontWeight::SEMIBOLD)
                                                         .when(draft_empty, |button| button.opacity(0.45))
                                                         .cursor_pointer()
+                                                        .hover(|button| button.opacity(0.9))
                                                         .on_click(cx.listener(|this, _, window, cx| {
                                                             this.submit_organizer_capture(window, cx)
                                                         }))
-                                                        .child("保存"),
+                                                        .child("发送笔记  ↗"),
                                                 ),
                                         ),
                                 ),
@@ -25267,7 +25553,6 @@ struct QuickNoteWindow {
     palette: Palette,
     subscription: Option<Subscription>,
 }
-
 impl QuickNoteWindow {
     fn apply_palette(&mut self, palette: Palette, cx: &mut Context<Self>) {
         let foreground = Palette::color(&palette.fg);
@@ -25281,11 +25566,11 @@ impl QuickNoteWindow {
         owner: Entity<Workspace>,
         palette: Palette,
         draft: String,
+        pending_note: Option<NoteId>,
         suggestions: Vec<String>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        crate::platform::set_window_always_on_top(window);
         let input = cx.new(|cx| TextInput::new(draft.clone(), Vec::new(), 15., window, cx));
         input.update(cx, |input, _| {
             input.placeholder = Some("写下速记…（#标签会加入笔记标签）".into())
@@ -25295,7 +25580,7 @@ impl QuickNoteWindow {
             owner,
             input: input.clone(),
             draft,
-            pending_note: None,
+            pending_note,
             suggestions,
             selected_suggestion: 0,
             suggestions_hidden: false,
@@ -25413,7 +25698,17 @@ impl QuickNoteWindow {
     fn save_action(&mut self, _: &Save, window: &mut Window, cx: &mut Context<Self>) {
         self.submit(window, cx);
     }
-    fn cancel(&mut self, window: &mut Window, _: &mut Context<Self>) {
+    /// Keep the unsent text (and any pending note id from a failed save) in
+    /// the workspace so reopening restores it instead of starting over.
+    fn cache_draft_for_reopen(&mut self, cx: &mut Context<Self>) {
+        let pending_note = self.pending_note;
+        self.owner.update(cx, |workspace, _| {
+            workspace.quick_note_draft =
+                keep_unsent_draft(self.draft.clone()).map(|draft| (draft, pending_note));
+        });
+    }
+    fn cancel(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.cache_draft_for_reopen(cx);
         window.remove_window();
     }
 }
