@@ -2003,3 +2003,70 @@
 - 速记窗口：删除 `set_window_always_on_top`（不再 TOPMOST）；Esc/×/Alt+F4 关闭时经 `QuickNoteWindow::cache_draft_for_reopen` 把草稿与 pending note id 缓存进 Workspace，`open_quick_note` 重开时优先恢复；笔记页"新建笔记"浮层同规则（`organizer_capture_saved`），提交成功清空。
 - 版本升至 `0.1.6`，应用标识 `quire-gpui-0.1.6`。
 - 验证：`cargo fmt --all -- --check`、`cargo check --all-targets --locked -j 8`、全量 `cargo test --locked -j 8`（60 库 + 64 二进制 + 3 集成共 127 项）通过，含真实命名管道 loopback 单测；`git diff --check` 通过。桌面真人双开/托盘/Alt+F4 验收待做；未访问真实用户库、未启动窗口。
+
+## 2026-11-06：文档排序模式与批量移动（0.1.9）
+
+- 右键块菜单："移动到页面…"移除，改为"排序…"进入文档排序模式（`BlockMenuMode::MoveToPage` 更名 `MoveSelection` 并改为批量语义；动作表抽成纯函数 `block_menu_actions` 供渲染与键盘共享）。
+- 排序模式：`block_sort_mode` + `selected_block_ids` + 模式条（全选/移动到…/完成）；块行排序浮层接管点击为选中并支持整行拖拽（既有拖放落点线不变）；根层 capture 按键处理 Escape 退出；`activate_page_without_history` 切页重置。
+- 批量移动：`Session::move_blocks_to_page` 单历史项批量跨页移动（祖先覆盖去重、原子放弃、order key 顺序重排），右下角"移动到…"在鼠标位置弹出目标页列表。
+- 版本升至 `0.1.9`，应用标识 `quire-gpui-0.1.9`。
+- 验证：全量 `cargo test --locked -j 8`（130 项）、`cargo fmt --all -- --check`、`cargo check --all-targets --locked` 通过；Release 已构建。按用户要求（睡觉无法点 UAC/防火墙弹窗）未启动应用，真人拖拽/批量移动验收待用户在场执行。
+
+## 2026-11-06：顶栏面包屑去掉应用名前缀（0.1.10）
+
+- 用户指出顶栏"quire-gpui-0.1.6 · 工作区 › 未命名"不对：旧版 Slint 顶栏面包屑只有"工作区 › 页面"，没有应用名/版本前缀。GPUI 顶栏移除 `APP_LABEL` 段；`quire-gpui-0.1.x` 命名按 2026-11-05 决定继续用于 OS 窗口标题、速记窗、托盘与安装器元数据。
+- 另发现用户截图运行的实例报 0.1.6，而仓库内 target\debug 为 0.1.8、target\release 为 0.1.9/0.1.10，未在开始菜单/任务栏固定/下载/安装表与工作区目录中找到 0.1.6 副本——用户实际启动的 exe 来源待确认，需提醒其使用 target\release 下的最新构建。
+- 验证：全量 `cargo test --locked -j 8`（130 项）、`cargo check`、Release 构建通过（EXE 读回 0.1.10）；按用户要求未启动应用。
+
+## 2026-11-06：侧栏分组与 debug 副本更新（0.1.11）
+
+- 用户指出侧栏"最近"与页面树同级无区分：对照旧版（收藏/最近折叠组 + "工作区"分组标签 + 页面树），GPUI 缺少最近组与树之间的"工作区"分组行，已补（24px 淡色小字，无折叠箭头）；收藏/最近组默认折叠对齐旧版 `favorites_open/recents_open = false` 的会话内默认。
+- 版本副本身份确认：用户截图的 0.1.6 来自 `target\debug\quire-gpui.exe`（长期未重建的 debug 构建，此轮前后已随测试刷新）；本轮 release 与 debug 均重新构建至 0.1.11，两个入口版本一致。
+- 验证：全量 `cargo test --locked -j 8`（130 项）、`cargo check`、`git diff --check` 通过；release/debug EXE 均读回 0.1.11。按用户要求未启动应用（0.1.10/0.1.11 视觉待用户自启验收）。
+
+## 2026-11-06：移除侧栏切换器装饰箭头（0.1.12）
+
+- 用户指出侧栏顶部"Q 工作区"右侧的 ⌄ 箭头无任何交互（该行右键菜单与箭头无关），按用户要求删除；"工作区"标签与右键菜单保留。与旧版参考的差异化按用户要求记录。
+- 版本 0.1.12；全量 `cargo test --locked -j 8`（130 项）、`cargo check` 通过；release 与 debug 构建均读回 0.1.12；按用户要求未启动应用。
+
+## 2026-11-06：任务看板边界与布局修正（0.1.13）
+
+- 用户反馈任务看板"边界不明、最右边很乱"：①看板模式下左侧导航列只剩一个搜索框（视图/清单均被看板条件隐藏），整列改为看板模式下不渲染，看板占满内容区；②看板列底色从 bg@20%（深色主题下不可见）改为 fg@3% 浅色填充，列边界可辨（对齐旧版整理区看板"fg@2.8% 列底"的思路）；③任务详情面板加左边框（隐藏分支同步去边框），不再悬浮在页面背景上。
+- 版本 0.1.13；全量 `cargo test --locked -j 8`（130 项）通过；release/debug 均重建读回 0.1.13；未启动应用。
+
+## 2026-11-06：侧栏 Notion 式重排与离屏排版缓存释放（0.1.14）
+
+- 侧栏按用户要求参考 Notion/FlowUs 重排：搜索行从"笔记/任务"组中移出、置于工作区切换器正下方（保留 Ctrl P 徽标与右键菜单），设置移到侧栏最底部（页面树滚动区之后、版本号之上，右键菜单不变）；上轮误加的第二个"工作区"标签删除，原滚动区外的"工作区"分组行（含拖出落点）按旧版位置移入滚动区——收藏/最近组之后、页面树之前。
+- 内存：滚动处理器与 sync_inputs 现在释放视口外（±4 行余量）文档行输入的 shape 缓存（`TextInput::release_layout_cache`；TextLayout/WrappedLine 是每块最重的状态，长页滚动此前会为每块曾渲染的行常驻一份排版结果）；活动块与 IME 组合中的输入豁免。undo 历史核对为每页 100 条封顶，非泄漏点。
+- 版本 0.1.14；全量 `cargo test --locked -j 8`（130 项）、`cargo check --all-targets`、`git diff --check` 通过；release/debug 均重建读回 0.1.14；未启动应用，内存前后对比待用户自启后用任务管理器/`Get-Process` 读数。
+
+## 2026-11-06：整理区栏宽可拖拽（0.1.15）
+
+- 用户要求笔记/任务页各栏之间支持拖拽调整间隔并限制最大距离：列表列右缘新增 6px 拖拽手柄（与主侧栏手柄同款交互，悬停/拖动高亮）。任务页拖拽改"任务列表 ↔ 详情"分界，列表宽钳制 240 至（窗口宽−380，下限 280）；笔记页拖拽改"卡片流 ↔ 笔记详情"分界，详情宽钳制 340 至（窗口宽−320，下限 400）。看板模式与单栏详情（窄窗）不显示手柄。
+- 两个宽度分别持久化到 `gpui.organizer.task-list-width` / `gpui.organizer.note-detail-width`，拖拽松手即写入并 flush；笔记详情未拖过时沿用旧 54% 自适应默认。
+- 版本 0.1.15；全量 `cargo test --locked -j 8`（130 项）、`cargo check --all-targets`、`git diff --check` 通过；release/debug 均重建读回 0.1.15；未启动应用。
+
+## 2026-11-06：工具栏裸文字按钮统一为 ghost chip（0.1.16）
+
+- 用户指出笔记工具栏"复制全部 / 指令… / 排序 / 多选"等直接以裸文字充当按钮不好看：新增 `toolbar_chip` 统一样式（11px 文字、6px 圆角、1px 边框、激活态着色填充、悬停抬高），并应用到笔记工具栏四钮、任务页头（新建任务/平铺切换/＋清单/多选/全选）、回收站"清空回收站"（红色调）与任务"排序/批量操作指令"芯片。
+- 版本 0.1.16；全量 `cargo test --locked -j 8`（130 项）通过；release/debug 均重建读回 0.1.16；未启动应用。
+
+## 2026-11-06：补记 0.1.17（拖拽与状态落盘的竖切 + 界面/性能测试基线）
+
+- 补记原因：0.1.17 只写进了 `Cargo.toml`/`Cargo.lock` 并随 release 产物读回（`FileVersion 0.1.17.0`），当轮漏了交付记录；此处只补版本号与运行时基线，功能与验收细节仍以既有条目为准——三处宽度拖拽"按下即崩、只跟一帧"的修复与三道门见 `docs/DIFFERENCES.md`「侧边栏与整理区分隔条拖拽」、四个视图开关落盘与六道变异见「视图状态不落盘」、空壳胶囊见「整理区工具条按钮只剩空壳」；`PLAN.md` 执行记录里对应两轮全量 debug 计数为 135 项、139 项。
+- 0.1.17 运行时基线（release、1600×900、warmup 2s、8s@250ms 采样、隔离 `%TEMP%` 库、采样后强制退出、无编辑；产物时间戳 05:52:39Z–05:55:38Z，exe 为 `target/release/quire-gpui.exe`）：空壳两臂句柄就位 5302.6/4711.5ms、静止单核 CPU 2.5%/1.34%、工作集末值 120.4/106.8MB 峰值 150.2/136.6MB、Private 末值 91.2/83.3MB 峰值 121.0/113.3MB；10k 块两臂句柄就位 4893.6/3958.3ms、CPU 7.61%/2.28%、工作集末值 164.2/164.1MB 峰值 207.1/214.6MB、Private 末值 144.1/143.7MB 峰值 187.1/194.4MB。这组数即 0.1.18 复测的对照基线。
+- 0.1.17 未安装、未发布、未提交，未读写真实用户库；该轮的真人鼠标验收项与前述条目相同，仍待执行。
+
+## 2026-11-06：块悬停导轨、页面面包屑与整页替换撤销（0.1.18）
+
+- 按 AppFlowy 补三条鼠标可见的界面入口。文档块左缘 42px gutter 加悬停导轨（`+` 在该块后插一块并把斜杠菜单开在新块上、`⋮⋮` 开该行块菜单，同按钮二次点击收起），做成绝对定位覆盖层而非 flex 兄弟，实测悬停不改正文行 `origin.x`/`width`；离开的行保留导轨 120ms 淡出（`rail_easing` 曲线，非线性）+140ms 释放，淡出层无 id、无监听、无 cursor 因此不生成 hitbox，点它不加块也不开菜单；enter/leave 按 paint 顺序不定，故离开只处理同 id 的行、且释放计时器带 `document_rail_exit_seq` 序号，旧淡出不得撤走新淡出。子页正文标题上方新增祖先面包屑（`page_breadcrumb` root-first、不含当前页、环检测与 16 级封顶、悬空父页回空），每段可点回该页；轨道空则整条不渲染不占布局。查找条第二行（替换框 + 替换此处/全部替换）改为按需进布局，实测展开时条高与正文 `y` 变大、收起后精确回原值。
+- 修两处既有缺陷：`replace_all` 原逐块写撤销栈（N 块 = N 条），与状态文案"Ctrl+Z 可撤销"矛盾，新增 `Session::replace_many` 把整页合成一条 `Entry { apply, revert }`（marks 重排并入同一条 revert），一次 Ctrl+Z 整页还原；替换成功消息原写 `self.status` 后被 `schedule_save` 同帧覆成"未保存"，改走浮条 `show_toast`（补 `detail` 入参，4 秒自动收、generation 守卫）。同批测得：全库 11 处"（Ctrl+Z 可撤销）"消息有 10 处（粘贴/移动/删除/清单改名改色删除/任务完成移动/彻底删除）写在 `schedule_save` 之前、当场不可见，只有版本恢复那条留得住；本轮未迁这 10 处，需先定"消息与保存态谁占状态行"的规矩，已记入 `docs/DIFFERENCES.md` 未决项。
+- 版本 0.1.18（Cargo.toml + Cargo.lock，release 产物 `FileVersion 0.1.18.0`/`ProductVersion 0.1.18` 读回；`cargo fmt --all` 之后又重编了一次 release，产物 26,573,824 B、16:56:32 落盘，版本仍读回 0.1.18.0，读回的版本号对应工作树当前字节）；新增 14 道门，`cargo test --release --bin quire-gpui` 93 项、`--lib` 61 项全绿；全量 debug `cargo test --locked -j 8`（156 项：61 库 + 93 二进制 + 2 集成）通过，fmt 后 release 两 suites 与全量 debug 各重跑一遍仍为同样 61/93/1/1 全绿；八条源码变异各红在预期用例名上（先跑逐字节相同的控制副本），变异体用 `cp` 还原并比对 sha256；`cargo fmt --all -- --check`、`cargo check --all-targets --locked` 通过。同机 release 复测（1600×900、warmup 2s、8s@250ms、隔离库）：空壳 119.5/119.2MB 末值 WS、CPU 1.73%/2.30%；10k 块五臂 160.1–178.6MB、CPU 13.62%（首臂，未复现）与 2.88%/1.92%/1.54%，判无退化，详数见 `docs/DIFFERENCES.md`。真人鼠标扫动、导轨插入与拖动、面包屑回父页待用户在场验收；未读写真实用户库、未安装、未发布、未提交。
+
+## 2026-11-06：闲置内存优化——文档输入实体按视口封顶（0.1.18 续）
+
+- 归因（一次性探针）：给 `Workspace::new` 加临时探针 exe，启动 6 秒后把内部计数写文件，配合对照臂矩阵把 10k 块页的闲置内存拆开。空白页 Private 末值 83.0MB，是 D3D11 渲染目标 + gpui 运行时 + 字体的固定地板，非本层可控；整库常驻约 30MB 来自 quire-core `Document.pages` 一次性载入全部页，属外部依赖、按 AGENTS.md 不动。探针在开 10k 块页时读到 `inputs=10002 subs=10002 input_text_bytes=358938`——1.08MB 文本被 10002 个 `TextInput` 实体各带 FocusHandle、事件订阅与 Entity 表槽放大成约 18MB。早前 0.1.17/0.1.18 的 10k 基线 Private 末值 130–160MB、峰值 153–169MB；用"只建前 80 实体"的 cap 臂量到理论下限 111–115MB。顺带纠正一个假读数：先前以为 p4 臂是"10 块小页"，探针显示它实际也开了 page1（`open_blocks=10003`），所以那组"p1≈p4"是两臂同页、不构成对照。
+- 改动：`sync_inputs` 与滚动处理器不再为整页每块建实体。`inputs`/`input_subscriptions` 现封顶到 `document_visible_range ± 120` ∪ 活动块 ∪ 组合中的块 ∪ 视口内表格单元格（新增 `viewport_input_ids`）。视口外的行改由 paint 的 `ensure_block_input` 按需重建实体（只渲染不需要订阅），`focus`/`focus_selection` 在事件回合里调用新增的 `ensure_input_subscribed` 给即将聚焦的块补齐实体+订阅——订阅只有在非渲染回合才生效，这正是原注释宁可"保留整页"的原因。120 行余量让连续滚动始终落在窗口内，且短于一屏加余量的页行为完全不变；同时删掉了随之失效的 `document_visible_block_ids`。
+- 效果（同机 release、1600×900、warmup 2s、8s@250ms、隔离库、采样后强杀、无编辑）：10k 块页 Private 末值 **109.1 / 115.1MB**（对照 cap 理论下限 111.6–115.5MB、改前 130–160MB）→ 闲置省约 **20MB**；峰值 Private **133MB**（改前 153–169MB）省约 **27MB**。空白页 **83.1 / 83.4MB** 与改前 83.0MB 持平，小页零回归。CPU 与句柄就位仍被测量噪声主导（改前改后都在 1–8% 间跳），不单独归因。原始 json 与探针文本落 `benchmarks/results/idle-memory-2026-11-06/`（before-attribution-arms3 = 改前+cap、after-optimized-arms4 = 改后、compare.txt = 汇总），脚本 `tools/measure-runtime.ps1`。
+- 门：新增 `focusing_a_far_block_recreates_its_input_and_still_takes_text`——播种 200 块，断言第 199 块改前不在常驻窗口（`!inputs.contains_key`）且常驻数远小于 200，focus 后向该块 buffer 走真实编辑事件、断言写回模型为 `"typed"`。移除 `ensure_input_subscribed` 调用的变异体让该门转红（left `"row 199"` ≠ right `"typed"`），证明门确能抓回"滚远的行键入丢失"这一回归。全量 debug `cargo test --locked -j 8` **157 项（61 库 + 94 二进制 + 2 集成）全绿**，`cargo fmt --all` 后重编；release 重编后 `FileVersion 0.1.18.0`、`view.rs` sha256 变 `262901feb4f021e6bd268c3a9926719d4ed58799bf2632f6eefd82a302d210d3`、exe 26,577,408B。
+- 未验证/风险：真人鼠标连续滚轮后在刚滚入的行立即键入、以及 IME 组合期间滚动，未做真机验收——新门覆盖的是事件路径，不含真实滚轮与焦点竞态；`±120` 是本轮端选择，非规格钉死值。版本号仍 0.1.18（未自动 bump，是否升 0.1.19 待用户点头）；未安装、未发布、未提交、未读写真实用户库。

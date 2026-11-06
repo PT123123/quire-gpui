@@ -151,6 +151,17 @@ impl TextInput {
         self.vertical_goal_x = None;
         cx.notify();
     }
+    /// Whether a shaped layout is cached (the heavy per-block state).
+    pub fn has_layout_cache(&self) -> bool {
+        self.layout.is_some()
+    }
+    /// Drop the cached shape result and geometry. Called when the input
+    /// leaves the viewport: the next paint re-shapes it, which is cheap next
+    /// to pinning every block's layout for the life of the session.
+    pub fn release_layout_cache(&mut self) {
+        self.layout = None;
+        self.bounds = None;
+    }
     pub fn insert_newline(&mut self, cx: &mut Context<Self>) {
         if self.buffer.composing() {
             return;

@@ -1,0 +1,7 @@
+﻿TAG=w3-small window=924x591
+SUMMARY WS=88.4 PeakWS=139.4 Private=64.9 PeakPrivate=113.4
+resident pages=22631
+   0.04 res | 125781616.4 commit |     1 allocs | maxshare=  0 | [0..7FFEC1E1000] | PRIVATE|alloc@0
+   0.00 res in -23 further buckets
+BY TYPE PRIVATE=0.0  IMAGE=0.0  MAPPED=0.0
+

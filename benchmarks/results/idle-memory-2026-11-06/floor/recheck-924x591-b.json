@@ -1,0 +1,19 @@
+﻿{
+    "label":  "recheck-924x591-b",
+    "exe":  "C:\\Users\\REDACTED\\Desktop\\quire\\quire-gpui\\target\\release\\quire-gpui.exe",
+    "database":  "\u003cisolated temp database\u003e",
+    "started_at_utc":  "2026-11-06T10:37:49.2358317Z",
+    "window_handle_up_ms":  2048.6,
+    "window_width":  924,
+    "window_height":  591,
+    "warmup_seconds":  2,
+    "idle_sample_seconds":  8.24,
+    "idle_cpu_percent_one_core":  1.9,
+    "end_working_set_mb":  87.4,
+    "peak_working_set_mb":  135.7,
+    "end_private_mb":  63.6,
+    "peak_private_mb":  112.1,
+    "memory_sample_interval_ms":  250,
+    "memory_sample_count":  29,
+    "process_exit_method":  "forced after idle sample; isolated DB, no edits"
+}

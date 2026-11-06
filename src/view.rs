@@ -22,6 +22,15 @@ use std::{
 
 const MOTION_DURATION: Duration = Duration::from_millis(220);
 const MOTION_SETTLE: Duration = Duration::from_millis(240);
+/// Chrome that follows the pointer has to be quick enough to feel like it is
+/// the pointer, not like a panel that woke up late.
+const MOTION_HOVER: Duration = Duration::from_millis(120);
+/// A fade has to outlive its frames before the layer is dropped, or the last
+/// frames are cut off. Same slack over the duration as MOTION_SETTLE keeps to
+/// MOTION_DURATION.
+const MOTION_HOVER_SETTLE: Duration = Duration::from_millis(140);
+const SIDEBAR_MIN_WIDTH: f32 = 200.;
+const SIDEBAR_MAX_WIDTH: f32 = 480.;
 
 fn interpolated_sidebar_width(from: f32, to: f32, started_at: Instant, now: Instant) -> f32 {
     let progress =
@@ -319,7 +328,6 @@ enum SidebarGlyph {
     Settings,
     Note,
     TodoCheck,
-    ChevronDown,
 }
 
 fn sidebar_glyph(glyph: SidebarGlyph, color: Hsla, size: Pixels) -> impl IntoElement {
@@ -382,11 +390,6 @@ fn sidebar_glyph(glyph: SidebarGlyph, color: Hsla, size: Pixels) -> impl IntoEle
                     path.line_to(point_at(9.5, 17.));
                     path.line_to(point_at(19.5, 6.5));
                 }
-                SidebarGlyph::ChevronDown => {
-                    path.move_to(point_at(5., 9.5));
-                    path.line_to(point_at(12., 16.5));
-                    path.line_to(point_at(19., 9.5));
-                }
             }
             path.build().expect("static sidebar glyph path")
         },
@@ -410,6 +413,7 @@ actions!(
         Find,
         FindNext,
         FindPrevious,
+        FindReplace,
         SearchPages,
         NavigateBack,
         NavigateForward,
@@ -424,7 +428,9 @@ actions!(
 enum BlockMenuMode {
     Actions,
     Convert,
-    MoveToPage,
+    /// Sort-mode batch move: lists destination pages for the current block
+    /// selection instead of a single block.
+    MoveSelection,
     ImageWidth,
 }
 
@@ -1154,6 +1160,31 @@ fn sync_peer_is_recent(last_seen: u64, now: u64) -> bool {
     now.saturating_sub(last_seen) <= 60
 }
 
+/// The standard toolbar chip: a bordered ghost button. Bare text reads as a
+/// label, not an action — every toolbar action goes through this.
+fn toolbar_chip(label: SharedString, color: Hsla, active: bool, p: &Palette) -> Div {
+    div()
+        .px(px(9.))
+        .py(px(4.))
+        .rounded(px(6.))
+        .border_1()
+        .border_color(if active {
+            color.opacity(0.55)
+        } else {
+            Palette::color(&p.border)
+        })
+        .bg(if active {
+            color.opacity(0.1)
+        } else {
+            Hsla::transparent_black()
+        })
+        .text_size(px(11.))
+        .text_color(color)
+        .cursor_pointer()
+        .hover(|button| button.bg(Palette::color(&p.elevated)))
+        .child(label)
+}
+
 /// Enter splits a block into two, except in the one block kind that is
 /// multi-line: the old editor set `single-line: block.kind != 8`, so code
 /// keeps its newline instead of growing a sibling.
@@ -1165,6 +1196,45 @@ fn enter_splits_block(kind: BlockKind) -> bool {
 /// content, verbatim. Whitespace-only drafts are dropped.
 fn keep_unsent_draft(text: String) -> Option<String> {
     (!text.trim().is_empty()).then_some(text)
+}
+
+/// Clamp a floating panel of `width × height` logical pixels so it stays
+/// inside the window. Input coordinates arrive in the same scaled space the
+/// mouse events report; the panel must never open off-screen.
+fn overlay_origin(
+    x: f32,
+    y: f32,
+    width: f32,
+    height: f32,
+    window_size: (f32, f32),
+    scale: f32,
+) -> (f32, f32) {
+    let x = (x / scale).clamp(0., (window_size.0 / scale - width).max(0.));
+    let y = (y / scale).clamp(0., (window_size.1 / scale - height).max(0.));
+    (x, y)
+}
+
+/// The block context menu's action rows, shared by the overlay renderer and
+/// the keyboard handler so selection indexes can never disagree. Move
+/// operations live in the sort mode; the menu only offers "排序…" as its door.
+fn block_menu_actions(image: bool, clipboard_ready: bool) -> Vec<(&'static str, u8)> {
+    let mut actions: Vec<(&'static str, u8)> = Vec::new();
+    if image {
+        actions.push(("图片宽度…", 8));
+    }
+    actions.extend([
+        ("转换为…", 0),
+        ("文字颜色", 1),
+        ("背景颜色", 2),
+        ("复制", 3),
+        ("复制块", 6),
+        ("删除", 4),
+        ("排序…", 9),
+    ]);
+    if clipboard_ready {
+        actions.push(("粘贴到下方", 7));
+    }
+    actions
 }
 
 fn slash_query(text: &str, insert_mode: bool) -> String {
@@ -1197,8 +1267,79 @@ fn centered_document_column(width: Pixels, content: impl IntoElement) -> impl In
         .child(div().w_full().max_w(width).child(content))
 }
 
+/// One of the two rail buttons, without any interactivity. The fading copy
+/// renders these as bare glyphs: a listener or even a cursor style would make
+/// the hitbox real, and the gutter would start eating clicks on its way out.
+fn rail_button(glyph: &'static str, size: Pixels, muted: Hsla) -> Div {
+    div()
+        .w(px(17.))
+        .h(px(16.))
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded(px(3.))
+        .text_size(size)
+        .text_color(muted)
+        .child(glyph)
+}
+
+/// Smoothstep. The rail has to read as something already waiting in the
+/// gutter rather than a panel that woke up late, and a linear ramp reads as a
+/// switch.
+fn rail_easing(progress: f32) -> f32 {
+    progress * progress * (3.0 - 2.0 * progress)
+}
+
+/// The page's path from the root down to this page's parent, root first.
+/// A dangling parent or a parent cycle ends the walk instead of spinning: the
+/// tree is editable by dragging, so a broken link may only shorten the trail.
+fn page_breadcrumb(
+    pages: &[quire_core::core::types::Page],
+    page: quire_core::core::types::PageId,
+) -> Vec<(quire_core::core::types::PageId, String)> {
+    let mut chain = Vec::new();
+    let mut seen = HashSet::new();
+    let mut current = pages
+        .iter()
+        .find(|candidate| candidate.id == page)
+        .and_then(|candidate| candidate.parent);
+    while let Some(id) = current {
+        if !seen.insert(id) || chain.len() >= 16 {
+            break;
+        }
+        let Some(parent) = pages.iter().find(|candidate| candidate.id == id) else {
+            break;
+        };
+        chain.push((id, parent.title.clone()));
+        current = parent.parent;
+    }
+    chain.reverse();
+    chain
+}
+
+/// Splices every match back into the block text, highest offset first, so each
+/// replacement leaves the ranges before it at the byte they were found at.
+fn apply_replacements(text: &str, ranges: &[Range<usize>], replacement: &str) -> String {
+    let mut replaced = text.to_owned();
+    for range in ranges.iter().rev() {
+        replaced.replace_range(range.clone(), replacement);
+    }
+    replaced
+}
+
 fn notes_auto_input_enabled(value: Option<&str>) -> bool {
     value.is_none_or(|value| !matches!(value, "0" | "false"))
+}
+
+/// View preferences are stored as `"true"` / `"false"`. Anything else keeps the
+/// default instead of guessing, so a hand edited settings row cannot flip the
+/// interface into a state the user never chose.
+fn bool_setting(value: Option<&str>, default: bool) -> bool {
+    match value {
+        Some("true") => true,
+        Some("false") => false,
+        _ => default,
+    }
 }
 
 fn periodic_snapshot_failure_notice(error: &dyn std::fmt::Display) -> String {
@@ -1270,23 +1411,25 @@ fn columns_layout_item_ids(blocks: &[Block], layout_id: BlockId) -> Vec<BlockId>
 #[cfg(test)]
 mod view_tests {
     use super::{
-        NavigationHistory, NavigationStop, OrganizerTaskDrag, Session, SlashAction,
-        capture_tag_replacement, capture_tags, centered_document_column, columns_layout_item_ids,
-        database_filter_value_from_text, database_group_identity, database_group_label,
-        database_property_kind_choices, enter_splits_block, evaluate_database_formula,
-        evaluate_database_rollup, find_matches_in, gallery_columns_for_width,
-        interpolated_sidebar_width, keep_unsent_draft, link_ranges_for_removal, link_target_range,
-        mention_date_matches, next_menu_selection, next_palette_selection, next_search_selection,
-        notes_auto_input_enabled, order_database_groups, organizer_notes_copy_payload,
-        organizer_tag_matches_path, organizer_tag_tree_rows, organizer_tags_exclude,
-        organizer_task_drop_accepted, palette_matches, parse_mcp_port, parse_organizer_tags,
-        periodic_snapshot_failure_notice, push_history, settings_matches, settings_section_visible,
-        slash_items, slash_query, sort_organizer_notes, sort_organizer_tasks, sync_peer_is_recent,
-        sync_targets, system_palette_id_for_appearance, toc_headings,
+        MOTION_HOVER_SETTLE, NavigationHistory, NavigationStop, OrganizerTaskDrag, Session,
+        SlashAction, apply_replacements, block_menu_actions, capture_tag_replacement, capture_tags,
+        centered_document_column, columns_layout_item_ids, database_filter_value_from_text,
+        database_group_identity, database_group_label, database_property_kind_choices,
+        enter_splits_block, evaluate_database_formula, evaluate_database_rollup, find_matches_in,
+        gallery_columns_for_width, interpolated_sidebar_width, keep_unsent_draft, key_bindings,
+        link_ranges_for_removal, link_target_range, mention_date_matches, next_menu_selection,
+        next_palette_selection, next_search_selection, notes_auto_input_enabled,
+        order_database_groups, organizer_notes_copy_payload, organizer_tag_matches_path,
+        organizer_tag_tree_rows, organizer_tags_exclude, organizer_task_drop_accepted,
+        overlay_origin, page_breadcrumb, palette_matches, parse_mcp_port, parse_organizer_tags,
+        periodic_snapshot_failure_notice, push_history, rail_easing, settings_matches,
+        settings_section_visible, slash_items, slash_query, sort_organizer_notes,
+        sort_organizer_tasks, sync_peer_is_recent, sync_targets, system_palette_id_for_appearance,
+        toc_headings,
     };
     use gpui::{
-        AppContext, Context, InteractiveElement, IntoElement, Render, Styled, TestAppContext,
-        Window, WindowAppearance, div, point, px, size,
+        AppContext, Bounds, Context, InteractiveElement, IntoElement, ParentElement, Pixels, Point,
+        Render, Styled, TestAppContext, Window, WindowAppearance, div, point, px, size,
     };
     use quire_core::core::database::PropertyKind;
     use quire_core::core::database_view::FilterValue;
@@ -1294,8 +1437,11 @@ mod view_tests {
         ListId, Note as OrganizerNote, NoteId, Priority, Repeat, Task as OrganizerTask, TaskId,
     };
     use quire_core::core::types::{
-        Block, BlockId, BlockKind, ColorKind, Lang, Mark, MarkKind, OrderKey, PageId,
+        Block, BlockId, BlockKind, ColorKind, Lang, Mark, MarkKind, OrderKey, Page, PageFont,
+        PageId,
     };
+    use std::collections::HashSet;
+    use std::path::Path;
     use std::time::{Duration, Instant};
 
     #[test]
@@ -1348,6 +1494,730 @@ mod view_tests {
     }
 
     #[test]
+    fn zoom_keys_match_both_spellings_of_the_same_press() {
+        let quire = gpui::KeyContext::try_from("Quire").expect("Quire context parses");
+        let typed = |key: &str, shift: bool| gpui::Keystroke {
+            modifiers: gpui::Modifiers {
+                control: true,
+                shift,
+                ..Default::default()
+            },
+            key: key.to_string(),
+            key_char: None,
+        };
+        let resolved = |key: &str, shift: bool| -> Option<&'static str> {
+            let (bindings, pending) = gpui::Keymap::new(key_bindings())
+                .bindings_for_input(&[typed(key, shift)], &[quire.clone()]);
+            assert!(!pending, "one keystroke cannot leave a pending chord");
+            bindings.first().map(|binding| binding.action().name())
+        };
+
+        assert_eq!(resolved("=", false).as_deref(), Some("workspace::ZoomIn"));
+        assert_eq!(resolved("-", false).as_deref(), Some("workspace::ZoomOut"));
+        assert_eq!(
+            resolved("0", false).as_deref(),
+            Some("workspace::ZoomReset")
+        );
+        // Windows reports the character a shifted press types and clears shift,
+        // so `Ctrl++` reaches the keymap as a bare control + `+`.
+        assert_eq!(resolved("+", false).as_deref(), Some("workspace::ZoomIn"));
+        assert_eq!(resolved("_", false).as_deref(), Some("workspace::ZoomOut"));
+        assert_eq!(
+            resolved(")", false).as_deref(),
+            Some("workspace::ZoomReset")
+        );
+
+        // Shift that the platform keeps is a different chord; those rows would
+        // never fire here, so they are deliberately absent from the keymap.
+        assert_eq!(resolved("+", true), None);
+        assert_eq!(resolved("=", true), None);
+
+        let zoomless: Vec<_> = key_bindings()
+            .into_iter()
+            .filter(|binding| {
+                !matches!(
+                    binding.action().name(),
+                    "workspace::ZoomIn" | "workspace::ZoomOut" | "workspace::ZoomReset"
+                )
+            })
+            .collect();
+        let (bindings, _) =
+            gpui::Keymap::new(zoomless).bindings_for_input(&[typed("+", false)], &[quire]);
+        assert!(
+            bindings.is_empty(),
+            "`ctrl-+` must resolve through its own row, not another binding"
+        );
+    }
+
+    #[gpui::test]
+    fn zoom_chords_dispatch_to_actions_in_a_live_window(cx: &mut TestAppContext) {
+        struct ZoomProbe {
+            focus: gpui::FocusHandle,
+            hits: Vec<&'static str>,
+        }
+        impl Render for ZoomProbe {
+            fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+                div()
+                    .key_context("Quire")
+                    .track_focus(&self.focus)
+                    .size_full()
+                    .on_action(cx.listener(|this, _: &super::ZoomIn, _, _| {
+                        this.hits.push("workspace::ZoomIn")
+                    }))
+                    .on_action(cx.listener(|this, _: &super::ZoomOut, _, _| {
+                        this.hits.push("workspace::ZoomOut")
+                    }))
+                    .on_action(cx.listener(|this, _: &super::ZoomReset, _, _| {
+                        this.hits.push("workspace::ZoomReset")
+                    }))
+            }
+        }
+
+        // One chord per spelling Windows can report for the two physical keys,
+        // plus the reset pair.
+        let chords = "ctrl-+ ctrl-- ctrl-0 ctrl-= ctrl-_ ctrl-)";
+
+        cx.update(|cx| cx.bind_keys(key_bindings()));
+        let (probe, window) = cx.add_window_view(|_, cx| ZoomProbe {
+            focus: cx.focus_handle(),
+            hits: Vec::new(),
+        });
+        window.update(|window, cx| {
+            window.focus(&probe.read(cx).focus);
+        });
+        window.simulate_keystrokes(chords);
+        let hits = window.read(|cx| probe.read(cx).hits.clone());
+        assert_eq!(
+            hits,
+            vec![
+                "workspace::ZoomIn",
+                "workspace::ZoomOut",
+                "workspace::ZoomReset",
+                "workspace::ZoomIn",
+                "workspace::ZoomOut",
+                "workspace::ZoomReset",
+            ]
+        );
+
+        // Control: rebind the rows that were here before the shifted spellings
+        // existed. The same six chords then land three times, on the unshifted
+        // rows only, which is what made `ctrl-+` a no-op before this change.
+        window.update(|_, cx| {
+            cx.clear_key_bindings();
+            cx.bind_keys([
+                gpui::KeyBinding::new("ctrl-=", super::ZoomIn, Some("Quire")),
+                gpui::KeyBinding::new("ctrl--", super::ZoomOut, Some("Quire")),
+                gpui::KeyBinding::new("ctrl-0", super::ZoomReset, Some("Quire")),
+            ]);
+        });
+        let before = hits.len();
+        window.simulate_keystrokes(chords);
+        let hits = window.read(|cx| probe.read(cx).hits.clone());
+        assert_eq!(
+            &hits[before..],
+            &[
+                "workspace::ZoomOut",
+                "workspace::ZoomReset",
+                "workspace::ZoomIn",
+            ],
+            "the control must fire only on the unshifted rows"
+        );
+    }
+
+    #[gpui::test]
+    fn toolbar_chip_lays_out_the_label_it_is_given(cx: &mut TestAppContext) {
+        struct ChipProbe;
+        impl Render for ChipProbe {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                let p = super::Palette::load("emerald");
+                let chip = |label: &'static str, name: &'static str| {
+                    super::toolbar_chip(label.into(), super::Palette::color(&p.accent), false, &p)
+                        .id(name)
+                        .debug_selector(move || name.to_owned())
+                };
+                div()
+                    .size_full()
+                    .flex()
+                    .flex_shrink_0()
+                    .child(chip("复制全部", "labelled-chip"))
+                    .child(chip("", "empty-chip"))
+            }
+        }
+        let (_probe, window) = cx.add_window_view(|_, _| ChipProbe);
+        window.run_until_parked();
+        let labelled = f32::from(
+            window
+                .debug_bounds("labelled-chip")
+                .expect("labelled chip laid out")
+                .size
+                .width,
+        );
+        let empty = f32::from(
+            window
+                .debug_bounds("empty-chip")
+                .expect("empty chip laid out")
+                .size
+                .width,
+        );
+        // The chip's own padding and borders are the whole empty width (20px),
+        // so any extra is text. Dropping the label collapses both to 20.
+        assert!(
+            labelled > empty * 1.5,
+            "the chip must grow for its label: labelled={labelled:.1} empty={empty:.1}"
+        );
+    }
+
+    fn mounted_workspace_at<'a>(
+        cx: &'a mut TestAppContext,
+        db: &Path,
+        smoke: bool,
+    ) -> (
+        gpui::Entity<super::Workspace>,
+        &'a mut gpui::VisualTestContext,
+    ) {
+        let session = Session::open(db).expect("isolated session");
+        let (shell_tx, shell_rx) = std::sync::mpsc::channel();
+        let services = crate::platform::Services {
+            handles: Vec::new(),
+            tray_available: false,
+            event_tx: shell_tx,
+            set_hotkey: std::sync::Arc::new(|_, _| Ok(())),
+        };
+        cx.add_window_view(|window, cx| {
+            super::Workspace::new(
+                session, "midnight", true, smoke, false, None, false, None, shell_rx, services,
+                window, cx,
+            )
+        })
+    }
+
+    fn mounted_workspace<'a>(
+        cx: &'a mut TestAppContext,
+        tag: &'static str,
+    ) -> (
+        quire_core::testing::ScratchDir,
+        gpui::Entity<super::Workspace>,
+        &'a mut gpui::VisualTestContext,
+    ) {
+        let scratch = quire_core::testing::ScratchDir::new(tag);
+        let (workspace, window) = mounted_workspace_at(cx, &scratch.path().join("quire.db"), true);
+        window.run_until_parked();
+        (scratch, workspace, window)
+    }
+
+    /// Presses a resize handle, drags it 40/80/120 design pixels to the right
+    /// and releases, reporting the width read after each move.
+    fn drag_handle_right(
+        window: &mut gpui::VisualTestContext,
+        selector: &'static str,
+        width: &mut impl FnMut(&mut gpui::VisualTestContext) -> f32,
+    ) -> Vec<f32> {
+        let handle = window.debug_bounds(selector).unwrap_or_else(|| {
+            panic!("{selector} must expose a resize handle");
+        });
+        let grab = point(
+            handle.origin.x + handle.size.width / 2.,
+            handle.origin.y + px(120.),
+        );
+        let mut steps = Vec::new();
+        window.simulate_mouse_down(grab, gpui::MouseButton::Left, gpui::Modifiers::none());
+        for offset in [40., 80., 120.] {
+            window.simulate_mouse_move(
+                point(grab.x + px(offset), grab.y),
+                Some(gpui::MouseButton::Left),
+                gpui::Modifiers::none(),
+            );
+            steps.push(width(window));
+        }
+        window.simulate_mouse_up(
+            point(grab.x + px(120.), grab.y),
+            gpui::MouseButton::Left,
+            gpui::Modifiers::none(),
+        );
+        steps
+    }
+
+    #[gpui::test]
+    fn sidebar_resize_handle_keeps_tracking_the_cursor(cx: &mut TestAppContext) {
+        let (_scratch, workspace, window) = mounted_workspace(cx, "gpui-sidebar-drag");
+        let before = f32::from(window.read(|app| workspace.read(app).sidebar_width));
+        let steps = {
+            let mut read = |window: &mut gpui::VisualTestContext| {
+                f32::from(window.read(|app| workspace.read(app).sidebar_width))
+            };
+            drag_handle_right(window, "sidebar-resize-handle", &mut read)
+        };
+        // A listener that only survives the frame that registered it stops
+        // after the first move, so every step has to show up in the width.
+        assert!(
+            steps.windows(2).all(|pair| pair[1] > pair[0] + 1.),
+            "each move must widen the panel: {steps:?}"
+        );
+        assert!(
+            (steps[2] - (before + 120.)).abs() < 2.,
+            "the panel must follow the cursor: expected {}, got {}",
+            before + 120.,
+            steps[2]
+        );
+        let expected = format!("{:.1}", steps[2]);
+        let persisted = window.read(|app| {
+            workspace
+                .read(app)
+                .session
+                .setting("gpui.sidebar-width")
+                .map(str::to_owned)
+        });
+        assert_eq!(
+            persisted.as_deref(),
+            Some(expected.as_str()),
+            "releasing the handle must persist the dragged width"
+        );
+    }
+
+    #[gpui::test]
+    fn sidebar_resize_handle_tracks_on_the_task_page(cx: &mut TestAppContext) {
+        let (_scratch, workspace, window) = mounted_workspace(cx, "gpui-sidebar-drag-tasks");
+        window.update(|window, app| workspace.update(app, |this, cx| this.create_task(window, cx)));
+        let steps = {
+            let mut read = |window: &mut gpui::VisualTestContext| {
+                f32::from(window.read(|app| workspace.read(app).sidebar_width))
+            };
+            drag_handle_right(window, "sidebar-resize-handle", &mut read)
+        };
+        assert!(
+            steps.windows(2).all(|pair| pair[1] > pair[0] + 1.),
+            "the sidebar must drag on the task page too: {steps:?}"
+        );
+    }
+
+    #[gpui::test]
+    fn organizer_list_handle_keeps_tracking_the_cursor(cx: &mut TestAppContext) {
+        let (_scratch, workspace, window) = mounted_workspace(cx, "gpui-organizer-drag");
+        // A selected task is what puts the list/detail divider on screen.
+        window.update(|window, app| workspace.update(app, |this, cx| this.create_task(window, cx)));
+        let before = f32::from(window.read(|app| workspace.read(app).organizer_task_list_width));
+        let steps = {
+            let mut read = |window: &mut gpui::VisualTestContext| {
+                f32::from(window.read(|app| workspace.read(app).organizer_task_list_width))
+            };
+            drag_handle_right(window, "organizer-list-resize-handle", &mut read)
+        };
+        assert!(
+            steps.windows(2).all(|pair| pair[1] > pair[0] + 1.),
+            "each move must widen the task list: {steps:?}"
+        );
+        assert!(
+            (steps[2] - (before + 120.)).abs() < 2.,
+            "the divider must follow the cursor: expected {}, got {}",
+            before + 120.,
+            steps[2]
+        );
+        let expected = format!("{:.1}", steps[2]);
+        let persisted = window.read(|app| {
+            workspace
+                .read(app)
+                .session
+                .setting("gpui.organizer.task-list-width")
+                .map(str::to_owned)
+        });
+        assert_eq!(
+            persisted.as_deref(),
+            Some(expected.as_str()),
+            "releasing the divider must persist the dragged width"
+        );
+    }
+
+    #[gpui::test]
+    fn the_view_toggles_record_their_choice_in_the_settings(cx: &mut TestAppContext) {
+        let scratch = quire_core::testing::ScratchDir::new("gpui-view-state-write");
+        let db = scratch.path().join("quire.db");
+        let (workspace, window) = mounted_workspace_at(cx, &db, false);
+        window.run_until_parked();
+        window.update(|window, app| {
+            workspace.update(app, |this, cx| {
+                this.toggle_sidebar(window, cx);
+                this.toggle_favorites_collapsed(window, cx);
+                this.toggle_recents_collapsed(window, cx);
+                this.toggle_organizer_board_mode(window, cx);
+            })
+        });
+        let stored = window.read(|app| {
+            let this = workspace.read(app);
+            [
+                this.session.setting("gpui.sidebar-open"),
+                this.session.setting("gpui.sidebar.favorites-collapsed"),
+                this.session.setting("gpui.sidebar.recents-collapsed"),
+                this.session.setting("gpui.organizer.board-mode"),
+            ]
+            .map(|value| value.map(str::to_owned))
+        });
+        assert_eq!(
+            stored,
+            [
+                Some("false".to_owned()),
+                Some("false".to_owned()),
+                Some("false".to_owned()),
+                Some("true".to_owned()),
+            ],
+            "every view toggle must store the choice the next start reads"
+        );
+    }
+
+    #[gpui::test]
+    fn a_reopened_workspace_restores_the_saved_view_choices(cx: &mut TestAppContext) {
+        let scratch = quire_core::testing::ScratchDir::new("gpui-view-state-reopen");
+        let db = scratch.path().join("quire.db");
+        let mut session = Session::open(&db).expect("isolated session");
+        session.set_setting("gpui.sidebar-open", "false");
+        session.set_setting("gpui.sidebar.favorites-collapsed", "false");
+        session.set_setting("gpui.sidebar.recents-collapsed", "false");
+        session.set_setting("gpui.organizer.board-mode", "true");
+        session
+            .persistence
+            .force_flush()
+            .expect("the stored view choices must reach the settings table");
+        // The database holds one exclusive lock, so dropping this session is
+        // what makes the workspace below read the file as a new process would.
+        drop(session);
+        let (workspace, window) = mounted_workspace_at(cx, &db, false);
+        window.run_until_parked();
+        let restored = window.read(|app| {
+            let this = workspace.read(app);
+            (
+                this.sidebar_open,
+                this.favorites_collapsed,
+                this.recents_collapsed,
+                this.organizer_board_mode,
+            )
+        });
+        assert_eq!(
+            restored,
+            (false, false, false, true),
+            "a restart must reopen the sidebar, group and board-view choices"
+        );
+    }
+
+    #[gpui::test]
+    fn a_garbage_view_setting_reopens_with_the_default(cx: &mut TestAppContext) {
+        let scratch = quire_core::testing::ScratchDir::new("gpui-view-state-garbage");
+        let db = scratch.path().join("quire.db");
+        let mut session = Session::open(&db).expect("isolated session");
+        for (key, value) in [
+            ("gpui.sidebar-width", "-1"),
+            ("gpui.sidebar-open", "yes"),
+            ("gpui.sidebar.favorites-collapsed", "1"),
+            ("gpui.organizer.board-mode", "TRUE"),
+            ("gpui.organizer.task-list-width", "NaN"),
+            ("gpui.organizer.note-detail-width", "inf"),
+        ] {
+            session.set_setting(key, value);
+        }
+        session
+            .persistence
+            .force_flush()
+            .expect("garbage settings must persist");
+        drop(session);
+        let (workspace, window) = mounted_workspace_at(cx, &db, false);
+        window.run_until_parked();
+        let (sidebar_width, task_list_width, note_detail_width, sidebar_open, favorites, board) =
+            window.read(|app| {
+                let this = workspace.read(app);
+                (
+                    this.sidebar_width,
+                    this.organizer_task_list_width,
+                    this.note_detail_drag_width,
+                    this.sidebar_open,
+                    this.favorites_collapsed,
+                    this.organizer_board_mode,
+                )
+            });
+        assert!(
+            (sidebar_width - super::SIDEBAR_MIN_WIDTH).abs() < 0.01,
+            "a width outside the drag range must be pulled back, not dropped: {sidebar_width}"
+        );
+        assert!(
+            (task_list_width - 320.).abs() < 0.01,
+            "a NaN task list width would poison every later drag: {task_list_width}"
+        );
+        assert_eq!(
+            note_detail_width, None,
+            "an infinite note detail width must fall back to the viewport default"
+        );
+        assert!(sidebar_open, "a non-boolean row keeps the default");
+        assert!(favorites, "a non-boolean row keeps the default");
+        assert!(
+            !board,
+            "a row that is not exactly true/false keeps the default"
+        );
+    }
+
+    #[gpui::test]
+    fn the_task_board_view_resumes_after_a_trip_through_the_trash(cx: &mut TestAppContext) {
+        let scratch = quire_core::testing::ScratchDir::new("gpui-board-trash");
+        let db = scratch.path().join("quire.db");
+        let (workspace, window) = mounted_workspace_at(cx, &db, false);
+        window.run_until_parked();
+        window.update(|window, app| {
+            workspace.update(app, |this, cx| {
+                this.organizer_tasks = true;
+                this.toggle_organizer_board_mode(window, cx);
+                assert!(this.organizer_board_mode, "the chip must reach board view");
+                this.toggle_organizer_trash(window, cx);
+                assert!(
+                    !this.organizer_board_mode,
+                    "the bin has no board columns to show"
+                );
+                this.toggle_organizer_trash(window, cx);
+                assert!(
+                    this.organizer_board_mode,
+                    "leaving the bin must restore the stored view choice"
+                );
+            })
+        });
+    }
+
+    /// `debug_bounds` wants a `&'static str` selector, so a row keyed by its
+    /// page id has to be promoted for the test process that reads it.
+    fn static_selector(selector: String) -> &'static str {
+        Box::leak(selector.into_boxed_str())
+    }
+
+    #[gpui::test]
+    fn the_sidebar_panel_lays_out_at_the_saved_width(cx: &mut TestAppContext) {
+        let scratch = quire_core::testing::ScratchDir::new("gpui-sidebar-layout-width");
+        let db = scratch.path().join("quire.db");
+        let mut session = Session::open(&db).expect("isolated session");
+        session.set_setting("gpui.sidebar-width", "340");
+        session
+            .persistence
+            .force_flush()
+            .expect("the stored width must reach the settings table");
+        drop(session);
+        let (_workspace, window) = mounted_workspace_at(cx, &db, false);
+        window.run_until_parked();
+        let panel = window
+            .debug_bounds("sidebar-panel")
+            .expect("the sidebar panel must be laid out");
+        let width = f32::from(panel.size.width);
+        assert!(
+            (width - 340.).abs() < 0.5,
+            "the stored width must reach the frame, not only the field: laid out {width}"
+        );
+        let handle = window
+            .debug_bounds("sidebar-resize-handle")
+            .expect("the panel must expose a grab handle");
+        let right_edge = f32::from(panel.origin.x + panel.size.width);
+        assert!(
+            (f32::from(handle.origin.x) - right_edge).abs() <= 8.,
+            "the grab handle must sit on the edge the user drags: handle at {}, panel edge at {right_edge}",
+            f32::from(handle.origin.x)
+        );
+    }
+
+    #[gpui::test]
+    fn collapsing_a_sidebar_group_takes_its_rows_out_of_the_layout(cx: &mut TestAppContext) {
+        let (_scratch, workspace, window) =
+            mounted_workspace(cx, "gpui-favorites-collapse-geometry");
+        let (favorite_id, recent_id) = window.update(|window, app| {
+            workspace.update(app, |this, cx| {
+                this.add_page(window, cx);
+                let first = this.session.page.id;
+                this.add_page(window, cx);
+                let second = this.session.page.id;
+                this.toggle_favorite(first, window, cx);
+                this.toggle_favorites_collapsed(window, cx);
+                (first, second)
+            })
+        });
+        window.run_until_parked();
+        let favorite = window
+            .debug_bounds(static_selector(format!("favorite-nav-{}", favorite_id.0)))
+            .expect("an expanded favourites group must lay its row out");
+        assert!(
+            (f32::from(favorite.size.height) - 28.).abs() < 0.5,
+            "the favourite row must keep its 28pt row height: {}",
+            f32::from(favorite.size.height)
+        );
+        let header = window
+            .debug_bounds("workspace-root-drop-target")
+            .expect("the workspace header must be laid out");
+        assert!(
+            f32::from(header.origin.y) > f32::from(favorite.origin.y) + 20.,
+            "the header must sit under the expanded row: header at {}, row at {}",
+            f32::from(header.origin.y),
+            f32::from(favorite.origin.y)
+        );
+        // Clicking the row itself, at the geometry the layout reported, must
+        // navigate: a row whose hit box is elsewhere is unclickable in practice.
+        window.simulate_click(
+            point(
+                favorite.origin.x + px(20.),
+                favorite.origin.y + favorite.size.height / 2.,
+            ),
+            gpui::Modifiers::none(),
+        );
+        window.run_until_parked();
+        let active = window.read(|app| workspace.read(app).session.page.id);
+        assert_eq!(
+            active, favorite_id,
+            "the click landing on the reported row bounds must open that page"
+        );
+        let toggle = window
+            .debug_bounds("sidebar-favorites-toggle")
+            .expect("the favourites header must be laid out");
+        window.simulate_click(
+            point(
+                toggle.origin.x + px(12.),
+                toggle.origin.y + toggle.size.height / 2.,
+            ),
+            gpui::Modifiers::none(),
+        );
+        window.run_until_parked();
+        let collapsed = window.read(|app| workspace.read(app).favorites_collapsed);
+        assert!(collapsed, "the header click lands on the collapse toggle");
+        assert!(
+            window
+                .debug_bounds(static_selector(format!("favorite-nav-{}", recent_id.0)))
+                .is_none(),
+            "the selector is page-specific rather than a generic row handle"
+        );
+        let header_after = window
+            .debug_bounds("workspace-root-drop-target")
+            .expect("the workspace header stays laid out");
+        // `Frame::clear` in this gpui never resets `debug_bounds`, so a key
+        // keeps reporting the geometry of its last painted frame: absence from
+        // the map proves nothing here. The band the row occupied is the
+        // evidence — an invisible-but-still-laid-out row would leave the header
+        // exactly where it was, which is the blank strip this must not produce.
+        assert!(
+            f32::from(header_after.origin.y) < f32::from(header.origin.y) - 20.,
+            "the section below must move up into the freed band: {} -> {}",
+            f32::from(header.origin.y),
+            f32::from(header_after.origin.y)
+        );
+    }
+
+    #[gpui::test]
+    fn the_two_sidebar_groups_collapse_independently(cx: &mut TestAppContext) {
+        let (_scratch, workspace, window) =
+            mounted_workspace(cx, "gpui-sidebar-groups-independent");
+        let (favorites_on, recents_on) = window.update(|window, app| {
+            workspace.update(app, |this, cx| {
+                this.add_page(window, cx);
+                let first = this.session.page.id;
+                this.add_page(window, cx);
+                this.add_page(window, cx);
+                this.toggle_favorite(first, window, cx);
+                (
+                    format!("favorite-nav-{}", first.0),
+                    format!("recent-nav-{}", first.0),
+                )
+            })
+        });
+        window.run_until_parked();
+        // Both groups default to collapsed, so one click each opens them.
+        for selector in ["sidebar-favorites-toggle", "sidebar-recents-toggle"] {
+            let toggle = window
+                .debug_bounds(selector)
+                .unwrap_or_else(|| panic!("{selector} must be laid out"));
+            window.simulate_click(
+                point(
+                    toggle.origin.x + px(12.),
+                    toggle.origin.y + toggle.size.height / 2.,
+                ),
+                gpui::Modifiers::none(),
+            );
+            window.run_until_parked();
+        }
+        let favorite_row = window
+            .debug_bounds(static_selector(favorites_on.clone()))
+            .expect("opening favourites must lay its row out");
+        let recent_row = window
+            .debug_bounds(static_selector(recents_on.clone()))
+            .expect("opening recents must lay its row out");
+        assert!(
+            f32::from(recent_row.origin.y) > f32::from(favorite_row.origin.y),
+            "recents follows favourites in the same list: recents at {}, favourites at {}",
+            f32::from(recent_row.origin.y),
+            f32::from(favorite_row.origin.y)
+        );
+        let toggle = window
+            .debug_bounds("sidebar-favorites-toggle")
+            .expect("the favourites header must be laid out");
+        window.simulate_click(
+            point(
+                toggle.origin.x + px(12.),
+                toggle.origin.y + toggle.size.height / 2.,
+            ),
+            gpui::Modifiers::none(),
+        );
+        window.run_until_parked();
+        let recent_after = window
+            .debug_bounds(static_selector(recents_on))
+            .expect("the recents row must stay laid out");
+        // The favourites row keeps reporting its last painted geometry through
+        // the sticky `debug_bounds` map, so the band it vacated is what has to
+        // carry this: recents has to move up into it.
+        assert!(
+            f32::from(recent_after.origin.y) < f32::from(recent_row.origin.y) - 20.,
+            "closing the group above must pull recents up into the freed band: {} -> {}",
+            f32::from(recent_row.origin.y),
+            f32::from(recent_after.origin.y)
+        );
+        let recents_flag = window.read(|app| workspace.read(app).recents_collapsed);
+        assert!(
+            !recents_flag,
+            "collapsing favourites must not touch the recents choice"
+        );
+    }
+
+    #[gpui::test]
+    fn sending_a_note_from_the_overlay_selects_what_it_just_wrote(cx: &mut TestAppContext) {
+        let (_scratch, workspace, window) = mounted_workspace(cx, "gpui-capture-selection");
+        let body = "浮层发送验收 #gpui-capture-gate";
+        window.update(|window, app| {
+            workspace.update(app, |this, cx| {
+                this.organizer_tag = Some("gpui-capture-gate".into());
+                this.open_organizer_capture(window, cx);
+                this.organizer_capture_draft = body.into();
+                this.submit_organizer_capture(window, cx);
+            })
+        });
+        window.run_until_parked();
+        let (selected, detail_open, capture_open, saved_draft, created) = window.read(|app| {
+            let this = workspace.read(app);
+            let created = this
+                .session
+                .organizer
+                .live_notes()
+                .find(|note| note.body == body)
+                .map(|note| (note.id, note.tags.clone()));
+            (
+                this.selected_note,
+                this.note_detail_open,
+                this.organizer_capture_open,
+                this.organizer_capture_saved.clone(),
+                created,
+            )
+        });
+        let (created_id, tags) = created.expect("submitting the overlay must write the note");
+        assert_eq!(tags, ["gpui-capture-gate"], "the hash token becomes a tag");
+        assert!(
+            matches!(selected, Some(id) if id == created_id),
+            "the sent note must become the selected one, not be dropped on the floor"
+        );
+        assert!(
+            !detail_open,
+            "sending opens the note at the first-click state, not straight into the detail pane"
+        );
+        assert!(!capture_open, "a successful send closes the overlay");
+        assert_eq!(
+            saved_draft, None,
+            "a successful send must clear the cached draft rather than reoffer it"
+        );
+    }
+
+    #[test]
     fn periodic_snapshot_failure_is_distinguished_from_a_failed_save() {
         let notice = periodic_snapshot_failure_notice(&"disk is full");
         assert!(notice.contains("数据库更改已保存"));
@@ -1381,6 +2251,1005 @@ mod view_tests {
             .expect("document content should have been laid out");
         assert_eq!(bounds.origin.x, px(132.));
         assert_eq!(bounds.size.width, px(760.));
+    }
+
+    /// A page built by hand: the breadcrumb walk is pure list work, so it is
+    /// gated without opening a database at all.
+    fn crumb_page(id: u64, parent: Option<u64>, title: &str) -> Page {
+        Page {
+            id: PageId(id),
+            title: title.to_owned(),
+            parent: parent.map(PageId),
+            order: OrderKey(id),
+            favorite: false,
+            expanded: true,
+            font: PageFont::Default,
+            full_width: false,
+            small_text: false,
+            icon: String::new(),
+            cover: None,
+            locked: false,
+            template: false,
+        }
+    }
+
+    #[test]
+    fn page_breadcrumb_lists_ancestors_root_first_and_survives_a_broken_chain() {
+        let pages = [
+            crumb_page(1, None, "根"),
+            crumb_page(2, Some(1), "中间"),
+            crumb_page(3, Some(2), "叶子"),
+            crumb_page(4, Some(99), "悬空"),
+        ];
+        assert!(
+            page_breadcrumb(&pages, PageId(1)).is_empty(),
+            "a page directly under the root has nothing to show"
+        );
+        assert_eq!(
+            page_breadcrumb(&pages, PageId(3)),
+            [(PageId(1), "根".to_owned()), (PageId(2), "中间".to_owned())],
+            "the trail has to read root first, the way the sidebar tree does"
+        );
+        assert!(
+            page_breadcrumb(&pages, PageId(4)).is_empty(),
+            "a parent that is not in the list ends the walk instead of spinning"
+        );
+        // Dragging can make a page its own grandparent. The walk may repeat an
+        // id once, but it must stop rather than loop.
+        let looped = [crumb_page(7, Some(8), "甲"), crumb_page(8, Some(7), "乙")];
+        assert_eq!(
+            page_breadcrumb(&looped, PageId(7))
+                .into_iter()
+                .map(|(id, _)| id)
+                .collect::<Vec<_>>(),
+            [PageId(7), PageId(8)],
+            "a two-page cycle has to terminate"
+        );
+        // 30 levels deep: the bar is capped, and it keeps the nearest ancestors.
+        let deep = (1..=31)
+            .map(|id| crumb_page(id, (id > 1).then_some(id - 1), &format!("第{id}层")))
+            .collect::<Vec<_>>();
+        let trail = page_breadcrumb(&deep, PageId(31));
+        assert_eq!(
+            trail.len(),
+            16,
+            "the trail is capped so one deep tree cannot fill the header"
+        );
+        assert_eq!(
+            trail[0].0,
+            PageId(15),
+            "the cap drops the far end, root-ward"
+        );
+        assert_eq!(
+            trail.last().unwrap().0,
+            PageId(30),
+            "the last crumb is always the page's own parent"
+        );
+    }
+
+    #[test]
+    fn apply_replacements_splices_every_match_highest_first() {
+        // The ranges come from find_matches_in, so the fixtures have to be
+        // strings whose matches are wider than one byte.
+        let mixed = "标题标题x标题";
+        let ranges = find_matches_in(mixed, "标题");
+        assert_eq!(ranges, [0..6, 6..12, 13..19]);
+        assert_eq!(
+            apply_replacements(mixed, &ranges, "cap"),
+            "capcapxcap",
+            "a multi-byte string must keep the text between its matches"
+        );
+        assert_eq!(
+            apply_replacements(mixed, &ranges, "替换"),
+            "替换替换x替换",
+            "and a multi-byte replacement must land at the same bytes"
+        );
+        let alpha = "alpha beta alpha";
+        let ranges = find_matches_in(alpha, "alpha");
+        assert_eq!(ranges, [0..5, 11..16]);
+        assert_eq!(
+            apply_replacements(alpha, &ranges, "alphabet"),
+            "alphabet beta alphabet"
+        );
+        assert_eq!(
+            apply_replacements(alpha, &find_matches_in(alpha, "ALPHA"), "A"),
+            "A beta A",
+            "an upper-case query still finds the lower-case matches, and every one \
+             of them is spliced: {alpha:?} has two"
+        );
+        // Control leg: splicing lowest-first is the bug this order exists to
+        // prevent, so the same ranges handed to a naive loop must differ.
+        let mut lowest_first = alpha.to_owned();
+        for range in &ranges {
+            lowest_first.replace_range(range.clone(), "alphabet");
+        }
+        assert_ne!(
+            lowest_first,
+            apply_replacements(alpha, &ranges, "alphabet"),
+            "the highest-first order has to be what makes the result correct: naive gave {lowest_first:?}"
+        );
+    }
+
+    #[test]
+    fn the_rail_fade_eases_rather_than_switches() {
+        assert_eq!(rail_easing(0.), 0.);
+        assert_eq!(rail_easing(1.), 1.);
+        assert!(
+            (rail_easing(0.5) - 0.5).abs() < 1e-6,
+            "the midpoint stays the midpoint"
+        );
+        assert!(
+            rail_easing(0.25) < 0.25,
+            "the fade has to leave the floor slowly, got {}",
+            rail_easing(0.25)
+        );
+        assert!(
+            rail_easing(0.75) > 0.75,
+            "and reach the ceiling slowly, got {}",
+            rail_easing(0.75)
+        );
+        for step in 1..100 {
+            let progress = step as f32 / 100.;
+            assert!(
+                rail_easing(progress) > rail_easing(progress - 0.01),
+                "the ramp must never run backwards: {progress}"
+            );
+        }
+        // Control leg: both shape assertions are decided by the curve, not by
+        // the endpoints — a straight line passes 0/0, 1/1 and 0.5 and would
+        // otherwise look like it satisfies the same gate.
+        let linear = |progress: f32| progress;
+        assert!(
+            !(linear(0.25) < 0.25),
+            "a linear ramp must fail the slow-start leg"
+        );
+        assert!(!(linear(0.75) > 0.75), "and the slow-finish leg too");
+    }
+
+    /// Adds paragraphs to the open page and returns the ids it created, in list
+    /// order. The workspace is mounted with `smoke=false`, so these rows are
+    /// the only content the rail is measured against.
+    fn seed_paragraphs(
+        workspace: &gpui::Entity<super::Workspace>,
+        window: &mut gpui::VisualTestContext,
+        texts: &[&str],
+    ) -> Vec<BlockId> {
+        let ids = window.update(|_, app| {
+            workspace.update(app, |this, _| {
+                let before = this.session.blocks().len();
+                for text in texts {
+                    this.session.execute(super::Command::AppendBlock {
+                        kind: BlockKind::Paragraph,
+                        text: (*text).to_owned(),
+                    });
+                }
+                this.session.blocks()[before..]
+                    .iter()
+                    .map(|block| block.id)
+                    .collect::<Vec<_>>()
+            })
+        });
+        window.update(|window, app| workspace.update(app, |this, cx| this.sync_inputs(window, cx)));
+        window.run_until_parked();
+        ids
+    }
+
+    fn rail_bounds(
+        window: &mut gpui::VisualTestContext,
+        which: &str,
+        id: BlockId,
+    ) -> Option<Bounds<Pixels>> {
+        window.debug_bounds(static_selector(format!("{which}-{id:?}")))
+    }
+
+    fn row_bounds(window: &mut gpui::VisualTestContext, id: BlockId) -> Bounds<Pixels> {
+        window
+            .debug_bounds(static_selector(format!("doc-row-{id:?}")))
+            .unwrap_or_else(|| panic!("row {id:?} must be laid out"))
+    }
+
+    fn center(bounds: Bounds<Pixels>) -> Point<Pixels> {
+        point(
+            bounds.origin.x + bounds.size.width / 2.,
+            bounds.origin.y + bounds.size.height / 2.,
+        )
+    }
+
+    /// Moves the pointer onto the middle of a row, which is what arms the rail.
+    fn hover_row(window: &mut gpui::VisualTestContext, id: BlockId) {
+        let target = center(row_bounds(window, id));
+        window.simulate_mouse_move(target, None::<gpui::MouseButton>, gpui::Modifiers::none());
+        window.run_until_parked();
+    }
+
+    /// Runs the fake clock forward and lets whatever it releases settle.
+    /// `run_until_parked` only drives ready work: it never advances the clock,
+    /// so a timer armed by a hover would stay armed for the rest of the test
+    /// and a gate would read the fading layer as stuck.
+    fn advance_past(window: &mut gpui::VisualTestContext, delay: Duration) {
+        window.executor().advance_clock(delay);
+        window.run_until_parked();
+    }
+
+    /// A workspace with two paragraphs on a fresh page, ready for pointer work.
+    #[gpui::test]
+    fn the_block_rail_follows_the_pointer_without_moving_the_text(cx: &mut TestAppContext) {
+        let scratch = quire_core::testing::ScratchDir::new("gpui-block-rail-gutter");
+        let db = scratch.path().join("quire.db");
+        let (workspace, window) = mounted_workspace_at(cx, &db, false);
+        window.run_until_parked();
+        let rows = seed_paragraphs(&workspace, window, &["第一段", "第二段"]);
+        let (first, second) = (rows[0], rows[1]);
+
+        assert_eq!(
+            window.read(|app| workspace.read(app).document_hover),
+            None,
+            "before the pointer arrives, no row may own the rail"
+        );
+        assert!(
+            rail_bounds(window, "rail-insert", first).is_none(),
+            "the gutter has to be empty on a row the pointer is not on"
+        );
+        let rest_before = row_bounds(window, first);
+
+        hover_row(window, first);
+        assert_eq!(
+            window.read(|app| workspace.read(app).document_hover),
+            Some(first.0),
+            "the row under the pointer is recorded by block id, not by list index"
+        );
+        let insert = rail_bounds(window, "rail-insert", first)
+            .expect("the insert button must be laid out under the pointer");
+        let handle = rail_bounds(window, "rail-handle", first)
+            .expect("the drag handle must be laid out under the pointer");
+        let rest_after = row_bounds(window, first);
+        // The whole reason the rail is an overlay instead of a column: a flex
+        // sibling would narrow the reading measure and shift every line.
+        assert_eq!(
+            rest_after.origin.x,
+            rest_before.origin.x,
+            "hovering may not move the row left edge: was {}, now {}",
+            f32::from(rest_before.origin.x),
+            f32::from(rest_after.origin.x)
+        );
+        assert_eq!(
+            rest_after.size.width, rest_before.size.width,
+            "hovering may not narrow the reading column"
+        );
+        assert!(
+            insert.origin.x >= px(0.),
+            "the rail must still be inside the window: {}",
+            f32::from(insert.origin.x)
+        );
+        assert!(
+            handle.origin.x + handle.size.width <= rest_after.origin.x,
+            "both buttons must sit left of the text they belong to: rail right edge {}, row left edge {}",
+            f32::from(handle.origin.x + handle.size.width),
+            f32::from(rest_after.origin.x)
+        );
+        assert!(
+            handle.origin.x >= insert.origin.x + insert.size.width,
+            "the handle has to follow the insert button, not cover it"
+        );
+        assert!(
+            rail_bounds(window, "rail-insert", second).is_none(),
+            "only the row under the pointer gets a rail"
+        );
+
+        // Straight into the next row. The leaving row also reports, and in one
+        // of the two orders a naive implementation clears the hover it just set.
+        hover_row(window, second);
+        assert_eq!(
+            window.read(|app| workspace.read(app).document_hover),
+            Some(second.0),
+            "a leave event for the previous row may not clear the row the pointer just entered"
+        );
+        assert!(
+            rail_bounds(window, "rail-insert", second).is_some(),
+            "the row now under the pointer owns the rail"
+        );
+        // The rail the pointer left is kept mounted for the length of its fade
+        // and then released, so the clock has to be walked past both the 120ms
+        // ramp and the 20ms settle.
+        advance_past(window, MOTION_HOVER_SETTLE);
+        assert_eq!(
+            window.read(|app| workspace.read(app).document_rail_exit),
+            None,
+            "the fading layer has to be released once the fade settles"
+        );
+        assert_eq!(
+            window.read(|app| workspace.read(app).document_hover),
+            Some(second.0),
+            "and releasing it may not disturb the row the pointer is on"
+        );
+        // The bounds map is sticky, so an absent `rail-insert-first` would
+        // prove nothing here; what is proved is that the two inputs the rail's
+        // own mount predicate reads both say "not this row", and that the
+        // readings do distinguish (see the never-hovered row above).
+    }
+
+    #[gpui::test]
+    fn a_leaving_rows_rail_fades_without_becoming_a_click_target(cx: &mut TestAppContext) {
+        let scratch = quire_core::testing::ScratchDir::new("gpui-block-rail-fade");
+        let db = scratch.path().join("quire.db");
+        let (workspace, window) = mounted_workspace_at(cx, &db, false);
+        window.run_until_parked();
+        let rows = seed_paragraphs(&workspace, window, &["第一段", "第二段"]);
+        let (first, second) = (rows[0], rows[1]);
+        // Two hovers inside one update, driven through the listener's own
+        // function: every `simulate_*` call parks the fake clock, and the
+        // 140ms settle timer would have fired before the fading layer could be
+        // read. What the real pointer does with these two calls is gated by
+        // `the_block_rail_follows_the_pointer_without_moving_the_text`.
+        window.update(|_, app| {
+            workspace.update(app, |this, cx| {
+                this.track_document_hover(true, first.0, cx);
+                this.track_document_hover(true, second.0, cx);
+            })
+        });
+        assert_eq!(
+            window.read(|app| workspace.read(app).document_rail_exit),
+            Some(first.0),
+            "the row that lost the pointer owns the fading layer"
+        );
+        let fading = rail_bounds(window, "rail-insert", first)
+            .expect("a fading rail must stay mounted, or there is nothing to fade");
+        let fading_handle = rail_bounds(window, "rail-handle", first)
+            .expect("the fading handle must stay mounted too");
+        let row = row_bounds(window, first);
+        assert!(
+            fading_handle.origin.x + fading_handle.size.width <= row.origin.x,
+            "even on its way out the rail stays in the gutter, never over the text"
+        );
+        assert!(
+            rail_bounds(window, "rail-insert", second).is_some(),
+            "the row under the pointer has its interactive rail at the same time"
+        );
+
+        let before = window.read(|app| workspace.read(app).session.blocks().len());
+        window.simulate_click(center(fading), gpui::Modifiers::none());
+        window.simulate_click(center(fading_handle), gpui::Modifiers::none());
+        window.run_until_parked();
+        let (count, slash_menu, block_menu) = window.read(|app| {
+            let this = workspace.read(app);
+            (
+                this.session.blocks().len(),
+                this.slash_menu,
+                this.block_menu_open,
+            )
+        });
+        // The fading copy is drawn from bare glyphs on purpose: chrome that is
+        // merely transparent still swallows the click aimed at it.
+        assert_eq!(
+            count, before,
+            "a fading rail must not add a block: a gutter that eats clicks is worse than no gutter"
+        );
+        assert_eq!(slash_menu, None, "and it must not open the slash menu");
+        assert!(block_menu.is_none(), "or the block menu");
+        advance_past(window, MOTION_HOVER_SETTLE);
+        assert_eq!(
+            window.read(|app| workspace.read(app).document_rail_exit),
+            None,
+            "the fade has to finish and let go"
+        );
+    }
+
+    /// The fade-out layer is named by one slot and one sequence counter, and a
+    /// pointer that crosses back over a row while the previous fade is still
+    /// running is exactly what puts two fades in flight at once.
+    #[gpui::test]
+    fn an_older_fade_cannot_cut_a_newer_one_short(cx: &mut TestAppContext) {
+        let scratch = quire_core::testing::ScratchDir::new("gpui-block-rail-fade-preempt");
+        let db = scratch.path().join("quire.db");
+        let (workspace, window) = mounted_workspace_at(cx, &db, false);
+        window.run_until_parked();
+        let rows = seed_paragraphs(&workspace, window, &["第一段", "第二段"]);
+        let (first, second) = (rows[0], rows[1]);
+
+        hover_row(window, first);
+        hover_row(window, second);
+        assert_eq!(
+            window.read(|app| workspace.read(app).document_rail_exit),
+            Some(first.0),
+            "leaving the first row armed its fade"
+        );
+        // Halfway through it, the pointer comes back. The second fade is armed
+        // later than the first, so the first one's timer is now the older of
+        // the two and has no business finishing the newer one.
+        advance_past(window, Duration::from_millis(100));
+        hover_row(window, first);
+        assert_eq!(
+            window.read(|app| workspace.read(app).document_rail_exit),
+            Some(second.0),
+            "the fade the pointer just started owns the layer"
+        );
+        advance_past(window, Duration::from_millis(60));
+        assert_eq!(
+            window.read(|app| workspace.read(app).document_rail_exit),
+            Some(second.0),
+            "the older timer may not release a fade that has nine frames left: \
+             a rail that vanishes mid-fade is the flicker this guard exists to stop"
+        );
+        advance_past(window, MOTION_HOVER_SETTLE);
+        assert_eq!(
+            window.read(|app| workspace.read(app).document_rail_exit),
+            None,
+            "but its own deadline does release it"
+        );
+    }
+
+    #[gpui::test]
+    fn the_rail_insert_button_adds_one_block_and_opens_the_slash_menu(cx: &mut TestAppContext) {
+        let scratch = quire_core::testing::ScratchDir::new("gpui-block-rail-insert");
+        let db = scratch.path().join("quire.db");
+        let (workspace, window) = mounted_workspace_at(cx, &db, false);
+        window.run_until_parked();
+        let rows = seed_paragraphs(&workspace, window, &["插入我"]);
+        let first = rows[0];
+        hover_row(window, first);
+        let insert = rail_bounds(window, "rail-insert", first)
+            .expect("the + button must be reachable under the pointer");
+        let before = window.read(|app| {
+            workspace
+                .read(app)
+                .session
+                .blocks()
+                .iter()
+                .map(|block| block.id)
+                .collect::<HashSet<_>>()
+        });
+
+        window.simulate_click(center(insert), gpui::Modifiers::none());
+        window.run_until_parked();
+        let (added, slash_menu) = window.read(|app| {
+            let this = workspace.read(app);
+            let ids = this
+                .session
+                .blocks()
+                .iter()
+                .map(|block| block.id)
+                .collect::<HashSet<_>>();
+            (
+                ids.difference(&before).copied().collect::<Vec<_>>(),
+                this.slash_menu,
+            )
+        });
+        assert_eq!(
+            added.len(),
+            1,
+            "the + button adds exactly the one block it promises: {added:?}"
+        );
+        assert_eq!(
+            slash_menu,
+            added.first().copied(),
+            "and opens the slash menu on the block it just made, not on the row clicked"
+        );
+    }
+
+    #[gpui::test]
+    fn the_rail_handle_button_opens_the_block_menu_for_its_row(cx: &mut TestAppContext) {
+        let scratch = quire_core::testing::ScratchDir::new("gpui-block-rail-menu");
+        let db = scratch.path().join("quire.db");
+        let (workspace, window) = mounted_workspace_at(cx, &db, false);
+        window.run_until_parked();
+        let rows = seed_paragraphs(&workspace, window, &["菜单我"]);
+        let first = rows[0];
+        hover_row(window, first);
+        let handle = rail_bounds(window, "rail-handle", first)
+            .expect("the ⋮⋮ button must be reachable under the pointer");
+
+        window.simulate_click(center(handle), gpui::Modifiers::none());
+        window.run_until_parked();
+        let opened = window.read(|app| workspace.read(app).block_menu_open);
+        assert_eq!(
+            opened.map(|(id, mode)| (id, matches!(mode, super::BlockMenuMode::Actions))),
+            Some((first, true)),
+            "the handle opens the actions menu on its own row"
+        );
+        // The menu is a second click away from closing again, which is what the
+        // gutter would do under a user who means to drag.
+        hover_row(window, first);
+        let handle = rail_bounds(window, "rail-handle", first)
+            .expect("the handle is still there with the menu open");
+        window.simulate_click(center(handle), gpui::Modifiers::none());
+        window.run_until_parked();
+        assert!(
+            window
+                .read(|app| workspace.read(app).block_menu_open)
+                .is_none(),
+            "the same button closes the menu it opened"
+        );
+    }
+
+    /// Opens the find bar the way Ctrl-F does.
+    fn open_find(window: &mut gpui::VisualTestContext, workspace: &gpui::Entity<super::Workspace>) {
+        window.update(|window, app| {
+            workspace.update(app, |this, cx| this.open_find(&super::Find, window, cx))
+        });
+        window.run_until_parked();
+    }
+
+    /// Types into one of the find bar's inputs through the edit event the input
+    /// itself emits. `TextInput::reset` is silent, so a gate that only reset the
+    /// buffer would leave the workspace's query empty and measure nothing.
+    fn type_find_bar(
+        workspace: &gpui::Entity<super::Workspace>,
+        window: &mut gpui::VisualTestContext,
+        replacement_box: bool,
+        text: &str,
+    ) {
+        window.update(|_, app| {
+            workspace.update(app, |this, cx| {
+                let input = if replacement_box {
+                    this.replace_input.clone()
+                } else {
+                    this.find_input.clone()
+                };
+                input.update(cx, |input, cx| {
+                    input.reset(text.to_owned(), Vec::new(), text.len(), cx);
+                    cx.emit(super::InputEvent::Edited {
+                        text: text.to_owned(),
+                        boundary: false,
+                    });
+                });
+            })
+        });
+        window.run_until_parked();
+    }
+
+    fn click_selector(window: &mut gpui::VisualTestContext, selector: &'static str) {
+        let bounds = window
+            .debug_bounds(selector)
+            .unwrap_or_else(|| panic!("{selector} must be laid out to be clicked"));
+        window.simulate_click(center(bounds), gpui::Modifiers::none());
+        window.run_until_parked();
+    }
+
+    #[gpui::test]
+    fn the_replace_row_joins_the_layout_only_when_it_is_asked_for(cx: &mut TestAppContext) {
+        let scratch = quire_core::testing::ScratchDir::new("gpui-find-replace-collapse");
+        let db = scratch.path().join("quire.db");
+        let (workspace, window) = mounted_workspace_at(cx, &db, false);
+        window.run_until_parked();
+        let rows = seed_paragraphs(&workspace, window, &["alpha 一行"]);
+        let body = rows[0];
+
+        // `Frame::clear` never resets `debug_bounds`, so a selector keeps
+        // reporting its last bounds even after it left the tree. Absence only
+        // proves something for a selector that was never painted, which is why
+        // the "out of the layout" legs below read the bar's height and the
+        // position of the text under it: both are rewritten every frame.
+        let body_at_rest = row_bounds(window, body).origin.y;
+
+        assert!(
+            window.debug_bounds("find-bar").is_none(),
+            "a find bar that was never opened has no bounds at all"
+        );
+        assert!(
+            window.debug_bounds("find-replace-row").is_none(),
+            "and neither has the replace row"
+        );
+
+        open_find(window, &workspace);
+        let bar = window
+            .debug_bounds("find-bar")
+            .expect("the bar has to be laid out once opened");
+        assert!(
+            window.debug_bounds("find-replace-row").is_none(),
+            "the replace row stays out of the layout until the user asks for it"
+        );
+        let query_row = window
+            .debug_bounds("find-query-row")
+            .expect("the query row must be laid out");
+        let body_under_bar = row_bounds(window, body).origin.y;
+        assert!(
+            body_under_bar > body_at_rest,
+            "the bar the document is searching in has to push the text down: rest {}, open {}",
+            f32::from(body_at_rest),
+            f32::from(body_under_bar)
+        );
+
+        click_selector(window, "find-toggle-replace");
+        let replace_row = window
+            .debug_bounds("find-replace-row")
+            .expect("opening replace must put the row in the layout");
+        assert!(
+            replace_row.origin.y >= query_row.origin.y + query_row.size.height,
+            "the replace row must be pushed under the query row, not painted over it: query at {}, replace at {}",
+            f32::from(query_row.origin.y),
+            f32::from(replace_row.origin.y)
+        );
+        let bar_with_replace = window
+            .debug_bounds("find-bar")
+            .expect("the bar is still open");
+        assert!(
+            replace_row.origin.y + replace_row.size.height
+                <= bar_with_replace.origin.y + bar_with_replace.size.height,
+            "and it must fit inside the bar that owns it"
+        );
+        assert!(
+            bar_with_replace.size.height > bar.size.height,
+            "a second row that adds height has to grow the bar: {} then, {} now",
+            f32::from(bar.size.height),
+            f32::from(bar_with_replace.size.height)
+        );
+        let body_under_replace = row_bounds(window, body).origin.y;
+        assert!(
+            body_under_replace > body_under_bar,
+            "and push the document down with it: {} then, {} now",
+            f32::from(body_under_bar),
+            f32::from(body_under_replace)
+        );
+
+        click_selector(window, "find-toggle-replace");
+        let bar_collapsed = window
+            .debug_bounds("find-bar")
+            .expect("the bar itself stays while the user keeps searching");
+        assert_eq!(
+            bar_collapsed.size.height,
+            bar.size.height,
+            "collapsing has to hand the row's height back: {} with replace, {} without",
+            f32::from(bar_with_replace.size.height),
+            f32::from(bar_collapsed.size.height)
+        );
+        assert_eq!(
+            row_bounds(window, body).origin.y,
+            body_under_bar,
+            "and the text below it has to come back up to exactly where it was"
+        );
+
+        click_selector(window, "find-close");
+        assert_eq!(
+            row_bounds(window, body).origin.y,
+            body_at_rest,
+            "closing the bar must give the whole strip's height back to the document"
+        );
+    }
+
+    #[gpui::test]
+    fn focusing_a_far_block_recreates_its_input_and_still_takes_text(cx: &mut TestAppContext) {
+        use gpui::EntityInputHandler;
+        // The per-block input map is bounded to the viewport plus a margin, not
+        // the whole page. The invariant that keeps that safe is that focusing
+        // any block — even one dropped because it sat far outside the resident
+        // window — recreates its entity and re-attaches its subscription in an
+        // event turn, so a real edit still reaches the model.
+        let scratch = quire_core::testing::ScratchDir::new("gpui-offwindow-typing");
+        let db = scratch.path().join("quire.db");
+        let (workspace, window) = mounted_workspace_at(cx, &db, false);
+        window.run_until_parked();
+        let texts: Vec<String> = (0..200).map(|index| format!("row {index}")).collect();
+        let refs: Vec<&str> = texts.iter().map(String::as_str).collect();
+        let rows = seed_paragraphs(&workspace, window, &refs);
+        let far = rows[199];
+
+        // The resident window must be bounded: row 199 has no input parked yet.
+        assert!(
+            !window.read(|app| workspace.read(app).inputs.contains_key(&far.0)),
+            "a row far below the viewport must not pin an input in the resident window"
+        );
+        let resident = window.read(|app| workspace.read(app).inputs.len());
+        assert!(
+            resident < 200,
+            "the map must hold a window, not every seeded block (got {resident})"
+        );
+
+        // Focusing it re-creates the entity and subscribes it (event context).
+        window
+            .update(|window, app| workspace.update(app, |this, cx| this.focus(far, 0, window, cx)));
+        window.run_until_parked();
+
+        // Type through the buffer's own edit, which emits the event the
+        // subscription is supposed to route. Without the subscription the model
+        // never sees the replacement and the assert below fails.
+        window.update(|window, app| {
+            workspace.update(app, |this, cx| {
+                let input = this
+                    .inputs
+                    .get(&far.0)
+                    .cloned()
+                    .expect("focusing must re-create the far row's input");
+                input.update(cx, |input, cx| {
+                    let whole = 0..input.buffer.committed().len();
+                    input.replace_text_in_range(Some(whole), "typed", window, cx);
+                });
+            })
+        });
+        window.run_until_parked();
+
+        let committed = window.read(|app| {
+            workspace
+                .read(app)
+                .session
+                .document
+                .block(far)
+                .expect("far block exists")
+                .text
+                .clone()
+        });
+        assert_eq!(
+            committed, "typed",
+            "a block outside the resident window must still take typed text once focused"
+        );
+    }
+
+    #[gpui::test]
+    fn replace_all_writes_the_page_as_one_undo_step(cx: &mut TestAppContext) {
+        let scratch = quire_core::testing::ScratchDir::new("gpui-replace-all-undo");
+        let db = scratch.path().join("quire.db");
+        let (workspace, window) = mounted_workspace_at(cx, &db, false);
+        window.run_until_parked();
+        let rows = seed_paragraphs(&workspace, window, &["alpha 和 alpha", "第二个 alpha 段"]);
+        let (first, second) = (rows[0], rows[1]);
+        open_find(window, &workspace);
+        type_find_bar(&workspace, window, false, "alpha");
+        assert_eq!(
+            window.read(|app| workspace.read(app).find_matches.len()),
+            3,
+            "the query has to reach the workspace through the input's own edit event"
+        );
+        click_selector(window, "find-toggle-replace");
+        type_find_bar(&workspace, window, true, "乙");
+
+        click_selector(window, "replace-all");
+        let (notice, detail, status, texts) = read_notice(&workspace, window, &[first, second]);
+        assert_eq!(
+            notice.as_deref(),
+            Some("已替换 3 处（2 个块）"),
+            "the count is matches and blocks, and the bar has to say it"
+        );
+        assert_eq!(
+            detail, "Ctrl+Z 可撤销",
+            "the bar carries the promise the undo has to keep"
+        );
+        assert_eq!(
+            status, "未保存",
+            "the line under the bar is free to go back to the save state"
+        );
+        assert_eq!(
+            texts,
+            ["乙 和 乙", "第二个 乙 段"],
+            "every match goes, and the multi-byte text between them must not drift"
+        );
+        // The bar is what makes the promise readable: the save line it sits
+        // above turns over 350ms later, so a message put there would be gone
+        // before the user's eye reached it.
+        advance_past(window, Duration::from_millis(4000));
+        let (notice, _, status) = window.read(|app| {
+            let this = workspace.read(app);
+            (
+                this.toast_message.clone(),
+                this.toast_detail.clone(),
+                this.status.clone(),
+            )
+        });
+        assert_eq!(
+            notice, None,
+            "and the bar has to let go on its own, not sit over the document"
+        );
+        assert_eq!(
+            status, "已保存",
+            "the page did reach the disk while the bar was up"
+        );
+
+        // One Ctrl+Z for a whole-page replace: the status line promised it.
+        window.update(|window, app| {
+            workspace.update(app, |this, cx| this.undo(&super::Undo, window, cx))
+        });
+        window.run_until_parked();
+        let (_, texts) = read_texts(&workspace, window, &[first, second]);
+        assert_eq!(
+            texts,
+            ["alpha 和 alpha", "第二个 alpha 段"],
+            "a single undo has to give the whole page back, not the last block only"
+        );
+    }
+
+    #[gpui::test]
+    fn replace_current_writes_one_match_and_gives_it_back_on_undo(cx: &mut TestAppContext) {
+        let scratch = quire_core::testing::ScratchDir::new("gpui-replace-current");
+        let db = scratch.path().join("quire.db");
+        let (workspace, window) = mounted_workspace_at(cx, &db, false);
+        window.run_until_parked();
+        let rows = seed_paragraphs(&workspace, window, &["alpha 和 alpha"]);
+        let first = rows[0];
+        open_find(window, &workspace);
+        type_find_bar(&workspace, window, false, "alpha");
+        click_selector(window, "find-toggle-replace");
+        type_find_bar(&workspace, window, true, "乙");
+
+        click_selector(window, "replace-current");
+        let (notice, detail, _, texts) = read_notice(&workspace, window, &[first]);
+        assert_eq!(
+            notice.as_deref(),
+            Some("已替换 1 处"),
+            "one match has to be counted as one, not as the page's total"
+        );
+        assert_eq!(detail, "Ctrl+Z 可撤销");
+        assert_eq!(
+            texts[0], "乙 和 alpha",
+            "replace-current must touch the highlighted match only"
+        );
+
+        window.update(|window, app| {
+            workspace.update(app, |this, cx| this.undo(&super::Undo, window, cx))
+        });
+        window.run_until_parked();
+        let texts = read_texts(&workspace, window, &[first]).1;
+        assert_eq!(texts[0], "alpha 和 alpha", "Ctrl+Z must restore the block");
+    }
+
+    #[gpui::test]
+    fn a_locked_page_answers_a_replace_attempt_out_loud(cx: &mut TestAppContext) {
+        let scratch = quire_core::testing::ScratchDir::new("gpui-replace-locked");
+        let db = scratch.path().join("quire.db");
+        let (workspace, window) = mounted_workspace_at(cx, &db, false);
+        window.run_until_parked();
+        let rows = seed_paragraphs(&workspace, window, &["alpha 和 alpha"]);
+        let first = rows[0];
+        open_find(window, &workspace);
+        type_find_bar(&workspace, window, false, "alpha");
+        click_selector(window, "find-toggle-replace");
+        type_find_bar(&workspace, window, true, "乙");
+        window.update(|_, app| workspace.update(app, |this, _| this.session.set_page_locked(true)));
+
+        click_selector(window, "replace-all");
+        let (status, texts) = read_texts(&workspace, window, &[first]);
+        assert_eq!(
+            status, "此页面已锁定，无法替换",
+            "a locked page must refuse out loud, not silently"
+        );
+        assert_eq!(texts[0], "alpha 和 alpha", "and it must write nothing");
+        click_selector(window, "replace-current");
+        let (status, texts) = read_texts(&workspace, window, &[first]);
+        assert_eq!(status, "此页面已锁定，无法替换");
+        assert_eq!(texts[0], "alpha 和 alpha", "the same refusal for one match");
+    }
+
+    /// The status line plus the text of the given blocks, read in one pass so a
+    /// gate cannot compare a status from one frame against another frame's data.
+    fn read_texts(
+        workspace: &gpui::Entity<super::Workspace>,
+        window: &mut gpui::VisualTestContext,
+        ids: &[BlockId],
+    ) -> (String, Vec<String>) {
+        window.read(|app| {
+            let this = workspace.read(app);
+            (
+                this.status.clone(),
+                ids.iter()
+                    .map(|id| {
+                        this.session
+                            .document
+                            .block(*id)
+                            .map(|block| block.text.clone())
+                            .unwrap_or_default()
+                    })
+                    .collect(),
+            )
+        })
+    }
+
+    /// What the floating bar says, read in the same pass as the block texts.
+    /// A replace writes two things at once — the bar's promise and the save
+    /// line's state — so a gate that sampled them in separate passes could
+    /// compare one frame's bar against the next frame's data.
+    fn read_notice(
+        workspace: &gpui::Entity<super::Workspace>,
+        window: &mut gpui::VisualTestContext,
+        ids: &[BlockId],
+    ) -> (Option<String>, String, String, Vec<String>) {
+        window.read(|app| {
+            let this = workspace.read(app);
+            (
+                this.toast_message.clone(),
+                this.toast_detail.clone(),
+                this.status.clone(),
+                ids.iter()
+                    .map(|id| {
+                        this.session
+                            .document
+                            .block(*id)
+                            .map(|block| block.text.clone())
+                            .unwrap_or_default()
+                    })
+                    .collect(),
+            )
+        })
+    }
+
+    /// The ids a page's trail lists, root first, without the titles.
+    fn trail(pages: &[Page], page: PageId) -> Vec<PageId> {
+        page_breadcrumb(pages, page)
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect()
+    }
+
+    #[gpui::test]
+    fn the_breadcrumb_walks_the_page_chain_and_back(cx: &mut TestAppContext) {
+        let scratch = quire_core::testing::ScratchDir::new("gpui-breadcrumb-chain");
+        let db = scratch.path().join("quire.db");
+        let (workspace, window) = mounted_workspace_at(cx, &db, false);
+        window.run_until_parked();
+        let root_body = seed_paragraphs(&workspace, window, &["根页正文"])[0];
+        // Same reason as the find bar gate: the bounds map is sticky, so the
+        // trail's appearance and its disappearance are both read off the row
+        // of text it has to step aside for.
+        let body_at_root = row_bounds(window, root_body).origin.y;
+        assert!(
+            window.debug_bounds("page-breadcrumb").is_none(),
+            "a page directly under the root has no trail to show"
+        );
+        let (root, child, leaf) = window.update(|_, app| {
+            workspace.update(app, |this, _| {
+                let root = this.session.page.id;
+                this.session.set_page_title("根页面".into());
+                let child = this.session.create_page(Some(root));
+                this.session.set_page_title("中间页".into());
+                let leaf = this.session.create_page(Some(child));
+                this.session.set_page_title("叶子页".into());
+                (root, child, leaf)
+            })
+        });
+        window.update(|window, app| workspace.update(app, |this, cx| this.sync_inputs(window, cx)));
+        window.run_until_parked();
+        let leaf_body = seed_paragraphs(&workspace, window, &["叶子正文"])[0];
+        assert!(
+            window.debug_bounds("page-breadcrumb").is_some(),
+            "a nested page has to show where it hangs"
+        );
+        let body_under_trail = row_bounds(window, leaf_body).origin.y;
+        assert!(
+            body_under_trail > body_at_root,
+            "and the trail has to sit above the text, not over it: root at {}, leaf at {}",
+            f32::from(body_at_root),
+            f32::from(body_under_trail)
+        );
+        assert_eq!(
+            window.read(|app| trail(&workspace.read(app).session.pages, leaf)),
+            [root, child],
+            "the trail is the ancestor chain, root first"
+        );
+
+        // Clicking a crumb goes to that page — the whole point of drawing it.
+        let crumb = window
+            .debug_bounds(static_selector(format!("breadcrumb-{child:?}")))
+            .expect("the ancestor crumb must be laid out to be clicked");
+        window.simulate_click(center(crumb), gpui::Modifiers::none());
+        window.run_until_parked();
+        assert_eq!(
+            window.read(|app| workspace.read(app).session.page.id),
+            child,
+            "the crumb labelled with a page must open that page"
+        );
+        assert_eq!(
+            window.read(|app| trail(&workspace.read(app).session.pages, child)),
+            [root],
+            "the trail lists the parents and never the page the user is on"
+        );
+        window.update(|window, app| {
+            workspace.update(app, |this, cx| {
+                this.activate_page(root, window, cx);
+            })
+        });
+        window.run_until_parked();
+        assert_eq!(
+            window.read(|app| workspace.read(app).session.page.id),
+            root,
+            "the test navigated back to the root"
+        );
+        assert!(
+            window.read(|app| trail(&workspace.read(app).session.pages, root).is_empty()),
+            "and the root page has no trail again"
+        );
+        assert_eq!(
+            row_bounds(window, root_body).origin.y,
+            body_at_root,
+            "the band the trail borrowed has to come back: {} at rest, {} after the round trip",
+            f32::from(body_at_root),
+            f32::from(row_bounds(window, root_body).origin.y)
+        );
     }
 
     #[test]
@@ -1718,6 +3587,46 @@ mod view_tests {
         );
         assert_eq!(keep_unsent_draft("   \n ".to_owned()), None);
         assert_eq!(keep_unsent_draft(String::new()), None);
+    }
+
+    #[test]
+    fn block_menu_swaps_the_move_entry_for_the_sort_door() {
+        let plain = block_menu_actions(false, false);
+        assert!(!plain.iter().any(|(_, action)| *action == 5));
+        assert_eq!(
+            plain.last().copied(),
+            Some(("排序…", 9)),
+            "the menu ends with the door into sort mode"
+        );
+        let with_extras = block_menu_actions(true, true);
+        assert_eq!(with_extras[0], ("图片宽度…", 8));
+        assert!(with_extras.iter().any(|(_, action)| *action == 7));
+        // Keyboard selection walks the same list, so ids and labels agree.
+        let ids: Vec<u8> = plain.iter().map(|(_, action)| *action).collect();
+        assert_eq!(ids, vec![0, 1, 2, 3, 6, 4, 9]);
+    }
+
+    #[test]
+    fn overlay_origins_clamp_to_the_window_and_survive_tiny_windows() {
+        // A click near the bottom-right keeps the 184×250 panel fully visible.
+        let (x, y) = overlay_origin(1200., 900., 184., 250., (1280., 800.), 1.);
+        assert!((x - (1280. - 184.)).abs() < 0.01);
+        assert!((y - (800. - 250.)).abs() < 0.01);
+        // A normal click position passes through untouched.
+        assert_eq!(
+            overlay_origin(310., 250., 184., 250., (1280., 800.), 1.),
+            (310., 250.)
+        );
+        // Scaled event coordinates divide down; a panel wider than the window
+        // pins to the left edge instead of going negative.
+        assert_eq!(
+            overlay_origin(300., 300., 184., 250., (1280., 800.), 1.5),
+            (200., 200.)
+        );
+        assert_eq!(
+            overlay_origin(400., 400., 4000., 250., (1280., 800.), 1.).0,
+            0.
+        );
     }
 
     #[test]
@@ -2499,6 +4408,10 @@ pub struct Workspace {
     find_matches: Vec<(BlockId, Range<usize>)>,
     find_index: Option<usize>,
     find_open: bool,
+    replace_input: Entity<TextInput>,
+    replace_subscription: Option<Subscription>,
+    replace_query: String,
+    find_replace_open: bool,
     search_open: bool,
     search_focus_return: Option<FocusHandle>,
     search_selected: usize,
@@ -2508,6 +4421,25 @@ pub struct Workspace {
     command_palette_selected: usize,
     backlinks_open: bool,
     block_menu_open: Option<(BlockId, BlockMenuMode)>,
+    /// Window-space origin for the block menu, captured from the right click
+    /// so the menu opens at the cursor instead of anchoring inside the row.
+    block_menu_at: (f32, f32),
+    /// Window-space origin for the block color picker, remembered from the
+    /// menu position that opened it.
+    color_picker_at: (f32, f32),
+    /// Dedicated document sort mode: rows select instead of edit, and the
+    /// whole row drags to reorder; selected blocks batch-move to a page.
+    block_sort_mode: bool,
+    selected_block_ids: Vec<BlockId>,
+    block_sort_focus: FocusHandle,
+    /// Organizer column resizing: the drag handle on the list column's right
+    /// edge adjusts the task list width (tasks) or the note detail width
+    /// (notes), clamped and persisted per mode.
+    organizer_task_list_width: f32,
+    note_detail_drag_width: Option<f32>,
+    organizer_list_resizing: bool,
+    organizer_list_resize_notes: bool,
+    organizer_list_drag_offset: f32,
     block_menu_focus: FocusHandle,
     block_menu_focus_return: Option<FocusHandle>,
     block_menu_selection: usize,
@@ -2530,6 +4462,21 @@ pub struct Workspace {
     document_list: ListState,
     document_list_ids: Vec<BlockId>,
     document_visible_range: Range<usize>,
+    /// The block whose row the pointer is on, which is the row that gets the
+    /// interactive rail. Tracked in state rather than left to a hover style,
+    /// because chrome that is merely transparent still swallows the clicks it
+    /// hides. Keyed by block id, not list index: rows shift under a virtualized
+    /// list when blocks come and go.
+    document_hover: Option<u64>,
+    /// The block that just lost the pointer. Its rail stays mounted while it
+    /// fades out, inert so the gutter is never a click target on its own.
+    document_rail_exit: Option<u64>,
+    /// Guards the fade-out cleanup: a newer exit must not be cleared by the
+    /// timer of an older one.
+    document_rail_exit_seq: u64,
+    /// The ids currently occupying document list rows, kept as a set so the
+    /// scroll handler can tell row inputs from table-cell inputs in O(1).
+    document_row_ids: HashSet<u64>,
     selected_database_views: HashMap<u64, ViewId>,
     database_columns_open: Option<(u64, u64)>,
     database_columns_focus: FocusHandle,
@@ -2656,6 +4603,7 @@ pub struct Workspace {
     status: String,
     error: bool,
     toast_message: Option<String>,
+    toast_detail: String,
     toast_generation: u64,
     smoke_mode: bool,
     smoke_board_rendered: bool,
@@ -2737,7 +4685,14 @@ impl Workspace {
             .and_then(|value| value.parse::<f32>().ok())
             .filter(|value| value.is_finite())
             .unwrap_or(260.)
-            .clamp(200., 480.);
+            .clamp(SIDEBAR_MIN_WIDTH, SIDEBAR_MAX_WIDTH);
+        let sidebar_open = bool_setting(session.setting("gpui.sidebar-open"), true);
+        let favorites_collapsed =
+            bool_setting(session.setting("gpui.sidebar.favorites-collapsed"), true);
+        let recents_collapsed =
+            bool_setting(session.setting("gpui.sidebar.recents-collapsed"), true);
+        let organizer_board_mode =
+            bool_setting(session.setting("gpui.organizer.board-mode"), false);
         let note_manual_order = session
             .setting("gpui.organizer-note-order")
             .unwrap_or_default()
@@ -2761,15 +4716,19 @@ impl Workspace {
         find_input.update(cx, |input, _| {
             input.placeholder = Some("查找当前页面".into());
         });
+        let replace_input = cx.new(|cx| TextInput::new(String::new(), Vec::new(), 12., window, cx));
+        replace_input.update(cx, |input, _| {
+            input.placeholder = Some("替换为".into());
+        });
         let link_target_input =
             cx.new(|cx| TextInput::new(String::new(), Vec::new(), 12., window, cx));
         link_target_input.update(cx, |input, _| {
             input.placeholder = Some("https://… 或 quire://page/ID".into())
         });
         let note_title_input =
-            cx.new(|cx| TextInput::new(String::new(), Vec::new(), 24., window, cx));
+            cx.new(|cx| TextInput::new(String::new(), Vec::new(), 20., window, cx));
         note_title_input.update(cx, |input, _| {
-            input.placeholder = Some("笔记标题".into());
+            input.placeholder = Some("任务标题".into());
             input.font_weight = FontWeight::SEMIBOLD;
         });
         let note_body_input =
@@ -2804,7 +4763,7 @@ impl Workspace {
         let organizer_tags_input =
             cx.new(|cx| TextInput::new(String::new(), Vec::new(), 12., window, cx));
         organizer_tags_input.update(cx, |input, _| {
-            input.placeholder = Some("标签，以逗号分隔".into())
+            input.placeholder = Some("以逗号分隔，如 工作, 生活".into())
         });
         let subtask_title_input =
             cx.new(|cx| TextInput::new(String::new(), Vec::new(), 12., window, cx));
@@ -2854,6 +4813,7 @@ impl Workspace {
             version_name_input.clone(),
             search_input.clone(),
             find_input.clone(),
+            replace_input.clone(),
             link_target_input.clone(),
             sync_name_input.clone(),
             note_title_input.clone(),
@@ -2928,10 +4888,22 @@ impl Workspace {
         let organizer_context_focus = cx.focus_handle();
         let block_menu_focus = cx.focus_handle();
         let block_color_focus = cx.focus_handle();
+        let block_sort_focus = cx.focus_handle();
         let database_filter_focus = cx.focus_handle();
         let database_group_focus = cx.focus_handle();
         let database_columns_focus = cx.focus_handle();
         let page_options_focus = cx.focus_handle();
+        // A non-finite row would reach the layout as NaN, and the next drag
+        // would persist that NaN back into the setting.
+        let organizer_task_list_width = session
+            .setting("gpui.organizer.task-list-width")
+            .and_then(|value| value.parse::<f32>().ok())
+            .filter(|value| value.is_finite())
+            .unwrap_or(320.);
+        let note_detail_drag_width = session
+            .setting("gpui.organizer.note-detail-width")
+            .and_then(|value| value.parse::<f32>().ok())
+            .filter(|value| value.is_finite());
         let mut this = Self {
             session,
             version_name_input,
@@ -2949,6 +4921,7 @@ impl Workspace {
             sync_name_original,
             search_input,
             find_input,
+            replace_input,
             link_target_input,
             note_title_input,
             note_body_input,
@@ -2974,6 +4947,7 @@ impl Workspace {
             database_relation_search_subscription: None,
             database_property_name_subscription: None,
             find_subscription: None,
+            replace_subscription: None,
             note_title_subscription: None,
             note_body_subscription: None,
             note_reply_subscription: None,
@@ -2991,6 +4965,8 @@ impl Workspace {
             find_matches: Vec::new(),
             find_index: None,
             find_open: false,
+            replace_query: String::new(),
+            find_replace_open: false,
             search_open: false,
             search_focus_return: None,
             search_selected: 0,
@@ -3000,6 +4976,16 @@ impl Workspace {
             command_palette_selected: 0,
             backlinks_open: false,
             block_menu_open: None,
+            block_menu_at: (0., 0.),
+            color_picker_at: (0., 0.),
+            block_sort_mode: false,
+            selected_block_ids: Vec::new(),
+            organizer_task_list_width,
+            note_detail_drag_width,
+            organizer_list_resizing: false,
+            organizer_list_resize_notes: false,
+            organizer_list_drag_offset: 0.,
+            block_sort_focus,
             block_menu_focus,
             block_menu_focus_return: None,
             block_menu_selection: 0,
@@ -3022,6 +5008,10 @@ impl Workspace {
             document_list: ListState::new(2, ListAlignment::Top, px(240.)),
             document_list_ids: Vec::new(),
             document_visible_range: 0..2,
+            document_hover: None,
+            document_rail_exit: None,
+            document_rail_exit_seq: 0,
+            document_row_ids: HashSet::new(),
             selected_database_views: HashMap::new(),
             database_columns_open: None,
             database_columns_focus,
@@ -3098,16 +5088,16 @@ impl Workspace {
             organizer_capture_suggestions: Vec::new(),
             organizer_capture_selected: 0,
             organizer_capture_suggestions_hidden: false,
-            sidebar_open: true,
-            favorites_collapsed: false,
-            recents_collapsed: false,
+            sidebar_open,
+            favorites_collapsed,
+            recents_collapsed,
             sidebar_transition: None,
             sidebar_transition_seq: 0,
             sidebar_width,
             sidebar_resizing: false,
             sidebar_drag_offset: 0.,
             organizer_tasks: false,
-            organizer_board_mode: false,
+            organizer_board_mode,
             organizer_note_board_mode: false,
             organizer_trash: false,
             organizer_tag: None,
@@ -3150,6 +5140,7 @@ impl Workspace {
             status: "已保存".into(),
             error: false,
             toast_message: None,
+            toast_detail: String::new(),
             toast_generation: 0,
             smoke_mode: smoke,
             smoke_board_rendered: false,
@@ -3703,6 +5694,19 @@ impl Workspace {
                 _ => {}
             },
         ));
+        let replace_input = this.replace_input.clone();
+        this.replace_subscription = Some(cx.subscribe_in(
+            &replace_input,
+            window,
+            |this, _, event, window, cx| match event {
+                InputEvent::Edited { text, .. } => {
+                    this.replace_query = text.clone();
+                    cx.notify();
+                }
+                InputEvent::DismissSlash => this.close_find(window, cx),
+                _ => {}
+            },
+        ));
         this.sync_inputs(window, cx);
         let persistence = this.session.persistence.clone();
         let lock = this.flush_lock.clone();
@@ -3742,7 +5746,7 @@ impl Workspace {
             eprintln!("SMOKE: settings backup flushes and creates an isolated database snapshot");
             let transition_theme = this.palette.id.clone();
             this.apply_palette("jade", window, cx);
-            this.toggle_sidebar(cx);
+            this.toggle_sidebar(window, cx);
             let transition_weak = cx.entity().downgrade();
             cx.spawn_in(window, async move |weak, cx| {
                 cx.background_executor()
@@ -3752,7 +5756,7 @@ impl Workspace {
                     this.apply_palette(&transition_theme, window, cx);
                     let expected_from = this.sidebar_transition.map_or(0.,
                         |(_, from, to, started_at)| interpolated_sidebar_width(from, to, started_at, Instant::now()));
-                    this.toggle_sidebar(cx);
+                    this.toggle_sidebar(window, cx);
                     let (_, from, _, _) = this
                         .sidebar_transition
                         .expect("reopened sidebar should have a transition");
@@ -4447,7 +6451,7 @@ impl Workspace {
                         .first()
                         .map(|block| block.id)
                         .expect("smoke document contains a block");
-                    this.toggle_block_context_menu(menu_block, window, cx);
+                    this.toggle_block_context_menu(menu_block, (420., 300.), window, cx);
                     assert!(this.block_menu_focus.is_focused(window));
                     let block_menu_frame = this.render(window, cx);
                     drop(block_menu_frame);
@@ -5628,11 +7632,36 @@ impl Workspace {
         }
         this
     }
+    fn release_offscreen_input_layouts(&mut self, cx: &mut Context<Self>) {
+        // A painted input caches its TextLayout — the shaped glyph runs are by
+        // far the heaviest per-block state, and scrolling a long page would
+        // otherwise pin a layout for every block ever painted. Shapes outside
+        // the viewport (plus a small margin) are dropped; they are re-shaped
+        // on the next paint, which is cheap next to keeping them all alive.
+        let lo = self.document_visible_range.start.saturating_sub(4);
+        let hi = (self.document_visible_range.end + 4).min(self.document_list_ids.len());
+        let visible: HashSet<u64> = self
+            .document_list_ids
+            .get(lo..hi.max(lo))
+            .map(|slice| slice.iter().map(|id| id.0).collect())
+            .unwrap_or_default();
+        for (id, input) in &self.inputs {
+            if self.document_row_ids.contains(id)
+                && !visible.contains(id)
+                && self.active != Some(BlockId(*id))
+            {
+                let stale = input.read(cx).has_layout_cache() && !input.read(cx).buffer.composing();
+                if stale {
+                    input.update(cx, |input, _| input.release_layout_cache());
+                }
+            }
+        }
+    }
     fn sync_inputs(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let visible_blocks = self.visible_document_blocks();
         let ids = visible_blocks.iter().map(|(_, id)| *id).collect::<Vec<_>>();
         self.sync_document_list_ids(&ids);
-        let mut keep = self.document_visible_block_ids();
+        let mut keep = self.viewport_input_ids();
         if let Some(active) = self.active {
             keep.insert(active.0);
         }
@@ -5659,32 +7688,31 @@ impl Workspace {
             .cloned()
             .collect::<Vec<_>>();
         keep.extend(visible_table_cells.iter().map(|cell| cell.id.0));
-        // Keep an input for every block that still exists and is editable, plus
-        // any block with an in-progress IME composition. Dropping inputs for
-        // off-screen blocks would force them to be recreated during the next
-        // render pass, and subscriptions created inside a render method never
-        // fire (so typed text and Enter would silently stop reaching the
-        // workspace). See the document-input fix.
-        self.inputs.retain(|id, input| {
-            self.session
-                .document
-                .block(BlockId(*id))
-                .is_some_and(|block| self.session.editable(block.id))
-                || input.read(cx).buffer.composing()
-        });
+        // Bind the per-block TextInput entities to the viewport (plus a margin)
+        // and the active / composing rows, not the whole page. The old loop
+        // materialised one entity for every block of the open page, so a
+        // 10k-block page pinned ~10k entities and their FocusHandles even
+        // though only the visible rows paint and only the focused row can
+        // receive keys. A row that scrolls back in is re-created by paint
+        // (ensure_block_input) and re-subscribed by focus()/focus_selection()
+        // in an event turn, where a new subscription actually fires — a
+        // subscription made during render never does. See the document-input fix.
+        self.inputs
+            .retain(|id, input| keep.contains(id) || input.read(cx).buffer.composing());
         self.input_subscriptions
             .retain(|id, _| self.inputs.contains_key(id));
-        for (_, id) in visible_blocks {
-            if let Some(block) = self.session.document.block(id).cloned() {
+        self.release_offscreen_input_layouts(cx);
+        for id in keep.iter().copied() {
+            if let Some(block) = self.session.document.block(BlockId(id)).cloned() {
                 if let Some(input) = self.ensure_block_input(&block, window, cx)
-                    && !self.input_subscriptions.contains_key(&id.0)
+                    && !self.input_subscriptions.contains_key(&id)
                 {
-                    let id = block.id;
+                    let block_id = block.id;
                     let subscription =
                         cx.subscribe_in(&input, window, move |this, _, event, window, cx| {
-                            this.input_event(id, event, window, cx)
+                            this.input_event(block_id, event, window, cx)
                         });
-                    self.input_subscriptions.insert(id.0, subscription);
+                    self.input_subscriptions.insert(id, subscription);
                 }
             }
         }
@@ -5742,6 +7770,7 @@ impl Workspace {
         let new_count = ids.len() - prefix - suffix;
         self.document_list.splice(prefix + 1..old_end, new_count);
         self.document_list_ids = ids.to_vec();
+        self.document_row_ids = self.document_list_ids.iter().map(|id| id.0).collect();
         self.inputs.retain(|id, _| {
             ids.iter().any(|block| block.0 == *id)
                 || self.active.is_some_and(|active| active.0 == *id)
@@ -5749,19 +7778,50 @@ impl Workspace {
         self.input_subscriptions
             .retain(|id, _| self.inputs.contains_key(id));
     }
-    fn document_visible_block_ids(&self) -> HashSet<u64> {
-        let start = self.document_visible_range.start.saturating_sub(1);
-        let end = self
+    /// The rows that keep a live `TextInput` entity and subscription: the
+    /// viewport widened by a fixed margin, so continuous scrolling never races
+    /// the (event-only) subscription re-attach and the resident set stays bound
+    /// to what is near the screen rather than the whole page. Pages short
+    /// enough to fit inside the margin keep every block, exactly as before.
+    fn viewport_input_ids(&self) -> HashSet<u64> {
+        const MARGIN: usize = 120;
+        let start = self
+            .document_visible_range
+            .start
+            .saturating_sub(1)
+            .saturating_sub(MARGIN);
+        let end = (self
             .document_visible_range
             .end
             .saturating_sub(1)
-            .min(self.document_list_ids.len());
+            .saturating_add(MARGIN))
+        .min(self.document_list_ids.len());
         self.document_list_ids
             .get(start..end.max(start))
             .unwrap_or_default()
             .iter()
             .map(|id| id.0)
             .collect()
+    }
+    fn ensure_input_subscribed(
+        &mut self,
+        id: BlockId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.input_subscriptions.contains_key(&id.0) {
+            return;
+        }
+        let Some(block) = self.session.document.block(id).cloned() else {
+            return;
+        };
+        if let Some(input) = self.ensure_block_input(&block, window, cx) {
+            let subscription =
+                cx.subscribe_in(&input, window, move |this, _, event, window, cx| {
+                    this.input_event(id, event, window, cx)
+                });
+            self.input_subscriptions.insert(id.0, subscription);
+        }
     }
     fn ensure_block_input(
         &mut self,
@@ -7277,38 +9337,6 @@ impl Workspace {
         }
         self.schedule_save(false, window, cx);
     }
-    fn move_block_to_page(
-        &mut self,
-        id: BlockId,
-        target: quire_core::core::types::PageId,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        if self.closing || self.session.page.locked {
-            return;
-        }
-        if self.composing(cx) {
-            self.status = "请先完成输入法组合输入，再移动此块".into();
-            self.error = true;
-            cx.notify();
-            return;
-        }
-        if self.session.move_block_to_page(id, target) {
-            self.block_menu_open = None;
-            self.sync_inputs(window, cx);
-            self.focus_first(window, cx);
-            let title = self
-                .session
-                .pages
-                .iter()
-                .find(|page| page.id == target)
-                .map(|page| page.title.as_str())
-                .unwrap_or("目标页面");
-            self.status = format!("块已移动到「{title}」，可撤销");
-            self.error = false;
-            self.schedule_save(false, window, cx);
-        }
-    }
     fn toggle_color_picker(
         &mut self,
         id: BlockId,
@@ -7323,6 +9351,8 @@ impl Workspace {
             if self.color_picker.is_none() {
                 self.block_color_focus_return = window.focused(cx);
             }
+            // The picker replaces the block menu at the spot the menu opened.
+            self.color_picker_at = self.block_menu_at;
             self.color_picker = Some((id, background));
             self.block_color_selection = 0;
             window.focus(&self.block_color_focus);
@@ -7413,6 +9443,7 @@ impl Workspace {
     fn toggle_block_context_menu(
         &mut self,
         id: BlockId,
+        at: (f32, f32),
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -7425,6 +9456,17 @@ impl Workspace {
             if self.block_menu_open.is_none() {
                 self.block_menu_focus_return = window.focused(cx);
             }
+            self.block_menu_at = overlay_origin(
+                at.0,
+                at.1,
+                184.,
+                250.,
+                (
+                    f32::from(window.bounds().size.width),
+                    f32::from(window.bounds().size.height),
+                ),
+                quire_gpui::ui_scale::get(),
+            );
             self.block_menu_open = Some((id, BlockMenuMode::Actions));
             self.block_menu_selection = 0;
             window.focus(&self.block_menu_focus);
@@ -7435,6 +9477,94 @@ impl Workspace {
         self.block_menu_open = None;
         if let Some(focus) = self.block_menu_focus_return.take() {
             window.focus(&focus);
+        }
+    }
+    fn visible_editable_block_ids(&self) -> Vec<BlockId> {
+        self.visible_document_blocks()
+            .into_iter()
+            .map(|(_, id)| id)
+            .filter(|id| self.session.editable(*id))
+            .collect()
+    }
+    fn enter_block_sort_mode(
+        &mut self,
+        seed: Option<BlockId>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.session.page.locked || self.closing {
+            return;
+        }
+        self.session.end_typing();
+        self.block_menu_open = None;
+        self.selected_block_ids.clear();
+        if let Some(id) = seed.filter(|id| self.session.editable(*id)) {
+            self.selected_block_ids.push(id);
+        }
+        self.block_sort_mode = true;
+        window.focus(&self.block_sort_focus);
+        cx.notify();
+    }
+    fn exit_block_sort_mode(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.block_sort_mode = false;
+        self.selected_block_ids.clear();
+        self.block_menu_open = None;
+        self.restore_focus(window, cx);
+        cx.notify();
+    }
+    fn toggle_block_selected(&mut self, id: BlockId, cx: &mut Context<Self>) {
+        if let Some(index) = self
+            .selected_block_ids
+            .iter()
+            .position(|candidate| *candidate == id)
+        {
+            self.selected_block_ids.remove(index);
+        } else if self.session.editable(id) {
+            self.selected_block_ids.push(id);
+        }
+        cx.notify();
+    }
+    fn select_all_visible_blocks(&mut self, cx: &mut Context<Self>) {
+        self.selected_block_ids = self.visible_editable_block_ids();
+        cx.notify();
+    }
+    fn move_selected_blocks_to(
+        &mut self,
+        target: quire_core::core::types::PageId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let ids = std::mem::take(&mut self.selected_block_ids);
+        self.block_menu_open = None;
+        let moved = self.session.move_blocks_to_page(&ids, target);
+        if moved > 0 {
+            self.status = format!("已移动 {moved} 个块（Ctrl+Z 可撤销）");
+            self.error = false;
+            self.sync_inputs(window, cx);
+            self.restore_focus(window, cx);
+            self.schedule_save(false, window, cx);
+        } else {
+            self.selected_block_ids = ids;
+            self.status = "移动失败：目标页面不可用".into();
+            self.error = true;
+        }
+        cx.notify();
+    }
+    fn block_sort_mode_key_down(
+        &mut self,
+        event: &KeyDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.block_sort_mode {
+            return;
+        }
+        if event.keystroke.modifiers.modified() {
+            return;
+        }
+        if event.keystroke.key == "escape" {
+            self.exit_block_sort_mode(window, cx);
+            cx.stop_propagation();
         }
     }
     fn escape_block_context_menu(&mut self, window: &mut Window) {
@@ -7448,25 +9578,20 @@ impl Workspace {
         }
     }
     fn block_menu_action_ids(&self, id: BlockId) -> Vec<u8> {
-        let mut actions = Vec::new();
-        if self
-            .session
-            .document
-            .block(id)
-            .is_some_and(|block| block.kind == BlockKind::Image)
-        {
-            actions.push(8);
-        }
-        actions.extend([0, 1, 2, 3, 6, 4, 5]);
-        if !self.session.page.locked
-            && self
-                .block_clipboard
-                .as_deref()
-                .is_some_and(block_clipboard_pasteable)
-        {
-            actions.push(7);
-        }
-        actions
+        block_menu_actions(
+            self.session
+                .document
+                .block(id)
+                .is_some_and(|block| block.kind == BlockKind::Image),
+            !self.session.page.locked
+                && self
+                    .block_clipboard
+                    .as_deref()
+                    .is_some_and(block_clipboard_pasteable),
+        )
+        .into_iter()
+        .map(|(_, action)| action)
+        .collect()
     }
     fn block_context_menu_key_down(
         &mut self,
@@ -7495,7 +9620,7 @@ impl Workspace {
                 })
                 .unwrap_or(1),
             BlockMenuMode::ImageWidth => 4,
-            BlockMenuMode::MoveToPage => (1 + self
+            BlockMenuMode::MoveSelection => (1 + self
                 .session
                 .pages
                 .iter()
@@ -7550,9 +9675,9 @@ impl Workspace {
                         self.set_image_width(id, *percent, window, cx);
                     }
                 }
-                BlockMenuMode::MoveToPage => {
+                BlockMenuMode::MoveSelection => {
                     if self.block_menu_selection == 0 {
-                        self.block_menu_open = Some((id, BlockMenuMode::Actions));
+                        self.block_menu_open = None;
                         self.block_menu_selection = 0;
                     } else if let Some(target) = self
                         .session
@@ -7564,8 +9689,7 @@ impl Workspace {
                         .nth(self.block_menu_selection - 1)
                         .map(|page| page.id)
                     {
-                        self.close_block_context_menu(window);
-                        self.move_block_to_page(id, target, window, cx);
+                        self.move_selected_blocks_to(target, window, cx);
                     }
                 }
             },
@@ -7599,9 +9723,9 @@ impl Workspace {
                 self.close_block_context_menu(window);
                 self.delete_block(block_id, window, cx);
             }
-            5 => {
-                self.block_menu_open = Some((block_id, BlockMenuMode::MoveToPage));
-                self.block_menu_selection = 0;
+            9 => {
+                self.close_block_context_menu(window);
+                self.enter_block_sort_mode(Some(block_id), window, cx);
             }
             7 => {
                 self.close_block_context_menu(window);
@@ -7825,6 +9949,7 @@ impl Workspace {
             self.title_input.clone(),
             self.search_input.clone(),
             self.find_input.clone(),
+            self.replace_input.clone(),
             self.link_target_input.clone(),
             self.note_title_input.clone(),
             self.note_body_input.clone(),
@@ -7893,6 +10018,7 @@ impl Workspace {
             self.title_input.clone(),
             self.search_input.clone(),
             self.find_input.clone(),
+            self.replace_input.clone(),
             self.link_target_input.clone(),
             self.note_title_input.clone(),
             self.note_body_input.clone(),
@@ -9520,6 +11646,127 @@ impl Workspace {
         self.restore_focus(window, cx);
         cx.notify();
     }
+    /// Pressing any resize handle arms a drag and the overlay that `render`
+    /// adds while one is armed owns every later move and the release, so the
+    /// drag keeps tracking once the cursor leaves the 6px-wide handle.
+    fn resize_drag_active(&self) -> bool {
+        self.sidebar_resizing || self.organizer_list_resizing || self.database_column_drag.is_some()
+    }
+
+    fn organizer_width(&self, window: &Window) -> f32 {
+        f32::from(window.viewport_size().width) / self.ui_zoom
+            - if self.sidebar_open {
+                self.sidebar_width
+            } else {
+                0.
+            }
+            - 28.
+    }
+
+    fn update_resize_drag(
+        &mut self,
+        event: &MouseMoveEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !event.dragging() {
+            return;
+        }
+        let zoom = quire_gpui::ui_scale::get();
+        let x = f32::from(event.position.x) / zoom;
+        if self.sidebar_resizing {
+            self.sidebar_width =
+                (x + self.sidebar_drag_offset).clamp(SIDEBAR_MIN_WIDTH, SIDEBAR_MAX_WIDTH);
+            cx.notify();
+            return;
+        }
+        if self.organizer_list_resizing {
+            let organizer_width = self.organizer_width(window);
+            let list_width = x + self.organizer_list_drag_offset;
+            if self.organizer_list_resize_notes {
+                // Notes: the drag moves the detail's left edge, so the detail
+                // width is what the clamp protects.
+                let detail =
+                    (organizer_width - list_width).clamp(340., (organizer_width - 320.).max(400.));
+                self.note_detail_drag_width = Some(detail);
+            } else {
+                self.organizer_task_list_width =
+                    list_width.clamp(240., (organizer_width - 380.).max(280.));
+            }
+            cx.notify();
+            return;
+        }
+        if let Some(drag) = &mut self.database_column_drag {
+            drag.preview_width = (drag.start_width + x - drag.start_x)
+                .clamp(drag.grid_width * 0.06, drag.grid_width * 1.06);
+            cx.notify();
+        }
+    }
+
+    fn finish_resize_drag(
+        &mut self,
+        event: &MouseUpEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let zoom = quire_gpui::ui_scale::get();
+        let x = f32::from(event.position.x) / zoom;
+        if self.sidebar_resizing {
+            self.sidebar_resizing = false;
+            self.session
+                .set_setting("gpui.sidebar-width", format!("{:.1}", self.sidebar_width));
+            self.schedule_save(true, window, cx);
+            cx.notify();
+            return;
+        }
+        if self.organizer_list_resizing {
+            self.organizer_list_resizing = false;
+            if self.organizer_list_resize_notes {
+                if let Some(detail) = self.note_detail_drag_width {
+                    self.session
+                        .set_setting("gpui.organizer.note-detail-width", format!("{detail:.1}"));
+                }
+            } else {
+                self.session.set_setting(
+                    "gpui.organizer.task-list-width",
+                    format!("{:.1}", self.organizer_task_list_width),
+                );
+            }
+            self.schedule_save(true, window, cx);
+            cx.notify();
+            return;
+        }
+        if let Some(mut drag) = self.database_column_drag.take() {
+            drag.preview_width = (drag.start_width + x - drag.start_x)
+                .clamp(drag.grid_width * 0.06, drag.grid_width * 1.06);
+            let permille =
+                ((drag.preview_width * 1000.0 / drag.grid_width).round() as u16).clamp(60, 1060);
+            if let Some(view) = self
+                .session
+                .databases
+                .views
+                .iter()
+                .find(|view| view.id == drag.view && view.db == drag.db)
+            {
+                let mut definition =
+                    quire_core::core::database_view::ViewDefinition::parse(&view.definition);
+                definition.set_width(drag.property, permille);
+                match self.session.set_database_view_definition(
+                    drag.block,
+                    drag.view,
+                    definition.to_text(),
+                ) {
+                    Ok(true) => self.schedule_save(true, window, cx),
+                    Ok(false) => {}
+                    Err(error) => {
+                        self.status = format!("数据库列宽保存失败：{error}");
+                        self.error = true;
+                    }
+                }
+            }
+            cx.notify();
+        }
+    }
     fn begin_database_column_drag(
         &mut self,
         block: BlockId,
@@ -9529,7 +11776,6 @@ impl Workspace {
         width: f32,
         grid_width: f32,
         event: &MouseDownEvent,
-        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         if self.session.page.locked || grid_width <= 0.0 {
@@ -9548,62 +11794,6 @@ impl Workspace {
         });
         cx.stop_propagation();
         cx.notify();
-
-        let workspace = cx.entity();
-        window.on_mouse_event({
-            let workspace = workspace.clone();
-            move |event: &MouseMoveEvent, _, _, cx| {
-                if !event.dragging() {
-                    return;
-                }
-                workspace.update(cx, |this, cx| {
-                    if let Some(drag) = &mut this.database_column_drag {
-                        let zoom = quire_gpui::ui_scale::get();
-                        let x = f32::from(event.position.x) / zoom;
-                        drag.preview_width = (drag.start_width + x - drag.start_x)
-                            .clamp(drag.grid_width * 0.06, drag.grid_width * 1.06);
-                        cx.notify();
-                    }
-                });
-            }
-        });
-        window.on_mouse_event(move |event: &MouseUpEvent, _, window, cx| {
-            workspace.update(cx, |this, cx| {
-                let Some(mut drag) = this.database_column_drag.take() else {
-                    return;
-                };
-                let zoom = quire_gpui::ui_scale::get();
-                let x = f32::from(event.position.x) / zoom;
-                drag.preview_width = (drag.start_width + x - drag.start_x)
-                    .clamp(drag.grid_width * 0.06, drag.grid_width * 1.06);
-                let permille = ((drag.preview_width * 1000.0 / drag.grid_width).round() as u16)
-                    .clamp(60, 1060);
-                if let Some(view) = this
-                    .session
-                    .databases
-                    .views
-                    .iter()
-                    .find(|view| view.id == drag.view && view.db == drag.db)
-                {
-                    let mut definition =
-                        quire_core::core::database_view::ViewDefinition::parse(&view.definition);
-                    definition.set_width(drag.property, permille);
-                    match this.session.set_database_view_definition(
-                        drag.block,
-                        drag.view,
-                        definition.to_text(),
-                    ) {
-                        Ok(true) => this.schedule_save(true, window, cx),
-                        Ok(false) => {}
-                        Err(error) => {
-                            this.status = format!("数据库列宽保存失败：{error}");
-                            this.error = true;
-                        }
-                    }
-                }
-                cx.notify();
-            });
-        });
     }
     fn commit_database_cell(
         &mut self,
@@ -10325,10 +12515,11 @@ impl Workspace {
         self.select_note(id, window, cx);
         self.schedule_save(true, window, cx);
     }
-    fn show_toast(&mut self, message: impl Into<String>, cx: &mut Context<Self>) {
+    fn show_toast(&mut self, message: impl Into<String>, detail: &str, cx: &mut Context<Self>) {
         self.toast_generation = self.toast_generation.wrapping_add(1);
         let generation = self.toast_generation;
         self.toast_message = Some(message.into());
+        self.toast_detail = detail.to_owned();
         let weak = cx.entity().downgrade();
         cx.spawn(async move |_, cx| {
             cx.background_executor()
@@ -10465,7 +12656,8 @@ impl Workspace {
         }
         self.commit_note_draft(window, cx);
         let tags = capture_tags(&body);
-        self.session
+        let id = self
+            .session
             .create_note_with_content(String::new(), body, tags);
         self.organizer_capture_open = false;
         self.organizer_capture_draft.clear();
@@ -10475,11 +12667,9 @@ impl Workspace {
         self.organizer_capture_input.update(cx, |input, cx| {
             input.reset(String::new(), Vec::new(), 0, cx);
         });
-        self.selected_note = None;
-        self.note_detail_open = false;
-        self.reset_organizer_item_inputs(cx);
+        self.select_note(id, window, cx);
         self.schedule_save(true, window, cx);
-        self.show_toast("已发送", cx);
+        self.show_toast("已发送", "笔记已保存到列表", cx);
         cx.notify();
     }
     fn organizer_capture_current_suggestion(&self) -> Option<String> {
@@ -10734,7 +12924,7 @@ impl Workspace {
         self.reset_organizer_item_inputs(cx);
         cx.notify();
     }
-    fn toggle_organizer_board_mode(&mut self, cx: &mut Context<Self>) {
+    fn toggle_organizer_board_mode(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.organizer_trash {
             return;
         }
@@ -10743,7 +12933,11 @@ impl Workspace {
             self.task_multi_select = false;
             self.selected_task_ids.clear();
         }
-        cx.notify();
+        self.session.set_setting(
+            "gpui.organizer.board-mode",
+            self.organizer_board_mode.to_string(),
+        );
+        self.schedule_save(true, window, cx);
     }
     fn toggle_task_done(
         &mut self,
@@ -11407,7 +13601,13 @@ impl Workspace {
         self.task_list_menu_open = None;
         self.task_list_color_open = None;
         self.organizer_trash = !self.organizer_trash;
-        self.organizer_board_mode = false;
+        // The bin has no board view, so entering it hides the columns without
+        // overwriting the stored choice; leaving the bin restores it.
+        self.organizer_board_mode = if self.organizer_trash {
+            false
+        } else {
+            bool_setting(self.session.setting("gpui.organizer.board-mode"), false)
+        };
         self.organizer_note_board_mode = false;
         self.note_multi_select = false;
         self.selected_note_ids.clear();
@@ -11711,7 +13911,7 @@ impl Workspace {
         }
         cx.notify();
     }
-    fn toggle_sidebar(&mut self, cx: &mut Context<Self>) {
+    fn toggle_sidebar(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let now = Instant::now();
         let from = self.sidebar_transition.map_or_else(
             || {
@@ -11732,6 +13932,9 @@ impl Workspace {
         self.sidebar_transition_seq = self.sidebar_transition_seq.wrapping_add(1);
         let transition_seq = self.sidebar_transition_seq;
         self.sidebar_transition = Some((transition_seq, from, to, now));
+        self.session
+            .set_setting("gpui.sidebar-open", self.sidebar_open.to_string());
+        self.schedule_save(true, window, cx);
         cx.notify();
         cx.spawn(async move |this, cx| {
             cx.background_executor().timer(MOTION_SETTLE).await;
@@ -11743,6 +13946,22 @@ impl Workspace {
             });
         })
         .detach();
+    }
+    fn toggle_favorites_collapsed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.favorites_collapsed = !self.favorites_collapsed;
+        self.session.set_setting(
+            "gpui.sidebar.favorites-collapsed",
+            self.favorites_collapsed.to_string(),
+        );
+        self.schedule_save(true, window, cx);
+    }
+    fn toggle_recents_collapsed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.recents_collapsed = !self.recents_collapsed;
+        self.session.set_setting(
+            "gpui.sidebar.recents-collapsed",
+            self.recents_collapsed.to_string(),
+        );
+        self.schedule_save(true, window, cx);
     }
     fn toggle_icon_picker(&mut self, cx: &mut Context<Self>) {
         self.icon_picker_open = !self.icon_picker_open;
@@ -12055,6 +14274,11 @@ impl Workspace {
             self.refresh_find_matches();
             self.active = None;
             self.title_edit_original = None;
+            // Block ids belong to the page that was open; sorting never
+            // survives a page switch.
+            self.block_sort_mode = false;
+            self.selected_block_ids.clear();
+            self.block_menu_open = None;
             let title = self.session.page.title.clone();
             self.title_input.update(cx, |input, cx| {
                 let len = title.len();
@@ -12353,7 +14577,7 @@ impl Workspace {
         match action {
             PaletteCommand::NewPage => self.add_page(window, cx),
             PaletteCommand::SearchPages => self.open_search(&SearchPages, window, cx),
-            PaletteCommand::ToggleSidebar => self.toggle_sidebar(cx),
+            PaletteCommand::ToggleSidebar => self.toggle_sidebar(window, cx),
             PaletteCommand::ToggleTheme => {
                 let next = if self.palette.id == "light" {
                     "midnight"
@@ -13235,6 +15459,12 @@ impl Workspace {
         self.schedule_save(false, window, cx);
     }
     fn focus(&mut self, id: BlockId, caret: usize, window: &mut Window, cx: &mut Context<Self>) {
+        // With the input map bounded to the viewport, the block about to be
+        // focused may have been scrolled out and dropped. Recreate its entity
+        // and attach its subscription here — an event turn, where a new
+        // subscription fires — before focusing, so the next keystroke always
+        // reaches the workspace.
+        self.ensure_input_subscribed(id, window, cx);
         if let Some(input) = self.inputs.get(&id.0).cloned() {
             self.set_active_block(id, cx);
             input.update(cx, |input, cx| {
@@ -13284,6 +15514,7 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.ensure_input_subscribed(id, window, cx);
         if let Some(input) = self.inputs.get(&id.0).cloned() {
             self.set_active_block(id, cx);
             input.update(cx, |input, cx| {
@@ -13466,6 +15697,181 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         self.move_find(-1, window, cx);
+    }
+    fn toggle_find_replace(
+        &mut self,
+        _: &FindReplace,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.find_open {
+            self.open_find(&Find, window, cx);
+        }
+        self.find_replace_open = !self.find_replace_open;
+        if self.find_replace_open {
+            let focus = self.replace_input.read(cx).focus.clone();
+            window.focus(&focus);
+        }
+        cx.notify();
+    }
+    /// The gates a replace has to pass before it touches data. A locked page
+    /// would refuse the write silently and a half-typed IME string would be
+    /// rewritten under the candidate window, so both answer out loud instead.
+    fn replace_allowed(&mut self, cx: &mut Context<Self>) -> bool {
+        if self.closing {
+            return false;
+        }
+        if self.session.page.locked {
+            self.status = "此页面已锁定，无法替换".into();
+            self.error = true;
+            cx.notify();
+            return false;
+        }
+        if self.composing(cx) {
+            self.status = "请先完成输入法组合输入，再替换".into();
+            self.error = true;
+            cx.notify();
+            return false;
+        }
+        true
+    }
+    /// Splices one block's matches in a single edit, so one undo step returns
+    /// one block rather than leaving a half-replaced sentence behind.
+    fn replace_block_matches(
+        &mut self,
+        id: BlockId,
+        ranges: &[Range<usize>],
+        replacement: &str,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(block) = self.session.document.block(id).cloned() else {
+            return false;
+        };
+        let text = apply_replacements(&block.text, ranges, replacement);
+        if text == block.text {
+            return false;
+        }
+        let caret = self
+            .inputs
+            .get(&id.0)
+            .map(|input| input.read(cx).buffer.caret().min(text.len()))
+            .unwrap_or(text.len());
+        self.session.replace(id, text.clone(), true);
+        self.invalidate_document_block(id);
+        let marks = self
+            .session
+            .document
+            .block(id)
+            .map(|block| block.marks.clone())
+            .unwrap_or_default();
+        if let Some(input) = self.inputs.get(&id.0) {
+            input.update(cx, |input, cx| input.reset(text.clone(), marks, caret, cx));
+        }
+        true
+    }
+    fn replace_current(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.replace_allowed(cx) {
+            return;
+        }
+        self.refresh_find_matches();
+        if self.find_index.is_none() && !self.find_matches.is_empty() {
+            self.move_find(1, window, cx);
+        }
+        let Some(index) = self.find_index else {
+            self.status = "没有可替换的内容".into();
+            self.error = false;
+            cx.notify();
+            return;
+        };
+        let Some((id, range)) = self.find_matches.get(index).cloned() else {
+            return;
+        };
+        if self.replace_block_matches(id, &[range], &self.replace_query.clone(), cx) {
+            self.refresh_find_matches();
+            self.find_index = if self.find_matches.is_empty() {
+                None
+            } else {
+                Some(index.min(self.find_matches.len() - 1))
+            };
+            self.sync_inputs(window, cx);
+            self.error = false;
+            self.schedule_save(false, window, cx);
+            // The bar, not the status line: `schedule_save` owns that line and
+            // writes its own state over anything a handler left there.
+            self.show_toast("已替换 1 处", "Ctrl+Z 可撤销", cx);
+        }
+        cx.notify();
+    }
+    fn replace_all(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.replace_allowed(cx) {
+            return;
+        }
+        self.refresh_find_matches();
+        if self.find_matches.is_empty() {
+            self.status = "没有可替换的内容".into();
+            self.error = false;
+            cx.notify();
+            return;
+        }
+        let mut ranges_by_block: BTreeMap<u64, Vec<Range<usize>>> = BTreeMap::new();
+        for (id, range) in self.find_matches.clone() {
+            ranges_by_block.entry(id.0).or_default().push(range);
+        }
+        let replacement = self.replace_query.clone();
+        // Every block is drafted first, then written as one undo entry: the
+        // status line promises Ctrl+Z, and a per-block history would hand back
+        // only the last block and leave the page half-replaced.
+        let mut drafts = Vec::new();
+        for (id, ranges) in ranges_by_block {
+            let Some(block) = self.session.document.block(BlockId(id)).cloned() else {
+                continue;
+            };
+            let text = apply_replacements(&block.text, &ranges, &replacement);
+            if text != block.text {
+                drafts.push((BlockId(id), ranges.len(), text));
+            }
+        }
+        let written = self.session.replace_many(
+            drafts
+                .iter()
+                .map(|(id, _, text)| (*id, text.clone()))
+                .collect(),
+        );
+        if written.is_empty() {
+            self.status = "没有可替换的内容".into();
+            self.error = false;
+            cx.notify();
+            return;
+        }
+        let mut replaced = 0usize;
+        for (id, count, text) in &drafts {
+            if !written.contains(id) {
+                continue;
+            }
+            replaced += count;
+            self.invalidate_document_block(*id);
+            let marks = self
+                .session
+                .document
+                .block(*id)
+                .map(|block| block.marks.clone())
+                .unwrap_or_default();
+            if let Some(input) = self.inputs.get(&id.0) {
+                let caret = input.read(cx).buffer.caret().min(text.len());
+                input.update(cx, |input, cx| input.reset(text.clone(), marks, caret, cx));
+            }
+        }
+        self.find_index = None;
+        self.refresh_find_matches();
+        self.sync_inputs(window, cx);
+        self.error = false;
+        self.schedule_save(false, window, cx);
+        self.show_toast(
+            format!("已替换 {replaced} 处（{} 个块）", written.len()),
+            "Ctrl+Z 可撤销",
+            cx,
+        );
+        cx.notify();
     }
     fn save(&mut self, _: &Save, window: &mut Window, cx: &mut Context<Self>) {
         self.commit_note_draft(window, cx);
@@ -14056,7 +16462,7 @@ impl Workspace {
             self.status = "速记已保存".into();
             self.error = false;
             *pending_note = None;
-            self.show_toast("已发送", cx);
+            self.show_toast("已发送", "笔记已保存到列表", cx);
         }
         cx.notify();
         true
@@ -14451,6 +16857,66 @@ impl Workspace {
             Vec::new()
         };
         let backlinks_empty = backlink_rows.is_empty();
+        let breadcrumb = page_breadcrumb(&self.session.pages, page_id)
+            .into_iter()
+            .map(|(ancestor, title)| {
+                div()
+                    .id(SharedString::from(format!("breadcrumb-{ancestor:?}")))
+                    .debug_selector(move || format!("breadcrumb-{ancestor:?}"))
+                    .flex_shrink_0()
+                    .px(px(4.))
+                    .py(px(2.))
+                    .rounded(px(4.))
+                    .cursor_pointer()
+                    .text_size(px(12.))
+                    .text_color(muted)
+                    .hover(|crumb| {
+                        crumb
+                            .bg(Palette::color(&p.elevated))
+                            .text_color(Palette::color(&p.fg))
+                    })
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.activate_page(ancestor, window, cx)
+                    }))
+                    .child(if title.trim().is_empty() {
+                        "未命名".to_owned()
+                    } else {
+                        title
+                    })
+                    .into_any_element()
+            })
+            .flat_map(|crumb| {
+                [
+                    crumb,
+                    div()
+                        .flex_shrink_0()
+                        .text_size(px(12.))
+                        .text_color(muted)
+                        .opacity(0.6)
+                        .child("›")
+                        .into_any_element(),
+                ]
+            })
+            .collect::<Vec<_>>();
+        let breadcrumb_bar = if breadcrumb.is_empty() {
+            None
+        } else {
+            Some(
+                div()
+                    .id("page-breadcrumb")
+                    .debug_selector(|| "page-breadcrumb".to_owned())
+                    .w_full()
+                    .mb(px(10.))
+                    .flex()
+                    .items_center()
+                    .gap(px(2.))
+                    .overflow_x_hidden()
+                    .text_size(px(12.))
+                    .text_color(muted)
+                    .children(breadcrumb)
+                    .into_any_element(),
+            )
+        };
         let cover_path = self
             .session
             .page
@@ -14472,6 +16938,7 @@ impl Workspace {
                         .mb(px(16.)),
                 )
             })
+            .when_some(breadcrumb_bar, |page, bar| page.child(bar))
             .child(
                 div()
                     .text_size(px(38.))
@@ -14520,6 +16987,171 @@ impl Workspace {
                 )
             })
             .into_any_element()
+    }
+
+    /// The hover chrome beside a document block: insert below, and a handle
+    /// that opens the block menu on a click and drags the block otherwise. It
+    /// rides the gutter left of the text column, so a row gaining or losing its
+    /// rail never moves the text under the caret.
+    ///
+    /// A rail is mounted for the row holding the pointer and, for one fade
+    /// longer, for the row that just lost it. The fading copy carries no
+    /// listeners and no cursor: chrome that is only transparent still swallows
+    /// the click aimed at it, and an invisible handle that hijacks a click is
+    /// worse than no handle.
+    fn block_rail(
+        &mut self,
+        block: &Block,
+        p: &Palette,
+        muted: Hsla,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        if self.organizer_open {
+            return None;
+        }
+        let id = block.id;
+        let hovered = self.document_hover == Some(id.0);
+        let fading = !hovered && self.document_rail_exit == Some(id.0);
+        if !hovered && !fading {
+            return None;
+        }
+        let gutter = div()
+            .absolute()
+            .left(px(-42.))
+            .top(px(2.))
+            .flex()
+            .items_center()
+            .gap(px(1.));
+        if fading {
+            return Some(
+                gutter
+                    .child(
+                        rail_button("+", px(12.), muted)
+                            .debug_selector(move || format!("rail-insert-{id:?}")),
+                    )
+                    .child(
+                        rail_button("⋮⋮", px(11.), muted)
+                            .debug_selector(move || format!("rail-handle-{id:?}")),
+                    )
+                    .with_animation(
+                        SharedString::from(format!("block-rail-out-{id:?}")),
+                        Animation::new(MOTION_HOVER).with_easing(rail_easing),
+                        |column, progress| column.opacity(1. - progress),
+                    )
+                    .into_any_element(),
+            );
+        }
+        let locked = self.session.page.locked;
+        let title = if block.text.trim().is_empty() {
+            block.kind.as_str().to_owned()
+        } else {
+            block.text.chars().take(64).collect::<String>()
+        };
+        let drag = EditorBlockDrag {
+            block: id,
+            page: self.session.page.id,
+            title,
+        };
+        let preview_background = Palette::color(&p.elevated).opacity(0.84);
+        let preview_foreground = Palette::color(&p.fg);
+        let preview_border = Palette::color(&p.border).opacity(0.7);
+        let hover_background = Palette::color(&p.elevated);
+        let hover_foreground = Palette::color(&p.fg);
+        let insert = rail_button("+", px(12.), muted)
+            .debug_selector(move || format!("rail-insert-{id:?}"))
+            .id(SharedString::from(format!("rail-insert-{id:?}")))
+            .cursor_pointer()
+            .hover(move |button| button.bg(hover_background).text_color(hover_foreground))
+            .on_click(cx.listener(move |this, _, window, cx| {
+                this.insert_block_after_and_open_menu(id, window, cx)
+            }));
+        let handle = rail_button("⋮⋮", px(11.), muted)
+            .debug_selector(move || format!("rail-handle-{id:?}"))
+            .id(SharedString::from(format!("rail-handle-{id:?}")))
+            .cursor(if locked {
+                CursorStyle::Arrow
+            } else {
+                CursorStyle::OpenHand
+            })
+            .hover(move |button| button.bg(hover_background).text_color(hover_foreground))
+            .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
+                let position = event.position();
+                this.toggle_block_context_menu(
+                    id,
+                    (f32::from(position.x), f32::from(position.y)),
+                    window,
+                    cx,
+                );
+            }))
+            .when(!locked, |handle| {
+                handle.on_drag(drag, move |drag, _, _, cx| {
+                    cx.new(|_| EditorBlockDragPreview {
+                        title: drag.title.clone(),
+                        background: preview_background,
+                        foreground: preview_foreground,
+                        border: preview_border,
+                    })
+                })
+            });
+        Some(
+            gutter
+                .child(insert)
+                .child(handle)
+                .with_animation(
+                    SharedString::from(format!("block-rail-in-{id:?}")),
+                    Animation::new(MOTION_HOVER).with_easing(rail_easing),
+                    |column, progress| column.opacity(progress),
+                )
+                .into_any_element(),
+        )
+    }
+
+    /// Records where the pointer is inside the document, and hands the row it
+    /// left to the fade-out layer.
+    ///
+    /// One pointer move delivers an enter to one row and a leave to the next,
+    /// and the two arrive in paint order rather than in the order that makes
+    /// sense: the leaving row can report first or last. Both arrivals have to
+    /// converge on the same state, so a leave only ever acts on the row it
+    /// names and never clears a hover that another row has already claimed.
+    fn track_document_hover(&mut self, hovered: bool, block: u64, cx: &mut Context<Self>) {
+        if hovered {
+            if self.document_hover == Some(block) {
+                return;
+            }
+            let previous = self.document_hover;
+            self.document_hover = Some(block);
+            if let Some(previous) = previous {
+                self.begin_document_rail_exit(previous, cx);
+            }
+            cx.notify();
+            return;
+        }
+        if self.document_hover != Some(block) {
+            return;
+        }
+        self.document_hover = None;
+        self.begin_document_rail_exit(block, cx);
+        cx.notify();
+    }
+
+    /// Keeps the row's rail mounted while it fades. The timer is guarded by a
+    /// sequence counter so an older fade cannot clear a newer one.
+    fn begin_document_rail_exit(&mut self, block: u64, cx: &mut Context<Self>) {
+        self.document_rail_exit_seq = self.document_rail_exit_seq.wrapping_add(1);
+        let seq = self.document_rail_exit_seq;
+        self.document_rail_exit = Some(block);
+        let weak = cx.entity().downgrade();
+        cx.spawn(async move |_, cx| {
+            cx.background_executor().timer(MOTION_HOVER_SETTLE).await;
+            let _ = weak.update(cx, |this, cx| {
+                if this.document_rail_exit_seq == seq {
+                    this.document_rail_exit = None;
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
     }
 
     fn render_document_block(
@@ -15214,298 +17846,9 @@ impl Workspace {
                 })
                 .child("− 分栏"),
         ];
-        let color_picker_view =
-            self.color_picker
-                .filter(|(id, _)| *id == block_id)
-                .map(|(_, background)| {
-                    anchored()
-                        .position_mode(AnchoredPositionMode::Local)
-                        .offset(point(px(34.), px(28.)))
-                        .child(
-                            div()
-                                .w(px(222.))
-                                .on_mouse_down_out(cx.listener(move |this, _, window, cx| {
-                                    this.dismiss_color_picker_after_mouse_down(
-                                        block_id, background, window, cx,
-                                    )
-                                }))
-                                .flex()
-                                .flex_wrap()
-                                .gap(px(5.))
-                                .p(px(7.))
-                                .rounded(px(7.))
-                                .border_1()
-                                .border_color(Palette::color(&p.border))
-                                .bg(Palette::color(&p.elevated))
-                                .shadow_lg()
-                                .track_focus(&self.block_color_focus)
-                                .children(ColorKind::ALL.into_iter().enumerate().map(
-                                    |(slot, _)| {
-                                        let slot = slot as i32;
-                                        let swatch = if background {
-                                            self.palette.block_bg(slot)
-                                        } else {
-                                            self.palette.block_text(slot)
-                                        };
-                                        div()
-                                            .id(SharedString::from(format!(
-                                                "block-color-{block_id:?}-{background}-{slot}"
-                                            )))
-                                            .size(px(19.))
-                                            .rounded(px(4.))
-                                            .border_1()
-                                            .border_color(
-                                                if self.block_color_selection == slot as usize {
-                                                    accent
-                                                } else {
-                                                    Palette::color(&p.border)
-                                                },
-                                            )
-                                            .bg(swatch)
-                                            .cursor_pointer()
-                                            .on_click(cx.listener(move |this, _, window, cx| {
-                                                this.set_block_color(
-                                                    block_id, background, slot, window, cx,
-                                                )
-                                            }))
-                                    },
-                                )),
-                        )
-                });
-        let block_context_popup =
-            self.block_menu_open
-                .filter(|(id, _)| *id == block_id)
-                .map(|(_, mode)| {
-                    let rows = if mode == BlockMenuMode::Convert {
-                        slash_items()
-                            .iter()
-                            .filter(|(_, _, action)| *action != SlashAction::Convert(kind))
-                            .enumerate()
-                            .map(|(index, (label, _, action))| {
-                                let action = *action;
-                                div()
-                                    .id(SharedString::from(format!(
-                                        "block-menu-kind-{block_id:?}-{action:?}"
-                                    )))
-                                    .w_full()
-                                    .h(px(28.))
-                                    .px(px(9.))
-                                    .flex()
-                                    .items_center()
-                                    .rounded(px(4.))
-                                    .cursor_pointer()
-                                    .text_size(px(12.))
-                                    .text_color(text)
-                                    .hover(|item| item.bg(Palette::color(&p.bg).opacity(0.3)))
-                                    .when(self.block_menu_selection == index + 1, |item| {
-                                        item.bg(Palette::color(&p.bg).opacity(0.38))
-                                    })
-                                    .on_click(cx.listener(move |this, _, window, cx| {
-                                        this.close_block_context_menu(window);
-                                        this.select_slash_action(block_id, action, window, cx);
-                                    }))
-                                    .child(*label)
-                                    .into_any_element()
-                            })
-                            .collect::<Vec<_>>()
-                    } else if mode == BlockMenuMode::ImageWidth {
-                        let selected = self
-                            .session
-                            .document
-                            .block(block_id)
-                            .map(|block| block.img_percent);
-                        [25u16, 50, 100]
-                            .into_iter()
-                            .enumerate()
-                            .map(|(index, percent)| {
-                                let is_selected = selected == Some(percent);
-                                div()
-                                    .id(SharedString::from(format!(
-                                        "block-menu-image-width-{block_id:?}-{percent}"
-                                    )))
-                                    .w_full()
-                                    .h(px(28.))
-                                    .px(px(9.))
-                                    .flex()
-                                    .items_center()
-                                    .justify_between()
-                                    .rounded(px(4.))
-                                    .cursor_pointer()
-                                    .text_size(px(12.))
-                                    .text_color(text)
-                                    .hover(|item| item.bg(Palette::color(&p.bg).opacity(0.3)))
-                                    .when(self.block_menu_selection == index + 1, |item| {
-                                        item.bg(Palette::color(&p.bg).opacity(0.38))
-                                    })
-                                    .on_click(cx.listener(move |this, _, window, cx| {
-                                        this.close_block_context_menu(window);
-                                        this.set_image_width(block_id, percent, window, cx);
-                                    }))
-                                    .child(format!("{percent}%"))
-                                    .when(is_selected, |row| row.child("✓"))
-                                    .into_any_element()
-                            })
-                            .collect::<Vec<_>>()
-                    } else if mode == BlockMenuMode::MoveToPage {
-                        self.session
-                            .pages
-                            .iter()
-                            .filter(|page| {
-                                !page.template && page.id != self.session.page.id && !page.locked
-                            })
-                            .enumerate()
-                            .map(|(index, page)| {
-                                let target = page.id;
-                                div()
-                                    .id(SharedString::from(format!(
-                                        "block-menu-move-to-{}-{block_id:?}",
-                                        target.0
-                                    )))
-                                    .w_full()
-                                    .h(px(28.))
-                                    .px(px(9.))
-                                    .flex()
-                                    .items_center()
-                                    .rounded(px(4.))
-                                    .cursor_pointer()
-                                    .text_size(px(12.))
-                                    .text_color(text)
-                                    .hover(|item| item.bg(Palette::color(&p.bg).opacity(0.3)))
-                                    .when(self.block_menu_selection == index + 1, |item| {
-                                        item.bg(Palette::color(&p.bg).opacity(0.38))
-                                    })
-                                    .on_click(cx.listener(move |this, _, window, cx| {
-                                        this.close_block_context_menu(window);
-                                        this.move_block_to_page(block_id, target, window, cx);
-                                    }))
-                                    .child(page.title.clone())
-                                    .into_any_element()
-                            })
-                            .collect::<Vec<_>>()
-                    } else {
-                        let mut actions = Vec::new();
-                        if kind == BlockKind::Image {
-                            actions.push(("图片宽度…", 8));
-                        }
-                        actions.extend([
-                            ("转换为…", 0),
-                            ("文字颜色", 1),
-                            ("背景颜色", 2),
-                            ("复制", 3),
-                            ("复制块", 6),
-                            ("删除", 4),
-                            ("移动到页面…", 5),
-                        ]);
-                        if !self.session.page.locked
-                            && self
-                                .block_clipboard
-                                .as_deref()
-                                .is_some_and(block_clipboard_pasteable)
-                        {
-                            actions.push(("粘贴到下方", 7));
-                        }
-                        actions
-                            .into_iter()
-                            .enumerate()
-                            .map(|(index, (label, action))| {
-                                div()
-                                    .id(SharedString::from(format!(
-                                        "block-menu-action-{block_id:?}-{action}"
-                                    )))
-                                    .w_full()
-                                    .h(px(28.))
-                                    .px(px(9.))
-                                    .flex()
-                                    .items_center()
-                                    .rounded(px(4.))
-                                    .cursor_pointer()
-                                    .text_size(px(12.))
-                                    .text_color(if action == 4 {
-                                        Hsla::from(rgb(0xe5534b))
-                                    } else {
-                                        text
-                                    })
-                                    .hover(|item| item.bg(Palette::color(&p.bg).opacity(0.3)))
-                                    .when(self.block_menu_selection == index, |item| {
-                                        item.bg(Palette::color(&p.bg).opacity(0.38))
-                                    })
-                                    .on_click(cx.listener(move |this, _, window, cx| {
-                                        this.run_block_context_action(block_id, action, window, cx);
-                                    }))
-                                    .child(label.to_owned())
-                                    .into_any_element()
-                            })
-                            .collect::<Vec<_>>()
-                    };
-                    let mut rows = rows;
-                    if mode == BlockMenuMode::MoveToPage && rows.is_empty() {
-                        rows.push(
-                            div()
-                                .w_full()
-                                .h(px(28.))
-                                .px(px(9.))
-                                .flex()
-                                .items_center()
-                                .text_size(px(11.))
-                                .text_color(muted)
-                                .child("没有可移动到的页面")
-                                .into_any_element(),
-                        );
-                    }
-                    if mode != BlockMenuMode::Actions {
-                        rows.insert(
-                            0,
-                            div()
-                                .id(SharedString::from(format!("block-menu-back-{block_id:?}")))
-                                .w_full()
-                                .h(px(28.))
-                                .px(px(9.))
-                                .flex()
-                                .items_center()
-                                .rounded(px(4.))
-                                .cursor_pointer()
-                                .text_size(px(12.))
-                                .text_color(muted)
-                                .hover(|item| item.bg(Palette::color(&p.bg).opacity(0.3)))
-                                .when(self.block_menu_selection == 0, |item| {
-                                    item.bg(Palette::color(&p.bg).opacity(0.38))
-                                })
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    this.block_menu_open = Some((block_id, BlockMenuMode::Actions));
-                                    this.block_menu_selection = 0;
-                                    cx.notify();
-                                }))
-                                .child("‹  返回")
-                                .into_any_element(),
-                        );
-                    }
-                    anchored()
-                        .anchor(Corner::TopRight)
-                        .position_mode(AnchoredPositionMode::Local)
-                        .offset(point(px(0.), px(30.)))
-                        .child(
-                            div()
-                                .id(SharedString::from(format!("block-menu-{block_id:?}")))
-                                .on_mouse_down_out(cx.listener(move |this, _, window, cx| {
-                                    this.dismiss_block_menu_after_mouse_down(block_id, window, cx)
-                                }))
-                                .track_focus(&self.block_menu_focus)
-                                .w(px(184.))
-                                .max_h(px(320.))
-                                .overflow_y_scroll()
-                                .p(px(4.))
-                                .flex()
-                                .flex_col()
-                                .gap(px(2.))
-                                .rounded(px(7.))
-                                .border_1()
-                                .border_color(Palette::color(&p.border))
-                                .bg(Palette::color(&p.elevated))
-                                .children(rows),
-                        )
-                });
         div()
                     .id(("block", block.id.0))
+                    .debug_selector(move || format!("doc-row-{block_id:?}"))
                     .can_drop(move |value, _, _| {
                         block_drop_enabled
                             && value
@@ -15524,32 +17867,21 @@ impl Workspace {
                     .flex()
                     .on_mouse_down(
                         MouseButton::Right,
-                        cx.listener(move |this, _, window, cx| {
-                            this.toggle_block_context_menu(block_id, window, cx);
+                        cx.listener(move |this, event: &MouseDownEvent, window, cx| {
+                            this.toggle_block_context_menu(
+                                block_id,
+                                (f32::from(event.position.x), f32::from(event.position.y)),
+                                window,
+                                cx,
+                            );
                         }),
                     )
                     .hover(|row| row.bg(Palette::color(&p.elevated).opacity(0.16)))
-                    .when(!self.session.page.locked, |row| {
-                        let preview_background = Palette::color(&p.elevated).opacity(0.84);
-                        let preview_foreground = Palette::color(&p.fg);
-                        let preview_border = Palette::color(&p.border).opacity(0.7);
-                        let drag = EditorBlockDrag {
-                            block: block_id,
-                            page: self.session.page.id,
-                            title: if block.text.trim().is_empty() {
-                                kind.as_str().to_owned()
-                            } else {
-                                block.text.chars().take(64).collect()
-                            },
-                        };
-                        row.on_drag(drag, move |drag, _, _, cx| {
-                            cx.new(|_| EditorBlockDragPreview {
-                                title: drag.title.clone(),
-                                background: preview_background,
-                                foreground: preview_foreground,
-                                border: preview_border,
-                            })
-                        })
+                    .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
+                        this.track_document_hover(*hovered, block_id.0, cx)
+                    }))
+                    .when_some(self.block_rail(block, p, muted, cx), |row, rail| {
+                        row.child(rail)
                     })
                     .items_start()
                     .gap(px(8.))
@@ -15741,7 +18073,7 @@ impl Workspace {
                                                                 cx.listener(
                                                                     move |this,
                                                                           event: &MouseDownEvent,
-                                                                          window,
+                                                                          _,
                                                                           cx| {
                                                                         this.begin_database_column_drag(
                                                                             drag_block,
@@ -15751,7 +18083,6 @@ impl Workspace {
                                                                             width,
                                                                             drag_grid,
                                                                             event,
-                                                                            window,
                                                                             cx,
                                                                         );
                                                                     },
@@ -19199,8 +21530,55 @@ impl Workspace {
                             .children(slash_options)
                             .children(mention_options),
                     )
-                    .when_some(color_picker_view, |row, picker| row.child(picker))
-                    .when_some(block_context_popup, |row, popup| row.child(popup))
+                    .when(
+                        self.block_sort_mode && self.session.editable(block_id),
+                        |row| {
+                            let sort_selected = self.selected_block_ids.contains(&block_id);
+                            let drag = EditorBlockDrag {
+                                block: block_id,
+                                page: self.session.page.id,
+                                title: if block.text.trim().is_empty() {
+                                    kind.as_str().to_owned()
+                                } else {
+                                    block.text.chars().take(64).collect()
+                                },
+                            };
+                            let preview_background = Palette::color(&p.elevated).opacity(0.84);
+                            let preview_foreground = Palette::color(&p.fg);
+                            let preview_border = Palette::color(&p.border).opacity(0.7);
+                            row.child(
+                                div()
+                                    .id(SharedString::from(format!(
+                                        "block-sort-overlay-{block_id:?}"
+                                    )))
+                                    .absolute()
+                                    .top_0()
+                                    .right_0()
+                                    .bottom_0()
+                                    .left_0()
+                                    .cursor_pointer()
+                                    .when(sort_selected, |overlay| {
+                                        overlay.bg(accent.opacity(0.14))
+                                    })
+                                    .on_mouse_down(
+                                        MouseButton::Left,
+                                        cx.listener(move |this, _, _, cx| {
+                                            this.toggle_block_selected(block_id, cx);
+                                            cx.stop_propagation();
+                                        }),
+                                    )
+                                    .on_drag(drag, move |drag, _, _, cx| {
+                                        let drag = drag.clone();
+                                        cx.new(|_| EditorBlockDragPreview {
+                                            title: drag.title.clone(),
+                                            background: preview_background,
+                                            foreground: preview_foreground,
+                                            border: preview_border,
+                                        })
+                                    }),
+                            )
+                        },
+                    )
                     .when(editor_block_drag_active, |row| {
                         let page = block_drop_page;
                         let enabled = block_drop_enabled;
@@ -19965,6 +22343,7 @@ impl Render for Workspace {
                                         ("撤销 / 重做", "Ctrl+Z / Ctrl+Shift+Z", "撤销 重做 undo redo"),
                                         ("查找页面", "Ctrl+P", "查找页面 搜索 search find page"),
                                         ("页面内查找", "Ctrl+F", "页面内查找 块 查找 find in page"),
+                        ("页内替换", "Ctrl+H", "替换 页内替换 查找替换 replace find"),
                                         ("界面缩放 / 复位", "Ctrl+= / Ctrl+- / Ctrl+0", "界面缩放 放大 缩小 复位 zoom"),
                                         ("新建块", "Enter", "新建块 段落 block"),
                                     ].into_iter().filter(|(label, key, keywords)| {
@@ -20198,6 +22577,7 @@ impl Render for Workspace {
                 let selected = page_id == self.session.page.id;
                 div()
                     .id(SharedString::from(format!("favorite-nav-{}", page_id.0)))
+                    .debug_selector(move || format!("favorite-nav-{}", page_id.0))
                     .h(px(28.))
                     .px(px(8.))
                     .flex()
@@ -20236,6 +22616,7 @@ impl Render for Workspace {
             .map(|(page_id, title)| {
                 div()
                     .id(SharedString::from(format!("recent-nav-{}", page_id.0)))
+                    .debug_selector(move || format!("recent-nav-{}", page_id.0))
                     .h(px(28.))
                     .px(px(8.))
                     .flex()
@@ -20688,6 +23069,269 @@ impl Render for Workspace {
                             )
                     })
             });
+        let block_menu_overlay = self.block_menu_open.map(|(menu_id, mode)| {
+            let current_kind = self.session.document.block(menu_id).map(|block| block.kind);
+            let rows = if mode == BlockMenuMode::Convert {
+                slash_items()
+                    .iter()
+                    .filter(|(_, _, action)| {
+                        current_kind.is_none_or(|kind| *action != SlashAction::Convert(kind))
+                    })
+                    .enumerate()
+                    .map(|(index, (label, _, action))| {
+                        let action = *action;
+                        div()
+                            .id(SharedString::from(format!(
+                                "block-menu-kind-{menu_id:?}-{action:?}"
+                            )))
+                            .w_full()
+                            .h(px(28.))
+                            .px(px(9.))
+                            .flex()
+                            .items_center()
+                            .rounded(px(4.))
+                            .cursor_pointer()
+                            .text_size(px(12.))
+                            .text_color(text)
+                            .hover(|item| item.bg(Palette::color(&p.bg).opacity(0.3)))
+                            .when(self.block_menu_selection == index + 1, |item| {
+                                item.bg(Palette::color(&p.bg).opacity(0.38))
+                            })
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.close_block_context_menu(window);
+                                this.select_slash_action(menu_id, action, window, cx);
+                            }))
+                            .child(*label)
+                            .into_any_element()
+                    })
+                    .collect::<Vec<_>>()
+            } else if mode == BlockMenuMode::ImageWidth {
+                let selected = self
+                    .session
+                    .document
+                    .block(menu_id)
+                    .map(|block| block.img_percent);
+                [25u16, 50, 100]
+                    .into_iter()
+                    .enumerate()
+                    .map(|(index, percent)| {
+                        let is_selected = selected == Some(percent);
+                        div()
+                            .id(SharedString::from(format!(
+                                "block-menu-image-width-{menu_id:?}-{percent}"
+                            )))
+                            .w_full()
+                            .h(px(28.))
+                            .px(px(9.))
+                            .flex()
+                            .items_center()
+                            .justify_between()
+                            .rounded(px(4.))
+                            .cursor_pointer()
+                            .text_size(px(12.))
+                            .text_color(text)
+                            .hover(|item| item.bg(Palette::color(&p.bg).opacity(0.3)))
+                            .when(self.block_menu_selection == index + 1, |item| {
+                                item.bg(Palette::color(&p.bg).opacity(0.38))
+                            })
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.close_block_context_menu(window);
+                                this.set_image_width(menu_id, percent, window, cx);
+                            }))
+                            .child(format!("{percent}%"))
+                            .when(is_selected, |row| row.child("✓"))
+                            .into_any_element()
+                    })
+                    .collect::<Vec<_>>()
+            } else if mode == BlockMenuMode::MoveSelection {
+                self.session
+                    .pages
+                    .iter()
+                    .filter(|page| {
+                        !page.template && page.id != self.session.page.id && !page.locked
+                    })
+                    .enumerate()
+                    .map(|(index, page)| {
+                        let target = page.id;
+                        div()
+                            .id(SharedString::from(format!(
+                                "block-menu-move-selection-{}-{menu_id:?}",
+                                target.0
+                            )))
+                            .w_full()
+                            .h(px(28.))
+                            .px(px(9.))
+                            .flex()
+                            .items_center()
+                            .justify_between()
+                            .rounded(px(4.))
+                            .cursor_pointer()
+                            .text_size(px(12.))
+                            .text_color(text)
+                            .hover(|item| item.bg(Palette::color(&p.bg).opacity(0.3)))
+                            .when(self.block_menu_selection == index + 1, |item| {
+                                item.bg(Palette::color(&p.bg).opacity(0.38))
+                            })
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.move_selected_blocks_to(target, window, cx);
+                            }))
+                            .child(page.title.clone())
+                            .into_any_element()
+                    })
+                    .collect::<Vec<_>>()
+            } else {
+                let actions = block_menu_actions(
+                    current_kind == Some(BlockKind::Image),
+                    !self.session.page.locked
+                        && self
+                            .block_clipboard
+                            .as_deref()
+                            .is_some_and(block_clipboard_pasteable),
+                );
+                actions
+                    .into_iter()
+                    .enumerate()
+                    .map(|(index, (label, action))| {
+                        div()
+                            .id(SharedString::from(format!(
+                                "block-menu-action-{menu_id:?}-{action}"
+                            )))
+                            .w_full()
+                            .h(px(28.))
+                            .px(px(9.))
+                            .flex()
+                            .items_center()
+                            .rounded(px(4.))
+                            .cursor_pointer()
+                            .text_size(px(12.))
+                            .text_color(if action == 4 {
+                                Hsla::from(rgb(0xe5534b))
+                            } else {
+                                text
+                            })
+                            .hover(|item| item.bg(Palette::color(&p.bg).opacity(0.3)))
+                            .when(self.block_menu_selection == index, |item| {
+                                item.bg(Palette::color(&p.bg).opacity(0.38))
+                            })
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.run_block_context_action(menu_id, action, window, cx);
+                            }))
+                            .child(label.to_owned())
+                            .into_any_element()
+                    })
+                    .collect::<Vec<_>>()
+            };
+            let mut rows = rows;
+            if mode == BlockMenuMode::MoveSelection && rows.is_empty() {
+                rows.push(
+                    div()
+                        .w_full()
+                        .h(px(28.))
+                        .px(px(9.))
+                        .flex()
+                        .items_center()
+                        .text_size(px(11.))
+                        .text_color(muted)
+                        .child("没有可移动到的页面")
+                        .into_any_element(),
+                );
+            }
+            if mode != BlockMenuMode::Actions && mode != BlockMenuMode::MoveSelection {
+                rows.insert(
+                    0,
+                    div()
+                        .id(SharedString::from(format!("block-menu-back-{menu_id:?}")))
+                        .w_full()
+                        .h(px(28.))
+                        .px(px(9.))
+                        .flex()
+                        .items_center()
+                        .rounded(px(4.))
+                        .cursor_pointer()
+                        .text_size(px(12.))
+                        .text_color(muted)
+                        .hover(|item| item.bg(Palette::color(&p.bg).opacity(0.3)))
+                        .when(self.block_menu_selection == 0, |item| {
+                            item.bg(Palette::color(&p.bg).opacity(0.38))
+                        })
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.block_menu_open = Some((menu_id, BlockMenuMode::Actions));
+                            this.block_menu_selection = 0;
+                            cx.notify();
+                        }))
+                        .child("‹  返回")
+                        .into_any_element(),
+                );
+            }
+            div()
+                .id("block-context-menu-overlay")
+                .absolute()
+                .left(px(self.block_menu_at.0))
+                .top(px(self.block_menu_at.1))
+                .on_mouse_down_out(cx.listener(move |this, _, window, cx| {
+                    this.dismiss_block_menu_after_mouse_down(menu_id, window, cx)
+                }))
+                .track_focus(&self.block_menu_focus)
+                .w(px(184.))
+                .max_h(px(320.))
+                .overflow_y_scroll()
+                .p(px(4.))
+                .flex()
+                .flex_col()
+                .gap(px(2.))
+                .rounded(px(7.))
+                .border_1()
+                .border_color(Palette::color(&p.border))
+                .bg(Palette::color(&p.elevated))
+                .shadow_lg()
+                .children(rows)
+        });
+        let color_picker_overlay = self.color_picker.map(|(picker_id, background)| {
+            div()
+                .id("block-color-picker-overlay")
+                .absolute()
+                .left(px(self.color_picker_at.0))
+                .top(px(self.color_picker_at.1))
+                .on_mouse_down_out(cx.listener(move |this, _, window, cx| {
+                    this.dismiss_color_picker_after_mouse_down(picker_id, background, window, cx)
+                }))
+                .w(px(222.))
+                .flex()
+                .flex_wrap()
+                .gap(px(5.))
+                .p(px(7.))
+                .rounded(px(7.))
+                .border_1()
+                .border_color(Palette::color(&p.border))
+                .bg(Palette::color(&p.elevated))
+                .shadow_lg()
+                .track_focus(&self.block_color_focus)
+                .children(ColorKind::ALL.into_iter().enumerate().map(|(slot, _)| {
+                    let slot = slot as i32;
+                    let swatch = if background {
+                        self.palette.block_bg(slot)
+                    } else {
+                        self.palette.block_text(slot)
+                    };
+                    div()
+                        .id(SharedString::from(format!(
+                            "block-color-{picker_id:?}-{background}-{slot}"
+                        )))
+                        .size(px(19.))
+                        .rounded(px(4.))
+                        .border_1()
+                        .border_color(if self.block_color_selection == slot as usize {
+                            accent
+                        } else {
+                            Palette::color(&p.border)
+                        })
+                        .bg(swatch)
+                        .cursor_pointer()
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.set_block_color(picker_id, background, slot, window, cx)
+                        }))
+                }))
+        });
         let page_context_overlay = self.page_context_menu.and_then(|(page_id, x, y)| {
             self.session
                 .pages
@@ -21127,61 +23771,145 @@ impl Render for Workspace {
         } else {
             div().id("link-editor-closed")
         };
-        let find_bar = if self.find_open {
-            let count = self.find_matches.len();
-            let position = self
-                .find_index
-                .map(|index| format!("{} / {count}", index + 1))
-                .unwrap_or_else(|| {
-                    if count == 0 {
-                        "无结果".into()
-                    } else {
-                        format!("{count} 个结果")
-                    }
-                });
-            div()
-                .id("find-bar")
-                .w_full()
-                .h(px(38.))
-                .px(px(12.))
-                .flex()
-                .items_center()
-                .gap(px(8.))
-                .border_b_1()
-                .border_color(Palette::color(&p.border))
-                .child(div().flex_1().min_w_0().child(self.find_input.clone()))
-                .child(div().text_size(px(11.)).text_color(muted).child(position))
-                .child(
-                    div()
-                        .id("find-previous")
-                        .px(px(6.))
-                        .cursor_pointer()
-                        .hover(|button| button.bg(Palette::color(&p.elevated)))
-                        .on_click(cx.listener(|this, _, window, cx| this.move_find(-1, window, cx)))
-                        .child("↑"),
-                )
-                .child(
-                    div()
-                        .id("find-next")
-                        .px(px(6.))
-                        .cursor_pointer()
-                        .hover(|button| button.bg(Palette::color(&p.elevated)))
-                        .on_click(cx.listener(|this, _, window, cx| this.move_find(1, window, cx)))
-                        .child("↓"),
-                )
-                .child(
-                    div()
-                        .id("find-close")
-                        .px(px(6.))
-                        .cursor_pointer()
-                        .text_color(muted)
-                        .hover(|button| button.bg(Palette::color(&p.elevated)))
-                        .on_click(cx.listener(|this, _, window, cx| this.close_find(window, cx)))
-                        .child("×"),
-                )
-        } else {
-            div().id("find-bar-closed")
-        };
+        let find_bar =
+            if self.find_open {
+                let count = self.find_matches.len();
+                let position = self
+                    .find_index
+                    .map(|index| format!("{} / {count}", index + 1))
+                    .unwrap_or_else(|| {
+                        if count == 0 {
+                            "无结果".into()
+                        } else {
+                            format!("{count} 个结果")
+                        }
+                    });
+                div()
+                    .id("find-bar")
+                    .debug_selector(|| "find-bar".to_owned())
+                    .w_full()
+                    .flex()
+                    .flex_col()
+                    .border_b_1()
+                    .border_color(Palette::color(&p.border))
+                    .child(
+                        div()
+                            .id("find-query-row")
+                            .debug_selector(|| "find-query-row".to_owned())
+                            .w_full()
+                            .h(px(38.))
+                            .px(px(12.))
+                            .flex()
+                            .items_center()
+                            .gap(px(8.))
+                            .child(div().flex_1().min_w_0().child(self.find_input.clone()))
+                            .child(div().text_size(px(11.)).text_color(muted).child(position))
+                            .child(
+                                div()
+                                    .id("find-toggle-replace")
+                                    .debug_selector(|| "find-toggle-replace".to_owned())
+                                    .px(px(6.))
+                                    .cursor_pointer()
+                                    .text_color(if self.find_replace_open {
+                                        accent
+                                    } else {
+                                        muted
+                                    })
+                                    .hover(|button| button.bg(Palette::color(&p.elevated)))
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.find_replace_open = !this.find_replace_open;
+                                        cx.notify();
+                                    }))
+                                    .child("替换"),
+                            )
+                            .child(
+                                div()
+                                    .id("find-previous")
+                                    .debug_selector(|| "find-previous".to_owned())
+                                    .px(px(6.))
+                                    .cursor_pointer()
+                                    .hover(|button| button.bg(Palette::color(&p.elevated)))
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.move_find(-1, window, cx)
+                                    }))
+                                    .child("↑"),
+                            )
+                            .child(
+                                div()
+                                    .id("find-next")
+                                    .debug_selector(|| "find-next".to_owned())
+                                    .px(px(6.))
+                                    .cursor_pointer()
+                                    .hover(|button| button.bg(Palette::color(&p.elevated)))
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.move_find(1, window, cx)
+                                    }))
+                                    .child("↓"),
+                            )
+                            .child(
+                                div()
+                                    .id("find-close")
+                                    .debug_selector(|| "find-close".to_owned())
+                                    .px(px(6.))
+                                    .cursor_pointer()
+                                    .text_color(muted)
+                                    .hover(|button| button.bg(Palette::color(&p.elevated)))
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.close_find(window, cx)
+                                    }))
+                                    .child("×"),
+                            ),
+                    )
+                    .when(self.find_replace_open, |bar| {
+                        bar.child(
+                            div()
+                                .id("find-replace-row")
+                                .debug_selector(|| "find-replace-row".to_owned())
+                                .w_full()
+                                .h(px(34.))
+                                .px(px(12.))
+                                .pb(px(4.))
+                                .flex()
+                                .items_center()
+                                .gap(px(8.))
+                                .child(div().flex_1().min_w_0().child(self.replace_input.clone()))
+                                .child(
+                                    div()
+                                        .id("replace-current")
+                                        .debug_selector(|| "replace-current".to_owned())
+                                        .px(px(8.))
+                                        .py(px(3.))
+                                        .rounded(px(4.))
+                                        .cursor_pointer()
+                                        .border_1()
+                                        .border_color(Palette::color(&p.border))
+                                        .hover(|button| button.bg(Palette::color(&p.elevated)))
+                                        .on_click(cx.listener(|this, _, window, cx| {
+                                            this.replace_current(window, cx)
+                                        }))
+                                        .child("替换"),
+                                )
+                                .child(
+                                    div()
+                                        .id("replace-all")
+                                        .debug_selector(|| "replace-all".to_owned())
+                                        .px(px(8.))
+                                        .py(px(3.))
+                                        .rounded(px(4.))
+                                        .cursor_pointer()
+                                        .border_1()
+                                        .border_color(Palette::color(&p.border))
+                                        .hover(|button| button.bg(Palette::color(&p.elevated)))
+                                        .on_click(cx.listener(|this, _, window, cx| {
+                                            this.replace_all(window, cx)
+                                        }))
+                                        .child("全部替换"),
+                                ),
+                        )
+                    })
+            } else {
+                div().id("find-bar-closed")
+            };
         let rows = self.visible_document_blocks();
         let mut notes = (if self.organizer_trash {
             self.session.organizer.trashed_notes().collect::<Vec<_>>()
@@ -21258,10 +23986,19 @@ impl Render for Workspace {
         };
         let organizer_single_pane =
             self.note_detail_open || organizer_width < 720. && organizer_detail_open;
-        let organizer_navigation_visible =
-            self.organizer_tasks && (!organizer_detail_open || organizer_width >= 920.);
-        let note_detail_width = (organizer_width * 0.54).clamp(340., 620.);
-        let task_list_width = if organizer_detail_open { 300. } else { 400. };
+        let organizer_navigation_visible = self.organizer_tasks
+            && !self.organizer_board_mode
+            && (!organizer_detail_open || organizer_width >= 920.);
+        let note_detail_width = self
+            .note_detail_drag_width
+            .unwrap_or_else(|| (organizer_width * 0.54).clamp(340., 620.))
+            .clamp(340., (organizer_width - 320.).max(400.));
+        let task_list_width = if organizer_detail_open {
+            self.organizer_task_list_width
+                .clamp(240., (organizer_width - 380.).max(280.))
+        } else {
+            400.
+        };
         let note_card_width = if organizer_detail_open && !organizer_single_pane {
             ((organizer_width - note_detail_width - 40.) / 2. - 6.).max(180.)
         } else {
@@ -22027,7 +24764,9 @@ impl Render for Workspace {
                     .rounded(px(9.))
                     .border_1()
                     .border_color(Palette::color(&p.border))
-                    .bg(Palette::color(&p.bg).opacity(0.2))
+                    // A light-on-dark 3% fill reads as a surface; the old bg
+                    // fill at 20% vanished against the dark page.
+                    .bg(Palette::color(&p.fg).opacity(0.03))
                     .flex()
                     .flex_col()
                     .gap(px(9.))
@@ -22925,10 +25664,23 @@ impl Render for Workspace {
                                 div().flex().flex_col().gap(px(3.))
                                     .child(div().text_size(px(11.)).text_color(muted).mb(px(2.)).child("视图"))
                                     .children(task_smart_view_buttons)
-                                    .child(div().text_size(px(11.)).text_color(muted).mt(px(7.)).mb(px(2.)).child("清单"))
+                                    .when(!task_list_buttons.is_empty(), |group| group.child(
+                                        div().text_size(px(11.)).text_color(muted).mt(px(7.)).mb(px(2.)).child("清单"),
+                                    ))
                                     .child(div().id("organizer-task-list-selector").flex().flex_col().gap(px(3.)).overflow_y_scroll().children(task_list_buttons))
                             ))
-                            .child(div().text_size(px(11.)).text_color(muted).mt(px(6.)).child(if organizer_tag_path.is_empty() { "标签".to_owned() } else { organizer_tag_path.replace('/', " / ") }))
+                            .when(
+                                !organizer_tag_buttons.is_empty() || self.organizer_tag.is_some(),
+                                |nav| {
+                                    nav.child(div().text_size(px(11.)).text_color(muted).mt(px(6.)).child(
+                                        if organizer_tag_path.is_empty() {
+                                            "标签".to_owned()
+                                        } else {
+                                            organizer_tag_path.replace('/', " / ")
+                                        },
+                                    ))
+                                },
+                            )
                             .when(self.organizer_tag.is_some(), |nav| {
                                 let parent_path = organizer_tag_path.rsplit_once('/').map(|(parent, _)| parent.to_owned()).unwrap_or_default();
                                 nav.child(
@@ -23027,106 +25779,125 @@ impl Render for Workspace {
                             .flex_wrap()
                             .gap(px(6.))
                             .justify_between()
-                            .child(div().flex_1().min_w(px(120.)).text_size(px(18.)).font_weight(FontWeight::SEMIBOLD).child(if self.organizer_tasks {
-                                format!("{task_view_title}  {task_count} 项待办")
-                            } else if self.organizer_trash {
-                                format!("回收站 · {note_count} 项")
-                            } else {
-                                format!("全部笔记 · {note_count} 条")
-                            }))
-                            .when(self.organizer_tasks || self.organizer_trash, |header| header.child(
+                            .child(
                                 div()
-                                    .id("organizer-create-note")
-                                    .px(px(8.))
-                                    .py(px(4.))
-                                    .rounded(px(4.))
-                                    .cursor_pointer()
-                                    .text_color(accent)
-                                    .hover(|button| button.bg(Palette::color(&p.elevated)))
-                                    .when(!self.organizer_trash, |button| {
-                                        button.on_click(cx.listener(|this, _, window, cx| {
-                                            this.create_task(window, cx);
-                                        }))
-                                    })
-                                    .when(self.organizer_trash, |button| {
-                                        button
-                                            .text_color(Hsla::from(rgb(0xe5534b)))
-                                            .on_click(cx.listener(|this, _, window, cx| {
-                                                this.empty_organizer_bin(window, cx)
-                                            }))
-                                    })
-                                    .child(if self.organizer_trash {
-                                        "清空回收站"
+                                    .flex_1()
+                                    .min_w(px(120.))
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(8.))
+                                    .overflow_hidden()
+                                    .child(
+                                        div()
+                                            .min_w_0()
+                                            .text_size(px(16.))
+                                            .font_weight(FontWeight::SEMIBOLD)
+                                            .whitespace_nowrap()
+                                            .overflow_hidden()
+                                            .child(if self.organizer_tasks {
+                                                task_view_title.clone()
+                                            } else if self.organizer_trash {
+                                                "回收站".to_owned()
+                                            } else {
+                                                "全部笔记".to_owned()
+                                            }),
+                                    )
+                                    .child(
+                                        div()
+                                            .flex_shrink_0()
+                                            .text_size(px(11.))
+                                            .text_color(muted)
+                                            .child(if self.organizer_tasks {
+                                                format!("{task_count} 项待办")
+                                            } else if self.organizer_trash {
+                                                format!("{note_count} 项")
+                                            } else {
+                                                format!("{note_count} 条")
+                                            }),
+                                    ),
+                            )
+                            .when(self.organizer_tasks || self.organizer_trash, |header| header.child(
+                                toolbar_chip(
+                                    if self.organizer_trash {
+                                        "清空回收站".into()
                                     } else if self.organizer_tasks {
-                                        "＋ 新建任务"
+                                        "＋ 新建任务".into()
                                     } else {
-                                        "＋ 新建笔记"
-                                    }),
+                                        "＋ 新建笔记".into()
+                                    },
+                                    if self.organizer_trash {
+                                        Hsla::from(rgb(0xe5534b))
+                                    } else {
+                                        accent
+                                    },
+                                    false,
+                                    &p,
+                                )
+                                .id("organizer-create-note")
+                                .when(!self.organizer_trash, |button| {
+                                    button.on_click(cx.listener(|this, _, window, cx| {
+                                        this.create_task(window, cx);
+                                    }))
+                                })
+                                .when(self.organizer_trash, |button| {
+                                    button
+                                        .on_click(cx.listener(|this, _, window, cx| {
+                                            this.empty_organizer_bin(window, cx)
+                                        }))
+                                }),
                             ))
                             .when(self.organizer_tasks && !self.organizer_trash, |row| {
                                 row.child(
-                                    div()
-                                        .id("organizer-task-view-mode")
-                                        .px(px(7.))
-                                        .py(px(4.))
-                                        .rounded(px(4.))
-                                        .cursor_pointer()
-                                        .text_color(accent)
-                                        .hover(|button| button.bg(Palette::color(&p.elevated)))
-                                        .on_click(cx.listener(|this, _, _, cx| {
-                                            this.toggle_organizer_board_mode(cx)
-                                        }))
-                                        .child(if self.organizer_board_mode { "列表" } else { "平铺" }),
-                                ).child(
-                                    div()
-                                        .id("organizer-create-task-list")
-                                        .px(px(7.))
-                                        .py(px(4.))
-                                        .rounded(px(4.))
-                                        .cursor_pointer()
-                                        .text_color(muted)
-                                        .hover(|button| button.bg(Palette::color(&p.elevated)))
-                                        .on_click(cx.listener(|this, _, window, cx| {
-                                            this.create_task_list(window, cx)
-                                        }))
-                                        .child("＋清单"),
+                                    toolbar_chip(
+                                        if self.organizer_board_mode { "列表".into() } else { "平铺".into() },
+                                        accent,
+                                        false,
+                                        &p,
+                                    )
+                                    .id("organizer-task-view-mode")
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.toggle_organizer_board_mode(window, cx)
+                                    })),
                                 )
                                 .child(
-                                    div()
-                                        .id("organizer-task-multiselect-toggle")
-                                        .px(px(7.))
-                                        .py(px(4.))
-                                        .rounded(px(4.))
-                                        .cursor_pointer()
-                                        .text_color(if self.task_multi_select { accent } else { muted })
-                                        .hover(|button| button.bg(Palette::color(&p.elevated)))
+                                    toolbar_chip("＋清单".into(), muted, false, &p)
+                                        .id("organizer-create-task-list")
                                         .on_click(cx.listener(|this, _, window, cx| {
-                                            this.toggle_task_multi_select_mode(window, cx);
-                                        }))
-                                        .child(if self.task_multi_select { "取消多选" } else { "多选" }),
+                                            this.create_task_list(window, cx)
+                                        })),
+                                )
+                                .child(
+                                    toolbar_chip(
+                                        if self.task_multi_select { "取消多选".into() } else { "多选".into() },
+                                        if self.task_multi_select { accent } else { muted },
+                                        self.task_multi_select,
+                                        &p,
+                                    )
+                                    .id("organizer-task-multiselect-toggle")
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.toggle_task_multi_select_mode(window, cx);
+                                    })),
                                 )
                                 .when(self.task_multi_select, |row| {
                                     let ids = visible_task_ids.clone();
                                     let all_selected = !ids.is_empty()
                                         && ids.iter().all(|id| self.selected_task_ids.contains(id));
                                     row.child(
-                                        div()
-                                            .id("organizer-task-select-all")
-                                            .px(px(7.))
-                                            .py(px(4.))
-                                            .rounded(px(4.))
-                                            .cursor_pointer()
-                                            .text_color(muted)
-                                            .hover(|button| button.bg(Palette::color(&p.elevated)))
-                                            .on_click(cx.listener(move |this, _, _, cx| {
-                                                if all_selected {
-                                                    this.selected_task_ids.clear();
-                                                } else {
-                                                    this.selected_task_ids = ids.iter().copied().collect();
-                                                }
-                                                cx.notify();
-                                            }))
-                                            .child(if all_selected { "取消全选" } else { "全选" }),
+                                        toolbar_chip(
+                                            if all_selected { "取消全选".into() } else { "全选".into() },
+                                            muted,
+                                            false,
+                                            &p,
+                                        )
+                                        .id("organizer-task-select-all")
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            if all_selected {
+                                                this.selected_task_ids.clear();
+                                            } else {
+                                                this.selected_task_ids = ids.iter().copied().collect();
+                                            }
+                                            cx.notify();
+                                        })),
                                     )
                                 })
                             }),
@@ -23145,62 +25916,47 @@ impl Render for Workspace {
                                 .when(!self.organizer_trash, |toolbar| {
                                     let ids = visible_note_ids.clone();
                                     toolbar.child(
-                                        div()
+                                        toolbar_chip("复制全部".into(), muted, false, &p)
                                             .id("organizer-note-copy-all")
-                                            .px(px(8.))
-                                            .py(px(6.))
-                                            .rounded(px(5.))
-                                            .cursor_pointer()
-                                            .text_color(accent)
-                                            .hover(|button| {
-                                                button.bg(Palette::color(&p.bg).opacity(0.25))
-                                            })
                                             .on_click(cx.listener(move |this, _, _, cx| {
                                                 this.copy_all_visible_notes(&ids, cx)
-                                            }))
-                                            .child("复制全部"),
+                                            })),
                                     ).child(
-                                        div().id("organizer-note-command-open").px(px(8.)).py(px(6.))
-                                            .rounded(px(5.)).cursor_pointer().text_color(accent)
-                                            .hover(|button| button.bg(Palette::color(&p.bg).opacity(0.25)))
-                                            .on_click(cx.listener(|this, _, window, cx| this.open_organizer_commands(false, window, cx)))
-                                            .child("指令…"),
+                                        toolbar_chip("指令…".into(), accent, false, &p)
+                                            .id("organizer-note-command-open")
+                                            .on_click(cx.listener(|this, _, window, cx| this.open_organizer_commands(false, window, cx))),
                                     )
                                 })
                                 .child(
-                                    div()
-                                        .id("organizer-note-sort-toggle")
-                                        .px(px(8.))
-                                        .py(px(6.))
-                                        .rounded(px(5.))
-                                        .cursor_pointer()
-                                        .text_color(muted)
-                                        .hover(|row| row.bg(Palette::color(&p.bg).opacity(0.25)))
-                                        .on_click(cx.listener(|this, _, _, cx| {
-                                            this.note_sort_mode = (this.note_sort_mode + 1) % 4;
-                                            cx.notify();
-                                        }))
-                                        .child(match self.note_sort_mode {
-                                            0 => "最新创建  ⌄",
-                                            1 => "最新更新  ⌄",
-                                            2 => "按内容  ⌄",
-                                            _ => "手动排序  ⌄",
-                                        }),
+                                    toolbar_chip(
+                                        match self.note_sort_mode {
+                                            0 => "最新创建  ⌄".into(),
+                                            1 => "最新更新  ⌄".into(),
+                                            2 => "按内容  ⌄".into(),
+                                            _ => "手动排序  ⌄".into(),
+                                        },
+                                        muted,
+                                        false,
+                                        &p,
+                                    )
+                                    .id("organizer-note-sort-toggle")
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.note_sort_mode = (this.note_sort_mode + 1) % 4;
+                                        cx.notify();
+                                    })),
                                 )
                                 .child(
-                                        div()
-                                            .id("organizer-note-multiselect-toggle")
-                                            .px(px(8.))
-                                            .py(px(6.))
-                                            .rounded(px(5.))
-                                            .cursor_pointer()
-                                            .text_color(if self.note_multi_select { accent } else { muted })
-                                            .hover(|button| button.bg(Palette::color(&p.bg).opacity(0.25)))
-                                            .on_click(cx.listener(|this, _, window, cx| {
-                                                this.toggle_note_multi_select(window, cx)
-                                            }))
-                                            .child(if self.note_multi_select { "取消多选" } else { "多选" }),
-                                    ),
+                                    toolbar_chip(
+                                        if self.note_multi_select { "取消多选".into() } else { "多选".into() },
+                                        if self.note_multi_select { accent } else { muted },
+                                        self.note_multi_select,
+                                        &p,
+                                    )
+                                    .id("organizer-note-multiselect-toggle")
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.toggle_note_multi_select(window, cx)
+                                    })),
+                                ),
                         )
                     })
                     .when(!self.organizer_tasks && self.note_multi_select, |list| {
@@ -23276,26 +26032,27 @@ impl Render for Workspace {
                     })
                     .when(self.organizer_tasks && !self.organizer_trash, |list| {
                         list.child(
-                            div()
-                                .id("organizer-task-sort-toggle")
-                                .px(px(8.))
-                                .py(px(5.))
-                                .rounded(px(5.))
-                                .cursor_pointer()
-                                .text_color(muted)
-                                .hover(|row| row.bg(Palette::color(&p.elevated)))
-                                .on_click(cx.listener(|this, _, _, cx| this.cycle_task_sort(cx)))
-                                .child(match self.task_sort {
-                                    1 => "排序：截止日期",
-                                    2 => "排序：优先级",
-                                    _ => "排序：手动顺序",
-                                }),
+                            div().flex().flex_wrap().items_center().gap(px(6.))
+                                .child(
+                                    toolbar_chip(
+                                        match self.task_sort {
+                                            1 => "排序：截止日期".into(),
+                                            2 => "排序：优先级".into(),
+                                            _ => "排序：手动顺序".into(),
+                                        },
+                                        muted,
+                                        false,
+                                        &p,
+                                    )
+                                    .id("organizer-task-sort-toggle")
+                                    .on_click(cx.listener(|this, _, _, cx| this.cycle_task_sort(cx))),
+                                )
+                                .child(
+                                    toolbar_chip("批量操作指令…".into(), accent, false, &p)
+                                        .id("organizer-task-command-open")
+                                        .on_click(cx.listener(|this, _, window, cx| this.open_organizer_commands(true, window, cx))),
+                                ),
                         )
-                        .child(div().id("organizer-task-command-open").px(px(8.)).py(px(5.))
-                            .rounded(px(5.)).cursor_pointer().text_size(px(11.)).text_color(accent)
-                            .hover(|button| button.bg(Palette::color(&p.elevated)))
-                            .on_click(cx.listener(|this, _, window, cx| this.open_organizer_commands(true, window, cx)))
-                            .child("批量操作指令…"))
                         .when(!self.selected_task_ids.is_empty(), |list| {
                             let all_ids = visible_task_ids.clone();
                             let copy_ids = visible_task_ids.clone();
@@ -23613,17 +26370,17 @@ impl Render for Workspace {
                                     div()
                                         .id("organizer-floating-create-task")
                                         .absolute()
-                                        .right(px(24.))
-                                        .bottom(px(24.))
-                                        .w(px(50.))
-                                        .h(px(50.))
-                                        .rounded(px(25.))
+                                        .right(px(18.))
+                                        .bottom(px(44.))
+                                        .w(px(44.))
+                                        .h(px(44.))
+                                        .rounded(px(22.))
                                         .flex()
                                         .items_center()
                                         .justify_center()
                                         .bg(accent)
                                         .text_color(Palette::color(&p.bg))
-                                        .text_size(px(26.))
+                                        .text_size(px(22.))
                                         .shadow_lg()
                                         .cursor_pointer()
                                         .on_click(cx.listener(|this, _, window, cx| {
@@ -23641,7 +26398,85 @@ impl Render for Workspace {
                                         .count()
                                 )),
                         )
-                    }),
+                    })
+                            .when(
+                                // The divider between the organizer's list
+                                // column and its detail panel drags to resize,
+                                // like the sidebar's own edge handle.
+                                organizer_detail_open
+                                    && !self.organizer_board_mode
+                                    && !organizer_single_pane
+                                    && (self.organizer_tasks || self.note_detail_open),
+                                |column| {
+                                    column.child(
+                                        div()
+                                            .id("organizer-list-resize-handle")
+                                            .debug_selector(|| "organizer-list-resize-handle".to_owned())
+                                            .absolute()
+                                            .top_0()
+                                            .right_0()
+                                            .bottom_0()
+                                            .w(px(6.))
+                                            .cursor(CursorStyle::ResizeLeftRight)
+                                            .hover(|handle| {
+                                                handle.bg(Palette::color(&p.border).opacity(0.8))
+                                            })
+                                            .when(self.organizer_list_resizing, |handle| {
+                                                handle.bg(Palette::color(&p.border).opacity(0.8))
+                                            })
+                                            .on_mouse_down(
+                                                MouseButton::Left,
+                                                cx.listener(
+                                                    |this,
+                                                     event: &MouseDownEvent,
+                                                     window,
+                                                     cx| {
+                                                        let zoom = quire_gpui::ui_scale::get();
+                                                        let organizer_width = f32::from(
+                                                            window.viewport_size().width,
+                                                        ) / this.ui_zoom
+                                                            - if this.sidebar_open {
+                                                                this.sidebar_width
+                                                            } else {
+                                                                0.
+                                                            }
+                                                            - 28.;
+                                                        this.organizer_list_resize_notes =
+                                                            !this.organizer_tasks;
+                                                        this.organizer_list_drag_offset =
+                                                            if this.organizer_tasks {
+                                                                this.organizer_task_list_width
+                                                                    .clamp(
+                                                                        240.,
+                                                                        (organizer_width - 380.)
+                                                                            .max(280.),
+                                                                    )
+                                                                    - f32::from(event.position.x)
+                                                                        / zoom
+                                                            } else {
+                                                                let detail = this
+                                                                    .note_detail_drag_width
+                                                                    .unwrap_or_else(|| {
+                                                                        (organizer_width * 0.54)
+                                                                            .clamp(340., 620.)
+                                                                    })
+                                                                    .clamp(
+                                                                        340.,
+                                                                        (organizer_width - 320.)
+                                                                            .max(400.),
+                                                                    );
+                                                                (organizer_width - detail)
+                                                                    - f32::from(event.position.x)
+                                                                        / zoom
+                                                            };
+                                                        this.organizer_list_resizing = true;
+                                                        cx.notify();
+                                                    },
+                                                ),
+                                            )
+                                    )
+                                },
+                            )
             )
             .child(
                 div()
@@ -23651,11 +26486,16 @@ impl Render for Workspace {
                     .h_full()
                     .px(px(20.))
                     .py(px(20.))
+                    // A left edge so the detail reads as its own panel instead
+                    // of floating on the page background.
+                    .border_l_1()
+                    .border_color(Palette::color(&p.border))
                     .when(!self.organizer_tasks || !organizer_detail_open && organizer_width < 1000., |pane| {
                         pane.flex_none()
                             .w(px(0.))
                             .px(px(0.))
                             .py(px(0.))
+                            .border_l_0()
                             .overflow_hidden()
                     })
                     .when_some(task_detail_view, |editor, detail| {
@@ -23866,19 +26706,40 @@ impl Render for Workspace {
         self.document_list.set_scroll_handler(move |event, _, app| {
             let visible_range = event.visible_range.clone();
             let _ = scroll_weak.update(app, |this, cx| {
-                this.document_visible_range = visible_range;
-                // Keep inputs for every existing, editable block so scrolling
-                // back never recreates them during a render pass (subscriptions
-                // created inside a render method do not fire).
-                this.inputs.retain(|id, input| {
-                    this.session
-                        .document
-                        .block(BlockId(*id))
-                        .is_some_and(|block| this.session.editable(block.id))
-                        || input.read(cx).buffer.composing()
-                });
+                this.document_visible_range = visible_range.clone();
+                // Scroll alone must also drop the entities and subscriptions of
+                // rows that left the resident window, or a long page keeps one
+                // TextInput for every block it ever showed. Rows scrolled back
+                // in are re-created by paint and re-subscribed when focused.
+                let mut keep = this.viewport_input_ids();
+                if let Some(active) = this.active {
+                    keep.insert(active.0);
+                }
+                this.inputs
+                    .retain(|id, input| keep.contains(id) || input.read(cx).buffer.composing());
                 this.input_subscriptions
                     .retain(|id, _| this.inputs.contains_key(id));
+                // Scrolling alone must also release the shaped layouts of the
+                // rows that left the viewport, or a long page pins a shape
+                // result for every block it ever showed.
+                let lo = visible_range.start.saturating_sub(4);
+                let hi = (visible_range.end + 4).min(this.document_list_ids.len());
+                let visible: HashSet<u64> = this
+                    .document_list_ids
+                    .get(lo..hi.max(lo))
+                    .map(|slice| slice.iter().map(|id| id.0).collect())
+                    .unwrap_or_default();
+                let active = this.active;
+                for (id, input) in &this.inputs {
+                    if this.document_row_ids.contains(id)
+                        && !visible.contains(id)
+                        && active != Some(BlockId(*id))
+                        && input.read(cx).has_layout_cache()
+                        && !input.read(cx).buffer.composing()
+                    {
+                        input.update(cx, |input, _| input.release_layout_cache());
+                    }
+                }
             });
         });
         let row_weak = cx.entity().downgrade();
@@ -24040,6 +26901,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::open_find))
             .on_action(cx.listener(Self::find_next_action))
             .on_action(cx.listener(Self::find_previous_action))
+            .on_action(cx.listener(Self::toggle_find_replace))
             .on_action(cx.listener(Self::open_search))
             .on_action(cx.listener(Self::navigate_back_action))
             .on_action(cx.listener(Self::navigate_forward_action))
@@ -24052,6 +26914,7 @@ impl Render for Workspace {
             .capture_key_down(cx.listener(Self::fixed_context_menu_key_down))
             .capture_key_down(cx.listener(Self::organizer_context_menu_key_down))
             .capture_key_down(cx.listener(Self::block_context_menu_key_down))
+            .capture_key_down(cx.listener(Self::block_sort_mode_key_down))
             .capture_key_down(cx.listener(Self::block_color_picker_key_down))
             .capture_key_down(cx.listener(Self::database_filter_key_down))
             .capture_key_down(cx.listener(Self::database_group_key_down))
@@ -24150,8 +27013,8 @@ impl Render for Workspace {
                             .cursor_pointer()
                             .text_color(muted)
                             .hover(|button| button.bg(Palette::color(&p.elevated)))
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.toggle_sidebar(cx);
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.toggle_sidebar(window, cx);
                             }))
                             .child("◫"),
                     )
@@ -24165,8 +27028,9 @@ impl Render for Workspace {
                             .gap(px(7.))
                             .text_color(muted)
                             .window_control_area(WindowControlArea::Drag)
-                            .child(div().flex_shrink_0().text_size(px(11.)).child(quire_gpui::APP_LABEL))
-                            .child("·")
+                            // The old title bar's breadcrumb carries no app
+                            // label: the quire-gpui-0.1.x name lives in the
+                            // OS window title, tray and installer only.
                             .child("工作区")
                             .child("›")
                             .child(if self.organizer_open {
@@ -24550,6 +27414,111 @@ impl Render for Workspace {
             })
             .child(link_editor)
             .child(find_bar)
+            .when(self.block_sort_mode, |root| {
+                let selected_count = self.selected_block_ids.len();
+                root.child(
+                    div()
+                        .id("block-sort-bar")
+                        .h(px(36.))
+                        .flex_shrink_0()
+                        .flex()
+                        .items_center()
+                        .gap(px(10.))
+                        .px(px(12.))
+                        .border_b_1()
+                        .border_color(Palette::color(&p.border))
+                        .bg(Palette::color(&p.elevated).opacity(0.6))
+                        .track_focus(&self.block_sort_focus)
+                        .child(
+                            div()
+                                .text_size(px(12.))
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .text_color(accent)
+                                .child("⇅ 排序模式"),
+                        )
+                        .child(
+                            div()
+                                .text_size(px(11.))
+                                .text_color(muted)
+                                .child("拖动块调整顺序 · 点击块选中，可批量移动到其他页面"),
+                        )
+                        .child(div().flex_1())
+                        .child(
+                            div()
+                                .text_size(px(11.))
+                                .text_color(if selected_count > 0 { text } else { muted })
+                                .child(format!("已选 {selected_count} 块")),
+                        )
+                        .child(
+                            div()
+                                .id("block-sort-select-all")
+                                .px(px(8.))
+                                .py(px(4.))
+                                .rounded(px(4.))
+                                .cursor_pointer()
+                                .text_size(px(11.))
+                                .text_color(muted)
+                                .hover(|button| button.bg(Palette::color(&p.elevated)))
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.select_all_visible_blocks(cx)
+                                }))
+                                .child("全选"),
+                        )
+                        .when(selected_count > 0, |bar| {
+                            bar.child(
+                                div()
+                                    .id("block-sort-move-to")
+                                    .px(px(8.))
+                                    .py(px(4.))
+                                    .rounded(px(4.))
+                                    .cursor_pointer()
+                                    .text_size(px(11.))
+                                    .text_color(accent)
+                                    .hover(|button| button.bg(Palette::color(&p.elevated)))
+                                    .on_click(cx.listener(
+                                        |this, event: &ClickEvent, window, cx| {
+                                            let anchor = this.selected_block_ids.first().copied();
+                                            this.block_menu_at = overlay_origin(
+                                                f32::from(event.position().x),
+                                                f32::from(event.position().y),
+                                                184.,
+                                                250.,
+                                                (
+                                                    f32::from(window.bounds().size.width),
+                                                    f32::from(window.bounds().size.height),
+                                                ),
+                                                quire_gpui::ui_scale::get(),
+                                            );
+                                            this.block_menu_open = anchor.map(|id| {
+                                                (id, BlockMenuMode::MoveSelection)
+                                            });
+                                            if this.block_menu_open.is_some() {
+                                                this.block_menu_selection = 0;
+                                                window.focus(&this.block_menu_focus);
+                                            }
+                                            cx.notify();
+                                        },
+                                    ))
+                                    .child("移动到…"),
+                            )
+                        })
+                        .child(
+                            div()
+                                .id("block-sort-done")
+                                .px(px(8.))
+                                .py(px(4.))
+                                .rounded(px(4.))
+                                .cursor_pointer()
+                                .text_size(px(11.))
+                                .text_color(muted)
+                                .hover(|button| button.bg(Palette::color(&p.elevated)))
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.exit_block_sort_mode(window, cx)
+                                }))
+                                .child("完成"),
+                        ),
+                )
+            })
             .child(
                 div()
                     .flex()
@@ -24558,6 +27527,7 @@ impl Render for Workspace {
                     .when(self.sidebar_open || sidebar_transition.is_some(), |body| {
                         let sidebar = div()
                             .id("sidebar-panel")
+                            .debug_selector(|| "sidebar-panel".to_owned())
                             .relative()
                             .w(px(self.sidebar_width))
                             .flex_shrink_0()
@@ -24591,16 +27561,53 @@ impl Render for Workspace {
                                     )
                                     .child(div().font_weight(FontWeight::SEMIBOLD).child("工作区"))
                                     .child(div().flex_1())
-                                    .child(sidebar_glyph(
-                                        SidebarGlyph::ChevronDown,
-                                        muted,
-                                        px(16.),
-                                    ))
+                                    // The old switcher's chevron was decorative;
+                                    // this build drops it (user request) — the
+                                    // row's right-click menu stays.
                                     .on_mouse_down(
                                         MouseButton::Right,
                                         cx.listener(|this, event: &MouseDownEvent, window, cx| {
                                             this.open_fixed_context_menu(0, event, window, cx)
                                         }),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .id("sidebar-search")
+                                    .h(px(28.))
+                                    .px(px(8.))
+                                    .flex()
+                                    .items_center()
+                                    .rounded(px(5.))
+                                    .cursor_pointer()
+                                    .text_color(muted)
+                                    .hover(|row| row.bg(Palette::color(&p.bg).opacity(0.3)))
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.open_search(&SearchPages, window, cx);
+                                    }))
+                                    .on_mouse_down(
+                                        MouseButton::Right,
+                                        cx.listener(|this, event: &MouseDownEvent, window, cx| {
+                                            this.open_fixed_context_menu(3, event, window, cx)
+                                        }),
+                                    )
+                                    .child(
+                                        div()
+                                            .w(px(16.))
+                                            .h(px(16.))
+                                            .flex()
+                                            .items_center()
+                                            .justify_center()
+                                            .child(sidebar_glyph(
+                                                SidebarGlyph::Search,
+                                                muted,
+                                                px(16.),
+                                            )),
+                                    )
+                                    .child(div().text_size(px(13.)).child("搜索"))
+                                    .child(div().flex_1())
+                                    .child(
+                                        div().text_size(px(11.)).text_color(muted).child("Ctrl P"),
                                     ),
                             )
                             .child(
@@ -24691,50 +27698,119 @@ impl Render for Workspace {
                                     )
                                     .child(div().text_size(px(13.)).child("任务")),
                             )
+                            .when_some(delete_confirmation, |sidebar, confirmation| {
+                                sidebar.child(confirmation)
+                            })
                             .child(
                                 div()
-                                    .id("sidebar-search")
-                                    .h(px(28.))
-                                    .px(px(8.))
-                                    .flex()
-                                    .items_center()
-                                    .rounded(px(5.))
-                                    .cursor_pointer()
-                                    .text_color(muted)
-                                    .hover(|row| row.bg(Palette::color(&p.bg).opacity(0.3)))
-                                    .on_click(cx.listener(|this, _, window, cx| {
-                                        this.open_search(&SearchPages, window, cx);
-                                    }))
-                                    .on_mouse_down(
-                                        MouseButton::Right,
-                                        cx.listener(|this, event: &MouseDownEvent, window, cx| {
-                                            this.open_fixed_context_menu(3, event, window, cx)
-                                        }),
-                                    )
+                                    .id("page-list-scroll")
+                                    .flex_1()
+                                    .h_full()
+                                    .overflow_y_scroll()
+                                    .when(!favorite_rows.is_empty(), |list| {
+                                        list.child(
+                                            div()
+                                                .id("sidebar-favorites-toggle")
+                                                .debug_selector(|| "sidebar-favorites-toggle".to_owned())
+                                                .h(px(24.))
+                                                .px(px(8.))
+                                                .flex()
+                                                .items_center()
+                                                .rounded(px(5.))
+                                                .cursor_pointer()
+                                                .text_size(px(11.))
+                                                .text_color(muted)
+                                                .hover(|row| {
+                                                    row.bg(Palette::color(&p.bg).opacity(0.35))
+                                                })
+                                                .on_click(cx.listener(|this, _, window, cx| {
+                                                    this.toggle_favorites_collapsed(window, cx);
+                                                }))
+                                                .child(if favorites_collapsed { "▸ 收藏" } else { "▾ 收藏" }),
+                                        )
+                                        .when(!favorites_collapsed, |list| list.children(favorite_rows))
+                                    })
+                                    .when(!recent_rows.is_empty(), |list| {
+                                        list.child(
+                                            div()
+                                                .id("sidebar-recents-toggle")
+                                                .debug_selector(|| "sidebar-recents-toggle".to_owned())
+                                                .h(px(24.))
+                                                .px(px(8.))
+                                                .flex()
+                                                .items_center()
+                                                .rounded(px(5.))
+                                                .cursor_pointer()
+                                                .text_size(px(11.))
+                                                .text_color(muted)
+                                                .hover(|row| {
+                                                    row.bg(Palette::color(&p.bg).opacity(0.35))
+                                                })
+                                                .on_click(cx.listener(|this, _, window, cx| {
+                                                    this.toggle_recents_collapsed(window, cx);
+                                                }))
+                                                .child(if recents_collapsed { "▸ 最近" } else { "▾ 最近" }),
+                                        )
+                                        .when(!recents_collapsed, |list| list.children(recent_rows))
+                                    })
+                                    // The old sidebar's sections live in one
+                                    // list: favorites, recents, then this
+                                    // "工作区" header separates the page tree
+                                    // (it is also the drag-out drop target).
                                     .child(
                                         div()
-                                            .w(px(16.))
-                                            .h(px(16.))
+                                            .id("workspace-root-drop-target")
+                                            .debug_selector(|| "workspace-root-drop-target".to_owned())
+                                            .h(px(24.))
+                                            .px(px(8.))
+                                            .mt(px(6.))
                                             .flex()
                                             .items_center()
-                                            .justify_center()
-                                            .child(sidebar_glyph(
-                                                SidebarGlyph::Search,
-                                                muted,
-                                                px(16.),
-                                            )),
+                                            .text_size(px(11.))
+                                            .text_color(muted)
+                                            .when(!root_drop_sources.is_empty(), |target| {
+                                                target
+                                                    .can_drop(move |value, _, _| {
+                                                        value.downcast_ref::<PageTreeDrag>().is_some_and(
+                                                            |drag| root_drop_sources.contains(&drag.page),
+                                                        )
+                                                    })
+                                                    .on_drop(cx.listener(
+                                                        |this, drag: &PageTreeDrag, window, cx| {
+                                                            this.drop_page_under(drag.page, None, window, cx)
+                                                        },
+                                                    ))
+                                            })
+                                            .child("工作区"),
                                     )
-                                    .child(div().text_size(px(13.)).child("搜索"))
-                                    .child(div().flex_1())
+                                    .children(page_rows)
                                     .child(
-                                        div().text_size(px(11.)).text_color(muted).child("Ctrl P"),
+                                        div()
+                                            .id("add-page")
+                                            .h(px(30.))
+                                            .px(px(8.))
+                                            .flex()
+                                            .items_center()
+                                            .rounded(px(5.))
+                                            .cursor_pointer()
+                                            .text_color(muted)
+                                            .hover(|row| {
+                                                row.bg(Palette::color(&p.bg).opacity(0.24))
+                                            })
+                                            .on_click(cx.listener(|this, _, window, cx| {
+                                                this.add_page(window, cx)
+                                            }))
+                                            .child("＋  新建页面"),
                                     ),
                             )
+                            // Settings sits at the very bottom (Notion /
+                            // FlowUs placement), pinned under the tree scroll.
                             .child(
                                 div()
                                     .id("sidebar-settings")
                                     .h(px(28.))
                                     .px(px(8.))
+                                    .mb(px(4.))
                                     .flex()
                                     .items_center()
                                     .rounded(px(5.))
@@ -24765,94 +27841,6 @@ impl Render for Workspace {
                                     )
                                     .child(div().text_size(px(13.)).child("设置")),
                             )
-                            .when_some(delete_confirmation, |sidebar, confirmation| {
-                                sidebar.child(confirmation)
-                            })
-                            .child(
-                                div()
-                                    .id("workspace-root-drop-target")
-                                    .text_size(px(11.))
-                                    .text_color(muted)
-                                    .mt(px(10.))
-                                    .when(!root_drop_sources.is_empty(), |target| {
-                                        target
-                                            .can_drop(move |value, _, _| {
-                                                value.downcast_ref::<PageTreeDrag>().is_some_and(
-                                                    |drag| root_drop_sources.contains(&drag.page),
-                                                )
-                                            })
-                                            .on_drop(cx.listener(
-                                                |this, drag: &PageTreeDrag, window, cx| {
-                                                    this.drop_page_under(drag.page, None, window, cx)
-                                                },
-                                            ))
-                                    })
-                                    .child("工作区"),
-                            )
-                            .child(
-                                div()
-                                    .id("page-list-scroll")
-                                    .flex_1()
-                                    .h_full()
-                                    .overflow_y_scroll()
-                                    .when(!favorite_rows.is_empty(), |list| {
-                                        list.child(
-                                            div()
-                                                .id("sidebar-favorites-toggle")
-                                                .h(px(24.))
-                                                .px(px(8.))
-                                                .flex()
-                                                .items_center()
-                                                .cursor_pointer()
-                                                .text_size(px(11.))
-                                                .text_color(muted)
-                                                .on_click(cx.listener(|this, _, _, cx| {
-                                                    this.favorites_collapsed = !this.favorites_collapsed;
-                                                    cx.notify();
-                                                }))
-                                                .child(if favorites_collapsed { "▸ 收藏" } else { "▾ 收藏" }),
-                                        )
-                                        .when(!favorites_collapsed, |list| list.children(favorite_rows))
-                                    })
-                                    .when(!recent_rows.is_empty(), |list| {
-                                        list.child(
-                                            div()
-                                                .id("sidebar-recents-toggle")
-                                                .h(px(24.))
-                                                .px(px(8.))
-                                                .flex()
-                                                .items_center()
-                                                .cursor_pointer()
-                                                .text_size(px(11.))
-                                                .text_color(muted)
-                                                .on_click(cx.listener(|this, _, _, cx| {
-                                                    this.recents_collapsed = !this.recents_collapsed;
-                                                    cx.notify();
-                                                }))
-                                                .child(if recents_collapsed { "▸ 最近" } else { "▾ 最近" }),
-                                        )
-                                        .when(!recents_collapsed, |list| list.children(recent_rows))
-                                    })
-                                    .children(page_rows)
-                                    .child(
-                                        div()
-                                            .id("add-page")
-                                            .h(px(30.))
-                                            .px(px(8.))
-                                            .flex()
-                                            .items_center()
-                                            .rounded(px(5.))
-                                            .cursor_pointer()
-                                            .text_color(muted)
-                                            .hover(|row| {
-                                                row.bg(Palette::color(&p.bg).opacity(0.24))
-                                            })
-                                            .on_click(cx.listener(|this, _, window, cx| {
-                                                this.add_page(window, cx)
-                                            }))
-                                            .child("＋  新建页面"),
-                                    ),
-                            )
                             .child(div().h(px(8.)))
                             .child(div().h(px(1.)).bg(Palette::color(&p.border)))
                             .child(
@@ -24868,6 +27856,7 @@ impl Render for Workspace {
                             .child(
                                 div()
                                     .id("sidebar-resize-handle")
+                                    .debug_selector(|| "sidebar-resize-handle".to_owned())
                                     .absolute()
                                     .top_0()
                                     .right_0()
@@ -24882,50 +27871,12 @@ impl Render for Workspace {
                                     })
                                     .on_mouse_down(
                                         MouseButton::Left,
-                                        cx.listener(|this, event: &MouseDownEvent, window, cx| {
+                                        cx.listener(|this, event: &MouseDownEvent, _, cx| {
                                             let zoom = quire_gpui::ui_scale::get();
                                             this.sidebar_drag_offset = this.sidebar_width
                                                 - f32::from(event.position.x) / zoom;
                                             this.sidebar_resizing = true;
                                             cx.notify();
-                                            let workspace = cx.entity();
-                                            window.on_mouse_event({
-                                                let workspace = workspace.clone();
-                                                move |event: &MouseMoveEvent, _, _, cx| {
-                                                    if !event.dragging() {
-                                                        return;
-                                                    }
-                                                    workspace.update(cx, |this, cx| {
-                                                        if this.sidebar_resizing {
-                                                            let zoom = quire_gpui::ui_scale::get();
-                                                            this.sidebar_width =
-                                                                (f32::from(event.position.x)
-                                                                    / zoom
-                                                                    + this.sidebar_drag_offset)
-                                                                    .clamp(200., 480.);
-                                                            cx.notify();
-                                                        }
-                                                    });
-                                                }
-                                            });
-                                            window.on_mouse_event({
-                                                move |_: &MouseUpEvent, _, window, cx| {
-                                                    workspace.update(cx, |this, cx| {
-                                                        if this.sidebar_resizing {
-                                                            this.sidebar_resizing = false;
-                                                            this.session.set_setting(
-                                                                "gpui.sidebar-width",
-                                                                format!(
-                                                                    "{:.1}",
-                                                                    this.sidebar_width
-                                                                ),
-                                                            );
-                                                            this.schedule_save(true, window, cx);
-                                                            cx.notify();
-                                                        }
-                                                    });
-                                                }
-                                            });
                                         }),
                                     ),
                             );
@@ -24974,10 +27925,15 @@ impl Render for Workspace {
                         }),
                 )
             })
-            .when_some(self.toast_message.clone(), |root, message| {
+            .when_some(
+                self.toast_message
+                    .clone()
+                    .map(|message| (message, self.toast_detail.clone())),
+                |root, (message, detail)| {
                 root.child(
                     div()
                         .id("organizer-sent-toast")
+                        .debug_selector(|| "toast".to_owned())
                         .absolute()
                         .bottom(px(28.))
                         .right(px(28.))
@@ -25010,7 +27966,7 @@ impl Render for Workspace {
                                 .flex_col()
                                 .gap(px(2.))
                                 .child(div().text_size(px(13.)).font_weight(FontWeight::SEMIBOLD).text_color(rgb(0xffffff)).child(message))
-                                .child(div().text_size(px(11.)).text_color(rgb(0xc8e8d7)).child("笔记已保存到列表")),
+                                .child(div().text_size(px(11.)).text_color(rgb(0xc8e8d7)).child(detail)),
                         ),
                 )
             })
@@ -25022,6 +27978,8 @@ impl Render for Workspace {
             .when_some(linked_database_overlay, |root, overlay| root.child(overlay))
             .when_some(organizer_command_overlay, |root, overlay| root.child(overlay))
             .when_some(organizer_context_overlay, |root, overlay| root.child(overlay))
+            .when_some(block_menu_overlay, |root, overlay| root.child(overlay))
+            .when_some(color_picker_overlay, |root, overlay| root.child(overlay))
             .when_some(page_context_overlay, |root, overlay| root.child(overlay))
             .when_some(fixed_context_overlay, |root, overlay| root.child(overlay))
             .when(self.organizer_capture_open, |root| {
@@ -25539,6 +28497,37 @@ impl Render for Workspace {
                         ),
                 )
             })
+            .when(self.resize_drag_active(), |root| {
+                // A 6px handle cannot hold the cursor: this full-viewport
+                // layer keeps the moves and the release coming until the
+                // button goes up, wherever that happens.
+                root.child(
+                    div()
+                        .id("resize-overlay")
+                        .debug_selector(|| "resize-overlay".to_owned())
+                        .absolute()
+                        .top_0()
+                        .right_0()
+                        .bottom_0()
+                        .left_0()
+                        .cursor(CursorStyle::ResizeLeftRight)
+                        .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, window, cx| {
+                            this.update_resize_drag(event, window, cx)
+                        }))
+                        .on_mouse_up(
+                            MouseButton::Left,
+                            cx.listener(|this, event: &MouseUpEvent, window, cx| {
+                                this.finish_resize_drag(event, window, cx)
+                            }),
+                        )
+                        .on_mouse_up_out(
+                            MouseButton::Left,
+                            cx.listener(|this, event: &MouseUpEvent, window, cx| {
+                                this.finish_resize_drag(event, window, cx)
+                            }),
+                        ),
+                )
+            })
     }
 }
 
@@ -25877,8 +28866,14 @@ impl Render for QuickNoteWindow {
     }
 }
 
-pub fn bind_keys(cx: &mut App) {
-    cx.bind_keys([
+/// One row per spelling the platform can report for the same physical press.
+/// Windows resolves a shifted OEM/alphanumeric key to the character it types
+/// and clears the shift modifier
+/// (`vendor/gpui-0.2.2/src/platform/windows/keyboard.rs`), so the `Ctrl` +
+/// `Shift` + `=` that produces `+` arrives as `control` + `+` and would never
+/// match the `ctrl-=` row.
+pub(crate) fn key_bindings() -> Vec<KeyBinding> {
+    vec![
         KeyBinding::new("ctrl-s", Save, Some("Quire")),
         KeyBinding::new("ctrl-enter", Save, Some("QuireQuickNote")),
         KeyBinding::new("alt-s", Save, Some("QuireQuickNote")),
@@ -25891,12 +28886,20 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("ctrl-f", Find, Some("Quire")),
         KeyBinding::new("ctrl-g", FindNext, Some("Quire")),
         KeyBinding::new("ctrl-shift-g", FindPrevious, Some("Quire")),
+        KeyBinding::new("ctrl-h", FindReplace, Some("Quire")),
         KeyBinding::new("ctrl-p", SearchPages, Some("Quire")),
         KeyBinding::new("alt-left", NavigateBack, Some("Quire")),
         KeyBinding::new("alt-right", NavigateForward, Some("Quire")),
         KeyBinding::new("ctrl-=", ZoomIn, Some("Quire")),
+        KeyBinding::new("ctrl-+", ZoomIn, Some("Quire")),
         KeyBinding::new("ctrl--", ZoomOut, Some("Quire")),
+        KeyBinding::new("ctrl-_", ZoomOut, Some("Quire")),
         KeyBinding::new("ctrl-0", ZoomReset, Some("Quire")),
+        KeyBinding::new("ctrl-)", ZoomReset, Some("Quire")),
         KeyBinding::new("ctrl-shift-l", ToggleTheme, Some("Quire")),
-    ]);
+    ]
+}
+
+pub fn bind_keys(cx: &mut App) {
+    cx.bind_keys(key_bindings());
 }

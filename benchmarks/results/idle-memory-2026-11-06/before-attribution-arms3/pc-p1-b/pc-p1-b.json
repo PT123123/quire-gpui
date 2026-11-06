@@ -1,0 +1,20 @@
+﻿{
+    "label":  "pc-p1-b",
+    "exe":  "C:\\Users\\REDACTED\\AppData\\Local\\Temp\\quire-mem-2026-11-06\\exe\\probe-cap.exe",
+    "database":  "\u003cisolated temp database\u003e",
+    "started_at_utc":  "2026-11-06T09:38:46.4150666Z",
+    "window_handle_up_ms":  1998.7,
+    "window_width":  1600,
+    "window_height":  900,
+    "warmup_seconds":  2,
+    "idle_sample_seconds":  8.14,
+    "idle_cpu_percent_one_core":  1.92,
+    "end_working_set_mb":  132.5,
+    "peak_working_set_mb":  160.9,
+    "end_private_mb":  111.6,
+    "peak_private_mb":  140.2,
+    "memory_sample_interval_ms":  250,
+    "memory_sample_count":  28,
+    "process_exit_method":  "forced after idle sample; isolated DB, no edits"
+}
+

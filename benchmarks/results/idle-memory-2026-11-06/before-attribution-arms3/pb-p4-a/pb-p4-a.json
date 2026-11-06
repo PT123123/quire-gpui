@@ -1,0 +1,20 @@
+﻿{
+    "label":  "pb-p4-a",
+    "exe":  "C:\\Users\\REDACTED\\AppData\\Local\\Temp\\quire-mem-2026-11-06\\exe\\probe-baseline.exe",
+    "database":  "\u003cisolated temp database\u003e",
+    "started_at_utc":  "2026-11-06T09:37:52.6502694Z",
+    "window_handle_up_ms":  3665.7,
+    "window_width":  1600,
+    "window_height":  900,
+    "warmup_seconds":  2,
+    "idle_sample_seconds":  8.08,
+    "idle_cpu_percent_one_core":  4.26,
+    "end_working_set_mb":  153.1,
+    "peak_working_set_mb":  181.6,
+    "end_private_mb":  132.9,
+    "peak_private_mb":  161.6,
+    "memory_sample_interval_ms":  250,
+    "memory_sample_count":  28,
+    "process_exit_method":  "forced after idle sample; isolated DB, no edits"
+}
+

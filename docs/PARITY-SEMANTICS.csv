@@ -70,9 +70,9 @@ save-requested,已实现,未验证,主窗口 Ctrl+S 先提交笔记草稿、结�
 insert-at-end-requested,不适用,已验证,这是旧版触屏底栏“+”入口的占位回调，桌面界面没有触发点；GPUI 桌面使用内容块“+”插入入口和末尾 Enter 新段落行为。,"旧版此回调没有桌面触发点；GPUI 桌面对应操作由块手柄“+”插入入口和末尾 Enter 创建段落承担。,"
 db-sort-cycled,已实现,未验证,数据库列头点击按无序→升序→降序→无序循环；多列排序保留优先级并在列头显示箭头/序号，按过滤后的记录数和排序结果绘制虚拟行。,使用 core ViewDefinition read-edit-write 保留视图规则并通过 SetDatabaseViewDefinition 保存/撤销；SQLite RowRequest 下推 sort/filter，UI 不做全表加载或本地排序；隔离测试覆盖定义撤销重做、重开读回与标题排序顺序。
 db-view-added,已实现,未验证,加号创建“表格 N”视图并立即选中；新视图默认 Table，之后可切换到其他支持的布局。,分配 ViewId 与 ord 后调用 core AddDatabaseView，写入 SQLite change stream，并纳入页面 undo/redo；隔离测试覆盖新增视图撤销/重做。
-zoom-in,已实现,未验证,外观设置提供 50%–300% 的整体缩放、加减和复位；不是只放大正文文字。,GPUI 根尺度以原子系数统一换算 view/input 的 px token，旧版阶梯 50/67/75/80/90/100/110/125/150/175/200/250/300%；gpui.ui-scale 持久化，开窗时读取。
-zoom-out,已实现,未验证,整体界面缩小，范围下限 75%，边界时禁用。,同一全局 px 换算路径，值持久化到独立 GPUI 设置。
-zoom-reset,已实现,未验证,一键恢复 100% 界面缩放。,将全局 px 系数和 gpui.ui-scale 同时重置为 1.00。
+zoom-in,已实现,未验证,外观设置提供 50%–300% 的整体缩放、加减和复位；不是只放大正文文字。键盘 Ctrl+= 与 Ctrl++ 两种拼写各占一行：Windows 把 Shift+= 报成字符 '+' 并清掉 shift，只绑 ctrl-= 接不到 Ctrl++。,GPUI 根尺度以原子系数统一换算 view/input 的 px token，旧版阶梯 50/67/75/80/90/100/110/125/150/175/200/250/300%；gpui.ui-scale 持久化，开窗时读取。zoom_chords_dispatch_to_actions_in_a_live_window 在真实窗口里派发六个缩放 chord 全部命中对应 action，control 腿只绑未偏移行时 Ctrl++/Ctrl+_ 不落；zoom_keys_match_both_spellings_of_the_same_press 逐字符核对键表。真窗口的缩放视觉、边界值和重启读回仍未逐项对照。
+zoom-out,已实现,未验证,整体界面缩小，范围下限 75%，边界时禁用。键盘 Ctrl+- 与 Ctrl+_（Shift+-）两种拼写各占一行。,同一全局 px 换算路径，值持久化到独立 GPUI 设置；chord 覆盖同上两条单测，真实视觉仍未对照。
+zoom-reset,已实现,未验证,一键恢复 100% 界面缩放。键盘 Ctrl+0 与 Ctrl+)（Shift+0）两种拼写各占一行。,将全局 px 系数和 gpui.ui-scale 同时重置为 1.00；键表覆盖见 zoom-in 行，偏移拼写由同一份键表单测覆盖。
 db-cell-activated,已实现,未验证,普通可编辑属性单击后进入内联编辑；Select/Status/MultiSelect 使用选项选择器，Relation 使用目标记录搜索/多选，Files 提供附件入口；锁定页面与派生属性只读,通过 uniform_list 虚拟行按 database/record/property 标识激活；Formula/自动计算属性可配置公式但结果只读
 db-cell-changed,已实现,未验证,输入内容经 core database_property::parse_one 校验；Enter 或失焦用 SetDatabaseCell 写入并进入页面撤销栈，非法输入显示错误且不落库,文本/数字/日期/Checkbox/URL/邮箱/电话/Select/Status/MultiSelect/Relation/Files 均有对应显示或编辑入口；附件导入和多值选择的真窗口操作仍待逐项验收
 db-cell-closed,已实现,未验证,Enter/失焦提交；Esc 放弃当前输入；非法失焦放弃错误草稿并保留旧值,撤销与重做沿用 core SetDatabaseCell 历史

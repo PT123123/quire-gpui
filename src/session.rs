@@ -5838,6 +5838,97 @@ impl Session {
         self.history.push(source, entry);
         true
     }
+    /// Move several top-most selected blocks (with their subtrees) to another
+    /// page as ONE history entry. Descendants of an already-moving block are
+    /// skipped — they ride along with their ancestor. Any planning failure
+    /// aborts the whole batch, so a selection never moves half-way.
+    pub fn move_blocks_to_page(&mut self, ids: &[BlockId], target: PageId) -> usize {
+        if self.page.locked || target == self.page.id {
+            return 0;
+        }
+        let Some(destination) = self
+            .pages
+            .iter()
+            .find(|page| page.id == target && !page.template)
+        else {
+            return 0;
+        };
+        if destination.locked {
+            return 0;
+        }
+        let source = self.page.id;
+        let mut roots: Vec<BlockId> = Vec::new();
+        for &id in ids {
+            let Some(block) = self.document.block(id) else {
+                continue;
+            };
+            if block.page != source {
+                continue;
+            }
+            let mut ancestor = id;
+            let covered = loop {
+                match self.document.block(ancestor).and_then(|b| b.parent) {
+                    Some(parent) => {
+                        if roots.contains(&parent) {
+                            break true;
+                        }
+                        ancestor = parent;
+                    }
+                    None => break false,
+                }
+            };
+            if !covered {
+                roots.push(id);
+            }
+        }
+        if roots.is_empty() {
+            return 0;
+        }
+        self.end_typing();
+        let last_target_order = self
+            .document
+            .page_blocks(target)
+            .iter()
+            .map(|block| block.order)
+            .max();
+        let Some(mut next_order) = OrderKey::between(last_target_order, None) else {
+            return 0;
+        };
+        let mut apply: Vec<Change> = Vec::new();
+        let mut reverts: Vec<Vec<Change>> = Vec::new();
+        for &id in &roots {
+            // Plans run against the not-yet-mutated document, which is safe:
+            // the selected roots are disjoint subtrees, and the destination
+            // order keys are rebased below for the whole batch in move order.
+            let Some(mut entry) = command::plan(
+                &mut self.document,
+                source,
+                Command::MoveBlockToPage { id, page: target },
+            ) else {
+                return 0;
+            };
+            for change in &mut entry.apply {
+                if let Change::BlockMovedToPage { page, order, .. } = change
+                    && *page == target
+                {
+                    *order = next_order;
+                    if let Some(order) = OrderKey::between(Some(next_order), None) {
+                        next_order = order;
+                    }
+                }
+            }
+            apply.extend(entry.apply);
+            reverts.push(entry.revert);
+        }
+        let mut revert = Vec::new();
+        for part in reverts.into_iter().rev() {
+            revert.extend(part);
+        }
+        self.document.apply(&apply);
+        self.persistence.record(apply.clone());
+        self.history.push(source, Entry { apply, revert });
+        roots.len()
+    }
     pub fn indent_page(&mut self, id: PageId) -> bool {
         let Some(page) = self
             .pages
@@ -6170,6 +6261,66 @@ impl Session {
         if boundary {
             self.end_typing();
         }
+    }
+    /// Rewrites several blocks as one undo entry. Find & replace works a whole
+    /// page at a time, and a Ctrl+Z that only handed the last block back would
+    /// leave the page half-replaced — which is exactly what the status line
+    /// promises against. Returns the blocks it actually wrote.
+    pub fn replace_many(&mut self, edits: Vec<(BlockId, String)>) -> Vec<BlockId> {
+        if self.page.locked {
+            return Vec::new();
+        }
+        self.end_typing();
+        let mut apply = Vec::new();
+        let mut revert = Vec::new();
+        let mut written = Vec::new();
+        for (id, text) in edits {
+            if !self.editable(id) {
+                continue;
+            }
+            let Some(mut entry) = command::plan(
+                &mut self.document,
+                self.page.id,
+                Command::ReplaceText {
+                    id,
+                    text: text.clone(),
+                },
+            ) else {
+                continue;
+            };
+            if let Some(previous) = self.document.block(id) {
+                let marks = adjust_marks(&previous.text, &text, &previous.marks);
+                if marks != previous.marks {
+                    entry.apply.push(Change::BlockMarksSet { id, marks });
+                    entry.revert.insert(
+                        0,
+                        Change::BlockMarksSet {
+                            id,
+                            marks: previous.marks.clone(),
+                        },
+                    );
+                }
+            }
+            self.document.apply(&entry.apply);
+            if entry.apply.is_empty() {
+                continue;
+            }
+            apply.extend(entry.apply.clone());
+            revert.extend(entry.revert);
+            written.push(id);
+        }
+        if apply.is_empty() {
+            return written;
+        }
+        self.persistence.record(apply.clone());
+        self.history.push(
+            self.page.id,
+            Entry {
+                apply,
+                revert: revert.clone(),
+            },
+        );
+        written
     }
     pub fn convert_prefix(&mut self, id: BlockId, text: String, kind: BlockKind) {
         self.replace(id, text, false);
@@ -9593,6 +9744,79 @@ mod tests {
         let reopened = Session::open(&path)?;
         assert!(reopened.page_versions(page).is_empty());
         assert!(!quire_core::storage::versions::path_for(&path, page.0 as i64, created).exists());
+        Ok(())
+    }
+
+    #[test]
+    fn batch_block_move_is_one_undo_step_and_persists() -> Result<()> {
+        let scratch = quire_core::testing::ScratchDir::new("gpui-batch-move");
+        let path = scratch.path().join("batch.db");
+        let (source_page, target, roots, child) = {
+            let mut s = Session::open(&path)?;
+            let source_page = s.page.id;
+            // create_page switches the current page; go back before seeding.
+            let target = s.create_page(None);
+            assert!(s.select_page(source_page));
+            for text in ["一", "二", "三", "四"] {
+                s.execute(Command::AppendBlock {
+                    kind: BlockKind::Paragraph,
+                    text: text.into(),
+                });
+            }
+            let blocks = s.blocks();
+            let (a, b, d) = (
+                blocks[blocks.len() - 4].id,
+                blocks[blocks.len() - 3].id,
+                blocks[blocks.len() - 1].id,
+            );
+            // "二" becomes a child of "一": selecting both must move one subtree.
+            s.execute(Command::SetBlockType {
+                id: a,
+                kind: BlockKind::Bullet,
+            });
+            s.execute(Command::SetBlockType {
+                id: b,
+                kind: BlockKind::Bullet,
+            });
+            s.execute(Command::IndentList { id: b });
+            let moved = s.move_blocks_to_page(&[a, b, d], target);
+            assert_eq!(moved, 2, "the child rides along instead of moving twice");
+            let target_blocks = s.document.page_blocks(target);
+            let target_ids: Vec<u64> = target_blocks.iter().map(|block| block.id.0).collect();
+            assert!(target_ids.contains(&a.0) && target_ids.contains(&d.0));
+            assert!(
+                s.document
+                    .block(b)
+                    .is_some_and(|block| block.parent == Some(a))
+            );
+            assert!(
+                s.blocks()
+                    .iter()
+                    .all(|block| block.id != a && block.id != d)
+            );
+            s.undo();
+            assert!(s.blocks().iter().any(|block| block.id == a));
+            assert!(
+                s.document
+                    .block(b)
+                    .is_some_and(|block| block.parent == Some(a))
+            );
+            s.redo();
+            assert!(s.blocks().iter().all(|block| block.id != a));
+            s.persistence.force_flush()?;
+            (source_page, target, [a, d], b)
+        };
+        let reopened = Session::open(&path)?;
+        assert_eq!(reopened.page.id, source_page);
+        let target_blocks = reopened.document.page_blocks(target);
+        let target_ids: Vec<u64> = target_blocks.iter().map(|block| block.id.0).collect();
+        assert!(roots.iter().all(|id| target_ids.contains(&id.0)));
+        assert!(
+            reopened
+                .document
+                .block(child)
+                .is_some_and(|block| block.page == target)
+        );
         Ok(())
     }
 }

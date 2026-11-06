@@ -1,0 +1,14 @@
+BEFORE (arms3, ~10002 inputs, pre-optimization):
+  pb-blank  endPriv=83 peakPriv=112.9 endWS=106.7 peakWS=136.5 cpu=1.15 handleUp=2595.7
+  pb-p1-a  endPriv=160.3 peakPriv=168.8 endWS=189.2 peakWS=197.6 cpu=6.73 handleUp=2983
+  pb-p1-b  endPriv=129.9 peakPriv=153.3 endWS=150.3 peakWS=173.6 cpu=1.94 handleUp=2210.8
+  pb-p4-a  endPriv=132.9 peakPriv=161.6 endWS=153.1 peakWS=181.6 cpu=4.26 handleUp=3665.7
+  pb-p4-b  endPriv=131.9 peakPriv=160.5 endWS=152 peakWS=180.4 cpu=3.67 handleUp=3366.4
+  [cap-ceiling] pc-p1-a endPriv=115.5 peakPriv=145.4
+  [cap-ceiling] pc-p1-b endPriv=111.6 peakPriv=140.2
+
+AFTER (arms4, viewport-bounded inputs, optimized):
+  blank-a  endPriv=83.1 peakPriv=113 endWS=106.4 peakWS=136.2 cpu=3.69 handleUp=2395.2
+  blank-b  endPriv=83.4 peakPriv=113.3 endWS=106.8 peakWS=136.6 cpu=3.42 handleUp=1996.1
+  p10k-a  endPriv=109.1 peakPriv=132.6 endWS=130.4 peakWS=153.8 cpu=2.49 handleUp=2145.4
+  p10k-b  endPriv=115.1 peakPriv=133.7 endWS=136.4 peakWS=154.9 cpu=7.8 handleUp=2252.3

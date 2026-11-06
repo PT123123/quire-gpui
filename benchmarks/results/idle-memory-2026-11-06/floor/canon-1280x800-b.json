@@ -1,0 +1,19 @@
+﻿{
+    "label":  "canon-1280x800-b",
+    "exe":  "C:\\Users\\REDACTED\\Desktop\\quire\\quire-gpui\\target\\release\\quire-gpui.exe",
+    "database":  "\u003cisolated temp database\u003e",
+    "started_at_utc":  "2026-11-06T10:55:36.4625137Z",
+    "window_handle_up_ms":  1803.2,
+    "window_width":  1280,
+    "window_height":  800,
+    "warmup_seconds":  2,
+    "idle_sample_seconds":  8.22,
+    "idle_cpu_percent_one_core":  6.08,
+    "end_working_set_mb":  96.9,
+    "peak_working_set_mb":  136.5,
+    "end_private_mb":  73.4,
+    "peak_private_mb":  113.1,
+    "memory_sample_interval_ms":  250,
+    "memory_sample_count":  29,
+    "process_exit_method":  "forced after idle sample; isolated DB, no edits"
+}

@@ -1,0 +1,1 @@
+pid=102204 open_page=1 open_blocks=10003 rows=10003 inputs=10002 subs=10002 input_text_bytes=358938 pages=15 library_blocks=30064 library_text_bytes=1077683 visible=0..2 organizer=false

@@ -1,0 +1,30 @@
+﻿TAG=big2 window=1600x900
+SUMMARY WS=108.2 PeakWS=141.8 Private=84.5 PeakPrivate=114.5
+resident pages=27692
+  54.10 res |   2047.9 commit |     1 allocs | maxshare=  0 | [0..0] | PRIVATE|alloc@0
+  12.59 res |     25.2 commit |     1 allocs | maxshare= 28 | [1A013A21000..1A01534F000] | PRIVATE|alloc@1787035779072
+   4.44 res |      8.9 commit |     1 allocs | maxshare= 28 | [1A00E9D0000..1A00F2AE000] | PRIVATE|alloc@1786951499776
+   3.82 res |      1.7 commit |     1 allocs | maxshare=  4 | [1A012E41000..1A01363E000] | PRIVATE|alloc@1787023327232
+   3.30 res |      0.0 commit |     1 allocs | maxshare=483 | [7FF7AD580000..7FF7AF052000] | IMAGE|quire-gpui.exe
+   3.11 res |      0.0 commit |     1 allocs | maxshare=485 | [7FFD78250000..7FFD79B32000] | IMAGE|igd10umt64xe.dll
+   2.79 res |      0.0 commit |     1 allocs | maxshare=  4 | [1A0109C0000..1A010F5E000] | PRIVATE|alloc@1786985054208
+   2.49 res |     40.8 commit |     1 allocs | maxshare=485 | [7FFD71F51000..7FFD75D87000] | IMAGE|igc64.dll
+   1.82 res |      1.9 commit |     1 allocs | maxshare=  4 | [1A0129C0000..1A012DBE000] | PRIVATE|alloc@1787018608640
+   1.19 res |      2.4 commit |     1 allocs | maxshare=481 | [1A01A1F1000..1A01A44F000] | PRIVATE|alloc@1787144634368
+   0.96 res |      5.7 commit |    22 allocs | maxshare=485 | [1A00BB00000..7FF4B36D2000] | MAPPED|<mapped-unknown>
+   0.93 res |      1.7 commit |     1 allocs | maxshare=  4 | [1A00E430000..1A00E62E000] | PRIVATE|alloc@1786945667072
+   0.92 res |      1.4 commit |     1 allocs | maxshare=483 | [7FFDA42A1000..7FFDA4504000] | IMAGE|ntdll.dll
+   0.88 res |      2.4 commit |     1 allocs | maxshare=483 | [7FFDA39A3000..7FFDA3D23000] | IMAGE|combase.dll
+   0.86 res |      1.7 commit |     1 allocs | maxshare= 28 | [1A00E805000..1A00E9BD000] | PRIVATE|alloc@1786949664768
+   0.86 res |      1.7 commit |     1 allocs | maxshare=  4 | [1A00E63E000..1A00E7F4000] | PRIVATE|alloc@1786947764224
+   0.74 res |      0.0 commit |     1 allocs | maxshare=483 | [7FFD777B0000..7FFD77CDD000] | IMAGE|igdgmm64.dll
+   0.57 res |      1.6 commit |     1 allocs | maxshare=483 | [7FFDA1674000..7FFDA1A6A000] | IMAGE|KernelBase.dll
+   0.56 res |      0.0 commit |     1 allocs | maxshare=483 | [7FFD9E4A0000..7FFD9E707000] | IMAGE|DWrite.dll
+   0.55 res |      0.0 commit |     1 allocs | maxshare=483 | [7FFD9EC60000..7FFD9EEC1000] | IMAGE|d3d11.dll
+   0.55 res |      6.4 commit |     1 allocs | maxshare=483 | [7FFD9F0B9000..7FFD9F90D000] | IMAGE|windows.storage.dll
+   0.53 res |      0.0 commit |     1 allocs | maxshare=483 | [7FFDA2340000..7FFDA2AC4000] | IMAGE|shell32.dll
+   0.50 res |      1.0 commit |     1 allocs | maxshare=  4 | [1A00BCD0000..1A00BDCE000] | PRIVATE|alloc@1786904379392
+   0.50 res |      1.0 commit |     1 allocs | maxshare=  4 | [1A00D951000..1A00DA4D000] | PRIVATE|alloc@1786934263808
+   8.59 res in 133 further buckets
+BY TYPE PRIVATE=85.4  IMAGE=21.4  MAPPED=1.4
+

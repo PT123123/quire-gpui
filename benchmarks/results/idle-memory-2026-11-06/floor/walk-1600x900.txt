@@ -1,0 +1,36 @@
+﻿WS=136.9 PeakWS=142.5 Private=113.4 PeakPrivate=113.4 (MB)
+QueryWorkingSet entries=35055
+   68.48 MB res |    68.48 MB priv |    1 reg | PRIVATE|heap@0
+   16.00 MB res |     0.00 MB priv |    1 reg | PRIVATE|heap@2200872091648
+   15.94 MB res |     0.00 MB priv |    1 reg | PRIVATE|heap@2200787746816
+    3.34 MB res |     0.00 MB priv |    1 reg | PRIVATE|heap@2200860950528
+    3.27 MB res |     0.00 MB priv |    1 reg | IMAGE|quire-gpui.exe
+    3.11 MB res |     0.00 MB priv |    1 reg | IMAGE|igd10umt64xe.dll
+    2.78 MB res |     0.00 MB priv |    1 reg | PRIVATE|heap@2200821301248
+    2.49 MB res |     0.00 MB priv |    1 reg | IMAGE|igc64.dll
+    1.83 MB res |     0.00 MB priv |    1 reg | PRIVATE|heap@2200854855680
+    1.19 MB res |     0.00 MB priv |    1 reg | PRIVATE|heap@2200980946944
+    0.97 MB res |     0.00 MB priv |    1 reg | PRIVATE|heap@2200781914112
+    0.96 MB res |     0.00 MB priv |   23 reg | MAPPED|<mapped-unknown>
+    0.92 MB res |     0.01 MB priv |    1 reg | IMAGE|ntdll.dll
+    0.88 MB res |     0.01 MB priv |    1 reg | IMAGE|combase.dll
+    0.86 MB res |     0.00 MB priv |    1 reg | PRIVATE|heap@2200784011264
+    0.86 MB res |     0.00 MB priv |    1 reg | PRIVATE|heap@2200859049984
+    0.74 MB res |     0.00 MB priv |    1 reg | IMAGE|igdgmm64.dll
+    0.57 MB res |     0.00 MB priv |    1 reg | IMAGE|KernelBase.dll
+    0.56 MB res |     0.01 MB priv |    1 reg | IMAGE|windows.storage.dll
+    0.56 MB res |     0.01 MB priv |    1 reg | IMAGE|DWrite.dll
+    0.55 MB res |     0.01 MB priv |    1 reg | IMAGE|d3d11.dll
+    0.53 MB res |     0.01 MB priv |    1 reg | IMAGE|shell32.dll
+    0.50 MB res |     0.00 MB priv |    1 reg | PRIVATE|heap@2200770576384
+    0.50 MB res |     0.00 MB priv |    1 reg | PRIVATE|heap@2200740691968
+    0.36 MB res |     0.01 MB priv |    1 reg | IMAGE|dxgi.dll
+    0.36 MB res |     0.00 MB priv |    1 reg | IMAGE|msctf.dll
+    0.34 MB res |     0.01 MB priv |    1 reg | IMAGE|rpcrt4.dll
+    0.32 MB res |     0.00 MB priv |    1 reg | IMAGE|WindowsCodecs.dll
+    0.30 MB res |     0.01 MB priv |    1 reg | IMAGE|ucrtbase.dll
+    0.28 MB res |     0.00 MB priv |    1 reg | IMAGE|dcomp.dll
+    6.57 MB res in 123 further buckets
+BY TYPE: PRIVATE=114.2 MB (of which share<=1 68.5)  IMAGE=21.3 MB  MAPPED=1.4 MB
+distinct buckets=153
+
