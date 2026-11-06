@@ -309,3 +309,12 @@
 - 理由：闲置内存的归因（见 `docs/08-VALIDATION.md`「闲置内存现状」与 `benchmarks/results/idle-memory-2026-11-06/` 的探针文本）显示空白页 83MB 是渲染地板、整库约 30MB 属 quire-core 外部依赖，本层唯一能动的是这 1.08MB 文本被 10002 个实体放大成的约 18MB。实体数由视口而非页大小决定后，10k 块页 Private 末值从 130–160MB 降到 109–115MB（与"只建 80 实体"的 cap 理论下限 111–115MB 吻合），峰值从 153–169 降到 133MB，空白页 83.0→83.1/83.4 持平（小页零回归）。
 - 未验证：真人滚轮连续滚动后在"刚滚入的行"上立即键入、以及组合期间滚动，未做真机验收；新门只覆盖事件路径。`±120` 未被规格钉死。版本仍 0.1.18（未自动 bump）。
 - 验收：新增 `focusing_a_far_block_recreates_its_input_and_still_takes_text`——播种 200 块，断言第 199 块改前不在常驻窗口、常驻数远小于 200，`focus` 后经真实编辑事件写回模型为 `"typed"`；移除 `ensure_input_subscribed` 的变异体令该门红在 `"row 199"` ≠ `"typed"`。全量 debug `cargo test --locked -j 8` 157 项（61 库 + 94 二进制 + 2 集成）全绿；`cargo fmt --all` 后重编，release `FileVersion 0.1.18.0`、`view.rs` sha256 `262901feb4f021e6…`、exe 26,577,408B。未读写真实用户库、未安装、未发布、未提交。
+
+## 侧栏搜索行从顶部移到最近组之后（2026-11-06）
+
+- 旧行为：搜索行常驻侧栏顶部，夹在"Q 工作区"切换器与"笔记/任务"之间（`sidebar-panel` 的直接子级），带 `Ctrl P` 徽标。这个位置是 0.1.14「侧栏 Notion 式重排」落下来的，`docs/DELIVERY-STATUS.md` 0.1.14 条把它记成用户要求；本轮用户看图后明确这不是他要的位置。
+- 新行为：搜索行移进 `page-list-scroll`，排在收藏/最近组之后、"工作区"分组行（`workspace-root-drop-target`）之前，行高 28、上间距 `mt(6)`，随页面树一起滚动，不再常驻顶部。点击仍走 `open_search(&SearchPages)`（与 Ctrl+P 同一个居中浮层），右键仍是固定菜单 index 3，行为一字未改，改的只是它在布局树里的位置。为让门能读坐标，给 `sidebar-organizer-notes`、`sidebar-organizer-tasks` 补了 `debug_selector`（`sidebar-search` 原本只有 `id`）。
+- 理由：用户在本轮给出的三个去处里选了"侧栏保留但往下放"，顶部留给切换器与笔记/任务。代价写在脸上：搜索行进入滚动区后，页面树很长时它会被推出视野，鼠标入口不再常驻；Ctrl+P 与浮层本身不受影响。
+- 验收：新增门 `the_search_row_lays_out_under_the_recents_group`——三页播种让最近组非空，断言 `笔记 < 任务 < 最近 < 搜索 < 工作区分组` 这五个真实 `origin.y` 的次序，再按布局上报的坐标点一次搜索行、断言 `search_open` 为真（证明搬进滚动区没把命中区搬丢）。变异自证：把该行整块搬回侧栏顶部（旧位置）后，该门红在预期断言上，报出 `recents 160, search 76, header 190`；还原后 `src/view.rs` sha256 与变异前一致（`2f723c7ea15f…`），门回绿。全量 debug `cargo test --locked -j 8` 158 项（61 库 + 95 二进制 + 2 集成）全绿，`cargo fmt --all -- --check`、`cargo check --all-targets` 通过。实拍：release 构建在隔离 `%TEMP%` 库、1280×800 真窗口 PrintWindow 截图，侧栏自上而下为 工作区 / 笔记 / 任务 / 搜索(Ctrl P) / 工作区分组 / 页面 / ＋新建页面，底部设置——该夹具库没有最近条目，所以搜索行紧贴任务下方 6px；真实库有最近组时它落在最近之后。
+- 未验证：真实库里最近组展开、页面树很长时搜索行被滚出视野后鼠标是否还够得着（未做真机滚动验收）。已随 0.1.19 出包、装机并在用户真实库上实拍确认（`docs/DELIVERY-STATUS.md` 0.1.19 条）。
+- 测量诚实性另记一条：本轮第一次全量 `cargo test --locked -j 8` 报 1 项失败，但当时的过滤管道把失败名洗掉了、没抓到；随后 5 次运行（含 bin 套件连续三次）全绿，无法复现。首要嫌疑是同步端口占用（测试日志里的 `os error 10048`）撞上上一轮运行的端口还没释放，未定位，不当作已解决。

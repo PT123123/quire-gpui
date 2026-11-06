@@ -2079,3 +2079,21 @@
 - 装机：安装器 exit 0；从磁盘读回 `%LOCALAPPDATA%\Programs\Quire GPUI\quire-gpui.exe` = 26,577,408 B、sha256 `1225B9C6C5543CE6EA724B4EB417ABA9A4AC50A0480FB17BD5D216C72ACC3086`、`FileVersion 0.1.18.0`——与构建产物逐字节同身份，不是上轮残留。HKCU 卸载登记只有一条：`{E8318F69-…}_is1`，`DisplayName Quire GPUI`、`DisplayVersion 0.1.18`、`InstallLocation` 指向上面目录、`InstallDate 20261106`。装机前确认无 `*quire*` 进程在跑，因此本轮没有旧实例需要交接。
 - 启动确认：直接拉起安装目录的 exe，1 秒内出现可见窗口 `quire-gpui-0.1.18`，窗口矩形 1280×800（本轮启动时沿用的是落盘的窗口几何设置，不是默认 1600×900，内存读数按此尺寸理解）；进程存活时读到 Private 119.2MB / Working Set 148.6MB（含刚开过文档的一次性状态，不与闲置基线同口径）。数据目录仍是自己独立的 `%LOCALAPPDATA%\QuireGPUI\`：启动即滚动 `quire.db.bak1..bak5`（`bak1` 落盘时间 20:04 即本轮启动的启动备份），未指向也未复制任何旧版真实库。
 - 未做：无 GitHub release/tag（本仓库 `git tag -l` 与 `gh release list` 都空，历史里没有发布对象）；未 bump 0.1.19；`PATH_MULTISAMPLE_COUNT` 4→2 的消融、`tools/measure-runtime.ps1` 接 modprobe 自证、quire-core 按需分页都仍在等用户点头；真人鼠标连续滚动后键入、IME 组合期滚动仍未验收。
+
+## 2026-11-06：侧栏搜索行下移（装机后用户看图提出的第一处修正）
+
+- 用户对着装机后截图问"我之前不是说这个搜索不要放这了吗"。先查记录再动手：docs 与全部会话转录里都没有"搜索不放侧栏"这条指令，唯一的位置指令是 0.1.14 那条"搜索行置于工作区切换器正下方"——现在屏幕上正是那个位置，代码在 `src/view.rs` 的 `sidebar-search`。当时把你的话理解成了"往上挪"，这条理解偏差写在 `docs/DIFFERENCES.md` 本轮条目里。
+- 给出三个去处（整行删掉只留 Ctrl+P / 挪到顶栏面包屑右侧 / 侧栏保留但往下放）后你选第三个：搜索行移入 `page-list-scroll`，排在收藏/最近组之后、"工作区"分组行之前，随页面树滚动；点击与右键行为一字未改，仍是同一个居中浮层和同一个固定菜单 index 3。
+- 门：新增 `the_search_row_lays_out_under_the_recents_group`（三页播种→断言 笔记<任务<最近<搜索<工作区分组 五个真实 `origin.y`→按上报坐标点一次→`search_open` 为真）；把整块搬回旧位置的变异体红在 `recents 160, search 76, header 190`，还原后 `src/view.rs` sha256 `2f723c7ea15f…` 与变异前一致、门回绿。顺带给 `sidebar-organizer-notes`/`sidebar-organizer-tasks` 补 `debug_selector` 以便门读坐标。
+- 验证：`cargo fmt --all -- --check` 通过；全量 debug `cargo test --locked -j 8` 158 项（61 库 + 95 二进制 + 2 集成）全绿；`cargo check --all-targets` 通过；release 构建后在隔离 `%TEMP%` 库、1280×800 真窗口 PrintWindow 实拍一张侧栏（截图确认顺序）。一条如实记录：第一次全量跑有 1 项失败但失败名被我的过滤管道洗掉了，随后 5 次全绿、无法复现，首要嫌疑是同步端口 `os error 10048` 撞上一轮运行的端口未释放，未定位。
+- 状态：改动只在工作树，未提交、未装机、未 bump 0.1.19；装机中那份 `%LOCALAPPDATA%\Programs\Quire GPUI\quire-gpui.exe` 仍是搜索行在顶部的 0.1.18，你屏幕上那个窗口也是它。要出包装机说一声，整条链一次跑完。（该状态已被下一条 0.1.19 交付冲掉。）
+
+## 2026-11-06：0.1.19 出包装机（侧栏搜索行下移随版本落地）
+
+- 版本号两处：`Cargo.toml` 的 `version` 与 `Cargo.lock` 里 `name = "quire-gpui"` 那条（0.1.18→0.1.19）；`Cargo.lock` 里另一条 `version = "0.1.18"` 属于第三方 `const-random`，没动。安装器不写版本号（`install/quire-gpui.iss` 的 `AppVersion` 从 EXE 版本信息读），代码里没有硬编码版本串（`grep 0.1.1x src/ tools/ install/` 零命中），窗口标题与底栏版本 chip 由包版本推导。
+- 提交前门：`cargo fmt --all -- --check` 通过；全量 debug `cargo test --locked -j 8` 158 项（61 库 + 95 二进制 + 2 集成）0 失败；`cargo check --all-targets --locked` 通过。本轮新增的门与变异自证见上一条与 `docs/DIFFERENCES.md`「侧栏搜索行从顶部移到最近组之后」。
+- 出包（`install/build-release.ps1 -BuildInstaller`）：release exe 26,577,408 B、sha256 前缀 `C3DBF7584064`、`FileVersion 0.1.19.0`、`ProductVersion 0.1.19`；便携 ZIP 9,379,238 B（`99A99458D10D`，21:17:38）；安装器 7,859,064 B（`C659A4903F8C`，21:17:50）；包内暂存 EXE 与构建产物逐字节比对为 identical（`staged identical: True`）。
+- 装机第一次失败并查清原因：`/VERYSILENT` 安装器 exit 5，读回安装目录仍是 `1225B9C6C554…` / `0.1.18.0`——常驻的 0.1.18 占着 exe。先按 `CloseMainWindow` 关窗，进程不退（`src/platform/tray.rs` 有自建托盘，托盘可用时关窗是隐藏进托盘）；再启动安装目录 exe，新进程 2 秒内自己退出——ADR-0136 的交接报文是 `ShellEvent::ShowMain`（`src/main.rs:332`、`src/view.rs:16015`），语义是"把常驻那份唤到前台"，不是"换版接管"，所以同版本再拉起永远挤不掉旧进程。结论：装机前必须让常驻真退出，本次按 PID `Stop-Process` 结束（该实例最后一次自动保存远早于此，启动备份也在），安装器随后 exit 0。
+- 装机读回：`%LOCALAPPDATA%\Programs\Quire GPUI\quire-gpui.exe` = 26,577,408 B、sha256 前缀 `C3DBF7584064`、`FileVersion 0.1.19.0`——与构建产物同身份。启动 2 秒出窗 `quire-gpui-0.1.19`，1280×800；数据目录仍是 `%LOCALAPPDATA%\QuireGPUI\`，`quire.db.bak1` 更新到 21:24（本次启动备份），bak2..bak5 依次 21:21 / 20:39 / 20:04 / 12:50。
+- 真实库实拍（PrintWindow，1280×800，仅本地留证、不入仓，因图内含用户页面标题与正文）：侧栏自上而下为 Q 工作区 / 笔记 / 任务 / ▸最近 / 搜索(Ctrl P) / 工作区分组 / 三个未命名页面 / ＋新建页面，底部设置，版本 chip `0.1.19`；正文"水电""阿萨德啊"与底栏"2 words · 6 chars"与装机前一致，说明换版没动内容。
+- 仍未做：GitHub release/tag（仓库里依旧没有发布对象）；真人鼠标把页面树滚到搜索行被推出视野后是否还够得着；`PATH_MULTISAMPLE_COUNT` 消融、modprobe 接进量法脚本、quire-core 分页继续等点头。

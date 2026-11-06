@@ -2172,6 +2172,63 @@ mod view_tests {
     }
 
     #[gpui::test]
+    fn the_search_row_lays_out_under_the_recents_group(cx: &mut TestAppContext) {
+        let (_scratch, workspace, window) = mounted_workspace(cx, "gpui-sidebar-search-order");
+        window.update(|window, app| {
+            workspace.update(app, |this, cx| {
+                this.add_page(window, cx);
+                this.add_page(window, cx);
+                this.add_page(window, cx);
+            });
+        });
+        window.run_until_parked();
+        let (notes, tasks, recents, search, header) = {
+            let mut row_y = |selector: &'static str| {
+                f32::from(
+                    window
+                        .debug_bounds(selector)
+                        .unwrap_or_else(|| panic!("{selector} must be laid out"))
+                        .origin
+                        .y,
+                )
+            };
+            (
+                row_y("sidebar-organizer-notes"),
+                row_y("sidebar-organizer-tasks"),
+                row_y("sidebar-recents-toggle"),
+                row_y("sidebar-search"),
+                row_y("workspace-root-drop-target"),
+            )
+        };
+        assert!(
+            notes < tasks && tasks < recents,
+            "the two organizer entries and the recents group keep their order: notes {notes}, tasks {tasks}, recents {recents}"
+        );
+        assert!(
+            recents < search && search < header,
+            "the search row belongs under the recents group and above the workspace header: recents {recents}, search {search}, header {header}"
+        );
+        // Moved into the scroll list it must still open the same overlay that
+        // Ctrl+P opens, at the geometry the layout reports.
+        let bounds = window
+            .debug_bounds("sidebar-search")
+            .expect("the search row must be laid out");
+        window.simulate_click(
+            point(
+                bounds.origin.x + px(20.),
+                bounds.origin.y + bounds.size.height / 2.,
+            ),
+            gpui::Modifiers::none(),
+        );
+        window.run_until_parked();
+        let open = window.read(|app| workspace.read(app).search_open);
+        assert!(
+            open,
+            "the click landing on the reported row bounds must open the page-search overlay"
+        );
+    }
+
+    #[gpui::test]
     fn sending_a_note_from_the_overlay_selects_what_it_just_wrote(cx: &mut TestAppContext) {
         let (_scratch, workspace, window) = mounted_workspace(cx, "gpui-capture-selection");
         let body = "浮层发送验收 #gpui-capture-gate";
@@ -27573,46 +27630,8 @@ impl Render for Workspace {
                             )
                             .child(
                                 div()
-                                    .id("sidebar-search")
-                                    .h(px(28.))
-                                    .px(px(8.))
-                                    .flex()
-                                    .items_center()
-                                    .rounded(px(5.))
-                                    .cursor_pointer()
-                                    .text_color(muted)
-                                    .hover(|row| row.bg(Palette::color(&p.bg).opacity(0.3)))
-                                    .on_click(cx.listener(|this, _, window, cx| {
-                                        this.open_search(&SearchPages, window, cx);
-                                    }))
-                                    .on_mouse_down(
-                                        MouseButton::Right,
-                                        cx.listener(|this, event: &MouseDownEvent, window, cx| {
-                                            this.open_fixed_context_menu(3, event, window, cx)
-                                        }),
-                                    )
-                                    .child(
-                                        div()
-                                            .w(px(16.))
-                                            .h(px(16.))
-                                            .flex()
-                                            .items_center()
-                                            .justify_center()
-                                            .child(sidebar_glyph(
-                                                SidebarGlyph::Search,
-                                                muted,
-                                                px(16.),
-                                            )),
-                                    )
-                                    .child(div().text_size(px(13.)).child("搜索"))
-                                    .child(div().flex_1())
-                                    .child(
-                                        div().text_size(px(11.)).text_color(muted).child("Ctrl P"),
-                                    ),
-                            )
-                            .child(
-                                div()
                                     .id("sidebar-organizer-notes")
+                                    .debug_selector(|| "sidebar-organizer-notes".to_owned())
                                     .h(px(28.))
                                     .px(px(8.))
                                     .flex()
@@ -27657,6 +27676,7 @@ impl Render for Workspace {
                             .child(
                                 div()
                                     .id("sidebar-organizer-tasks")
+                                    .debug_selector(|| "sidebar-organizer-tasks".to_owned())
                                     .h(px(28.))
                                     .px(px(8.))
                                     .flex()
@@ -27753,10 +27773,56 @@ impl Render for Workspace {
                                         )
                                         .when(!recents_collapsed, |list| list.children(recent_rows))
                                     })
-                                    // The old sidebar's sections live in one
-                                    // list: favorites, recents, then this
-                                    // "工作区" header separates the page tree
-                                    // (it is also the drag-out drop target).
+                                    .child(
+                                        div()
+                                            .id("sidebar-search")
+                                            .debug_selector(|| "sidebar-search".to_owned())
+                                            .h(px(28.))
+                                            .px(px(8.))
+                                            .mt(px(6.))
+                                            .flex()
+                                            .items_center()
+                                            .rounded(px(5.))
+                                            .cursor_pointer()
+                                            .text_color(muted)
+                                            .hover(|row| {
+                                                row.bg(Palette::color(&p.bg).opacity(0.3))
+                                            })
+                                            .on_click(cx.listener(|this, _, window, cx| {
+                                                this.open_search(&SearchPages, window, cx);
+                                            }))
+                                            .on_mouse_down(
+                                                MouseButton::Right,
+                                                cx.listener(|this, event: &MouseDownEvent, window, cx| {
+                                                    this.open_fixed_context_menu(3, event, window, cx)
+                                                }),
+                                            )
+                                            .child(
+                                                div()
+                                                    .w(px(16.))
+                                                    .h(px(16.))
+                                                    .flex()
+                                                    .items_center()
+                                                    .justify_center()
+                                                    .child(sidebar_glyph(
+                                                        SidebarGlyph::Search,
+                                                        muted,
+                                                        px(16.),
+                                                    )),
+                                            )
+                                            .child(div().text_size(px(13.)).child("搜索"))
+                                            .child(div().flex_1())
+                                            .child(
+                                                div()
+                                                    .text_size(px(11.))
+                                                    .text_color(muted)
+                                                    .child("Ctrl P"),
+                                            ),
+                                    )
+                                    // One list: favorites, recents, the search
+                                    // row (moved out of the sidebar top by user
+                                    // request), then this "工作区" header before
+                                    // the page tree (also the drag-out target).
                                     .child(
                                         div()
                                             .id("workspace-root-drop-target")
