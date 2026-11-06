@@ -2049,18 +2049,73 @@ mod view_tests {
         );
         // Clicking the row itself, at the geometry the layout reported, must
         // navigate: a row whose hit box is elsewhere is unclickable in practice.
+        // The tree is re-ordered by the very act of opening a page (the recents
+        // group is a projection of recency), so the row under this point at
+        // press time is not necessarily the row that was laid out when the
+        // bounds were read. Re-read first: if it moved, say so — a moved row is
+        // a different defect from a hit box that sits elsewhere.
+        let settled = window
+            .debug_bounds(static_selector(format!("favorite-nav-{}", favorite_id.0)))
+            .expect("the favourites row must stay laid out for the click");
+        assert_eq!(
+            (
+                f32::from(settled.origin.x),
+                f32::from(settled.origin.y),
+                f32::from(settled.size.height)
+            ),
+            (
+                f32::from(favorite.origin.x),
+                f32::from(favorite.origin.y),
+                f32::from(favorite.size.height)
+            ),
+            "the sidebar row moved between the bounds read and the click \
+             ({}x{} → {}x{}); this gate clicks a settled tree",
+            f32::from(favorite.origin.x),
+            f32::from(favorite.origin.y),
+            f32::from(settled.origin.x),
+            f32::from(settled.origin.y)
+        );
         window.simulate_click(
             point(
-                favorite.origin.x + px(20.),
-                favorite.origin.y + favorite.size.height / 2.,
+                settled.origin.x + px(20.),
+                settled.origin.y + settled.size.height / 2.,
             ),
             gpui::Modifiers::none(),
         );
         window.run_until_parked();
         let active = window.read(|app| workspace.read(app).session.page.id);
         assert_eq!(
-            active, favorite_id,
-            "the click landing on the reported row bounds must open that page"
+            active,
+            favorite_id,
+            "the click landing on the reported row bounds must open that page; \
+             the sidebar rows sat at {:?} and the point clicked was {:?}",
+            [
+                static_selector(format!("favorite-nav-{}", favorite_id.0)),
+                static_selector(format!("recent-nav-{}", favorite_id.0)),
+                static_selector(format!("favorite-nav-{}", recent_id.0)),
+                static_selector(format!("recent-nav-{}", recent_id.0)),
+                "sidebar-favorites-toggle",
+                "sidebar-recents-toggle",
+                "workspace-root-drop-target",
+            ]
+            .into_iter()
+            .map(|selector| {
+                (
+                    selector,
+                    window.debug_bounds(selector).map(|row| {
+                        (
+                            f32::from(row.origin.y),
+                            f32::from(row.origin.x),
+                            f32::from(row.size.height),
+                        )
+                    }),
+                )
+            })
+            .collect::<Vec<_>>(),
+            (
+                f32::from(settled.origin.x) + 20.,
+                f32::from(settled.origin.y) + f32::from(settled.size.height) / 2.,
+            )
         );
         let toggle = window
             .debug_bounds("sidebar-favorites-toggle")

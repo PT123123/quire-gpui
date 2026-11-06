@@ -19,6 +19,22 @@ fn main() {
     }
 }
 
+/// Where both Quire desktops keep their library: `%APPDATA%\Quire\quire.db`.
+///
+/// That is the legacy app's own default, so pointing GPUI at it takes no flag,
+/// no shortcut edit and no rebuild of the old version. Before 2026-11-06 GPUI
+/// defaulted to `%LOCALAPPDATA%\QuireGPUI\`, i.e. a second library; the user
+/// decision on that date was that the two UIs share one data backend.
+/// `--db` still overrides this, and every test, benchmark and smoke run names
+/// its own file, so nothing but a real launch lands here by accident.
+fn shared_library_path(appdata: Option<std::ffi::OsString>) -> PathBuf {
+    appdata
+        .map(PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir)
+        .join("Quire")
+        .join("quire.db")
+}
+
 fn run() -> Result<()> {
     let mut path = None;
     let mut theme: Option<String> = None;
@@ -30,10 +46,16 @@ fn run() -> Result<()> {
     let mut stdio = false;
     let mut share_port = None;
     let mut pull_url = None;
+    let mut import_library = None;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--db" => path = Some(PathBuf::from(args.next().context("--db 需要路径")?)),
+            "--import-library" => {
+                import_library = Some(PathBuf::from(
+                    args.next().context("--import-library 需要路径")?,
+                ))
+            }
             "--theme" => {
                 theme_overridden = true;
                 theme = Some(args.next().context("--theme 需要 ID")?);
@@ -64,7 +86,7 @@ fn run() -> Result<()> {
             "--stdio" | "mcp" => stdio = true,
             "--help" | "-h" => {
                 println!(
-                    "quire-gpui [--db PATH] [--theme ID] [--dump-state] [--share] [--share-port PORT] [--pull URL]\nquire-gpui --stdio [--db PATH]: bridge MCP stdio to the running Quire HTTP service. The database path locates its adjacent mcp.json pointer.\n--share: serve this workspace read-only on the LAN at port 5877.\n--share-port PORT: serve read-only on the LAN at the specified port.\n--pull URL: import pages from a Quire LAN share endpoint.\n--smoke-test: requires a NEW --db path and refuses an existing adjacent mcp.json; exercises isolated UI/MCP paths, NOT real OS IME.\n--smoke-recovery: with --smoke-test only, requires an existing isolated database that recovers from a backup.\n--smoke-blocks N: with --smoke-test, add N synthetic paragraph blocks (max 10000) to the isolated test page."
+                    "quire-gpui [--db PATH] [--theme ID] [--dump-state] [--share] [--share-port PORT] [--pull URL]\nquire-gpui --import-library PATH: merge that SQLite library into the one this run opens, print what changed, and exit without a window.\nquire-gpui --stdio [--db PATH]: bridge MCP stdio to the running Quire HTTP service. The database path locates its adjacent mcp.json pointer.\n--share: serve this workspace read-only on the LAN at port 5877.\n--share-port PORT: serve read-only on the LAN at the specified port.\n--pull URL: import pages from a Quire LAN share endpoint.\n--smoke-test: requires a NEW --db path and refuses an existing adjacent mcp.json; exercises isolated UI/MCP paths, NOT real OS IME.\n--smoke-recovery: with --smoke-test only, requires an existing isolated database that recovers from a backup.\n--smoke-blocks N: with --smoke-test, add N synthetic paragraph blocks (max 10000) to the isolated test page."
                 );
                 return Ok(());
             }
@@ -101,13 +123,20 @@ fn run() -> Result<()> {
     if dump && path.as_ref().is_none_or(|p| !p.exists()) {
         bail!("--dump-state 需要已存在的 --db 库");
     }
-    let path = path.unwrap_or_else(|| {
-        std::env::var_os("LOCALAPPDATA")
-            .map(PathBuf::from)
-            .unwrap_or_else(std::env::temp_dir)
-            .join("QuireGPUI")
-            .join("quire.db")
-    });
+    if let Some(source) = import_library.as_deref() {
+        if smoke || smoke_blocks > 0 || stdio || dump {
+            bail!(
+                "--import-library 是独立的一次性合并命令，不与 --smoke-test/--smoke-blocks/--stdio/--dump-state 同用"
+            );
+        }
+        if !source.is_file() {
+            bail!(
+                "--import-library 需要一个已存在的 SQLite 库：{}",
+                source.display()
+            );
+        }
+    }
+    let path = path.unwrap_or_else(|| shared_library_path(std::env::var_os("APPDATA")));
     let path = std::path::absolute(path)?;
     if smoke
         && path
@@ -136,21 +165,42 @@ fn run() -> Result<()> {
         return Ok(());
     }
     // Single instance per database: an already-running workspace is asked to
-    // show its main window and this process exits quietly.
-    if platform::activate_running_instance(&path) {
+    // show its main window and this process exits quietly. A --import-library
+    // run must not do that — the merge has to report what it did, or fail loudly,
+    // rather than exit 0 while a window nobody asked for keeps the library open.
+    if import_library.is_none() && platform::activate_running_instance(&path) {
         eprintln!("Quire GPUI already runs for this database; asked it to show its window");
         return Ok(());
     }
     let mut session = match Session::open(&path) {
         Ok(session) => session,
         Err(error) => {
-            crate::platform::show_startup_error(&format!(
-                "无法打开 Quire 数据库：\n{}\n\n程序不会覆盖或重建该文件。请检查文件权限、磁盘状态，或从备份恢复。",
-                error
-            ));
+            if import_library.is_none() {
+                crate::platform::show_startup_error(&format!(
+                    "无法打开 Quire 数据库：\n{}\n\n程序不会覆盖或重建该文件。请检查文件权限、磁盘状态，或从备份恢复。",
+                    error
+                ));
+            }
             return Err(error);
         }
     };
+    if let Some(source) = import_library.as_deref() {
+        let report = session.import_library(source)?;
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "source": source.display().to_string(),
+                "target": path.display().to_string(),
+                "pages": { "before": report.pages_before, "after": report.pages_after },
+                "blocks": { "before": report.blocks_before, "after": report.blocks_after },
+                "notes": { "before": report.notes_before, "after": report.notes_after },
+                "tasks": { "before": report.tasks_before, "after": report.tasks_after },
+                "attachments": { "before": report.attachments_before, "after": report.attachments_after },
+                "imported_pages": report.imported_pages,
+            }))?
+        );
+        return Ok(());
+    }
     if smoke_recovery && session.startup_notice.is_none() {
         bail!("--smoke-recovery 数据库没有触发备份恢复");
     }
@@ -495,7 +545,31 @@ fn parse_window_bounds(x: &str, y: &str, width: &str, height: &str) -> Option<Bo
 
 #[cfg(test)]
 mod window_geometry_tests {
-    use super::{parse_window_bounds, pull_lan_pages, sync_listener_preflight};
+    use super::{
+        parse_window_bounds, pull_lan_pages, shared_library_path, sync_listener_preflight,
+    };
+
+    /// Both desktops read and write one library, at the path the legacy app
+    /// already uses by default — no flag, no shortcut edit, no rebuild of it.
+    #[test]
+    fn the_default_library_is_the_one_the_legacy_desktop_already_uses() {
+        let path = shared_library_path(Some(std::ffi::OsString::from("R:/Roaming")));
+        assert_eq!(
+            path,
+            std::path::PathBuf::from("R:/Roaming")
+                .join("Quire")
+                .join("quire.db")
+        );
+        assert!(
+            !path.to_string_lossy().contains("QuireGPUI"),
+            "the old per-UI library must not be the default any more: {path:?}"
+        );
+        // No roaming profile (a service account, a stripped runner): a temp
+        // folder, never a guess at somebody's real library.
+        let fallback = shared_library_path(None);
+        assert_eq!(fallback.file_name().unwrap(), "quire.db");
+        assert_eq!(fallback.parent().unwrap().file_name().unwrap(), "Quire");
+    }
 
     #[test]
     fn handoff_pipe_names_are_stable_and_per_database() {

@@ -22,7 +22,7 @@ cargo run
 cargo run -- --db "$env:TEMP/quire-gpui-scratch/quire.db" --theme jade
 ```
 
-可用主题 ID 见 `src/palettes.json`。默认数据库位于 `%LOCALAPPDATA%/QuireGPUI/quire.db`。不要把旧版真实数据库作为 `--db` 参数；需先复制一份测试副本。开发构建已在本机通过，完整的窗口交互、输入法与关闭重开流程尚待使用反馈。
+可用主题 ID 见 `src/palettes.json`。默认数据库是旧版桌面端那颗：`%APPDATA%/Quire/quire.db`——2026-11-06 起两版共用一套数据后端，`--db` 仍然优先，压测/迁移/破坏性测试一律显式指到 `%TEMP%` 副本，不要拿真实库当夹具。两版不能同时打开同一个库写：GPUI 启动时会独占试开 `<db>-shm`，旧版正在写就拒绝启动；反方向（GPUI 常驻时开旧版）目前没人拦，需人工遵守。把 GPUI 试验库里的内容并进共用库用一次性命令 `cargo run -- --import-library %LOCALAPPDATA%/QuireGPUI/quire.db`，它无窗口运行、打印 JSON 报告后退出，只增不删。开发构建已在本机通过，完整的窗口交互、输入法与关闭重开流程尚待使用反馈。
 
 ### Release 编译开销（Windows x64，2026-10-17）
 
@@ -53,7 +53,7 @@ powershell -ExecutionPolicy Bypass -File tools/measure-build.ps1 `
 powershell -ExecutionPolicy Bypass -File install/build-release.ps1
 ```
 
-产物位于 `dist/`，包含程序、README 与第三方许可。可选安装 Inno Setup 6，再加 `-BuildInstaller` 生成按当前用户安装的安装器；脚本会从 PATH 或常见的 per-user 安装目录查找编译器。GPUI 使用独立的 Windows AppUserModelID、嵌入图标/版本信息、独立 `%LOCALAPPDATA%/QuireGPUI` 数据目录；卸载不会删除数据，也不会替换 Slint 版。
+产物位于 `dist/`，包含程序、README 与第三方许可。可选安装 Inno Setup 6，再加 `-BuildInstaller` 生成按当前用户安装的安装器；脚本会从 PATH 或常见的 per-user 安装目录查找编译器。GPUI 使用独立的 Windows AppUserModelID、嵌入图标/版本信息、独立安装目录与独立 exe，但**数据后端与旧版共用**（默认 `%APPDATA%/Quire/quire.db`）；卸载只撤程序，不动数据，也不替换 Slint 版。
 
 候选版切换前备份、隔离兼容测试与回退步骤见 [`docs/RELEASE-AND-ROLLBACK.md`](docs/RELEASE-AND-ROLLBACK.md)。
 

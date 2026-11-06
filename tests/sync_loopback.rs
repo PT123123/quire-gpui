@@ -1,14 +1,40 @@
+use quire_core::core::command::Command;
+use quire_core::core::organizer::{NoteId, TaskId};
+use quire_core::core::types::AttachmentId;
 use quire_core::services::sync::{
     engine::{DeviceInfo, Job, PeerRecord},
     model::SyncSnapshot,
     server::SyncServer,
     transport,
 };
-use quire_core::{core::command::Command, core::types::AttachmentId};
 use quire_gpui::session::Session;
 use std::net::TcpListener;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::{Duration, Instant};
+
+/// The row number this device holds for the note the peer minted under `uuid`.
+///
+/// SPEC §四十一: an organizer row's integer id is 每台设备自己的行号, and a row
+/// that only the peer has is inserted here under a fresh local id — the uuid is
+/// the name that travels, the id is not. So a cross-device assertion looks the
+/// row up by uuid and then uses the id *of the device it is asserting about*.
+fn note_id_by_uuid(session: &Session, uuid: &str) -> Option<NoteId> {
+    session
+        .organizer
+        .notes
+        .iter()
+        .find(|note| note.uuid == uuid)
+        .map(|note| note.id)
+}
+
+fn task_id_by_uuid(session: &Session, uuid: &str) -> Option<TaskId> {
+    session
+        .organizer
+        .tasks
+        .iter()
+        .find(|task| task.uuid == uuid)
+        .map(|task| task.id)
+}
 
 fn start_node(session: &mut Session) -> (u16, Receiver<Job>) {
     let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind isolated sync endpoint");
@@ -107,6 +133,7 @@ fn two_isolated_sessions_exchange_changes_over_sync_http_and_reopen() -> anyhow:
         "经由同步 HTTP 往返".into(),
         vec!["loopback".into()],
     );
+    let note_a_uuid = a.organizer.note(note_a).unwrap().uuid.clone();
     let page_b = b.create_page(None);
     b.set_page_title("来自 B 的页面".into());
     let database_block_b = b.blocks().first().unwrap().id;
@@ -293,7 +320,17 @@ fn two_isolated_sessions_exchange_changes_over_sync_http_and_reopen() -> anyhow:
             .iter()
             .any(|note| note.title == "来自 A 的笔记")
     );
-    assert!(b.organizer.note(note_a).is_some());
+    let note_on_b = note_id_by_uuid(&b, &note_a_uuid).expect("A's note did not arrive on B");
+    assert_eq!(
+        b.organizer
+            .notes
+            .iter()
+            .filter(|n| n.uuid == note_a_uuid)
+            .count(),
+        1,
+        "one uuid is one row on B"
+    );
+    assert_eq!(b.organizer.note(note_on_b).unwrap().title, "来自 A 的笔记");
     assert!(b.pages.iter().any(|page| page.title == "来自 B 的页面"));
     assert!(
         b.databases
@@ -336,17 +373,19 @@ fn two_isolated_sessions_exchange_changes_over_sync_http_and_reopen() -> anyhow:
         "B 在共同基线上新增了任务".into(),
         None,
     ));
+    let task_b_uuid = b.organizer.task(task_b).unwrap().uuid.clone();
     let concurrent_b = b.sync_export()?;
     let merged_on_a = a.sync_apply_remote(&concurrent_b, &[], &peer_b)?;
     let note = a.organizer.note(note_a).expect("A note merged on A");
     assert_eq!(note.title, "共享基线后的 A 笔记更新");
     assert_eq!(note.body, "A 在共同基线上更新了正文");
     assert_eq!(note.tags, ["A-side"]);
-    let task = a.organizer.task(task_b).expect("B task merged on A");
+    let task_on_a = task_id_by_uuid(&a, &task_b_uuid).expect("B's task did not arrive on A");
+    let task = a.organizer.task(task_on_a).expect("B task merged on A");
     assert_eq!(task.title, "共享基线后的 B 任务");
     assert_eq!(task.notes, "B 在共同基线上新增了任务");
     b.sync_apply_remote(&merged_on_a, &[], &peer_a)?;
-    let note = b.organizer.note(note_a).expect("A note merged on B");
+    let note = b.organizer.note(note_on_b).expect("A note merged on B");
     assert_eq!(note.title, "共享基线后的 A 笔记更新");
     assert_eq!(note.body, "A 在共同基线上更新了正文");
     assert_eq!(note.tags, ["A-side"]);
@@ -363,7 +402,7 @@ fn two_isolated_sessions_exchange_changes_over_sync_http_and_reopen() -> anyhow:
         vec!["A-side".into()],
     );
     b.update_note_editor(
-        note_a,
+        note_on_b,
         "共同基线冲突：节点 B".into(),
         "A 在共同基线上更新了正文".into(),
         vec!["A-side".into()],
@@ -383,7 +422,7 @@ fn two_isolated_sessions_exchange_changes_over_sync_http_and_reopen() -> anyhow:
     ));
     assert_eq!(
         b.organizer
-            .note(note_a)
+            .note(note_on_b)
             .expect("conflicted note on B")
             .title,
         resolved_note_title
@@ -466,9 +505,9 @@ fn two_isolated_sessions_exchange_changes_over_sync_http_and_reopen() -> anyhow:
             .iter()
             .any(|page| page.title == "来自 B 的页面")
     );
-    assert!(reopened_b.organizer.note(note_a).is_some());
+    assert!(reopened_b.organizer.note(note_on_b).is_some());
     assert_eq!(
-        reopened_b.organizer.note(note_a).map(|note| (
+        reopened_b.organizer.note(note_on_b).map(|note| (
             note.title.as_str(),
             note.body.as_str(),
             note.tags.as_slice()
@@ -479,8 +518,12 @@ fn two_isolated_sessions_exchange_changes_over_sync_http_and_reopen() -> anyhow:
             &["A-side".to_string()][..]
         ))
     );
-    for session in [&reopened_a, &reopened_b] {
-        let task = session.organizer.task(task_b).expect("B task persisted");
+    assert_eq!(
+        reopened_b.organizer.note(note_on_b).unwrap().uuid,
+        note_a_uuid
+    );
+    for (session, task) in [(&reopened_a, task_on_a), (&reopened_b, task_b)] {
+        let task = session.organizer.task(task).expect("B task persisted");
         assert_eq!(task.title, "共享基线后的 B 任务");
         assert_eq!(task.notes, "B 在共同基线上新增了任务");
     }

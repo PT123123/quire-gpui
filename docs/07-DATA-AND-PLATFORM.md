@@ -2,7 +2,7 @@
 
 ## core 与存储
 
-旧版依赖 quire-core Git rev `db0e95f`，复刻初始保持相同。Document/命令/Changes、SQLite migrations、FTS、附件、persistence、备份/恢复、organizer 和 sync 业务从 core 复用。新 UI 不自建第二套 schema 或搜索实现。
+旧版依赖 quire-core Git rev `1d6a357`。2026-11-06 起 GPUI 锁同一 rev（此前是 `b73af89`，两者的 `migrations.rs` 相同、`CURRENT_VERSION` 都是 30）。Document/命令/Changes、SQLite migrations、FTS、附件、persistence、备份/恢复、organizer 和 sync 业务从 core 复用。新 UI 不自建第二套 schema 或搜索实现。
 
 旧版 README 与阶段记录中的防抖间隔存在历史差异，实施时读当前 controller/state 调用点确定实际值。输入 burst 分组、存储 debounce、组织器草稿 debounce 是三件事，不混成一个全局 timer。
 
@@ -12,9 +12,13 @@
 
 ## 开发与切换
 
-开发应用使用独立目录与显式 `--db` 测试库；建议 App ID 和 binary 使用 Quire GPUI/quire-gpui，最终品牌切换另定。不要启动时自动找到旧库并写入。备份 SQLite 时使用一致性备份服务，不能在旧版打开 WAL 库时仅复制主 .db 文件。
+2026-11-06 的用户决定：**两版共用一套数据后端**。GPUI 的默认库不再是 `%LOCALAPPDATA%\QuireGPUI\`，而是旧版一直在用的 `%APPDATA%\Quire\quire.db`；`--db` 仍然优先于默认值，压测/迁移/破坏性测试照旧用显式 `--db` 指向 `%TEMP%` 副本，不碰真实库。开发构建与安装标识（AppUserModelID、安装目录、exe 名）仍然独立。
 
-同库不允许两版并发写入。跨版验证用关闭后的完整库副本或 SQLite backup API，包含附件树。记录迁移前 schema、记录数、稳定 ID、关键字段和附件哈希；测试旧→新→旧往返。不能声称“schema 一样就兼容”，还要测设置、页面 metadata、organizer、数据库属性和附件引用。
+同库不允许两版并发写入，这条现在有了机器门：GPUI 打开库时先独占试开 `<db>-shm`（Windows `share_mode(0)`）。SQLite 只在有连接附着时持有该文件，试开失败即说明另一版正在写，GPUI 拒绝启动并说明要先退出另一个；残留的 `-shm`（上一进程没干净退出）能被独占打开，所以这道门不会把库锁死。门只覆盖 GPUI 这一侧——旧版代码未改，**旧版在 GPUI 常驻时被拉起不会被拦住**，对称的那 5 行要加在 quire-desktop，等授权。
+
+`--import-library PATH` 是一次性的并库命令：以真实会话打开源库，`sync_export` 出一份快照，再走局域网同步那套三方合并 `sync_apply_remote`（无 shadow）并进当前库，打印每项前后计数后退出，不开窗、不弹窗。合并只新增：模板页不进快照（`sync_export` 就排除了它），两侧同 id 的行保留本侧，本侧独有的行不会被”对端没有”判成删除。内置模板种子也改成按预设逐个查标题——旧版库自带 5 份同名模板页，GPUI 只补缺的，不再往用户库塞第二套。
+
+备份 SQLite 时使用一致性备份服务，不能在任一版打开 WAL 库时仅复制主 `.db` 文件。跨版验证用关闭后的完整库副本（主文件 + `-wal` + `-shm` + 附件 + 配置），记录迁移前 schema、记录数、稳定 ID、关键字段和附件哈希；测旧→新→旧往返：GPUI 写入后的副本必须由 `quire-slint --db 副本 --dump-state` 读出同样的页数，反向亦然。不能声称”schema 一样就兼容”，还要测设置、页面 metadata、organizer、数据库属性和附件引用。
 
 ## 同步与 Android
 

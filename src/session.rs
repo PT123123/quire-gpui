@@ -39,6 +39,47 @@ pub struct PendingOrganizerDelete {
     pub message: String,
 }
 
+/// How much a library holds, used on both sides of [`Session::import_library`].
+#[derive(Clone, Copy, Debug, Default)]
+struct Counts {
+    pages: usize,
+    blocks: usize,
+    notes: usize,
+    tasks: usize,
+    attachments: usize,
+}
+
+impl Counts {
+    fn of(session: &Session) -> Self {
+        Self {
+            pages: session.pages.iter().filter(|page| !page.template).count(),
+            blocks: session.document.all_blocks().count(),
+            notes: session.organizer.live_notes().count(),
+            tasks: session.organizer.live_tasks().count(),
+            attachments: session.attachments.len(),
+        }
+    }
+}
+
+/// What one [`Session::import_library`] call changed, printed by
+/// `--import-library` and asserted by its gates.
+#[derive(Debug, Default)]
+pub struct ImportReport {
+    pub source: PathBuf,
+    pub pages_before: usize,
+    pub pages_after: usize,
+    pub blocks_before: usize,
+    pub blocks_after: usize,
+    pub notes_before: usize,
+    pub notes_after: usize,
+    pub tasks_before: usize,
+    pub tasks_after: usize,
+    pub attachments_before: usize,
+    pub attachments_after: usize,
+    /// Titles of the pages whose ids this library did not have before.
+    pub imported_pages: Vec<String>,
+}
+
 pub struct Session {
     pub path: PathBuf,
     pub startup_notice: Option<String>,
@@ -62,6 +103,39 @@ pub struct Session {
     next_organizer_delete_token: u64,
     // Prevent two GPUI instances allocating IDs against the same stale document.
     _instance_lock: std::fs::File,
+}
+
+/// One library, one writer at a time (docs/07:「同库不允许两版并发写入」).
+///
+/// Both desktops load the whole library into memory and flush their own change
+/// lists, so a second writer does not merge with the first — it silently
+/// overwrites it later. `<db>.gpui.lock` only speaks for GPUI, and the legacy
+/// desktop answers to no lock file of ours. SQLite keeps `<db>-shm` open for as
+/// long as a connection is attached to the WAL, so asking for that file
+/// *exclusively* (share mode 0) detects an attached foreign connection without
+/// needing the other program's cooperation. A `-shm` nobody holds is left over
+/// from an unclean exit, the exclusive open succeeds, and the library still
+/// opens — this check can never strand a library on its own.
+fn ensure_no_other_quire_holds_it(path: &Path) -> Result<()> {
+    if !cfg!(windows) {
+        return Ok(());
+    }
+    let mut shm = path.as_os_str().to_os_string();
+    shm.push("-shm");
+    let shm = PathBuf::from(shm);
+    if !shm.is_file() {
+        return Ok(());
+    }
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    std::os::windows::fs::OpenOptionsExt::share_mode(&mut options, 0);
+    match options.open(&shm) {
+        Ok(_exclusive) => Ok(()),
+        Err(error) => bail!(
+            "旧版 Quire 桌面端正打开着这个库：{}（{error}）\n两个版本不能同时写一套数据，先退出另一个再打开。",
+            path.display()
+        ),
+    }
 }
 
 fn snap_left(text: &str, byte: usize) -> usize {
@@ -679,6 +753,9 @@ impl Session {
         instance_lock
             .try_lock()
             .context("此库已被另一个 Quire GPUI 实例打开")?;
+        // Past this point no other GPUI can be in the library, so anything the
+        // probe below finds is the legacy desktop.
+        ensure_no_other_quire_holds_it(path)?;
         let (repo, open_report) = SqliteRepository::open_with_report(path)
             .context("无法打开库；不会覆盖或重建已有文件")?;
         let repo = Arc::new(repo);
@@ -837,6 +914,17 @@ impl Session {
             .max();
         let mut changes = Vec::new();
         for preset in quire_core::core::template::PRESETS {
+            // Per preset, not per library: the Slint desktop seeds this same
+            // list under its own settings key, so the first GPUI open of a
+            // library it already prepared would otherwise add a second copy of
+            // every template beside the pages the user has.
+            if self
+                .pages
+                .iter()
+                .any(|page| page.template && page.title == preset.name)
+            {
+                continue;
+            }
             let order = OrderKey::between(next_order, None).unwrap_or(OrderKey::FIRST);
             next_order = Some(order);
             let page = Page {
@@ -3920,69 +4008,125 @@ impl Session {
                 };
             };
         }
+        // A row the merge renames draws from these allocators, but every other
+        // remote row arrives under the id it already carries. Seeding only from
+        // this library therefore lets a renamed row take an id the remote still
+        // uses, and one id reaches storage twice — `UNIQUE constraint failed:
+        // blocks.id`. Both sides' maxima are the floor.
+        let floor = |local: u64, remote: u64| local.max(remote);
         allocator!(
             next_page,
-            self.pages.iter().map(|row| row.id.0).max().unwrap_or(0)
+            floor(
+                self.pages.iter().map(|row| row.id.0).max().unwrap_or(0),
+                remote.pages.iter().map(|row| row.id).max().unwrap_or(0)
+            )
         );
         allocator!(
             next_block,
-            self.document
-                .all_blocks()
-                .map(|row| row.id.0)
-                .max()
-                .unwrap_or(0)
+            floor(
+                self.document
+                    .all_blocks()
+                    .map(|row| row.id.0)
+                    .max()
+                    .unwrap_or(0),
+                remote.blocks.iter().map(|row| row.id).max().unwrap_or(0)
+            )
         );
         allocator!(
             next_attachment,
-            local
-                .attachments
-                .iter()
-                .map(|row| row.id)
-                .max()
-                .unwrap_or(0)
+            floor(
+                local
+                    .attachments
+                    .iter()
+                    .map(|row| row.id)
+                    .max()
+                    .unwrap_or(0),
+                remote
+                    .attachments
+                    .iter()
+                    .map(|row| row.id)
+                    .max()
+                    .unwrap_or(0)
+            )
         );
         allocator!(
             next_db,
-            local.databases.iter().map(|row| row.id).max().unwrap_or(0)
+            floor(
+                local.databases.iter().map(|row| row.id).max().unwrap_or(0),
+                remote.databases.iter().map(|row| row.id).max().unwrap_or(0)
+            )
         );
         allocator!(
             next_property,
-            local
-                .databases
-                .iter()
-                .flat_map(|db| db.properties.iter().map(|row| row.id))
-                .max()
-                .unwrap_or(0)
+            floor(
+                local
+                    .databases
+                    .iter()
+                    .flat_map(|db| db.properties.iter().map(|row| row.id))
+                    .max()
+                    .unwrap_or(0),
+                remote
+                    .databases
+                    .iter()
+                    .flat_map(|db| db.properties.iter().map(|row| row.id))
+                    .max()
+                    .unwrap_or(0)
+            )
         );
         allocator!(
             next_record,
-            local
-                .databases
-                .iter()
-                .flat_map(|db| db.records.iter().map(|row| row.id))
-                .max()
-                .unwrap_or(0)
+            floor(
+                local
+                    .databases
+                    .iter()
+                    .flat_map(|db| db.records.iter().map(|row| row.id))
+                    .max()
+                    .unwrap_or(0),
+                remote
+                    .databases
+                    .iter()
+                    .flat_map(|db| db.records.iter().map(|row| row.id))
+                    .max()
+                    .unwrap_or(0)
+            )
         );
         allocator!(
             next_view,
-            local
-                .databases
-                .iter()
-                .flat_map(|db| db.views.iter().map(|row| row.id))
-                .max()
-                .unwrap_or(0)
+            floor(
+                local
+                    .databases
+                    .iter()
+                    .flat_map(|db| db.views.iter().map(|row| row.id))
+                    .max()
+                    .unwrap_or(0),
+                remote
+                    .databases
+                    .iter()
+                    .flat_map(|db| db.views.iter().map(|row| row.id))
+                    .max()
+                    .unwrap_or(0)
+            )
         );
         allocator!(
             next_note,
-            local.notes.iter().map(|row| row.id).max().unwrap_or(0)
+            floor(
+                local.notes.iter().map(|row| row.id).max().unwrap_or(0),
+                remote.notes.iter().map(|row| row.id).max().unwrap_or(0)
+            )
         );
         allocator!(
             next_task,
-            local.tasks.iter().map(|row| row.id).max().unwrap_or(0)
+            floor(
+                local.tasks.iter().map(|row| row.id).max().unwrap_or(0),
+                remote.tasks.iter().map(|row| row.id).max().unwrap_or(0)
+            )
         );
         allocator!(
             next_list,
-            local.lists.iter().map(|row| row.id).max().unwrap_or(0)
+            floor(
+                local.lists.iter().map(|row| row.id).max().unwrap_or(0),
+                remote.lists.iter().map(|row| row.id).max().unwrap_or(0)
+            )
         );
         let mut uuid = || quire_core::core::organizer::new_uuid();
         let mut ctx = quire_core::services::sync::merge::MergeCtx {
@@ -4242,6 +4386,93 @@ impl Session {
         self.persistence.force_flush()?;
         Ok(merged)
     }
+
+    /// Carry one whole Quire library into this one.
+    ///
+    /// The rows arrive through `sync_apply_remote` with no shadow, which is the
+    /// merge the LAN sync already runs: rows only the other file has arrive,
+    /// rows only this file has stay untouched, and a row both sides claim under
+    /// one id keeps this side's copy. Writing the import on top of that engine
+    /// is what keeps `block_children`, the FTS rows, the organizer uuids and the
+    /// attachment pointers correct without a second implementation of them.
+    ///
+    /// The source is opened as a real session, so it takes its own instance
+    /// lock and rotates its own snapshots — a caller that must leave the
+    /// original file alone points `source` at a copy.
+    pub fn import_library(&mut self, source: &Path) -> Result<ImportReport> {
+        use quire_core::{core::types::AttachmentId, services::sync::engine::PeerRecord};
+        let source = std::path::absolute(source)?;
+        if source == std::path::absolute(&self.path)? {
+            bail!("导入源就是当前库，无需导入");
+        }
+        if !source.is_file() {
+            bail!("导入源不存在：{}", source.display());
+        }
+        let mut from =
+            Session::open(&source).with_context(|| format!("无法打开导入源：{source:?}"))?;
+        let remote = from.sync_export()?;
+        if remote.pages.is_empty() {
+            bail!(
+                "导入源没有可导入的页面：{}",
+                from.path.display().to_string()
+            );
+        }
+        let mut bytes: Vec<(u64, Vec<u8>)> = Vec::new();
+        for attachment in &remote.attachments {
+            let id = AttachmentId(attachment.id);
+            let path = from
+                .attachment_display_path(id)
+                .or_else(|| from.attachment_path(id));
+            match path.as_ref().and_then(|path| std::fs::read(path).ok()) {
+                Some(blob) => bytes.push((attachment.id, blob)),
+                None => bail!(
+                    "导入源缺少附件 {}（{}），导入中止",
+                    attachment.id,
+                    from.path.display()
+                ),
+            }
+        }
+        let peer = PeerRecord {
+            id: "library-import".to_owned(),
+            name: "导入的 Quire 库".to_owned(),
+            kind: "desktop".to_owned(),
+            ip: "127.0.0.1".to_owned(),
+            port: 0,
+            paired: true,
+            last_seen: 0,
+            last_sync: String::new(),
+        };
+        let before = Counts::of(self);
+        let local_pages = self
+            .pages
+            .iter()
+            .map(|page| page.id)
+            .collect::<std::collections::BTreeSet<_>>();
+        drop(from);
+        self.sync_apply_remote(&remote, &bytes, &peer)?;
+        let after = Counts::of(self);
+        let report = ImportReport {
+            source,
+            pages_before: before.pages,
+            pages_after: after.pages,
+            blocks_before: before.blocks,
+            blocks_after: after.blocks,
+            notes_before: before.notes,
+            notes_after: after.notes,
+            tasks_before: before.tasks,
+            tasks_after: after.tasks,
+            attachments_before: before.attachments,
+            attachments_after: after.attachments,
+            imported_pages: self
+                .pages
+                .iter()
+                .filter(|page| !page.template && !local_pages.contains(&page.id))
+                .map(|page| page.title.clone())
+                .collect(),
+        };
+        Ok(report)
+    }
+
     pub fn set_page_layout(&mut self, full_width: bool, small_text: bool) {
         if self.page.locked
             || (self.page.full_width == full_width && self.page.small_text == small_text)
@@ -9816,6 +10047,234 @@ mod tests {
                 .document
                 .block(child)
                 .is_some_and(|block| block.page == target)
+        );
+        Ok(())
+    }
+
+    fn titles(session: &Session) -> Vec<String> {
+        session
+            .pages
+            .iter()
+            .filter(|page| !page.template)
+            .map(|page| page.title.clone())
+            .collect()
+    }
+
+    #[test]
+    fn import_library_adds_the_other_librarys_pages_and_keeps_its_own() -> Result<()> {
+        let scratch = quire_core::testing::ScratchDir::new("gpui-import-library");
+        let target = scratch.path().join("target.db");
+        let source = scratch.path().join("source.db");
+        {
+            let mut session = Session::open(&target)?;
+            session.import_markdown("当前库的一页".into(), "旧版看不到的正文".into());
+            session.persistence.force_flush()?;
+        }
+        let source_titles = {
+            let mut session = Session::open(&source)?;
+            session.import_markdown("旧版的一页".into(), "水电\n阿萨德啊".into());
+            session.persistence.force_flush()?;
+            titles(&session)
+        };
+        let mut session = Session::open(&target)?;
+        let before = titles(&session);
+        let report = session.import_library(&source)?;
+        // The libraries both carry a freshly seeded 「未命名」 page, and the merge
+        // converges rows the two sides agree on, so a page count is not the
+        // invariant — every source *title* ending up in the target is.
+        assert_eq!(
+            report.pages_after - report.pages_before,
+            report.imported_pages.len(),
+            "the report's own arithmetic must be consistent: {report:?}"
+        );
+        let after = titles(&session);
+        for title in &before {
+            assert!(after.contains(title), "the target lost {title}: {after:?}");
+        }
+        for title in &source_titles {
+            assert!(
+                after.contains(title),
+                "the source's {title} did not arrive: {after:?}"
+            );
+        }
+        assert!(
+            report.imported_pages.contains(&"旧版的一页".to_owned()),
+            "{:?}",
+            report.imported_pages
+        );
+        let imported = session
+            .pages
+            .iter()
+            .find(|page| page.title == "旧版的一页")
+            .context("imported page must be listed")?
+            .id;
+        assert!(
+            session
+                .document
+                .page_blocks(imported)
+                .iter()
+                .any(|block| block.text.contains("水电")),
+            "the imported body must arrive with its blocks"
+        );
+        session.persistence.force_flush()?;
+        drop(session);
+        let reopened = Session::open(&target)?;
+        assert!(
+            titles(&reopened).contains(&"旧版的一页".to_owned()),
+            "the import has to survive the process: {:?}",
+            titles(&reopened)
+        );
+        Ok(())
+    }
+
+    /// The legacy desktop seeds the same built-in template pages, under its own
+    /// settings key — so a GPUI open that only asks "did *I* seed this library"
+    /// adds a second copy of every preset beside the pages the user already
+    /// has. That is exactly what the first open of the shared library does, so
+    /// the seed answers per preset: create the ones this library lacks, leave
+    /// the ones it names alone, even when this build has never run on it.
+    #[test]
+    fn builtin_templates_seed_only_the_presets_a_library_does_not_have() -> Result<()> {
+        let scratch = quire_core::testing::ScratchDir::new("gpui-template-seed");
+        let path = scratch.path().join("quire.db");
+        let built_ins = quire_core::core::template::PRESETS.len();
+        {
+            let mut session = Session::open(&path)?;
+            assert_eq!(session.templates().len(), built_ins, "a new library seeds");
+            // Stand in for the other Quire's library: its own key says the
+            // presets are already there, GPUI's key has never been written.
+            session.set_setting("gpui.templates-seeded-v1", "false");
+            session.persistence.force_flush()?;
+        }
+        let template_titles = |session: &Session| -> Vec<String> {
+            session
+                .templates()
+                .iter()
+                .map(|page| page.title.clone())
+                .collect()
+        };
+        let mut session = Session::open(&path)?;
+        let titles = template_titles(&session);
+        assert_eq!(titles.len(), built_ins, "no preset may double: {titles:?}");
+        let mut unique = titles.clone();
+        unique.sort();
+        unique.dedup();
+        assert_eq!(
+            unique.len(),
+            titles.len(),
+            "template titles must stay unique: {titles:?}"
+        );
+
+        // And the per-preset check must not become a blanket skip: delete one
+        // preset and the next open puts that one back.
+        let lost = session.templates()[0].clone();
+        assert!(
+            session.delete_template(lost.id),
+            "the fixture must be able to drop a preset"
+        );
+        session.set_setting("gpui.templates-seeded-v1", "false");
+        session.persistence.force_flush()?;
+        drop(session);
+        let reopened = Session::open(&path)?;
+        let titles = template_titles(&reopened);
+        assert_eq!(
+            titles.len(),
+            built_ins,
+            "the missing preset returns: {titles:?}"
+        );
+        assert!(
+            titles.contains(&lost.title),
+            "the preset that was deleted by title must come back: {titles:?}"
+        );
+        Ok(())
+    }
+
+    /// Notes and tasks are keyed by their uuid in the merge, not by the integer
+    /// id each device counts up on its own — so the note both libraries mint as
+    /// id 1 must arrive as two rows rather than overwrite each other.
+    #[test]
+    fn import_library_keeps_both_libraries_organizer_rows() -> Result<()> {
+        let scratch = quire_core::testing::ScratchDir::new("gpui-import-organizer");
+        let target = scratch.path().join("target.db");
+        let source = scratch.path().join("source.db");
+        {
+            let mut session = Session::open(&target)?;
+            let note = session.create_note();
+            assert!(session.update_note_content(note, "本库的笔记".into(), String::new()));
+            session.create_task("本库的任务".into());
+            session.persistence.force_flush()?;
+        }
+        {
+            let mut session = Session::open(&source)?;
+            let note = session.create_note();
+            assert!(session.update_note_content(note, "旧版的笔记".into(), String::new()));
+            session.create_task("旧版的任务".into());
+            session.persistence.force_flush()?;
+        }
+        let mut session = Session::open(&target)?;
+        let report = session.import_library(&source)?;
+        assert_eq!(report.notes_before + 1, report.notes_after, "{report:?}");
+        assert_eq!(report.tasks_before + 1, report.tasks_after, "{report:?}");
+        let notes: Vec<String> = session
+            .organizer
+            .live_notes()
+            .map(|note| note.title.clone())
+            .collect();
+        assert!(notes.contains(&"本库的笔记".to_owned()), "{notes:?}");
+        assert!(notes.contains(&"旧版的笔记".to_owned()), "{notes:?}");
+        Ok(())
+    }
+
+    #[test]
+    fn import_library_refuses_the_current_library_and_a_missing_source() -> Result<()> {
+        let scratch = quire_core::testing::ScratchDir::new("gpui-import-refusals");
+        let target = scratch.path().join("target.db");
+        let mut session = Session::open(&target)?;
+        let error = session
+            .import_library(&target)
+            .err()
+            .context("merging a library into itself must be refused")?;
+        assert!(error.to_string().contains("导入源就是当前库"), "{error}");
+        let error = session
+            .import_library(&scratch.path().join("nowhere.db"))
+            .err()
+            .context("a source that is not a file must be refused")?;
+        assert!(error.to_string().contains("导入源不存在"), "{error}");
+        assert!(
+            titles(&session).contains(&"未命名".to_owned()),
+            "a refused import must not touch the target"
+        );
+        Ok(())
+    }
+
+    /// One library, one writer: the legacy desktop honours no lock file of
+    /// ours, so the WAL's `-shm` handle is what says a connection is attached.
+    /// `SqliteRepository::open` stands in for that other process — it holds a
+    /// connection without taking `<db>.gpui.lock`, exactly like the old app.
+    #[test]
+    fn a_library_another_connection_has_attached_is_refused_until_it_releases() -> Result<()> {
+        if !cfg!(windows) {
+            // The probe asks Windows for the `-shm` handle exclusively; other
+            // platforms have no sharing modes to test against.
+            return Ok(());
+        }
+        let scratch = quire_core::testing::ScratchDir::new("gpui-shm-guard");
+        let path = scratch.path().join("shared.db");
+        Session::open(&path)?.persistence.force_flush()?;
+        let holder = SqliteRepository::open(&path)?;
+        let error = Session::open(&path)
+            .err()
+            .context("a second writer opened the library while another connection held it")?;
+        assert!(
+            error
+                .to_string()
+                .contains("旧版 Quire 桌面端正打开着这个库"),
+            "wrong refusal: {error}"
+        );
+        drop(holder);
+        assert!(
+            Session::open(&path).is_ok(),
+            "a released library must open again"
         );
         Ok(())
     }

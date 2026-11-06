@@ -38,11 +38,19 @@ Copy-Item -LiteralPath (Join-Path $root 'THIRD-PARTY-NOTICES.md') -Destination $
 @'
 Quire GPUI portable build
 
-Run quire-gpui.exe to start. This build stores data separately from the Slint Quire app at:
-%LOCALAPPDATA%\QuireGPUI\quire.db
+Run quire-gpui.exe to start. Since 2026-11-06 the GPUI and Slint desktops share one data
+backend, so the default library is the one the Slint app already uses:
+%APPDATA%\Quire\quire.db
 
-To use another database, launch with --db PATH. Never point this build at a live Slint database.
-Uninstalling or deleting this application folder does not remove the data directory.
+Only one of the two apps may hold that library open at a time. GPUI refuses to start while
+the Slint desktop is attached to it; the Slint side has no matching check yet, so close
+GPUI (including its tray-resident process) before launching the Slint app.
+
+To work on another database, launch with --db PATH. To fold an older separate GPUI
+library into the shared one, run once:
+quire-gpui.exe --import-library %LOCALAPPDATA%\QuireGPUI\quire.db
+That mode opens no window, prints a JSON report of what arrived, only adds rows, and exits.
+Uninstalling or deleting this application folder does not remove any data.
 '@ | Set-Content -LiteralPath (Join-Path $stage 'PORTABLE-README.txt') -Encoding UTF8
 if (Test-Path -LiteralPath $zip) { Remove-Item -LiteralPath $zip -Force }
 Compress-Archive -Path (Join-Path $stage '*') -DestinationPath $zip -CompressionLevel Optimal
