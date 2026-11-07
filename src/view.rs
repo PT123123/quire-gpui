@@ -1160,6 +1160,17 @@ fn sync_peer_is_recent(last_seen: u64, now: u64) -> bool {
     now.saturating_sub(last_seen) <= 60
 }
 
+/// How soon after a content write the push goes — the real-time promise, the
+/// same number the Android shell runs. Every write re-stamps the session's
+/// dirty stamp, so this is the typing debounce too: a burst pushes one second
+/// after its last keystroke, not once per keystroke.
+const WRITE_KICK_SECS: u64 = 1;
+
+/// The backstop cadence — one reconciliation round a minute catches what a
+/// push missed: a peer that was frozen when the change fired, a cooled-down
+/// failure, drift nobody noticed.
+const RECONCILE_SECS: u64 = 60;
+
 /// The peers the 刷新 press dials: one row per address the book holds,
 /// freshest first, minus the rounds already in flight.
 ///
@@ -16283,6 +16294,15 @@ impl Workspace {
                 message,
             } => {
                 self.sync_pending.remove(&peer_id);
+                // The cooldown the real-time clock leans on: a failed automatic
+                // attempt rests the peer for sixty seconds — every settled
+                // write would otherwise re-dial a dead address at one-second
+                // cadence. A success clears whatever rest was running.
+                if ok {
+                    self.session.sync_retry_clear(&peer_id);
+                } else {
+                    self.session.sync_retry(&peer_id);
+                }
                 self.session.sync_mark_done(&peer_id, ok, &message);
                 self.sync_status = message;
             }
@@ -16416,16 +16436,31 @@ impl Workspace {
         self.schedule_save(false, window, cx);
     }
     fn sync_auto_tick(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
-        let (automatic, interval) = self.session.sync_config();
-        if !automatic || self.sync_last_auto.elapsed().as_secs() < interval {
+        if !self.session.sync_auto() {
+            return;
+        }
+        // The real-time clock: a settled content write pushes inside
+        // [`WRITE_KICK_SECS`] of its last keystroke — that IS the real-time
+        // promise — and otherwise one reconciliation round per
+        // [`RECONCILE_SECS`] catches what a push missed. The interval setting
+        // this used to read is retired; the 同步 page names modes now.
+        let now = quire_core::services::sync::engine::now_unix();
+        let dirty = self.session.sync_dirty_at();
+        let write_due = dirty > 0 && now.saturating_sub(dirty) >= WRITE_KICK_SECS;
+        if !write_due && self.sync_last_auto.elapsed().as_secs() < RECONCILE_SECS {
             return;
         }
         self.sync_last_auto = std::time::Instant::now();
-        let now = quire_core::services::sync::engine::now_unix();
+        self.session.sync_dirty_clear();
         let peers = sync_targets(self.session.sync_peers(), now, &self.sync_pending);
         let mut queued = 0usize;
         let mut changed = false;
         for peer in peers {
+            // A peer inside its failure cooldown rests — every settled write
+            // would otherwise re-dial a dead address at one-second cadence.
+            if self.session.sync_retry_cooling(&peer.id, now) {
+                continue;
+            }
             self.sync_pending.insert(peer.id.clone());
             if self
                 .sync_cmd_tx
@@ -16441,7 +16476,7 @@ impl Workspace {
             }
         }
         if queued > 0 {
-            self.sync_status = format!("正在自动同步 {queued} 台设备…");
+            self.sync_status = format!("正在同步 {queued} 台设备…");
         }
         if changed {
             cx.notify();
@@ -21869,7 +21904,7 @@ impl Render for Workspace {
             .unwrap_or_default();
         let sync_peers = self.session.sync_peers();
         let sync_logs = self.session.sync_log();
-        let (sync_auto, sync_interval) = self.session.sync_config();
+        let sync_auto = self.session.sync_auto();
         let sync_offline_count = sync_peers
             .iter()
             .filter(|peer| {
@@ -22296,28 +22331,24 @@ impl Render for Workspace {
                                         .child("保存并重启")))
                                 .child(div().w_full().min_w_0().text_size(px(9.)).text_color(muted).child("设备名称应用后重启 Quire，新的名称才会广播到局域网。"))
                                 .child(div().flex().items_center().gap(px(5.))
-                                    .child(div().text_size(px(10.)).child(if sync_auto { "自动同步" } else { "手动同步" }))
+                                    .child(div().text_size(px(10.)).child(if sync_auto { "实时推送" } else { "仅手动" }))
                                     .child(div().id("sync-auto-toggle").px(px(7.)).py(px(4.)).rounded(px(4.))
                                         .border_1().border_color(Palette::color(&p.border)).cursor_pointer().text_size(px(9.))
                                         .on_click(cx.listener(|this, _, window, cx| {
-                                            let (enabled, _) = this.session.sync_config();
+                                            let enabled = this.session.sync_auto();
                                             this.session.sync_set_auto(!enabled);
                                             this.sync_last_auto = std::time::Instant::now();
-                                            this.sync_status = if enabled { "自动同步已关闭" } else { "自动同步已开启" }.into();
+                                            this.sync_status = if enabled {
+                                                "已切换为仅手动 — 请按「立即同步」".into()
+                                            } else {
+                                                "实时推送已开启 — 改动后即时同步".into()
+                                            };
                                             this.schedule_save(true, window, cx);
                                             cx.notify();
                                         }))
                                         .child(if sync_auto { "关闭" } else { "开启" }))
-                                    .children([10u64, 30, 60].into_iter().map(|seconds|
-                                        div().id(SharedString::from(format!("sync-interval-{seconds}"))).px(px(6.)).py(px(4.)).rounded(px(4.))
-                                            .border_1().border_color(Palette::color(&p.border)).cursor_pointer().text_size(px(9.))
-                                            .when(sync_interval == seconds, |chip| chip.bg(Palette::color(&p.accent)).text_color(Palette::color(&p.fg)))
-                                            .on_click(cx.listener(move |this, _, window, cx| {
-                                                this.session.sync_set_interval(seconds);
-                                                this.schedule_save(true, window, cx);
-                                                cx.notify();
-                                            }))
-                                            .child(format!("{seconds}s")))))
+                                    .child(div().text_size(px(9.)).text_color(muted).child(
+                                        if sync_auto { "改动后即时同步 · 后台每分钟对账" } else { "" }.to_owned())))
                                 .child(div().h(px(1.)).bg(Palette::color(&p.border)))
                                 .child(div().flex().items_center().justify_between()
                                     .child(div().text_size(px(12.)).font_weight(FontWeight::SEMIBOLD).child(format!("设备 · {}", sync_peers.len())))

@@ -48,8 +48,13 @@ fn sync_with(peer: &PeerRecord, jobs: &Sender<Job>) {
         });
     };
 
+    // Three seconds, not five: a LAN peer that answers answers in
+    // milliseconds, and a *frozen* peer's kernel still completes the TCP
+    // handshake while its userspace never runs — the short window is what
+    // tells them apart, so the real-time push fails fast into the cooldown
+    // instead of holding the one-worker-at-a-time line for the whole wait.
     let (status, info_body) =
-        match http_get(&peer.ip, peer.port, "/sync/info", Duration::from_secs(5)) {
+        match http_get(&peer.ip, peer.port, "/sync/info", Duration::from_secs(3)) {
             Ok(response) => response,
             Err(error) => return fail(format!("{}: {error}", peer.name)),
         };

@@ -24,7 +24,7 @@ use quire_core::{
     storage::{SqliteRepository, backup::OpenReport},
 };
 use std::{
-    collections::{BTreeMap, BTreeSet, HashSet},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     path::{Path, PathBuf},
     sync::Arc,
     time::{Duration, Instant},
@@ -101,6 +101,13 @@ pub struct Session {
     typing: Option<(BlockId, Entry, Instant)>,
     pending_organizer_delete: Option<PendingOrganizerDelete>,
     next_organizer_delete_token: u64,
+    // LAN sync's real-time clock: unix seconds of the last content write (the
+    // write-kick's stamp), the suppress flag `sync_apply_remote` holds so a
+    // merge never reads as a fresh local edit, and the per-peer cooldown that
+    // keeps a dead or frozen peer from being hammered by every burst.
+    sync_dirty_at: u64,
+    sync_dirty_suppressed: bool,
+    sync_retry_after: HashMap<String, u64>,
     // Prevent two GPUI instances allocating IDs against the same stale document.
     _instance_lock: std::fs::File,
 }
@@ -876,6 +883,9 @@ impl Session {
             typing: None,
             pending_organizer_delete: None,
             next_organizer_delete_token: 0,
+            sync_dirty_at: 0,
+            sync_dirty_suppressed: false,
+            sync_retry_after: HashMap::new(),
             _instance_lock: instance_lock,
         };
         if session.blocks().is_empty() && !session.page.locked {
@@ -3802,6 +3812,60 @@ impl Session {
         );
     }
 
+    /// Whether automatic sync is on — the 实时/仅手动 mode switch. The
+    /// interval this used to return is retired: the tick pushes on the
+    /// write-kick and reconciles on its own sixty-second clock, and a stored
+    /// `sync.interval` row from an older build is simply no longer read.
+    pub fn sync_auto(&self) -> bool {
+        self.setting("sync.auto")
+            .map(|value| value != "0")
+            .unwrap_or(true)
+    }
+
+    /// The write-kick's stamp, as the view's tick reads it. Zero means nothing
+    /// pending.
+    pub fn sync_dirty_at(&self) -> u64 {
+        self.sync_dirty_at
+    }
+
+    /// Consume the stamp — the round it started has been queued.
+    pub fn sync_dirty_clear(&mut self) {
+        self.sync_dirty_at = 0;
+    }
+
+    /// A failed automatic attempt: the peer rests for sixty seconds before the
+    /// tick dials it again. A manual round never checks this map — the press
+    /// is the user's will.
+    pub fn sync_retry(&mut self, peer_id: &str) {
+        self.sync_retry_after.insert(
+            peer_id.to_string(),
+            quire_core::services::sync::engine::now_unix() + 60,
+        );
+    }
+
+    /// The attempt succeeded; the peer is immediately eligible again.
+    pub fn sync_retry_clear(&mut self, peer_id: &str) {
+        self.sync_retry_after.remove(peer_id);
+    }
+
+    /// Whether `peer_id` is inside its failure cooldown at unix second `now`.
+    pub fn sync_retry_cooling(&self, peer_id: &str, now: u64) -> bool {
+        self.sync_retry_after
+            .get(peer_id)
+            .is_some_and(|until| now < *until)
+    }
+
+    /// Stamp the write-kick. Called from the content-write funnels only — a
+    /// settings row (the sync bookkeeping writes one every time a peer
+    /// announces) and a merge's rows (`sync_apply_remote`, under the suppress
+    /// flag) must not read as fresh local edits, or the two sides would push
+    /// each other's pushes back and forth forever.
+    fn touch_sync_dirty(&mut self) {
+        if !self.sync_dirty_suppressed {
+            self.sync_dirty_at = quire_core::services::sync::engine::now_unix();
+        }
+    }
+
     pub fn sync_config(&self) -> (bool, u64) {
         let automatic = self
             .setting("sync.auto")
@@ -3980,7 +4044,24 @@ impl Session {
         Ok(snapshot)
     }
 
+    /// Merge a peer's snapshot into the session — three-way, against the
+    /// shadow this peer last agreed. The whole write runs under the write-kick's
+    /// suppress flag: a merge's rows must not read as a fresh local edit, or
+    /// the two sides would push each other's pushes back and forth forever.
+    /// `&mut self` makes the clear unconditional, however the body returns.
     pub fn sync_apply_remote(
+        &mut self,
+        remote: &quire_core::services::sync::model::SyncSnapshot,
+        bytes: &[(u64, Vec<u8>)],
+        peer: &quire_core::services::sync::engine::PeerRecord,
+    ) -> anyhow::Result<quire_core::services::sync::model::SyncSnapshot> {
+        self.sync_dirty_suppressed = true;
+        let result = self.sync_apply_remote_inner(remote, bytes, peer);
+        self.sync_dirty_suppressed = false;
+        result
+    }
+
+    fn sync_apply_remote_inner(
         &mut self,
         remote: &quire_core::services::sync::model::SyncSnapshot,
         bytes: &[(u64, Vec<u8>)],
@@ -5282,6 +5363,7 @@ impl Session {
             })
             .count();
         self.apply_organizer_changes(&changes);
+        self.touch_sync_dirty();
         self.persistence.record(changes);
         count
     }
@@ -5295,6 +5377,7 @@ impl Session {
             return false;
         };
         self.apply_organizer_changes(&changes);
+        self.touch_sync_dirty();
         self.persistence.record(changes);
         true
     }
@@ -5760,6 +5843,7 @@ impl Session {
     fn apply_organizer_entry(&mut self, entry: Entry) {
         self.document.apply(&entry.apply);
         self.apply_organizer_changes(&entry.apply);
+        self.touch_sync_dirty();
         self.persistence.record(entry.apply.clone());
         if let Some(batch) = &mut self.organizer_batch {
             batch.apply.extend(entry.apply);
@@ -5812,6 +5896,7 @@ impl Session {
         };
         self.document.apply(&entry.revert);
         self.apply_organizer_changes(&entry.revert);
+        self.touch_sync_dirty();
         self.persistence.record(entry.revert);
         true
     }
@@ -5821,6 +5906,7 @@ impl Session {
         };
         self.document.apply(&entry.apply);
         self.apply_organizer_changes(&entry.apply);
+        self.touch_sync_dirty();
         self.persistence.record(entry.apply);
         true
     }
@@ -5893,6 +5979,7 @@ impl Session {
             }],
         };
         self.document.apply(&entry.apply);
+        self.touch_sync_dirty();
         self.persistence.record(entry.apply.clone());
         self.history.push(self.page.id, entry);
     }
@@ -5949,6 +6036,7 @@ impl Session {
         if changes.is_empty() {
             return false;
         }
+        self.touch_sync_dirty();
         self.persistence.record(changes);
         true
     }
@@ -6065,6 +6153,7 @@ impl Session {
             }
         }
         self.document.apply(&entry.apply);
+        self.touch_sync_dirty();
         self.persistence.record(entry.apply.clone());
         self.history.push(source, entry);
         true
@@ -6156,6 +6245,7 @@ impl Session {
             revert.extend(part);
         }
         self.document.apply(&apply);
+        self.touch_sync_dirty();
         self.persistence.record(apply.clone());
         self.history.push(source, Entry { apply, revert });
         roots.len()
@@ -6338,6 +6428,7 @@ impl Session {
         }
 
         self.end_typing();
+        self.touch_sync_dirty();
         self.persistence.record(vec![Change::PageDeleted { id }]);
         for page_id in &subtree {
             if let Some(versions) = self.page_versions.remove(&page_id.0) {
@@ -6482,6 +6573,7 @@ impl Session {
             }
         }
         self.document.apply(&entry.apply);
+        self.touch_sync_dirty();
         self.persistence.record(entry.apply.clone());
         if let Some((_, active, last)) = &mut self.typing {
             active.apply = entry.apply;
@@ -6543,6 +6635,7 @@ impl Session {
         if apply.is_empty() {
             return written;
         }
+        self.touch_sync_dirty();
         self.persistence.record(apply.clone());
         self.history.push(
             self.page.id,
@@ -6563,6 +6656,7 @@ impl Session {
             return;
         };
         self.document.apply(&entry.apply);
+        self.touch_sync_dirty();
         self.persistence.record(entry.apply.clone());
         if let Some((typing_id, typing, _)) = &mut self.typing
             && *typing_id == id
@@ -6593,6 +6687,7 @@ impl Session {
                 if let Some(changes) =
                     command::exec(&mut self.document, &mut self.history, self.page.id, command)
                 {
+                    self.touch_sync_dirty();
                     self.persistence.record(changes);
                 }
             }
@@ -6600,6 +6695,7 @@ impl Session {
     }
     fn apply_entry(&mut self, entry: Entry) {
         self.document.apply(&entry.apply);
+        self.touch_sync_dirty();
         self.persistence.record(entry.apply.clone());
         self.history.push(self.page.id, entry);
     }
@@ -6671,6 +6767,7 @@ impl Session {
         if let Some(changes) = command::undo(&mut self.document, &mut self.history, self.page.id) {
             let database_change = changes.iter().any(is_database_change);
             self.apply_database_changes(&changes);
+            self.touch_sync_dirty();
             self.persistence.record(changes);
             if database_change {
                 let _ = self.persistence.force_flush();
@@ -6682,6 +6779,7 @@ impl Session {
         if let Some(changes) = command::redo(&mut self.document, &mut self.history, self.page.id) {
             let database_change = changes.iter().any(is_database_change);
             self.apply_database_changes(&changes);
+            self.touch_sync_dirty();
             self.persistence.record(changes);
             if database_change {
                 let _ = self.persistence.force_flush();
