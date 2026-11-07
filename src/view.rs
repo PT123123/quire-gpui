@@ -1160,6 +1160,32 @@ fn sync_peer_is_recent(last_seen: u64, now: u64) -> bool {
     now.saturating_sub(last_seen) <= 60
 }
 
+/// The peers the 刷新 press dials: one row per address the book holds,
+/// freshest first, minus the rounds already in flight.
+///
+/// The press is the user's will, stated; the sixty-second announcing window is
+/// the timer's caution, not the reader's. A device whose beats are filtered
+/// can sit with a perfectly good address behind a stale `last_seen`, and a
+/// 刷新 that answered 「暂未发现在线设备」 to that is the one failure no
+/// discovery work could reach. The list goes through
+/// [`quire_core::services::sync::engine::one_address_one_row`] — a book holds
+/// generations per address (every reinstall of a desktop minted a new id), and
+/// dialing each of them separately queues the alive device behind a wall of
+/// per-row timeouts. This is deliberately a *different* list from
+/// [`sync_targets`]: the two answers disagree on purpose, and each keeps its
+/// reason in its own doc comment instead of inheriting the other's.
+fn sync_targets_any_address(
+    peers: Vec<quire_core::services::sync::engine::PeerRecord>,
+    pending: &HashSet<String>,
+) -> Vec<quire_core::services::sync::engine::PeerRecord> {
+    quire_core::services::sync::engine::one_address_one_row(
+        peers
+            .into_iter()
+            .filter(|peer| !peer.ip.is_empty() && !pending.contains(&peer.id))
+            .collect(),
+    )
+}
+
 /// The standard toolbar chip: a bordered ghost button. Bare text reads as a
 /// label, not an action — every toolbar action goes through this.
 fn toolbar_chip(label: SharedString, color: Hsla, active: bool, p: &Palette) -> Div {
@@ -1424,8 +1450,8 @@ mod view_tests {
         overlay_origin, page_breadcrumb, palette_matches, parse_mcp_port, parse_organizer_tags,
         periodic_snapshot_failure_notice, push_history, rail_easing, settings_matches,
         settings_section_visible, slash_items, slash_query, sort_organizer_notes,
-        sort_organizer_tasks, sync_peer_is_recent, sync_targets, system_palette_id_for_appearance,
-        toc_headings,
+        sort_organizer_tasks, sync_peer_is_recent, sync_targets, sync_targets_any_address,
+        system_palette_id_for_appearance, toc_headings,
     };
     use gpui::{
         AppContext, Bounds, Context, InteractiveElement, IntoElement, ParentElement, Pixels, Point,
@@ -3648,6 +3674,41 @@ mod view_tests {
         );
         assert!(sync_peer_is_recent(now - 60, now));
         assert!(!sync_peer_is_recent(now - 61, now));
+    }
+
+    /// The manual round is a different question with a different answer: the
+    /// stale peer dials anyway (the press is the user's will), an address's
+    /// generations collapse to their freshest row, and a round already in
+    /// flight is not started twice. The alive device leads the list.
+    #[test]
+    fn manual_targets_dial_every_address_once_freshest_first() {
+        use quire_core::services::sync::engine::PeerRecord;
+
+        let now = 1_000u64;
+        let peer = |id: &str, ip: &str, age| PeerRecord {
+            id: id.into(),
+            name: id.into(),
+            kind: "windows".into(),
+            ip: ip.into(),
+            port: 5878,
+            paired: true,
+            last_seen: now - age,
+            last_sync: String::new(),
+        };
+        let peers = vec![
+            peer("desktop-old", "10.0.0.2", 500),
+            peer("tablet", "10.0.0.3", 5),
+            peer("desktop-new", "10.0.0.2", 100),
+            peer("in-flight", "10.0.0.4", 1),
+            peer("addressless", "", 1),
+        ];
+        let selected = sync_targets_any_address(peers, &["in-flight".to_owned()].into());
+        let ids: Vec<&str> = selected.iter().map(|p| p.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            vec!["tablet", "desktop-new"],
+            "one row per address, freshest first, pending and addressless out: {ids:?}"
+        );
     }
 
     #[test]
@@ -16240,8 +16301,7 @@ impl Workspace {
         cx.notify();
     }
     fn sync_now_all(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let now = quire_core::services::sync::engine::now_unix();
-        let peers = sync_targets(self.session.sync_peers(), now, &self.sync_pending);
+        let peers = sync_targets_any_address(self.session.sync_peers(), &self.sync_pending);
         if peers.is_empty() {
             self.sync_status = if self.sync_pending.is_empty() {
                 "暂未发现在线设备".into()
