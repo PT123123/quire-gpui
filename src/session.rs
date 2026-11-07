@@ -275,47 +275,6 @@ fn adjust_marks(old: &str, new: &str, marks: &[Mark]) -> Vec<Mark> {
     }
     adjusted
 }
-
-fn page_depth(
-    page: &quire_core::services::sync::model::SPage,
-    pages: &[quire_core::services::sync::model::SPage],
-) -> usize {
-    let mut depth = 0;
-    let mut parent = page.parent;
-    let mut seen = std::collections::HashSet::new();
-    while let Some(id) = parent {
-        if !seen.insert(id) {
-            break;
-        }
-        depth += 1;
-        parent = pages
-            .iter()
-            .find(|candidate| candidate.id == id)
-            .and_then(|candidate| candidate.parent);
-    }
-    depth
-}
-
-fn block_depth(
-    block: &quire_core::services::sync::model::SBlock,
-    blocks: &[quire_core::services::sync::model::SBlock],
-) -> usize {
-    let mut depth = 0;
-    let mut parent = block.parent;
-    let mut seen = std::collections::HashSet::new();
-    while let Some(id) = parent {
-        if !seen.insert(id) {
-            break;
-        }
-        depth += 1;
-        parent = blocks
-            .iter()
-            .find(|candidate| candidate.id == id)
-            .and_then(|candidate| candidate.parent);
-    }
-    depth
-}
-
 fn normalize_page_tree(pages: &mut [quire_core::services::sync::model::SPage]) {
     let original = pages.to_vec();
     for page in pages {
@@ -342,7 +301,6 @@ fn normalize_page_tree(pages: &mut [quire_core::services::sync::model::SPage]) {
         }
     }
 }
-
 fn normalize_block_tree(blocks: &mut [quire_core::services::sync::model::SBlock]) {
     let original = blocks.to_vec();
     for block in blocks {
@@ -367,111 +325,6 @@ fn normalize_block_tree(blocks: &mut [quire_core::services::sync::model::SBlock]
         if !valid {
             block.parent = None;
         }
-    }
-}
-
-fn sync_block_diff(
-    before: &quire_core::services::sync::model::SBlock,
-    after: &quire_core::services::sync::model::SBlock,
-    changes: &mut Vec<quire_core::core::persistence::Change>,
-) {
-    use quire_core::core::{
-        persistence::Change,
-        types::{BlockId, PageId},
-    };
-    let id = BlockId(after.id);
-    if before.page != after.page {
-        changes.push(Change::BlockMovedToPage {
-            id,
-            page: PageId(after.page),
-            parent: after.parent.map(BlockId),
-            order: quire_core::core::OrderKey(after.ord),
-        });
-    } else if before.parent != after.parent || before.ord != after.ord {
-        changes.push(Change::BlockMoved {
-            id,
-            parent: after.parent.map(BlockId),
-            order: quire_core::core::OrderKey(after.ord),
-        });
-    }
-    if before.text != after.text {
-        changes.push(Change::BlockTextSet {
-            id,
-            text: after.text.clone(),
-        });
-    }
-    if before.kind != after.kind {
-        changes.push(Change::BlockKindSet {
-            id,
-            kind: after.to_core().kind,
-        });
-    }
-    if before.checked != after.checked {
-        changes.push(Change::BlockCheckedSet {
-            id,
-            checked: after.checked,
-        });
-    }
-    if before.folded != after.folded {
-        changes.push(Change::BlockFoldedSet {
-            id,
-            folded: after.folded,
-        });
-    }
-    if before.marks != after.marks {
-        changes.push(Change::BlockMarksSet {
-            id,
-            marks: after.to_core().marks,
-        });
-    }
-    if before.color != after.color || before.background != after.background {
-        changes.push(Change::BlockColorSet {
-            id,
-            color: after.to_core().color,
-            background: after.to_core().background,
-        });
-    }
-    if before.page_ref != after.page_ref {
-        changes.push(Change::BlockRefSet {
-            id,
-            page: after.page_ref.map(PageId),
-        });
-    }
-    if before.sync_ref != after.sync_ref {
-        changes.push(Change::BlockSyncSet {
-            id,
-            source: after.sync_ref.map(BlockId),
-        });
-    }
-    if before.attachment != after.attachment {
-        changes.push(Change::BlockAttachmentSet {
-            id,
-            attachment: after.attachment.map(quire_core::core::types::AttachmentId),
-        });
-    }
-    if before.img_percent != after.img_percent {
-        changes.push(Change::BlockImageWidthSet {
-            id,
-            percent: after.img_percent,
-        });
-    }
-    if before.columns != after.columns {
-        changes.push(Change::BlockColumnsSet {
-            id,
-            columns: after.columns,
-        });
-    }
-    if before.lang != after.lang {
-        changes.push(Change::BlockLangSet {
-            id,
-            lang: after.to_core().lang,
-        });
-    }
-    if before.db_ref != after.db_ref {
-        changes.push(Change::BlockDbRefSet {
-            id,
-            db: after.db_ref.map(quire_core::core::database::DatabaseId),
-        });
     }
 }
 
@@ -4049,6 +3902,66 @@ impl Session {
     /// suppress flag: a merge's rows must not read as a fresh local edit, or
     /// the two sides would push each other's pushes back and forth forever.
     /// `&mut self` makes the clear unconditional, however the body returns.
+    /// Rebuild every in-memory structure from what is now in the database.
+    ///
+    /// The merge's replace_all half writes the file wholesale, and the honest
+    /// way for the session to observe it is to load it back — piecemeal
+    /// absorption of the same rows is what the old row-by-row path did, and
+    /// its blind spots were exactly the UNIQUE. The selected page survives if
+    /// the merge kept it; the undo stack does not, because its entries name
+    /// rows the merge may have replaced.
+    fn reload_in_memory(&mut self) -> anyhow::Result<()> {
+        let loaded = self.repo.load()?;
+        let organizer = self.repo.load_organizer()?;
+        let databases = self.repo.load_databases()?;
+        let attachments = self
+            .repo
+            .load_attachments()?
+            .into_iter()
+            .map(|attachment| (attachment.id.as_u64(), attachment))
+            .collect::<BTreeMap<_, _>>();
+        let next_attachment_id = attachments
+            .keys()
+            .copied()
+            .max()
+            .unwrap_or(0)
+            .saturating_add(1)
+            .max(1);
+        let mut document = Document::new(1);
+        let mut pages = loaded.pages.clone();
+        pages.sort_by_key(|p| p.order);
+        for p in &pages {
+            document.set_page_blocks(
+                p.id,
+                loaded
+                    .blocks
+                    .iter()
+                    .filter(|b| b.page == p.id)
+                    .cloned()
+                    .collect(),
+            );
+        }
+        let previous = self.page.id;
+        let page = pages
+            .iter()
+            .find(|p| p.id == previous)
+            .or_else(|| pages.iter().find(|p| !p.template))
+            .cloned()
+            .unwrap_or_else(|| self.page.clone());
+        self.document = document;
+        self.pages = pages;
+        self.organizer = organizer;
+        self.databases = databases;
+        self.attachments = attachments;
+        self.next_attachment_id = next_attachment_id;
+        self.page = page;
+        self.history = History::default();
+        self.typing = None;
+        self.organizer_batch = None;
+        self.pending_organizer_delete = None;
+        Ok(())
+    }
+
     pub fn sync_apply_remote(
         &mut self,
         remote: &quire_core::services::sync::model::SyncSnapshot,
@@ -4068,16 +3981,43 @@ impl Session {
         peer: &quire_core::services::sync::engine::PeerRecord,
     ) -> anyhow::Result<quire_core::services::sync::model::SyncSnapshot> {
         use quire_core::{
-            core::{
-                persistence::Change,
-                types::{AttachmentId, BlockId, PageId},
-            },
+            core::{persistence::Change, types::AttachmentId},
             services::sync::model::{SBlock, SyncSnapshot},
         };
         let local = self.sync_export()?;
         let shadow = self
             .setting(&format!("sync.shadow.{}", peer.id))
             .and_then(|value| SyncSnapshot::from_json(value).ok());
+
+        // ── the empty-snapshot gate ──────────────────────────────────────────
+        //
+        // A snapshot with nothing in it is the ordinary shape of a device that
+        // was installed five minutes ago or one whose store was reset. It is
+        // **not** a statement that the user deleted everything, and a merge
+        // reads absence as a deletion — without this the first round with a
+        // fresh peer empties the library that answered it. Local emptiness is
+        // not a reason to refuse: that is the ordinary first sync, where the
+        // peer is the one with the library and this device is the newcomer.
+        let remote_rows = remote.pages.len()
+            + remote.blocks.len()
+            + remote.notes.len()
+            + remote.tasks.len()
+            + remote.lists.len();
+        let local_rows = local.pages.len()
+            + local.blocks.len()
+            + local.notes.len()
+            + local.tasks.len()
+            + local.lists.len();
+        if remote_rows == 0 && local_rows > 0 {
+            return Err(anyhow::anyhow!(
+                "{} 发来的是一份空快照（本机有 {local_rows} 项）—— 已拒绝，这一轮没有动本机的任何数据",
+                if remote.device.is_empty() {
+                    peer.name.as_str()
+                } else {
+                    remote.device.as_str()
+                }
+            ));
+        }
 
         macro_rules! allocator {
             ($name:ident, $last:expr) => {
@@ -4285,181 +4225,63 @@ impl Session {
             changes.push(Change::AttachmentAdded(stored));
         }
 
-        let local_pages: std::collections::HashMap<u64, _> = self
-            .pages
-            .iter()
-            .filter(|page| !page.template)
-            .map(|page| (page.id.0, page.clone()))
-            .collect();
-        let merged_page_ids: std::collections::HashSet<u64> =
-            merged.pages.iter().map(|page| page.id).collect();
-        let mut deleted_pages: Vec<_> = local_pages
-            .keys()
-            .copied()
-            .filter(|id| !merged_page_ids.contains(id))
-            .collect();
-        deleted_pages.sort_unstable();
-        let mut page_deletions = Vec::new();
-        for id in deleted_pages.iter().copied().filter(|id| {
-            local_pages
-                .get(id)
-                .and_then(|page| page.parent)
-                .is_none_or(|parent| merged_page_ids.contains(&parent.0))
-        }) {
-            page_deletions.push(Change::PageDeleted { id: PageId(id) });
-        }
-        let mut ordered_pages = merged.pages.clone();
-        ordered_pages.sort_by_key(|page| page_depth(page, &merged.pages));
-        for wire in &ordered_pages {
-            let page = wire.to_core();
-            match local_pages.get(&wire.id) {
-                None => changes.push(Change::PageCreated(page)),
-                Some(before) => {
-                    let id = before.id;
-                    if before.title != page.title {
-                        changes.push(Change::PageTitleSet {
-                            id,
-                            title: page.title.clone(),
-                        });
-                    }
-                    if before.parent != page.parent || before.order != page.order {
-                        changes.push(Change::PageMoved {
-                            id,
-                            parent: page.parent,
-                            order: page.order,
-                        });
-                    }
-                    if before.favorite != page.favorite {
-                        changes.push(Change::PageFavoriteSet {
-                            id,
-                            favorite: page.favorite,
-                        });
-                    }
-                    if before.expanded != page.expanded {
-                        changes.push(Change::PageExpandedSet {
-                            id,
-                            expanded: page.expanded,
-                        });
-                    }
-                    if before.font != page.font {
-                        changes.push(Change::PageFontSet {
-                            id,
-                            font: page.font,
-                        });
-                    }
-                    if before.full_width != page.full_width || before.small_text != page.small_text
-                    {
-                        changes.push(Change::PageLayoutSet {
-                            id,
-                            full_width: page.full_width,
-                            small_text: page.small_text,
-                        });
-                    }
-                    if before.icon != page.icon {
-                        changes.push(Change::PageIconSet {
-                            id,
-                            icon: page.icon.clone(),
-                        });
-                    }
-                    if before.cover != page.cover {
-                        changes.push(Change::PageCoverSet {
-                            id,
-                            cover: page.cover,
-                        });
-                    }
-                    if before.locked != page.locked {
-                        changes.push(Change::PageLockedSet {
-                            id,
-                            locked: page.locked,
-                        });
-                    }
-                }
-            }
-        }
-
-        let local_blocks: std::collections::HashMap<u64, SBlock> = self
-            .document
-            .all_blocks()
-            .filter(|block| {
-                self.pages
-                    .iter()
-                    .any(|page| page.id == block.page && !page.template)
-            })
-            .map(|block| (block.id.0, SBlock::from(block)))
-            .collect();
-        let merged_block_ids: std::collections::HashSet<u64> =
-            merged.blocks.iter().map(|block| block.id).collect();
-        let mut ordered_blocks = merged.blocks.clone();
-        ordered_blocks.sort_by_key(|block| block_depth(block, &merged.blocks));
-        for wire in &ordered_blocks {
-            match local_blocks.get(&wire.id) {
-                None => changes.push(Change::BlockInserted(wire.to_core())),
-                Some(before) => sync_block_diff(before, wire, &mut changes),
-            }
-        }
-        let mut deleted_blocks: Vec<_> = local_blocks
-            .keys()
-            .copied()
-            .filter(|id| !merged_block_ids.contains(id))
-            .collect();
-        deleted_blocks.sort_unstable();
-        for id in deleted_blocks.iter().copied().filter(|id| {
-            local_blocks
-                .get(id)
-                .is_some_and(|block| merged_page_ids.contains(&block.page))
-                && local_blocks
-                    .get(id)
-                    .and_then(|block| block.parent)
-                    .is_none_or(|parent| merged_block_ids.contains(&parent))
-        }) {
-            changes.push(Change::BlockDeleted { id: BlockId(id) });
-        }
-        changes.extend(page_deletions);
-
         sync_database_changes(&local.databases, &merged.databases, &mut changes);
         sync_organizer_changes(&local, &merged, &mut changes);
 
-        // The document, catalogs, and persistence queue must observe the same
-        // ordered batch. Page rows are maintained by Session; block operations
-        // are applied by Document; the two catalogs have dedicated reducers.
-        for page in &ordered_pages {
-            if !local_pages.contains_key(&page.id) {
-                self.document.set_page_blocks(PageId(page.id), Vec::new());
-            }
-        }
-        self.document.apply(&changes);
-        for id in &deleted_pages {
-            self.document.drop_page(PageId(*id));
-        }
-        let template_pages = self
+        // ── the document half, as one `PersistedState` ───────────────────────
+        //
+        // `replace_all` rewrites the pages and blocks tables wholesale. The
+        // merge's output is the *agreement*; writing it row by row reads
+        // "INSERT" against rows this store already holds but the in-memory
+        // view does not know about — a trashed page, a template row, a page
+        // another shell deleted — and one such collision is a UNIQUE whose
+        // failed batch stays at the head of the flush queue, poisoning every
+        // write this session makes afterwards. meta and settings are read out
+        // first and handed straight back: the peers table, this device's
+        // identity and the per-peer shadows live in them.
+        self.persistence
+            .force_flush()
+            .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+        let mut base = self
+            .repo
+            .load()
+            .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+        // Templates never travel: the export filters them, and the seed is
+        // each device's own. The merge's pages therefore cannot see them —
+        // chaining the local ones back keeps the replace from wiping rows the
+        // snapshot never described.
+        let template_pages: Vec<_> = base
             .pages
             .iter()
             .filter(|page| page.template)
             .cloned()
-            .collect::<Vec<_>>();
-        self.pages = ordered_pages
-            .into_iter()
+            .collect();
+        base.pages = merged
+            .pages
+            .iter()
             .map(|page| page.to_core())
             .chain(template_pages)
             .collect();
-        self.pages.sort_by_key(|page| (page.parent, page.order));
-        self.apply_database_changes(&changes);
-        self.apply_organizer_changes(&changes);
-        self.persistence.record(changes);
-        self.persistence.force_flush()?;
-        self.databases = self.repo.load_databases()?;
-        if let Some(page) = self
-            .pages
-            .iter()
-            .find(|page| page.id == self.page.id)
-            .cloned()
-        {
-            self.page = page;
-        } else if let Some(page) = self.pages.iter().find(|page| !page.template).cloned() {
-            self.page = page;
-        }
-        self.ensure_page_has_block();
+        base.blocks = merged.blocks.iter().map(|block| block.to_core()).collect();
+        self.repo
+            .replace_all(&base)
+            .map_err(|e| anyhow::anyhow!(e.to_string()))?;
 
+        // The organizer, the databases and the attachment rows are not part of
+        // the document replace. Their diffs are exact — same id, same content
+        // skips — so a row the store already holds is an update, never a
+        // colliding INSERT.
+        if !changes.is_empty() {
+            self.repo
+                .apply(&changes)
+                .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+        }
+
+        // Rebuild every in-memory structure from what is now in the file: the
+        // merge may have replaced rows the old in-memory view described, and
+        // the undo stack names rows that may no longer exist.
+        self.reload_in_memory()?;
+        self.ensure_page_has_block();
         let me = self.sync_self_info();
         merged.device_id = me.id;
         merged.device = me.name;

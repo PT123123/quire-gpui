@@ -16200,6 +16200,22 @@ impl Workspace {
                     self.sync_status = format!("同步快照失败：{error}");
                 }
             },
+            Job::ApplyMerged {
+                peer,
+                snapshot,
+                reply,
+            } => {
+                // The push-only round's answer: the peer merged this side's
+                // snapshot, and this state is what both sides now agree on.
+                // Adopting it is the same write half an inbound round runs;
+                // the merge is not repeated — the answer **is** its output —
+                // and the shadow keys straight off the agreement.
+                let answer = self
+                    .session
+                    .sync_apply_remote(&snapshot, &[], &peer)
+                    .map_err(|error| error.to_string());
+                let _ = reply.send(answer);
+            }
             Job::ListLocalAttachments { reply } => {
                 let _ = reply.send(self.session.attachments.keys().copied().collect());
             }
@@ -16450,6 +16466,7 @@ impl Workspace {
         if !write_due && self.sync_last_auto.elapsed().as_secs() < RECONCILE_SECS {
             return;
         }
+        let was_write = write_due;
         self.sync_last_auto = std::time::Instant::now();
         self.session.sync_dirty_clear();
         let peers = sync_targets(self.session.sync_peers(), now, &self.sync_pending);
@@ -16462,11 +16479,15 @@ impl Workspace {
                 continue;
             }
             self.sync_pending.insert(peer.id.clone());
-            if self
-                .sync_cmd_tx
-                .send(crate::sync_client::Cmd::SyncWith(peer.clone()))
-                .is_ok()
-            {
+            // A settled write pushes only: one request — the peer merges and
+            // answers the agreement, which this side adopts. The pull half of
+            // the round is the reconciliation's business.
+            let command = if was_write {
+                crate::sync_client::Cmd::PushWith(peer.clone())
+            } else {
+                crate::sync_client::Cmd::SyncWith(peer.clone())
+            };
+            if self.sync_cmd_tx.send(command).is_ok() {
                 queued += 1;
                 changed = true;
             } else {

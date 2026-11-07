@@ -20,6 +20,10 @@ use std::{
 
 pub enum Cmd {
     SyncWith(PeerRecord),
+    /// Push this side's snapshot only: the peer merges, applies, and answers
+    /// the agreed state, which this side adopts — one request, one merge on
+    /// each end (the write-triggered round).
+    PushWith(PeerRecord),
 }
 
 pub fn start(jobs: Sender<Job>) -> Sender<Cmd> {
@@ -35,6 +39,7 @@ fn run(rx: Receiver<Cmd>, jobs: Sender<Job>) {
     while let Ok(command) = rx.recv() {
         match command {
             Cmd::SyncWith(peer) => sync_with(&peer, &jobs),
+            Cmd::PushWith(peer) => push_with(&peer, &jobs),
         }
     }
 }
@@ -409,4 +414,103 @@ mod tests {
         server.join().unwrap();
         assert!(finished, "the pull-merge-push cycle must finish");
     }
+}
+
+/// One push-only cycle against a peer, run on the worker thread — the
+/// write-triggered round. This side's snapshot goes out; the peer merges it
+/// against its own shadow for us, applies the agreement, and answers the
+/// agreed state, which this side adopts too (Job::ApplyMerged). One request,
+/// one merge on each end; the pull half of a full round is the
+/// reconciliation's business. The probe and the answer parsing match the
+/// core engine's push_with.
+fn push_with(peer: &PeerRecord, jobs: &Sender<Job>) {
+    let fail = |message: String| {
+        let _ = jobs.send(Job::SyncDone {
+            peer_id: peer.id.clone(),
+            ok: false,
+            message,
+        });
+    };
+
+    // Three seconds: a LAN peer answers in milliseconds, and a frozen peer
+    // still completes the TCP handshake — the short window tells them apart.
+    let (status, info_body) =
+        match http_get(&peer.ip, peer.port, "/sync/info", Duration::from_secs(3)) {
+            Ok(response) => response,
+            Err(error) => return fail(format!("{}: {error}", peer.name)),
+        };
+    if status != 200 {
+        return fail(format!("{}: info answered {status}", peer.name));
+    }
+    let info = match DeviceInfo::from_json(&String::from_utf8_lossy(&info_body)) {
+        Ok(info) => info,
+        Err(error) => return fail(error),
+    };
+    if info.id != peer.id {
+        return fail(format!(
+            "{}: answered as {} — the address moved",
+            peer.name, info.name
+        ));
+    }
+
+    let (snapshot_tx, snapshot_rx) = std::sync::mpsc::channel();
+    if jobs
+        .send(Job::ExportSnapshot { reply: snapshot_tx })
+        .is_err()
+    {
+        return fail("the app is shutting down".into());
+    }
+    let snapshot = match snapshot_rx.recv() {
+        Ok(snapshot) => snapshot,
+        Err(_) => return fail("the app is shutting down".into()),
+    };
+
+    let (status, answer_body) = match http_post(
+        &peer.ip,
+        peer.port,
+        "/sync/snapshot",
+        &snapshot.to_json(),
+        Duration::from_secs(120),
+    ) {
+        Ok(response) => response,
+        Err(error) => return fail(format!("{}: {error}", peer.name)),
+    };
+    if status != 200 {
+        return fail(format!(
+            "{}: push answered {status}: {answer_body}",
+            peer.name
+        ));
+    }
+    let answer = match SyncSnapshot::from_json(&answer_body) {
+        Ok(snapshot) => snapshot,
+        Err(error) => return fail(format!("{}: push answer unreadable: {error}", peer.name)),
+    };
+
+    let (apply_tx, apply_rx) = std::sync::mpsc::channel();
+    if jobs
+        .send(Job::ApplyMerged {
+            peer: peer.clone(),
+            snapshot: answer.clone(),
+            reply: apply_tx,
+        })
+        .is_err()
+    {
+        return fail("the app is shutting down".into());
+    }
+    if apply_rx.recv().is_err() {
+        return fail("the app is shutting down".into());
+    }
+
+    let _ = jobs.send(Job::SyncDone {
+        peer_id: peer.id.clone(),
+        ok: true,
+        message: format!(
+            "已推送 {name}：{pages} pages, {blocks} blocks, {notes} notes, {tasks} tasks",
+            name = peer.name,
+            pages = answer.pages.len(),
+            blocks = answer.blocks.len(),
+            notes = answer.notes.len(),
+            tasks = answer.tasks.len()
+        ),
+    });
 }

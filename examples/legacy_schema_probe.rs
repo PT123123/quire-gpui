@@ -198,6 +198,9 @@ fn sync_serve_push(
                 let _ = source.persistence.force_flush();
             }
             Job::AutoTick => {}
+            Job::ApplyMerged { reply, .. } => {
+                let _ = reply.send(Err(String::from("legacy probe does not adopt")));
+            }
         }
     }
     source.persistence.force_flush()?;
