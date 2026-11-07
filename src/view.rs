@@ -16461,17 +16461,17 @@ impl Workspace {
         // [`RECONCILE_SECS`] catches what a push missed. The interval setting
         // this used to read is retired; the 同步 page names modes now.
         let now = quire_core::services::sync::engine::now_unix();
-        // The write-kick's signal lives in the persistence layer now: every
-        // content write arms it, the flush disarms it — no funnel can forget
-        // to stamp, because there is no stamping.
+        // The write-kick's independent stamp: armed by every content write
+        // (whatever code path it came from), refreshed on each — the typing
+        // debounce — and cleared by the push it owed. A flush does not clear
+        // it, which is exactly why dirty_since_ms never worked as the trigger:
+        // the MCP handler's trailing force_flush erased the signal the moment
+        // the write completed.
         let write_due = self
             .session
             .persistence
-            .dirty_since_ms()
+            .content_dirty_since_ms()
             .is_some_and(|since| {
-                // dirty_since_ms is milliseconds; now_unix is seconds — convert
-                // before the age is taken, or the saturating subtraction
-                // underflows to zero and the kick never fires.
                 let armed_at = (since.max(0) as u64) / 1000;
                 now.saturating_sub(armed_at) >= WRITE_KICK_SECS
             });
@@ -16480,6 +16480,7 @@ impl Workspace {
         }
         let was_write = write_due;
         self.sync_last_auto = std::time::Instant::now();
+        self.session.persistence.clear_content_dirty();
         // A settled write goes to every address the book holds — the push this
         // side owes the peer does not depend on the peer having spoken recently,
         // and a filtered broadcast (or a firewalled listener on this side)
