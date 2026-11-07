@@ -12,7 +12,7 @@ unicode-segmentation = "1.12"
 # (unicast hello on every beat, multicast road, bounded request reader) and
 # one_address_one_row — the manual round dials one row per address, freshest
 # first, and the info handshake gives up on silence in two seconds.
-quire-core = { git = "https://github.com/PT123123/quire-core.git", rev = "0b081f0381b2dabd0f610701879618ab28c2818e" }
+quire-core = { git = "https://github.com/PT123123/quire-core.git", rev = "4778b652190ba698291490f2f597589c7102f780" }
 anyhow = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

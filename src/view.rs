@@ -16461,14 +16461,19 @@ impl Workspace {
         // [`RECONCILE_SECS`] catches what a push missed. The interval setting
         // this used to read is retired; the 同步 page names modes now.
         let now = quire_core::services::sync::engine::now_unix();
-        let dirty = self.session.sync_dirty_at();
-        let write_due = dirty > 0 && now.saturating_sub(dirty) >= WRITE_KICK_SECS;
+        // The write-kick's signal lives in the persistence layer now: every
+        // content write arms it, the flush disarms it — no funnel can forget
+        // to stamp, because there is no stamping.
+        let write_due = self
+            .session
+            .persistence
+            .dirty_since_ms()
+            .is_some_and(|since| now.saturating_sub((since.max(0) as u64)) >= WRITE_KICK_SECS);
         if !write_due && self.sync_last_auto.elapsed().as_secs() < RECONCILE_SECS {
             return;
         }
         let was_write = write_due;
         self.sync_last_auto = std::time::Instant::now();
-        self.session.sync_dirty_clear();
         let peers = sync_targets(self.session.sync_peers(), now, &self.sync_pending);
         let mut queued = 0usize;
         let mut changed = false;
