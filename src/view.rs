@@ -16468,13 +16468,30 @@ impl Workspace {
             .session
             .persistence
             .dirty_since_ms()
-            .is_some_and(|since| now.saturating_sub((since.max(0) as u64)) >= WRITE_KICK_SECS);
+            .is_some_and(|since| {
+                // dirty_since_ms is milliseconds; now_unix is seconds — convert
+                // before the age is taken, or the saturating subtraction
+                // underflows to zero and the kick never fires.
+                let armed_at = (since.max(0) as u64) / 1000;
+                now.saturating_sub(armed_at) >= WRITE_KICK_SECS
+            });
         if !write_due && self.sync_last_auto.elapsed().as_secs() < RECONCILE_SECS {
             return;
         }
         let was_write = write_due;
         self.sync_last_auto = std::time::Instant::now();
-        let peers = sync_targets(self.session.sync_peers(), now, &self.sync_pending);
+        // A settled write goes to every address the book holds — the push this
+        // side owes the peer does not depend on the peer having spoken recently,
+        // and a filtered broadcast (or a firewalled listener on this side)
+        // leaves the address fresh in the book while the device sits right
+        // there. The reconciliation keeps the announcing window: a peer that
+        // has not spoken for a minute is one the worker should not dial every
+        // minute for nothing.
+        let peers = if was_write {
+            sync_targets_any_address(self.session.sync_peers(), &self.sync_pending)
+        } else {
+            sync_targets(self.session.sync_peers(), now, &self.sync_pending)
+        };
         let mut queued = 0usize;
         let mut changed = false;
         for peer in peers {
